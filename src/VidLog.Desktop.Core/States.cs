@@ -38,6 +38,41 @@ public enum RecordingSessionState
 }
 
 /// <summary>
+/// 一次录制**为什么**停下来。
+/// </summary>
+/// <remarks>
+/// 这个枚举的每一项都必须走<see cref="Recording.SessionFinalizer"/> 的同一条收尾路径
+/// —— 这正是**不变量 I9**（录制收尾只有一条路径，不存在旁路）要保证的事。
+/// <para>
+/// 把「为什么停」做成显式枚举而不是散落的 if，是为了让「有没有旁路」这件事
+/// 在编译期就能看出来：新增一种停法 = 往这里加一项，而收尾逻辑一行都不用改。
+/// </para>
+/// </remarks>
+public enum StopReason
+{
+    /// <summary>用户手动停止。</summary>
+    Manual,
+
+    /// <summary>同码复扫（规格 §3.3.2 错码保护通过后）。</summary>
+    SameWaybillRescan,
+
+    /// <summary>画面静止超时（规格 §3.3.3）。</summary>
+    StaticTimeout,
+
+    /// <summary>时长兜底（规格 §3.3.4）。</summary>
+    DurationFallback,
+
+    /// <summary>进程被杀 / 掉电后，重启时的孤儿收尾（规格 §3.1.1）。</summary>
+    ProcessKilled,
+
+    /// <summary>存储将满，主动安全收尾（规格 §3.1.1）。</summary>
+    StorageLow,
+
+    /// <summary>设备过热或电量过低，主动安全收尾（规格 §3.1.1）。</summary>
+    DeviceUnhealthy,
+}
+
+/// <summary>
 /// 上传任务状态。规格 §4.2。
 /// </summary>
 /// <remarks>
