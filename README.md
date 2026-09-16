@@ -30,10 +30,16 @@ C# / .NET 9 + WPF。
 ## 仓库结构
 
 ```
-src/VidLog.Desktop.App/            WPF 外壳（薄，只做呈现与交互）
-src/VidLog.Desktop.Core/           领域模型与可测试逻辑（不引用 WPF）
-tests/VidLog.Desktop.Core.Tests/   xUnit
-scripts/precheck.ps1               推送前的本地预检
+src/VidLog.Desktop.App/                    WPF 外壳（薄，只做呈现与交互）
+src/VidLog.Desktop.Core/                   领域模型与可测试逻辑（不引用 WPF）
+  Primitives.cs / States.cs                  硬约束值对象、状态机枚举
+  Scanning/ScannerKeystrokeDetector.cs       扫码枪按键判定（纯逻辑）
+  Media/                                     FFmpeg 封装：编码探测 / remux / 解码校验
+  Recording/                                 收尾（I9）/ 孤儿恢复 / 工作区 / 磁盘守卫
+  Index/                                     内容哈希 + JSON Lines 索引
+tests/VidLog.Desktop.Core.Tests/           xUnit（含打真 FFmpeg 的集成测试）
+docs/实现决策.md                            规格没写、由实现方定的细节
+scripts/precheck.ps1                       推送前的本地预检
 ```
 
 ---
@@ -62,15 +68,34 @@ git push
 
 ## 当前进度
 
-**M0 骨架 + M1 契约** —— 工程能编译、测试能跑、模型与状态机已定。
+**M0 骨架 + M1 契约 + M2 录像链路（逻辑部分）**
 
 已落地：
 
-- WPF 外壳（能启动的空窗口）
-- `RelativePath` / `WaybillNumber` / `ContentHash` 三个硬约束值对象
-- 三个状态机枚举（录制会话 / 上传任务 / 证据生命周期），规格 §4
+- **M1**：`RelativePath` / `WaybillNumber` / `ContentHash` 三个硬约束值对象；
+  三个状态机枚举（规格 §4）；单号归一化（§3.2.3）
+- **M2 扫码**：扫码枪按键判定（§3.2.1），含键盘自动重复防护
+- **M2 媒体**：编码能力**实测探测**（§3.1.5）、MKV→MP4 无损 remux、
+  **实际解码校验**（§3.1.4）
+- **M2 收尾**：`SessionFinalizer` —— 不变量 I9 的唯一入口，七种停法全走同一条路径；
+  孤儿分段自动收尾（§3.1.1）；磁盘余量守卫（§3.1.1）
+- **M2 入库**：SHA-256 内容哈希（§3.6.1）+ JSON Lines 索引，只存相对路径（§6.2）
 
-未做（按里程碑推进）：扫码识别、录像链路、检索回放、归档、证据能力。
+### ⚠️ M2 未完成 —— 真机验收还没做
+
+三条验收里有一条已用真 FFmpeg 端到端验证，另两条**需要真实设备**：
+
+| 验收项 | 状态 |
+|---|---|
+| 录一段，产物能被系统播放器直接播放 | ⚠️ 代码路径验过（合成源），**没用真摄像头录过** |
+| 录制中强杀进程 → 重启后自动收尾 | ✅ 真 FFmpeg 端到端验证通过 |
+| 磁盘写满 → 提前告警 + 主动收尾 | ⚠️ 逻辑已测，**没在真写满的盘上跑过** |
+
+按 `AGENTS.md` §9：**编译全绿但真机行为错误的问题，只有真机能暴露。**
+那两条 ⚠️ 必须等有工位设备时补回归，否则 M2 不算完成。
+
+未做：摄像头采集与识码、Windows 全局键盘钩子、预录缓冲、托盘、§3.2.5 的三项异步联动。
+详见 [`docs/实现决策.md`](docs/实现决策.md) §6。
 
 CI 见 [`.github/workflows/ci.yml`](.github/workflows/ci.yml)。
 
