@@ -52,6 +52,14 @@ if ($dotnet) {
     Fail 'dotnet 不在 PATH'
 }
 
+# FFmpeg 缺失不会让构建失败，但会让整组集成测试静默跳过 —— 那比失败更糟。
+$ffmpeg = (Get-Command ffmpeg -ErrorAction SilentlyContinue).Source
+if ($ffmpeg) {
+    Info "ffmpeg -> $ffmpeg"
+} else {
+    Warn 'FFmpeg 不在 PATH —— 编码探测 / remux / 解码校验的集成测试会被跳过'
+}
+
 # ─────────────────────────────────────────────────────────────
 Section '1. 密钥泄露检查'
 
@@ -132,8 +140,20 @@ if ($LASTEXITCODE -ne 0) { Fail 'dotnet build 失败' } else { Pass 'dotnet buil
 
 if (-not $SkipTests) {
     Info 'test...'
-    & dotnet test $target -c Debug --no-build --nologo
-    if ($LASTEXITCODE -ne 0) { Fail 'dotnet test 失败' } else { Pass 'dotnet test 通过' }
+    $testOutput = & dotnet test $target -c Debug --no-build --nologo 2>&1 | Out-String
+    Write-Host $testOutput
+
+    if ($LASTEXITCODE -ne 0) {
+        Fail 'dotnet test 失败'
+    } else {
+        Pass 'dotnet test 通过'
+
+        # 跳过的测试会让「全绿」变成一种虚假的安心 —— 尤其是没装 FFmpeg 时
+        # 整组集成测试会静默跳过，而它们正是验编码探测与成品可播性的那些。
+        if ($testOutput -match '(Skipped|已跳过)\D+([1-9]\d*)') {
+            Warn "有 $($Matches[2]) 个测试被跳过 —— 确认是不是缺 FFmpeg 之类的原因"
+        }
+    }
 }
 
 # ─────────────────────────────────────────────────────────────

@@ -41,14 +41,46 @@ jobs:
       - name: 显示 SDK 版本
         run: dotnet --info
 
+      # ─────────────────────────────────────────────
+      # windows-latest 镜像里**没有** FFmpeg，而本仓的
+      # FfmpegIntegrationTests 全靠它。不装的话那十几条测试会被
+      # RequiresFfmpegFact 静默跳过 —— CI 照样绿，但编码探测、remux、
+      # 解码校验这三件最该被验证的事一件都没验。
+      # 这是「看起来完成了」，比 CI 红更贵。
+      #
+      # 刻意不在 Linux 上跑这些测试：编码能力探测的结果本身就是
+      # 机器相关的（QSV/NVENC/AMF 各自要看显卡），在 Linux 上验等于没验。
+      # ─────────────────────────────────────────────
+      - name: 安装 FFmpeg
+        run: |
+          choco install ffmpeg -y --no-progress
+          $ffmpeg = (Get-Command ffmpeg -ErrorAction SilentlyContinue).Source
+          if (-not $ffmpeg) { throw '装了 FFmpeg 但 PATH 上找不到' }
+          "FFMPEG_EXE=$ffmpeg" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+          Write-Host "FFmpeg: $ffmpeg"
+          & $ffmpeg -version | Select-Object -First 1
+
       - name: 还原
         run: dotnet restore
 
       - name: 构建（Release）
         run: dotnet build -c Release --no-restore
 
-      - name: 测试
-        run: dotnet test -c Release --no-build --logger "trx;LogFileName=results.trx"
+      # 自带守卫：任何测试被跳过就让 job 红。
+      # 理由同上 —— 跳过的测试会让 CI 变成一种虚假的安心。
+      - name: 测试（含打真 FFmpeg 的集成测试）
+        run: |
+          $output = & dotnet test -c Release --no-build --logger "trx;LogFileName=results.trx" 2>&1 | Out-String
+          Write-Host $output
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "dotnet test 失败（退出码 $LASTEXITCODE）"
+          }
+
+          # 中英文输出都拦
+          if ($output -match '(Skipped|已跳过)\D+([1-9]\d*)') {
+            throw "有测试被跳过（跳过数 $($Matches[2])）—— CI 绿了但那些测试什么都没验，先查为什么跳。"
+          }
 
       - name: 上传测试结果
         if: always()
