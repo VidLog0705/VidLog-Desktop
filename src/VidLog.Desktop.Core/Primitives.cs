@@ -77,8 +77,14 @@ public sealed record RelativePath
 /// 都只是可修正标签。这里用独立类型而不是裸 <see cref="string"/>，是为了让
 /// "这个位置传进来的确实是单号"在编译期就成立。
 /// <para>
-/// 归一化算法本身（规格 §3.2.3，含校验位处理）留到 M2 落定；本类型只守住
-/// "已归一化形态不含空白字符、非空"这条与生俱来的性质。
+/// 规格 §3.2.3：**归一化后的结果才是单号，一切关联以此为准** —— 所以
+/// <see cref="Parse"/> / <see cref="TryParse"/> 都先归一化再构造。
+/// </para>
+/// <para>
+/// <b>已知缺口</b>：§3.2.3 还要求「处理校验位」，本实现**刻意没做**。
+/// 校验位规则按承运商而异，规格没有给出适用算法；凭空实现会改变单号的同一性，
+/// 而 I5 说单号是唯一事实标识 —— 改错了等于毁掉证据关联。
+/// 补这个之前必须先拿到具体承运商的校验位规则。
 /// </para>
 /// </remarks>
 public sealed record WaybillNumber
@@ -86,6 +92,50 @@ public sealed record WaybillNumber
     public string Value { get; }
 
     private WaybillNumber(string value) => Value = value;
+
+    /// <summary>
+    /// 规格 §3.2.3 的归一化：去除空白、统一大小写。
+    /// </summary>
+    /// <remarks>
+    /// 「统一大小写」规格没规定方向，本实现定为**大写**（`02-数据模型.md` 记录该决策）。
+    /// 校验位与分隔符**一律保留原样** —— 见类型注释里的已知缺口。
+    /// </remarks>
+    /// <returns>归一化后的字符串；若归一化后为空则返回 <see langword="null"/>。</returns>
+    public static string? Normalize(string? raw)
+    {
+        if (string.IsNullOrEmpty(raw))
+        {
+            return null;
+        }
+
+        var buffer = new char[raw.Length];
+        var length = 0;
+        var changed = false;
+
+        foreach (var ch in raw)
+        {
+            if (char.IsWhiteSpace(ch))
+            {
+                changed = true;
+                continue;
+            }
+
+            var upper = char.ToUpperInvariant(ch);
+            if (upper != ch)
+            {
+                changed = true;
+            }
+
+            buffer[length++] = upper;
+        }
+
+        if (length == 0)
+        {
+            return null;
+        }
+
+        return changed ? new string(buffer, 0, length) : raw;
+    }
 
     public static WaybillNumber Parse(string? raw)
     {
@@ -105,22 +155,14 @@ public sealed record WaybillNumber
         result = null;
         error = null;
 
-        if (string.IsNullOrEmpty(raw))
+        var normalized = Normalize(raw);
+        if (normalized is null)
         {
-            error = "单号不得为空";
+            error = "单号不得为空（归一化后没有任何有效字符）";
             return false;
         }
 
-        foreach (var ch in raw)
-        {
-            if (char.IsWhiteSpace(ch))
-            {
-                error = "单号不得含空白字符（归一化时应已去除）";
-                return false;
-            }
-        }
-
-        result = new WaybillNumber(raw);
+        result = new WaybillNumber(normalized);
         return true;
     }
 

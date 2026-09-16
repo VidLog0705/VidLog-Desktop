@@ -59,41 +59,72 @@ public class RelativePathTests
 
 /// <summary>
 /// 不变量 I5：单号是唯一事实标识。
+/// 规格 §3.2.3：归一化后的结果才是单号，一切关联以此为准。
 /// </summary>
 public class WaybillNumberTests
 {
     [Theory]
-    [InlineData("SF 1234567890")]
-    [InlineData("SF\t1234567890")]
-    [InlineData("SF1234567890\n")]
-    public void 拒绝含空白字符的未归一化单号(string raw)
+    [InlineData("SF 1234567890", "SF1234567890")]
+    [InlineData("SF\t1234567890", "SF1234567890")]
+    [InlineData("SF1234567890\n", "SF1234567890")]
+    [InlineData("  SF1234567890  ", "SF1234567890")]
+    public void 归一化去除空白(string raw, string expected)
     {
-        // 归一化（§3.2.3）负责去除空白；到达本类型时应当已经去过。
-        Assert.False(WaybillNumber.TryParse(raw, out _, out var error));
-        Assert.NotNull(error);
+        Assert.Equal(expected, WaybillNumber.Normalize(raw));
+    }
+
+    [Theory]
+    [InlineData("sf1234567890", "SF1234567890")]
+    [InlineData("Sf1234567890", "SF1234567890")]
+    public void 归一化统一为大写(string raw, string expected)
+    {
+        Assert.Equal(expected, WaybillNumber.Normalize(raw));
     }
 
     [Theory]
     [InlineData(null)]
     [InlineData("")]
-    public void 拒绝空单号(string? raw)
+    [InlineData("   ")]
+    [InlineData("\t\r\n")]
+    public void 归一化后为空则视为非法(string? raw)
     {
-        Assert.False(WaybillNumber.TryParse(raw, out _, out _));
+        Assert.Null(WaybillNumber.Normalize(raw));
+        Assert.False(WaybillNumber.TryParse(raw, out _, out var error));
+        Assert.NotNull(error);
     }
 
     [Fact]
-    public void 接受归一化后的单号()
+    public void Parse_先归一化再构造()
     {
-        var waybill = WaybillNumber.Parse("SF1234567890");
-
-        Assert.Equal("SF1234567890", waybill.Value);
+        Assert.Equal("SF1234567890", WaybillNumber.Parse(" sf 1234567890\n").Value);
     }
 
     [Fact]
-    public void 同值相等_可作为标识使用()
+    public void 不同写法必须归一到同一单号()
     {
-        Assert.Equal(WaybillNumber.Parse("SF1234567890"), WaybillNumber.Parse("SF1234567890"));
+        // 扫码枪带换行、人工输入带空格或小写 —— 归一化后必须是同一个单号，
+        // 否则同一件包裹会被记成两条证据（违反 I5）。
+        var fromScanner = WaybillNumber.Parse("SF1234567890\r\n");
+        var fromTyping = WaybillNumber.Parse(" sf 1234567890 ");
+
+        Assert.Equal(fromScanner, fromTyping);
+    }
+
+    [Fact]
+    public void 不同单号不相等()
+    {
         Assert.NotEqual(WaybillNumber.Parse("SF1234567890"), WaybillNumber.Parse("SF1234567891"));
+    }
+
+    [Theory]
+    [InlineData("SF-1234567890")]
+    [InlineData("SF1234567890-1")]
+    public void 校验位与分隔符保留原样_这是刻意的(string raw)
+    {
+        // §3.2.3 要求「处理校验位」，但规格没给适用算法。
+        // 凭空剥离会改变单号的同一性（I5），所以这里断言的是「不动它」。
+        // 等拿到具体承运商的校验位规则再改这条测试。
+        Assert.Equal(raw, WaybillNumber.Normalize(raw));
     }
 }
 
