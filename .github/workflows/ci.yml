@@ -1,0 +1,59 @@
+name: CI
+
+# 成本约束（重要）
+# ─────────────────────────────────────────────────────────────
+# 私有仓库的 GitHub-hosted runner 计费倍率：Linux 1× / Windows 2× / macOS 10×
+# 本仓是 .NET / WPF，只能跑 windows-latest —— 2× 计费。
+# 所以：能在本地跑的一律不要放 CI。推送前请先跑 scripts/precheck.ps1。
+#
+# 本仓没有 iOS job，也不需要：电脑端不涉及 macOS 构建。
+# ─────────────────────────────────────────────────────────────
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  DOTNET_NOLOGO: true
+  DOTNET_CLI_TELEMETRY_OPTOUT: true
+  DOTNET_SKIP_FIRST_TIME_EXPERIENCE: true
+
+jobs:
+  dotnet:
+    name: .NET (build / test)
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '9.0.x'
+
+      - name: 显示 SDK 版本
+        run: dotnet --info
+
+      - name: 还原
+        run: dotnet restore
+
+      - name: 构建（Release）
+        run: dotnet build -c Release --no-restore
+
+      - name: 测试
+        run: dotnet test -c Release --no-build --logger "trx;LogFileName=results.trx"
+
+      - name: 上传测试结果
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dotnet-test-results
+          path: '**/TestResults/**/*.trx'
+          if-no-files-found: ignore
