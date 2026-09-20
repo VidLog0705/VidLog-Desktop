@@ -1,0 +1,668 @@
+using System.Net;
+using System.Text;
+using System.Text.Json;
+using VidLog.Desktop.Core.Index;
+using VidLog.Desktop.Core.Labels;
+using VidLog.Desktop.Core.Playback;
+using VidLog.Desktop.Core.Search;
+
+namespace VidLog.Desktop.Core.Web;
+
+/// <summary>局域网回放服务的配置。</summary>
+public sealed record PlaybackServerOptions
+{
+    /// <summary>
+    /// 绑定的 URL 前缀。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// 本机调试用 <c>http://localhost:8720/</c>（不需要管理员权限）。
+    /// 要让**别的设备**能打开就得用 <c>http://+:8720/</c>，
+    /// 而 Windows 上绑定通配符前缀需要一次性注册：
+    /// </para>
+    /// <code>
+    /// netsh http add urlacl url=http://+:8720/ user=Everyone
+    /// </code>
+    /// <para>
+    /// 这条命令需要管理员权限，应当由安装程序完成一次 —— 别让用户自己敲。
+    /// 选 <see cref="HttpListener"/> 而不是 ASP.NET Core 就是为了这个：
+    /// 它用的是系统自带的 http.sys，不给一个 WPF 桌面应用凭空加上
+    /// 「必须装 ASP.NET Core 运行时」这种部署要求。
+    /// </para>
+    /// </remarks>
+    public string Prefix { get; init; } = "http://localhost:8720/";
+
+    /// <summary>
+    /// <see cref="Prefix"/> 绑不上时的退路。为 <see langword="null"/> 表示不退。
+    /// </summary>
+    /// <remarks>
+    /// 典型用法：<see cref="Prefix"/> 用 <c>http://+:8720/</c>（局域网可达），
+    /// 回退到 <c>http://localhost:8720/</c>（一定绑得上）。
+    /// <para>
+    /// 为什么要退而不是直接失败：没注册 urlacl 时局域网前缀会抛异常，
+    /// 而「回放服务起不来」不该让整个应用不可用 —— 用户至少还能在本机看回放，
+    /// 界面同时告诉他怎么把局域网打开。
+    /// </para>
+    /// </remarks>
+    public string? FallbackPrefix { get; init; }
+
+    /// <summary>归档根目录 —— 索引里的相对路径相对它解析。</summary>
+    public string ArchiveRoot { get; init; } = string.Empty;
+}
+
+/// <summary>
+/// 局域网网页回放（规格 §3.8）。
+/// </summary>
+/// <remarks>
+/// <para>
+/// ⚠️ **这不是规格 §3.7 的「可分享的证据链接」，两者不要混为一谈。**
+/// </para>
+/// <list type="bullet">
+/// <item>本服务是给**操作者自己**在内网看回放用的，直接读本机归档目录。</item>
+/// <item>§3.7 的证据链接是发给**外部**（客户、平台、法庭）的，
+/// 必须由服务端签发并指向**归档层**（不变量 I7：分享链接永不指向本地副本）。</item>
+/// </list>
+/// <para>
+/// 所以本服务的 URL **不得**被当作证据链接对外发送 —— 本地副本会被生命周期清理
+/// （规格 §3.5），发出去就是一条迟早失效的链接。
+/// </para>
+/// <para>
+/// 本服务同样**不依赖许可状态**：许可设计 §5 要求历史录像始终可查看、检索、回放。
+/// </para>
+/// </remarks>
+public sealed class PlaybackServer : IAsyncDisposable
+{
+    private static readonly JsonSerializerOptions JsonOptions = new()
+    {
+        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+    };
+
+    private readonly PlaybackServerOptions _options;
+    private readonly RecordingSearch _search;
+    private readonly IRecordingIndex _index;
+    private readonly PunchNavigation _punches;
+    private HttpListener _listener = new();
+
+    private CancellationTokenSource? _loopCancellation;
+    private Task? _loopTask;
+
+    public PlaybackServer(
+        PlaybackServerOptions options,
+        RecordingSearch search,
+        IRecordingIndex index,
+        PunchNavigation punches)
+    {
+        _options = options;
+        _search = search;
+        _index = index;
+        _punches = punches;
+    }
+
+    /// <summary>实际绑上的地址（可能不是配置里的首选地址 —— 见 <see cref="PlaybackServerOptions.FallbackPrefix"/>）。</summary>
+    public string BaseUrl { get; private set; } = string.Empty;
+
+    /// <summary>是否退回到了备用地址。</summary>
+    public bool IsUsingFallback { get; private set; }
+
+    /// <summary>绑不上首选地址时的原因，供界面告知用户。没有回退过时为 <see langword="null"/>。</summary>
+    public string? FallbackReason { get; private set; }
+
+    public Task StartAsync(CancellationToken cancellationToken = default)
+    {
+        if (TryBind(_options.Prefix, out var firstError))
+        {
+            BaseUrl = _options.Prefix;
+        }
+        else if (_options.FallbackPrefix is not null && TryBind(_options.FallbackPrefix, out _))
+        {
+            BaseUrl = _options.FallbackPrefix;
+            IsUsingFallback = true;
+            FallbackReason = firstError;
+        }
+        else
+        {
+            throw new InvalidOperationException($"无法绑定回放地址：{firstError}");
+        }
+
+        _loopCancellation = new CancellationTokenSource();
+        _loopTask = Task.Run(() => LoopAsync(_loopCancellation.Token), CancellationToken.None);
+
+        return Task.CompletedTask;
+    }
+
+    /// <summary>
+    /// 试着绑一个前缀。成功返回 true。
+    /// </summary>
+    /// <remarks>
+    /// **每次都用全新的 <see cref="HttpListener"/>。** 绑定失败过的实例不能复用：
+    /// <c>Start()</c> 抛异常之后，它内部的状态既不是「已启动」也不是「干净」，
+    /// 再改前缀或再 Start 都不可靠。踩过一次。
+    /// </remarks>
+    private bool TryBind(string prefix, out string? error)
+    {
+        var candidate = new HttpListener();
+        candidate.Prefixes.Add(prefix);
+
+        try
+        {
+            candidate.Start();
+            _listener = candidate;
+            error = null;
+            return true;
+        }
+        catch (Exception ex)
+        {
+            error = ex.Message;
+
+            try
+            {
+                candidate.Close();
+            }
+            catch (Exception)
+            {
+                // 关不掉也没关系，它没绑上任何东西。
+            }
+
+            return false;
+        }
+    }
+
+    public async Task StopAsync(CancellationToken cancellationToken = default)
+    {
+        if (_loopCancellation is not null)
+        {
+            await _loopCancellation.CancelAsync();
+        }
+
+        if (_listener.IsListening)
+        {
+            _listener.Stop();
+        }
+
+        if (_loopTask is not null)
+        {
+            try
+            {
+                await _loopTask.WaitAsync(TimeSpan.FromSeconds(5), cancellationToken);
+            }
+            catch (Exception ex) when (ex is TimeoutException or OperationCanceledException)
+            {
+                // 停不下来不该让调用方卡住 —— 进程退出会收掉它。
+            }
+        }
+    }
+
+    private async Task LoopAsync(CancellationToken cancellationToken)
+    {
+        while (!cancellationToken.IsCancellationRequested)
+        {
+            HttpListenerContext context;
+            try
+            {
+                context = await _listener.GetContextAsync().WaitAsync(cancellationToken);
+            }
+            catch (Exception ex) when (ex is OperationCanceledException or HttpListenerException or ObjectDisposedException)
+            {
+                break;
+            }
+
+            _ = Task.Run(() => HandleAsync(context), CancellationToken.None);
+        }
+    }
+
+    private async Task HandleAsync(HttpListenerContext context)
+    {
+        try
+        {
+            var path = context.Request.Url?.AbsolutePath ?? "/";
+
+            if (path is "/" or "/index.html")
+            {
+                await WriteHtmlAsync(context, BuildPage());
+                return;
+            }
+
+            if (path == "/api/search")
+            {
+                await WriteSearchAsync(context);
+                return;
+            }
+
+            if (path == "/api/punches")
+            {
+                await WritePunchesAsync(context);
+                return;
+            }
+
+            if (path.StartsWith("/media/", StringComparison.Ordinal))
+            {
+                await WriteMediaAsync(context, Uri.UnescapeDataString(path["/media/".Length..]));
+                return;
+            }
+
+            context.Response.StatusCode = 404;
+        }
+        catch (Exception)
+        {
+            // 单个请求出错不能拖垮服务；能回 500 就回。
+            try
+            {
+                context.Response.StatusCode = 500;
+            }
+            catch (Exception)
+            {
+                // 连接已经断了，忽略。
+            }
+        }
+        finally
+        {
+            try
+            {
+                context.Response.Close();
+            }
+            catch (Exception)
+            {
+                // 同上。
+            }
+        }
+    }
+
+    private async Task WriteSearchAsync(HttpListenerContext context)
+    {
+        var query = context.Request.QueryString;
+
+        var recordingQuery = new RecordingQuery
+        {
+            WaybillText = query["q"],
+            MatchMode = query["mode"] switch
+            {
+                "prefix" => WaybillMatchMode.Prefix,
+                "contains" => WaybillMatchMode.Contains,
+                _ => WaybillMatchMode.Exact,
+            },
+            From = ParseInstant(query["from"]),
+            To = ParseInstant(query["to"]),
+            BusinessType = ParseBusinessType(query["type"]),
+        };
+
+        var hits = await _search.SearchAsync(recordingQuery);
+
+        var payload = hits.Select(hit => new PlaybackSearchItem(
+            hit.Entry.EvidenceId,
+            hit.Entry.Waybill.Value,
+            hit.Entry.StartedAt.ToString("O"),
+            hit.Entry.Duration.TotalSeconds,
+            hit.BusinessType?.ToString() ?? "unknown"));
+
+        await WriteJsonAsync(context, payload);
+    }
+
+    /// <summary>
+    /// 某条证据所属会话的全部打点，已换算成「哪个文件、第几秒」。
+    /// </summary>
+    /// <remarks>
+    /// 规格 §3.8 要求回放支持「跳转到打点位置」（§3.8）。
+    /// 换算之所以要服务端做：打点是**会话内偏移**，而一次打包可能横跨多个分段文件，
+    /// 浏览器拿到的只是单个文件的 URL，不知道跨段关系。
+    /// </remarks>
+    private async Task WritePunchesAsync(HttpListenerContext context)
+    {
+        var evidenceId = context.Request.QueryString["evidenceId"] ?? string.Empty;
+
+        var targets = await _punches.ForEvidenceAsync(evidenceId);
+
+        await WriteJsonAsync(context, targets);
+    }
+
+    private async Task WriteMediaAsync(HttpListenerContext context, string evidenceId)
+    {
+        var path = await ResolveEvidencePathAsync(evidenceId);
+
+        if (path is null || !File.Exists(path))
+        {
+            context.Response.StatusCode = 404;
+            return;
+        }
+
+        await WriteFileWithRangeAsync(context, path);
+    }
+
+    /// <summary>
+    /// 把证据 id 解析成本机文件路径。
+    /// </summary>
+    /// <remarks>
+    /// **只按索引里的相对路径解析，绝不拼接请求里的字符串** ——
+    /// 否则 <c>/media/../../../windows/system32/config/sam</c> 就能读到任何文件。
+    /// 解析完还要再确认落在归档根之内，挡住索引本身被污染的情况。
+    /// </remarks>
+    private async Task<string?> ResolveEvidencePathAsync(string evidenceId)
+    {
+        if (string.IsNullOrWhiteSpace(evidenceId) || string.IsNullOrEmpty(_options.ArchiveRoot))
+        {
+            return null;
+        }
+
+        var entries = await _index.LoadAllAsync();
+        var entry = entries.FirstOrDefault(e => string.Equals(e.EvidenceId, evidenceId, StringComparison.Ordinal));
+        if (entry is null)
+        {
+            return null;
+        }
+
+        var root = Path.GetFullPath(_options.ArchiveRoot);
+        var candidate = Path.GetFullPath(Path.Combine(root, entry.Location.Value));
+
+        var rootWithSeparator = root.EndsWith(Path.DirectorySeparatorChar)
+            ? root
+            : root + Path.DirectorySeparatorChar;
+
+        return candidate.StartsWith(rootWithSeparator, StringComparison.OrdinalIgnoreCase)
+            ? candidate
+            : null;
+    }
+
+    private static async Task WriteFileWithRangeAsync(HttpListenerContext context, string filePath)
+    {
+        var file = new FileInfo(filePath);
+        var total = file.Length;
+
+        context.Response.ContentType = "video/mp4";
+        context.Response.AddHeader("Accept-Ranges", "bytes");
+
+        var rangeHeader = context.Request.Headers["Range"];
+        long start = 0;
+        var end = total - 1;
+
+        if (!string.IsNullOrEmpty(rangeHeader) && TryParseRange(rangeHeader, total, out var rangeStart, out var rangeEnd))
+        {
+            start = rangeStart;
+            end = rangeEnd;
+            context.Response.StatusCode = 206;
+            context.Response.AddHeader("Content-Range", $"bytes {start}-{end}/{total}");
+        }
+        else
+        {
+            context.Response.StatusCode = 200;
+        }
+
+        var length = end - start + 1;
+        context.Response.ContentLength64 = length;
+
+        await using var stream = new FileStream(
+            filePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite, 64 * 1024, useAsync: true);
+
+        stream.Seek(start, SeekOrigin.Begin);
+
+        var buffer = new byte[64 * 1024];
+        var remaining = length;
+
+        while (remaining > 0)
+        {
+            var toRead = (int)Math.Min(buffer.Length, remaining);
+            var read = await stream.ReadAsync(buffer.AsMemory(0, toRead));
+            if (read <= 0)
+            {
+                break;
+            }
+
+            await context.Response.OutputStream.WriteAsync(buffer.AsMemory(0, read));
+            remaining -= read;
+        }
+    }
+
+    /// <summary>
+    /// 解析单段 Range 请求头（浏览器拖进度条用的就是这种）。
+    /// </summary>
+    /// <remarks>
+    /// 多段 Range（<c>bytes=0-99,200-299</c>）**刻意不支持** —— 浏览器播放视频只用单段。
+    /// 不支持时退回整文件（200），仍然能播，只是不省流量。
+    /// </remarks>
+    private static bool TryParseRange(string header, long total, out long start, out long end)
+    {
+        start = 0;
+        end = total - 1;
+
+        if (!header.StartsWith("bytes=", StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        var spec = header["bytes=".Length..].Trim();
+        if (spec.Contains(','))
+        {
+            return false;
+        }
+
+        var dash = spec.IndexOf('-');
+        if (dash < 0)
+        {
+            return false;
+        }
+
+        var startText = spec[..dash].Trim();
+        var endText = spec[(dash + 1)..].Trim();
+
+        // "bytes=-500" = 最后 500 字节
+        if (startText.Length == 0)
+        {
+            if (!long.TryParse(endText, out var suffix) || suffix <= 0)
+            {
+                return false;
+            }
+
+            start = Math.Max(0, total - suffix);
+            end = total - 1;
+            return true;
+        }
+
+        if (!long.TryParse(startText, out start) || start < 0 || start >= total)
+        {
+            return false;
+        }
+
+        if (endText.Length > 0)
+        {
+            if (!long.TryParse(endText, out end) || end < start)
+            {
+                return false;
+            }
+
+            end = Math.Min(end, total - 1);
+        }
+        else
+        {
+            end = total - 1;
+        }
+
+        return true;
+    }
+
+    private static DateTimeOffset? ParseInstant(string? text) =>
+        DateTimeOffset.TryParse(text, null, System.Globalization.DateTimeStyles.RoundtripKind, out var parsed)
+            ? parsed
+            : null;
+
+    private static BusinessType? ParseBusinessType(string? text) =>
+        BusinessTypes.TryParse(text, out var parsed) ? parsed : null;
+
+    private static async Task WriteJsonAsync(HttpListenerContext context, object payload)
+    {
+        var json = JsonSerializer.Serialize(payload, JsonOptions);
+        var bytes = Encoding.UTF8.GetBytes(json);
+
+        context.Response.ContentType = "application/json; charset=utf-8";
+        context.Response.ContentLength64 = bytes.Length;
+        await context.Response.OutputStream.WriteAsync(bytes);
+    }
+
+    private static async Task WriteHtmlAsync(HttpListenerContext context, string html)
+    {
+        var bytes = Encoding.UTF8.GetBytes(html);
+
+        context.Response.ContentType = "text/html; charset=utf-8";
+        context.Response.ContentLength64 = bytes.Length;
+        await context.Response.OutputStream.WriteAsync(bytes);
+    }
+
+    /// <summary>回放页面。刻意保持单文件、零外部依赖 —— 局域网里没有 CDN 可访问。</summary>
+    private static string BuildPage() => """
+        <!DOCTYPE html>
+        <html lang="zh-CN">
+        <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <title>VidLog 回放</title>
+        <style>
+          :root { color-scheme: light dark; }
+          body { font: 14px/1.6 system-ui, sans-serif; margin: 0; padding: 16px; max-width: 900px; }
+          h1 { font-size: 18px; margin: 0 0 12px; }
+          form { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 16px; }
+          input, select, button { font: inherit; padding: 6px 8px; }
+          input[type=text] { flex: 1 1 200px; }
+          table { border-collapse: collapse; width: 100%; }
+          th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid #8884; }
+          tr.hit { cursor: pointer; }
+          tr.hit:hover { background: #8882; }
+          #player { width: 100%; background: #000; margin-top: 12px; display: none; }
+          #punches { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 12px; align-items: center; }
+          #punches button { padding: 4px 10px; }
+          .muted { opacity: .7; }
+          .note { margin-top: 24px; font-size: 12px; opacity: .6; }
+        </style>
+        </head>
+        <body>
+        <h1>VidLog 回放</h1>
+        <form id="f">
+          <input type="text" id="q" placeholder="单号" autocomplete="off">
+          <select id="mode">
+            <option value="exact">精确</option>
+            <option value="prefix">前缀</option>
+            <option value="contains">模糊</option>
+          </select>
+          <select id="type">
+            <option value="">全部</option>
+            <option value="outbound">发货</option>
+            <option value="return">退货</option>
+          </select>
+          <input type="date" id="from">
+          <input type="date" id="to">
+          <button type="submit">查询</button>
+        </form>
+        <table>
+          <thead><tr><th>单号</th><th>录制时间</th><th>时长</th><th>类型</th></tr></thead>
+          <tbody id="rows"></tbody>
+        </table>
+        <div id="punches"></div>
+        <video id="player" controls playsinline></video>
+        <p class="note">
+          本页仅供内网回放。它不是证据分享链接 —— 分享链接指向归档层，
+          而这里的视频来自本机本地副本，本地副本可能已被生命周期清理。
+        </p>
+        <script>
+        const rows = document.getElementById('rows');
+        const player = document.getElementById('player');
+        const punchBox = document.getElementById('punches');
+
+        // 打点是**会话内偏移**，一次打包可能横跨多个分段文件 ——
+        // 所以「跳到打点」要服务端换算成「哪个文件、第几秒」。
+        async function loadPunches(evidenceId) {
+          punchBox.innerHTML = '';
+          const res = await fetch('/api/punches?evidenceId=' + encodeURIComponent(evidenceId));
+          const targets = await res.json();
+
+          if (targets.length === 0) {
+            const span = document.createElement('span');
+            span.className = 'muted';
+            span.textContent = '这段录像没有打点';
+            punchBox.appendChild(span);
+            return;
+          }
+
+          const label = document.createElement('span');
+          label.className = 'muted';
+          label.textContent = '打点：';
+          punchBox.appendChild(label);
+
+          for (const t of targets) {
+            const b = document.createElement('button');
+            b.textContent = t.waybillNumber + ' · ' + Math.round(t.sessionOffsetSeconds) + 's';
+            b.onclick = () => {
+              player.style.display = 'block';
+              player.src = '/media/' + encodeURIComponent(t.evidenceId);
+              player.onloadedmetadata = () => {
+                player.currentTime = t.offsetSeconds;
+                player.play();
+              };
+            };
+            punchBox.appendChild(b);
+          }
+        }
+
+        function openRecording(evidenceId) {
+          player.style.display = 'block';
+          player.src = '/media/' + encodeURIComponent(evidenceId);
+          player.play();
+          loadPunches(evidenceId);
+        }
+
+        async function run() {
+          const p = new URLSearchParams();
+          const q = document.getElementById('q').value.trim();
+          if (q) p.set('q', q);
+          p.set('mode', document.getElementById('mode').value);
+          const t = document.getElementById('type').value;
+          if (t) p.set('type', t);
+          const from = document.getElementById('from').value;
+          if (from) p.set('from', from + 'T00:00:00');
+          const to = document.getElementById('to').value;
+          if (to) p.set('to', to + 'T23:59:59');
+
+          const res = await fetch('/api/search?' + p);
+          const items = await res.json();
+
+          rows.innerHTML = '';
+          for (const it of items) {
+            const tr = document.createElement('tr');
+            tr.className = 'hit';
+            tr.innerHTML = `<td></td><td></td><td></td><td></td>`;
+            tr.children[0].textContent = it.waybill;
+            tr.children[1].textContent = new Date(it.startedAt).toLocaleString();
+            tr.children[2].textContent = Math.round(it.durationSeconds) + ' 秒';
+            tr.children[3].textContent = it.businessType;
+            tr.onclick = () => openRecording(it.evidenceId);
+            rows.appendChild(tr);
+          }
+
+          if (items.length === 0) {
+            const tr = document.createElement('tr');
+            const td = document.createElement('td');
+            td.colSpan = 4;
+            td.className = 'muted';
+            td.textContent = '没有匹配的录像';
+            tr.appendChild(td);
+            rows.appendChild(tr);
+          }
+        }
+
+        document.getElementById('f').addEventListener('submit', e => { e.preventDefault(); run(); });
+        run();
+        </script>
+        </body>
+        </html>
+        """;
+
+    public async ValueTask DisposeAsync()
+    {
+        await StopAsync();
+        _loopCancellation?.Dispose();
+        ((IDisposable)_listener).Dispose();
+    }
+}
+
+/// <summary>检索接口返回的一项。</summary>
+public sealed record PlaybackSearchItem(
+    string EvidenceId,
+    string Waybill,
+    string StartedAt,
+    double DurationSeconds,
+    string BusinessType);
