@@ -185,6 +185,7 @@ public sealed class SessionFinalizer
         // 4. 写索引
         var entry = new RecordingEntry(
             EvidenceId: $"{sessionId}-{segment.Sequence:000}",
+            SessionId: sessionId,
             Waybill: waybill,
             StartedAt: segment.StartedAt,
             EndedAt: segment.EndedAt,

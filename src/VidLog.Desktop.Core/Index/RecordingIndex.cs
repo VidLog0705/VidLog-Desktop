@@ -13,8 +13,25 @@ namespace VidLog.Desktop.Core.Index;
 /// 存在别处，可随时改，不影响证据本身的同一性。
 /// </para>
 /// </remarks>
+/// <param name="EvidenceId">这一条（= 一个分段成品）的标识。</param>
+/// <param name="SessionId">
+/// 所属录制会话。
+/// </param>
+/// <remarks>
+/// <para>
+/// <b>为什么必须有 SessionId</b>：录像是**区间**，一次打包可能横跨多个分段文件
+/// （母仓 `docs/02-数据模型.md` §2），于是同一会话会落成多条记录。
+/// 而打点记的是**会话内偏移** —— 要把它定位到「第几段的第几秒」，
+/// 就得先把同一会话的分段归到一起。没有这个字段，回放的「跳到打点位置」根本做不了。
+/// </para>
+/// <para>
+/// 不能靠拆 <paramref name="EvidenceId"/> 的字符串前缀来替代：
+/// 那是把编码格式当契约用，格式一改就全线崩，而且没有任何编译期保护。
+/// </para>
+/// </remarks>
 public sealed record RecordingEntry(
     string EvidenceId,
+    string SessionId,
     WaybillNumber Waybill,
     DateTimeOffset StartedAt,
     DateTimeOffset EndedAt,
@@ -129,6 +146,7 @@ public sealed class JsonLinesRecordingIndex : IRecordingIndex
 /// </remarks>
 public sealed record RecordingEntryDto(
     string EvidenceId,
+    string? SessionId,
     string Waybill,
     string StartedAt,
     string EndedAt,
@@ -139,6 +157,7 @@ public sealed record RecordingEntryDto(
 {
     public static RecordingEntryDto From(RecordingEntry entry) => new(
         entry.EvidenceId,
+        entry.SessionId,
         entry.Waybill.Value,
         entry.StartedAt.ToString("O"),
         entry.EndedAt.ToString("O"),
@@ -149,6 +168,9 @@ public sealed record RecordingEntryDto(
 
     public RecordingEntry ToEntry() => new(
         EvidenceId,
+        // 早期写入的记录没有 SessionId 字段。退化成「自己是自己的会话」——
+        // 单段录像本来就等价于此，而它至少不会把不同会话错并到一起。
+        string.IsNullOrEmpty(SessionId) ? EvidenceId : SessionId,
         WaybillNumber.Parse(Waybill),
         DateTimeOffset.Parse(StartedAt, null, System.Globalization.DateTimeStyles.RoundtripKind),
         DateTimeOffset.Parse(EndedAt, null, System.Globalization.DateTimeStyles.RoundtripKind),
