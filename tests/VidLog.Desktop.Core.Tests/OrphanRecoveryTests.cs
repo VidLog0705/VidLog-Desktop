@@ -149,6 +149,28 @@ public class OrphanRecoveryTests
         Assert.Empty(await workspace.ListOrphansAsync());
     }
 
+    [Fact]
+    public async Task 反复写同一个manifest每次都成功且内容完整()
+    {
+        // Windows 上「改名覆盖已存在的文件」可能被拒（Defender 扫新文件时持有句柄），
+        // 而 manifest 是**反复写同一个文件**的（开录一次、每个分段封闭再一次）。
+        // 手机端先踩到这个坑：写入失败会让录像重启后收不了尾。
+        // 这条覆盖的正是「重复写」那条路径 —— 之前只测过写一次。
+        using var dir = new TempDir();
+        var workspace = new RecordingWorkspace(dir.Dir("work"));
+
+        for (var i = 0; i < 10; i++)
+        {
+            await workspace.WriteManifestAsync(ManifestFor("s1", $"segment-{i:000}.mkv"));
+        }
+
+        var sessionDirectory = workspace.SessionDirectory("s1");
+        var json = await File.ReadAllTextAsync(Path.Combine(sessionDirectory, "session.json"));
+
+        Assert.Contains("segment-009.mkv", json, StringComparison.Ordinal);
+        Assert.Empty(Directory.GetFiles(sessionDirectory, "*.tmp"));
+    }
+
     // ─────────────────────────────────────────────
     // 收尾行为
     // ─────────────────────────────────────────────

@@ -171,6 +171,19 @@ public sealed class RecordingWorkspace
             ? parsed
             : DateTimeOffset.MinValue;
 
+    /// <summary>
+    /// 写临时文件再改名。
+    /// </summary>
+    /// <remarks>
+    /// <b>Windows 上「改名覆盖已存在的文件」会被拒绝</b>（实测 <c>errno = 5 拒绝访问</c>）——
+    /// Defender 扫新写的文件时会短暂持有句柄。而 manifest 是**反复写同一个文件**的
+    /// （开录写一次、每个分段封闭再写一次），所以正好每次都撞上。
+    /// <para>
+    /// 手机端先踩到这个坑。后果是 manifest 写不进去、那段录像重启后收不了尾。
+    /// 这里同样重试；仍不行就**退化成直接写** —— 宁可失去「原子替换」这层保护，
+    /// 也不能把 manifest 整个丢掉。
+    /// </para>
+    /// </remarks>
     private static async Task WriteAtomicallyAsync(
         string destination,
         string content,
@@ -184,6 +197,36 @@ public sealed class RecordingWorkspace
             new UTF8Encoding(encoderShouldEmitUTF8Identifier: false),
             cancellationToken);
 
-        File.Move(temporary, destination, overwrite: true);
+        for (var attempt = 0; attempt < 5; attempt++)
+        {
+            try
+            {
+                File.Move(temporary, destination, overwrite: true);
+                return;
+            }
+            catch (IOException) when (attempt < 4)
+            {
+                await Task.Delay(TimeSpan.FromMilliseconds(20 * (attempt + 1)), cancellationToken);
+            }
+            catch (UnauthorizedAccessException) when (attempt < 4)
+            {
+                await Task.Delay(TimeSpan.FromMilliseconds(20 * (attempt + 1)), cancellationToken);
+            }
+        }
+
+        await File.WriteAllTextAsync(
+            destination,
+            content,
+            new UTF8Encoding(encoderShouldEmitUTF8Identifier: false),
+            cancellationToken);
+
+        try
+        {
+            File.Delete(temporary);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            // 删不掉只是留个 .tmp 垃圾，不影响正确性。
+        }
     }
 }
