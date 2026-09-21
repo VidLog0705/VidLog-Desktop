@@ -26,9 +26,6 @@ public static class LabelKeys
     public const string Company = "company";
     public const string Category = "category";
     public const string Note = "note";
-
-    /// <summary>规格 §3.8 检索用到的键；其余键只用于展示。</summary>
-    public static IReadOnlyList<string> Searchable { get; } = [BusinessType, Company, Category];
 }
 
 /// <summary><see cref="BusinessType"/> 与标签值之间的换算。</summary>

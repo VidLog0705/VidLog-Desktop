@@ -18,10 +18,6 @@ public static class FfmpegLocator
 {
     public const string EnvironmentVariable = "FFMPEG_EXE";
 
-    /// <summary>随包分发的相对位置（见发布脚本的依赖缓存约定）。</summary>
-    public static string BundledRelativePath =>
-        Path.Combine("tools", OperatingSystem.IsWindows() ? "ffmpeg.exe" : "ffmpeg");
-
     public static IReadOnlyList<string> ExecutableNames { get; } =
         OperatingSystem.IsWindows() ? ["ffmpeg.exe"] : ["ffmpeg"];
 

@@ -67,9 +67,6 @@ public enum StopReason
 
     /// <summary>存储将满，主动安全收尾（规格 §3.1.1）。</summary>
     StorageLow,
-
-    /// <summary>设备过热或电量过低，主动安全收尾（规格 §3.1.1）。</summary>
-    DeviceUnhealthy,
 }
 
 /// <summary>

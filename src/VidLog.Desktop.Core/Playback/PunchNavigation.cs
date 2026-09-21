@@ -69,8 +69,8 @@ public sealed class PunchNavigation
         return await ForSessionAsync(anchor.SessionId, entries, cancellationToken);
     }
 
-    /// <summary>取某个会话的全部打点并映射。</summary>
-    public async Task<IReadOnlyList<PunchTarget>> ForSessionAsync(
+    /// <summary>取某个会话的全部打点并映射。只给 [ForEvidenceAsync] 用。</summary>
+    private async Task<IReadOnlyList<PunchTarget>> ForSessionAsync(
         string sessionId,
         IReadOnlyList<RecordingEntry> entries,
         CancellationToken cancellationToken = default)

@@ -59,9 +59,6 @@ public sealed class RecordingWorkspace
 
     public string SessionDirectory(string sessionId) => Path.Combine(_root, sessionId);
 
-    public string FinalizedMarkerPath(string sessionId) =>
-        Path.Combine(SessionDirectory(sessionId), FinalizedFileName);
-
     public async Task WriteManifestAsync(SessionManifest manifest, CancellationToken cancellationToken = default)
     {
         var directory = SessionDirectory(manifest.SessionId);
