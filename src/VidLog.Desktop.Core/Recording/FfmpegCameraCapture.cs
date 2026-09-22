@@ -24,6 +24,14 @@ public sealed class FfmpegCameraCapture : ICameraCapture
 
     private readonly string _ffmpegPath;
 
+    /// <summary>采集进程 stderr 的尾部。</summary>
+    /// <remarks>
+    /// 留它不是为了记日志，是为了两件具体的事：① 判定 <c>device already in use</c>
+    /// （换件/重开时要用）；② 采集失败时能把 ffmpeg 真正说的话报给用户，
+    /// 而不是一句无话可说的「失败了」（I3）。
+    /// </remarks>
+    private readonly BoundedTextTail _errorTail = new();
+
     public FfmpegCameraCapture(string ffmpegPath)
     {
         _ffmpegPath = ffmpegPath;
@@ -60,12 +68,43 @@ public sealed class FfmpegCameraCapture : ICameraCapture
         var process = new Process { StartInfo = startInfo };
         process.Start();
 
-        // stdout 没人读的话管道会满、进而把 ffmpeg 堵死。内容不需要，但必须排空。
-        _ = process.StandardOutput.ReadToEndAsync(cancellationToken);
+        // 两条管道都必须**无条件排空**，且**读端绝不接受可取消的读**。
+        //
+        // 这里踩过一个会丢录像的坑：原来写的是
+        //     _ = process.StandardOutput.ReadToEndAsync(cancellationToken);
+        // 一旦调用方传进来一个真会取消的 token，读端就停了 → 管道满 →
+        // ffmpeg 写不进去 → 它连 stdin 上的 q 都处理不了 → StopAsync 超时 →
+        // 只能强杀 → **MKV 尾部丢掉**。今天侥幸没出事，只是因为调用方一直传 None。
+        // 停机只能走 q（FfmpegCaptureProcess 里那条唯一路径），不能靠取消读。
+        _ = Task.Run(() => DrainAsync(process.StandardOutput, sink: null));
+
+        // stderr 同样没人读的话，长时间录制里一次异常刷屏就能把它灌满，后果同上。
+        // 但它有内容价值（`device already in use` 这类判定文本、诊断包素材），
+        // 所以排进一个有上限的环形缓冲，而不是丢掉。
+        _ = Task.Run(() => DrainAsync(process.StandardError, _errorTail));
 
         cancellationToken.ThrowIfCancellationRequested();
 
-        return Task.FromResult<ICaptureProcess>(new FfmpegCaptureProcess(process));
+        return Task.FromResult<ICaptureProcess>(
+            new FfmpegCaptureProcess(process, () => _errorTail.ToString()));
+    }
+
+    /// <summary>把管道读干。读到流结束为止，异常吞掉（进程退了就是结束，不是错误）。</summary>
+    private static async Task DrainAsync(StreamReader reader, BoundedTextTail? sink)
+    {
+        try
+        {
+            var buffer = new char[4096];
+            int read;
+            while ((read = await reader.ReadAsync(buffer).ConfigureAwait(false)) > 0)
+            {
+                sink?.Append(buffer, read);
+            }
+        }
+        catch (Exception ex) when (ex is IOException or ObjectDisposedException or InvalidOperationException)
+        {
+            // 进程被收掉时管道会断。这不是错误，只是没有更多输出了。
+        }
     }
 
     /// <summary>
@@ -94,4 +133,41 @@ public sealed class FfmpegCameraCapture : ICameraCapture
         "-f", "matroska",
         "-y", outputPath,
     ];
+}
+
+/// <summary>
+/// 只留最后 N 个字符的文本缓冲。线程安全。
+/// </summary>
+/// <remarks>
+/// 用来排空子进程的 stderr：既要**读干**（不读就会把管道灌满、把进程堵死），
+/// 又不能无限攒（长录制会吃光内存）。留尾部而不是头部，是因为出问题时
+/// 有用的那几行通常就在最后。
+/// </remarks>
+public sealed class BoundedTextTail
+{
+    private const int Capacity = 16 * 1024;
+
+    private readonly Lock _gate = new();
+    private readonly System.Text.StringBuilder _tail = new();
+
+    public void Append(char[] buffer, int count)
+    {
+        lock (_gate)
+        {
+            _tail.Append(buffer, 0, count);
+
+            if (_tail.Length > Capacity)
+            {
+                _tail.Remove(0, _tail.Length - Capacity);
+            }
+        }
+    }
+
+    public override string ToString()
+    {
+        lock (_gate)
+        {
+            return _tail.ToString();
+        }
+    }
 }

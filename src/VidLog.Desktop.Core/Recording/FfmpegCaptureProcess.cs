@@ -14,11 +14,20 @@ namespace VidLog.Desktop.Core.Recording;
 public sealed class FfmpegCaptureProcess : ICaptureProcess
 {
     private readonly Process _process;
+    private readonly Func<string> _errors;
 
-    internal FfmpegCaptureProcess(Process process)
+    /// <param name="errors">
+    /// 取 stderr 尾部的回调。用来把 ffmpeg 真正说的话报给用户 ——
+    /// 只说「采集失败」是 I3 不允许的静默失败。
+    /// </param>
+    internal FfmpegCaptureProcess(Process process, Func<string> errors)
     {
         _process = process;
+        _errors = errors;
     }
+
+    /// <summary>采集进程 stderr 的尾部（有上限）。</summary>
+    public string ErrorTail => _errors();
 
     public async Task<int?> StopAsync(TimeSpan timeout, CancellationToken cancellationToken = default)
     {
