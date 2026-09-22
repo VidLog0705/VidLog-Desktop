@@ -10,6 +10,13 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <UseWPF>true</UseWPF>
+    <!--
+      只为托盘图标（System.Windows.Forms.NotifyIcon）而开。
+      Windows Desktop SDK 自带，**不加任何 NuGet 包**。
+      不用它的话就得手写 Shell_NotifyIcon 的 P/Invoke —— 代码多好几倍，
+      而换来的只是「不引用 WinForms」，没有实际收益。
+    -->
+    <UseWindowsForms>true</UseWindowsForms>
   </PropertyGroup>
 
 </Project>

@@ -1,4 +1,11 @@
 using System.Windows;
+using VidLog.Desktop.Core.Recording;
+
+// 本工程同时开了 UseWPF 与 UseWindowsForms，ImplicitUsings 会把两边的同名类型
+// 都带进来。这里钉死成 WPF 的那套 —— 对话框只该有一个来源。
+using MessageBox = System.Windows.MessageBox;
+using MessageBoxImage = System.Windows.MessageBoxImage;
+using MessageBoxResult = System.Windows.MessageBoxResult;
 
 namespace VidLog.Desktop.App;
 
@@ -9,20 +16,33 @@ namespace VidLog.Desktop.App;
 /// 启动顺序刻意是「先装配、再开窗口」：装配失败时还没有窗口可以显示错误，
 /// 所以失败要用 MessageBox 说出来，而不是静默退出。
 /// </remarks>
-public partial class App : Application
+public partial class App : System.Windows.Application
 {
+    private AppHost? _host;
+    private MainWindow? _window;
+    private bool _exiting;
+
     protected override async void OnStartup(StartupEventArgs e)
     {
         base.OnStartup(e);
 
         try
         {
-            var host = await AppHost.StartAsync();
+            _host = await AppHost.StartAsync();
 
-            // 装配里攒下的问题（读设置失败、没摄像头、没编码器）会显示在窗口的
-            // 「需要注意」区里，不在这里拦。
-            MainWindow = new MainWindow(host);
-            MainWindow.Show();
+            _window = new MainWindow(_host);
+            MainWindow = _window;
+
+            // 关窗口只是收进托盘，退出走托盘菜单 —— 有在录的段时先问一句。
+            _host.ConfirmExitWhileRecording = ConfirmExitWhileRecording;
+
+            _host.AttachTray(
+                showWindow: ShowWindow,
+                exitApplication: () => _ = ExitAsync());
+
+            _host.Notice += OnNotice;
+
+            _window.Show();
         }
         catch (Exception ex)
         {
@@ -33,5 +53,71 @@ public partial class App : Application
 
             Shutdown(1);
         }
+    }
+
+    private void ShowWindow()
+    {
+        if (_window is null)
+        {
+            return;
+        }
+
+        _window.Show();
+        _window.WindowState = WindowState.Normal;
+        _window.Activate();
+        _window.RestartTicker();
+    }
+
+    private Task<bool> ConfirmExitWhileRecording()
+    {
+        var waybill = _host?.Coordinator.CurrentWaybill;
+        if (waybill is null)
+        {
+            return Task.FromResult(true);
+        }
+
+        ShowWindow();
+
+        var answer = MessageBox.Show(
+            $"「{waybill.Value}」还在录。要结束它并退出吗？",
+            "VidLog", MessageBoxButton.YesNo, MessageBoxImage.Question);
+
+        return Task.FromResult(answer == MessageBoxResult.Yes);
+    }
+
+    /// <summary>
+    /// 把协调器的通知送到托盘 —— 窗口收起来之后，那是用户唯一看得见的地方。
+    /// </summary>
+    /// <remarks>
+    /// 只弹「需要用户知道」的那几类。每一件包裹都弹一次气泡是噪声，
+    /// 用户会开始无视它 —— 那比不弹更糟。
+    /// </remarks>
+    private void OnNotice(CoordinatorNotice notice)
+    {
+        if (notice.Kind is not (CoordinatorNoticeKind.FinalizeFailed or CoordinatorNoticeKind.WrongWaybill))
+        {
+            return;
+        }
+
+        _host?.Tray?.Notify("VidLog", notice.Message);
+    }
+
+    private async Task ExitAsync()
+    {
+        if (_exiting || _host is null)
+        {
+            return;
+        }
+
+        _exiting = true;
+
+        // ShutdownAsync 会先问一句（有在录的段时），用户说不退就什么都不做。
+        if (!await _host.ShutdownAsync())
+        {
+            _exiting = false;
+            return;
+        }
+
+        Shutdown();
     }
 }

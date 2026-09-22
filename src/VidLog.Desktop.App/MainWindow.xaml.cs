@@ -2,9 +2,21 @@ using System.ComponentModel;
 using System.Diagnostics;
 using System.IO;
 using System.Windows;
-using System.Windows.Controls;
-using System.Windows.Input;
 using System.Windows.Threading;
+
+// 本工程同时开了 UseWPF 与 UseWindowsForms（后者只为托盘图标），
+// ImplicitUsings 会把两边的命名空间都带进来，于是 ComboBox / KeyEventArgs
+// 这类同名类型变成「不明确」。这里用**别名钉死成 WPF 的那套** ——
+// 这个文件里的控件全是 WPF 的，WinForms 一个都不该出现。
+using ComboBox = System.Windows.Controls.ComboBox;
+using ComboBoxItem = System.Windows.Controls.ComboBoxItem;
+using Key = System.Windows.Input.Key;
+using KeyEventArgs = System.Windows.Input.KeyEventArgs;
+using MessageBox = System.Windows.MessageBox;
+using MessageBoxImage = System.Windows.MessageBoxImage;
+using MessageBoxResult = System.Windows.MessageBoxResult;
+using SelectionChangedEventArgs = System.Windows.Controls.SelectionChangedEventArgs;
+using TextChangedEventArgs = System.Windows.Controls.TextChangedEventArgs;
 using VidLog.Desktop.Core;
 using VidLog.Desktop.Core.Configuration;
 using VidLog.Desktop.Core.Diagnostics;
@@ -146,6 +158,22 @@ public partial class MainWindow : Window
     // ─────────────────────────────────────────────
     // 工作
     // ─────────────────────────────────────────────
+
+    /// <summary>
+    /// 从托盘恢复时把刷新重新开起来。
+    /// </summary>
+    /// <remarks>
+    /// 关窗口时会停掉它（窗口都看不见了，刷新纯属白费），
+    /// 但那期间录制可能一直在进行 —— 恢复时必须接上，否则状态显示会停在旧值。
+    /// </remarks>
+    public void RestartTicker()
+    {
+        if (_host.Coordinator.CurrentWaybill is not null)
+        {
+            _ticker.Start();
+            UpdateRecordingStatus();
+        }
+    }
 
     /// <summary>扫码枪扫到了 —— 界面跟着填，让用户看得见识别到了什么。</summary>
     private void OnScanned(ScanOutcome outcome)
@@ -475,32 +503,20 @@ public partial class MainWindow : Window
     // ─────────────────────────────────────────────
 
     /// <summary>
-    /// 关窗口不等于退出 —— 规格 §3.2.1 要求后台仍能收码。
+    /// 关窗口 = 收进托盘，**不是退出**（规格 §3.2.1：后台仍要收码）。
     /// </summary>
     /// <remarks>
-    /// 有在录的段时先收尾：直接退会留下一个未收尾的分段，
-    /// 虽然下次启动的孤儿恢复能接上，但**当场收掉**对用户更清楚。
+    /// 真正的退出走托盘菜单的「退出」，由 <see cref="AppHost.ShutdownAsync"/> 收尾。
+    /// 这里无条件取消关闭，是为了不区分「首次关闭」与「真要退出」——
+    /// 那个区分要靠状态位，而状态位最容易写错成「第二次点 X 才退」这种惊喜。
     /// </remarks>
-    private async void OnClosing(object? sender, CancelEventArgs e)
+    private void OnClosing(object? sender, CancelEventArgs e)
     {
-        if (_host.Coordinator.CurrentWaybill is not null)
-        {
-            e.Cancel = true;
-
-            var answer = MessageBox.Show(
-                $"「{_host.Coordinator.CurrentWaybill.Value}」还在录。要结束它并退出吗？",
-                "VidLog", MessageBoxButton.YesNo, MessageBoxImage.Question);
-
-            if (answer != MessageBoxResult.Yes)
-            {
-                return;
-            }
-
-            await _host.Coordinator.StopWorkAsync();
-        }
+        e.Cancel = true;
 
         _ticker.Stop();
-        await _host.DisposeAsync();
-        Application.Current.Shutdown();
+        Hide();
+
+        _host.Tray?.Notify("VidLog 还在后台", "扫码枪照常可用。要退出请右键托盘图标。");
     }
 }

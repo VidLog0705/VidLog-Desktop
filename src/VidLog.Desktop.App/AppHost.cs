@@ -45,6 +45,56 @@ public sealed class AppHost : IAsyncDisposable
     public KeyboardScanBridge Bridge { get; }
     public RecordingCoordinator Coordinator { get; }
 
+    public TrayIcon? Tray { get; private set; }
+
+    /// <summary>关窗口时问一句的钩子 —— 由窗口提供（它知道怎么弹对话框）。</summary>
+    /// <remarks>
+    /// 不给 AppHost 直接引用窗口：那样两者互相依赖，而装配层不该知道界面长什么样。
+    /// </remarks>
+    public Func<Task<bool>>? ConfirmExitWhileRecording { get; set; }
+
+    /// <summary>
+    /// 建托盘并接上「显示窗口 / 退出」。
+    /// </summary>
+    /// <remarks>
+    /// 规格 §3.2.1 要求后台仍能收码 —— 钩子是全局的、与焦点无关，
+    /// 所以收进托盘之后扫码照常工作，这正是托盘存在的意义。
+    /// </remarks>
+    public TrayIcon AttachTray(Action showWindow, Action exitApplication)
+    {
+        var tray = new TrayIcon("VidLog · 工位录像");
+        tray.BuildMenu(showWindow, exitApplication);
+        tray.UiRequested += showWindow;
+        Tray = tray;
+
+        _logger.Log(LogLevel.Info, "启动", "托盘已就绪");
+        return tray;
+    }
+
+    /// <summary>
+    /// 走完退出流程：收尾在录的段、拆托盘、释放服务。
+    /// </summary>
+    public async Task<bool> ShutdownAsync()
+    {
+        if (Coordinator.CurrentWaybill is not null && ConfirmExitWhileRecording is not null)
+        {
+            if (!await ConfirmExitWhileRecording())
+            {
+                return false;
+            }
+        }
+
+        // 收尾在录的段。不收的话会留下一个未收尾的分段 ——
+        // 下次启动的孤儿恢复能接上，但当场收掉对用户更清楚。
+        await Coordinator.StopWorkAsync();
+
+        Tray?.Dispose();
+        Tray = null;
+
+        await DisposeAsync();
+        return true;
+    }
+
     public IReadOnlyList<string> Warnings { get; private set; } = [];
 
     /// <summary>扫码枪识别到一个单号（回到调用方的线程上）。</summary>
@@ -115,7 +165,8 @@ public sealed class AppHost : IAsyncDisposable
 
         // 钩子在自己的线程上回调，而消费方（界面）是 UI 线程 —— 派回去。
         Hook.KeyEvent += (raw, timestamp) =>
-            Application.Current?.Dispatcher.BeginInvoke(() => Bridge.Accept(raw, timestamp));
+            System.Windows.Application.Current?.Dispatcher.BeginInvoke(
+                () => Bridge.Accept(raw, timestamp));
 
         Bridge.Scanned += outcome =>
         {

@@ -40,6 +40,15 @@ public sealed class WindowsKeyboardHook : IDisposable
     private uint _threadId;
     private volatile bool _running;
 
+    /// <summary>装钩的**结果**已经出来（成功或失败）。</summary>
+    /// <remarks>
+    /// 装钩发生在钩子线程上，而 <see cref="Start"/> 在 UI 线程上 ——
+    /// 没有这个信号的话，调用方会在钩子还没装完时就去读 <see cref="IsInstalled"/>，
+    /// 读到 false 并据此报「装不上」。表现是**间歇性失败**（实测三次里错一次），
+    /// 而且它会被当成本机不支持，很难查。
+    /// </remarks>
+    private readonly ManualResetEventSlim _installSettled = new(false);
+
     public WindowsKeyboardHook()
     {
         _callback = HookCallback;
@@ -53,7 +62,13 @@ public sealed class WindowsKeyboardHook : IDisposable
     /// <summary>装不上时的原因（I3：不允许静默失效）。</summary>
     public string? LastError { get; private set; }
 
-    /// <summary>装上钩子并起消息循环。幂等。</summary>
+    /// <summary>
+    /// 装上钩子并起消息循环。幂等。
+    /// </summary>
+    /// <remarks>
+    /// **会等到装钩出结果再返回** —— 否则调用方读 <see cref="IsInstalled"/>
+    /// 会读到「还没装完」，据此误报「装不上」。
+    /// </remarks>
     public void Start()
     {
         if (_running)
@@ -69,6 +84,9 @@ public sealed class WindowsKeyboardHook : IDisposable
         };
         _thread.SetApartmentState(ApartmentState.STA);
         _thread.Start();
+
+        // 等结果。两秒足够 —— 装钩本身是瞬时的事，等这么久只可能是线程没起来。
+        _installSettled.Wait(TimeSpan.FromSeconds(2));
     }
 
     private void MessageLoop()
@@ -89,10 +107,12 @@ public sealed class WindowsKeyboardHook : IDisposable
 
             IsInstalled = false;
             _running = false;
+            _installSettled.Set();
             return;
         }
 
         IsInstalled = true;
+        _installSettled.Set();
 
         // 低级钩子要求安装它的线程**有消息循环**，否则回调永远不会被调用。
         while (_running && GetMessage(out var message, IntPtr.Zero, 0, 0) > 0)
