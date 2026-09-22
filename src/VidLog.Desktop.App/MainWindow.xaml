@@ -12,6 +12,8 @@
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
             <RowDefinition Height="*"/>
         </Grid.RowDefinitions>
 
@@ -23,7 +25,59 @@
                        Text="正在启动…"/>
         </StackPanel>
 
-        <StackPanel Grid.Row="1" Orientation="Horizontal" Margin="0,14,0,0">
+        <!-- 录制。手工「开始工作」触发（需求方 2026-09-22 裁定），
+             与规格 §4.1 的「识别到单号→录制中」不同 —— 见 docs/实现决策.md。 -->
+        <Border Grid.Row="1"
+                Margin="0,14,0,0"
+                Padding="12"
+                BorderThickness="1"
+                CornerRadius="4"
+                BorderBrush="#33000000">
+            <StackPanel>
+                <TextBlock Text="录制" FontWeight="SemiBold"/>
+
+                <StackPanel Orientation="Horizontal" Margin="0,10,0,0">
+                    <TextBlock Text="摄像头" VerticalAlignment="Center" Width="60"/>
+                    <ComboBox x:Name="CameraCombo"
+                              Width="300"
+                              IsEnabled="False"
+                              SelectionChanged="OnCameraChanged"/>
+                    <TextBlock x:Name="CameraHint"
+                               Margin="10,0,0,0"
+                               VerticalAlignment="Center"
+                               Foreground="#88666666"
+                               Text=""/>
+                </StackPanel>
+
+                <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
+                    <TextBlock Text="单号" VerticalAlignment="Center" Width="60"/>
+                    <TextBox x:Name="WaybillBox"
+                             Width="300"
+                             IsEnabled="False"
+                             TextChanged="OnWaybillChanged"/>
+                </StackPanel>
+
+                <StackPanel Orientation="Horizontal" Margin="0,12,0,0">
+                    <Button x:Name="StartWorkButton"
+                            Content="开始工作"
+                            Padding="18,6"
+                            IsEnabled="False"
+                            Click="OnStartWork"/>
+                    <Button x:Name="StopWorkButton"
+                            Content="结束"
+                            Padding="18,6"
+                            Margin="8,0,0,0"
+                            IsEnabled="False"
+                            Click="OnStopWork"/>
+                    <TextBlock x:Name="RecordingStatus"
+                               Margin="14,0,0,0"
+                               VerticalAlignment="Center"
+                               Text=""/>
+                </StackPanel>
+            </StackPanel>
+        </Border>
+
+        <StackPanel Grid.Row="2" Orientation="Horizontal" Margin="0,14,0,0">
             <Button x:Name="OpenPlaybackButton"
                     Content="打开回放页面"
                     Padding="14,6"
@@ -37,7 +91,7 @@
                     Click="OnOpenDataFolder"/>
         </StackPanel>
 
-        <TextBlock Grid.Row="2"
+        <TextBlock Grid.Row="4"
                    Margin="0,18,0,4"
                    Text="需要注意"
                    FontWeight="SemiBold"
@@ -45,7 +99,7 @@
                    Visibility="Collapsed"/>
 
         <ListBox x:Name="WarningsList"
-                 Grid.Row="3"
+                 Grid.Row="5"
                  Margin="0,0,0,0"
                  HorizontalContentAlignment="Stretch"
                  Visibility="Collapsed"/>
