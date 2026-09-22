@@ -5,103 +5,175 @@
         xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
         xmlns:local="clr-namespace:VidLog.Desktop.App"
         mc:Ignorable="d"
-        Title="VidLog" Height="520" Width="820"
+        Title="VidLog" Height="640" Width="980"
         Closing="OnClosing">
-    <Grid Margin="16">
-        <Grid.RowDefinitions>
-            <RowDefinition Height="Auto"/>
-            <RowDefinition Height="Auto"/>
-            <RowDefinition Height="Auto"/>
-            <RowDefinition Height="Auto"/>
-            <RowDefinition Height="Auto"/>
-            <RowDefinition Height="*"/>
-        </Grid.RowDefinitions>
+    <TabControl Margin="10">
+        <!-- ── 工作 ─────────────────────────────────────────── -->
+        <TabItem Header="工作">
+            <Grid Margin="16">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="*"/>
+                </Grid.RowDefinitions>
 
-        <StackPanel Grid.Row="0">
-            <TextBlock Text="VidLog · 电脑端" FontSize="20" FontWeight="SemiBold"/>
-            <TextBlock x:Name="StatusText"
-                       Margin="0,8,0,0"
-                       TextWrapping="Wrap"
-                       Text="正在启动…"/>
-        </StackPanel>
+                <StackPanel Grid.Row="0">
+                    <TextBlock Text="VidLog · 电脑端" FontSize="20" FontWeight="SemiBold"/>
+                    <TextBlock x:Name="StatusText" Margin="0,8,0,0" TextWrapping="Wrap" Text="正在启动…"/>
 
-        <!-- 录制。手工「开始工作」触发（需求方 2026-09-22 裁定），
-             与规格 §4.1 的「识别到单号→录制中」不同 —— 见 docs/实现决策.md。 -->
-        <Border Grid.Row="1"
-                Margin="0,14,0,0"
-                Padding="12"
-                BorderThickness="1"
-                CornerRadius="4"
-                BorderBrush="#33000000">
-            <StackPanel>
-                <TextBlock Text="录制" FontWeight="SemiBold"/>
+                    <!-- 工作模式（规格 §3.3.1）。三者的差别全在「什么时候停」。 -->
+                    <StackPanel Orientation="Horizontal" Margin="0,12,0,0">
+                        <TextBlock Text="工作模式" VerticalAlignment="Center" Width="66"/>
+                        <ComboBox x:Name="ModeCombo" Width="190" SelectionChanged="OnModeChanged">
+                            <ComboBoxItem Tag="Continuous">连续扫（换件即换段）</ComboBoxItem>
+                            <ComboBoxItem Tag="StopOnSameWaybill">同码停（复扫同号停）</ComboBoxItem>
+                            <ComboBoxItem Tag="StopOnStaticAfterRescan">扫码静止停录</ComboBoxItem>
+                        </ComboBox>
 
-                <StackPanel Orientation="Horizontal" Margin="0,10,0,0">
-                    <TextBlock Text="摄像头" VerticalAlignment="Center" Width="60"/>
-                    <ComboBox x:Name="CameraCombo"
-                              Width="300"
-                              IsEnabled="False"
-                              SelectionChanged="OnCameraChanged"/>
-                    <TextBlock x:Name="CameraHint"
-                               Margin="10,0,0,0"
-                               VerticalAlignment="Center"
-                               Foreground="#88666666"
-                               Text=""/>
+                        <TextBlock Text="静止停录" VerticalAlignment="Center" Margin="20,0,0,0" Width="66"/>
+                        <ComboBox x:Name="StaticCombo" Width="110" SelectionChanged="OnStaticChanged">
+                            <ComboBoxItem Tag="Off">关闭</ComboBoxItem>
+                            <ComboBoxItem Tag="Two">2 分钟</ComboBoxItem>
+                            <ComboBoxItem Tag="Three">3 分钟</ComboBoxItem>
+                            <ComboBoxItem Tag="Four">4 分钟</ComboBoxItem>
+                            <ComboBoxItem Tag="Five">5 分钟</ComboBoxItem>
+                        </ComboBox>
+
+                        <TextBlock Text="时长兜底" VerticalAlignment="Center" Margin="20,0,0,0" Width="66"/>
+                        <ComboBox x:Name="DurationCombo" Width="110" SelectionChanged="OnDurationChanged">
+                            <ComboBoxItem Tag="Off">关闭</ComboBoxItem>
+                            <ComboBoxItem Tag="Four">4 分钟</ComboBoxItem>
+                            <ComboBoxItem Tag="Five">5 分钟</ComboBoxItem>
+                            <ComboBoxItem Tag="Six">6 分钟</ComboBoxItem>
+                        </ComboBox>
+                    </StackPanel>
                 </StackPanel>
 
-                <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
-                    <TextBlock Text="单号" VerticalAlignment="Center" Width="60"/>
-                    <TextBox x:Name="WaybillBox"
-                             Width="300"
-                             IsEnabled="False"
-                             TextChanged="OnWaybillChanged"/>
+                <Border Grid.Row="1" Margin="0,14,0,0" Padding="12"
+                        BorderThickness="1" CornerRadius="4" BorderBrush="#33000000">
+                    <StackPanel>
+                        <TextBlock Text="录制" FontWeight="SemiBold"/>
+
+                        <StackPanel Orientation="Horizontal" Margin="0,10,0,0">
+                            <TextBlock Text="摄像头" VerticalAlignment="Center" Width="66"/>
+                            <ComboBox x:Name="CameraCombo" Width="300" IsEnabled="False"/>
+                            <TextBlock x:Name="CameraHint" Margin="10,0,0,0"
+                                       VerticalAlignment="Center" Foreground="#88666666" Text=""/>
+                        </StackPanel>
+
+                        <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
+                            <TextBlock Text="单号" VerticalAlignment="Center" Width="66"/>
+                            <TextBox x:Name="WaybillBox" Width="300" IsEnabled="False"
+                                     TextChanged="OnWaybillChanged"/>
+                            <TextBlock Margin="10,0,0,0" VerticalAlignment="Center"
+                                       Foreground="#88666666"
+                                       Text="扫码枪直接扫即可；也可手打后按回车"/>
+                        </StackPanel>
+
+                        <StackPanel Orientation="Horizontal" Margin="0,12,0,0">
+                            <Button x:Name="StartWorkButton" Content="开始工作" Padding="18,6"
+                                    IsEnabled="False" Click="OnStartWork"/>
+                            <Button x:Name="StopWorkButton" Content="结束" Padding="18,6"
+                                    Margin="8,0,0,0" IsEnabled="False" Click="OnStopWork"/>
+                            <TextBlock x:Name="RecordingStatus" Margin="14,0,0,0"
+                                       VerticalAlignment="Center" TextWrapping="Wrap"/>
+                        </StackPanel>
+                    </StackPanel>
+                </Border>
+
+                <TextBlock Grid.Row="2" x:Name="NoticesText" Margin="0,12,0,0"
+                           TextWrapping="Wrap" Foreground="#CC333333"/>
+            </Grid>
+        </TabItem>
+
+        <!-- ── 检索与回放 ───────────────────────────────────── -->
+        <TabItem Header="检索与回放">
+            <Grid Margin="16">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="*"/>
+                    <RowDefinition Height="Auto"/>
+                </Grid.RowDefinitions>
+
+                <StackPanel Grid.Row="0" Orientation="Horizontal">
+                    <TextBlock Text="单号" VerticalAlignment="Center" Width="40"/>
+                    <TextBox x:Name="SearchBox" Width="220" KeyDown="OnSearchKeyDown"/>
+
+                    <ComboBox x:Name="MatchCombo" Width="110" Margin="8,0,0,0" SelectedIndex="1">
+                        <ComboBoxItem Tag="Exact">精确</ComboBoxItem>
+                        <ComboBoxItem Tag="Prefix">前缀</ComboBoxItem>
+                        <ComboBoxItem Tag="Fuzzy">模糊</ComboBoxItem>
+                    </ComboBox>
+
+                    <TextBlock Text="日期" VerticalAlignment="Center" Margin="14,0,0,0"/>
+                    <DatePicker x:Name="FromDate" Width="130"/>
+                    <TextBlock Text="—" VerticalAlignment="Center" Margin="6,0"/>
+                    <DatePicker x:Name="ToDate" Width="130"/>
+
+                    <TextBlock Text="类型" VerticalAlignment="Center" Margin="14,0,0,0"/>
+                    <ComboBox x:Name="BusinessCombo" Width="100" SelectedIndex="0">
+                        <ComboBoxItem Tag="">全部</ComboBoxItem>
+                        <ComboBoxItem Tag="Outbound">发货</ComboBoxItem>
+                        <ComboBoxItem Tag="Return">退货</ComboBoxItem>
+                    </ComboBox>
+
+                    <Button x:Name="SearchButton" Content="检索" Padding="16,4"
+                            Margin="14,0,0,0" Click="OnSearch"/>
+                    <Button x:Name="OpenPlaybackButton" Content="局域网回放页" Padding="16,4"
+                            Margin="8,0,0,0" IsEnabled="False" Click="OnOpenPlayback"/>
+                    <Button x:Name="OpenDataFolderButton" Content="数据目录" Padding="16,4"
+                            Margin="8,0,0,0" IsEnabled="False" Click="OnOpenDataFolder"/>
                 </StackPanel>
 
-                <StackPanel Orientation="Horizontal" Margin="0,12,0,0">
-                    <Button x:Name="StartWorkButton"
-                            Content="开始工作"
-                            Padding="18,6"
-                            IsEnabled="False"
-                            Click="OnStartWork"/>
-                    <Button x:Name="StopWorkButton"
-                            Content="结束"
-                            Padding="18,6"
-                            Margin="8,0,0,0"
-                            IsEnabled="False"
-                            Click="OnStopWork"/>
-                    <TextBlock x:Name="RecordingStatus"
-                               Margin="14,0,0,0"
-                               VerticalAlignment="Center"
-                               Text=""/>
+                <DataGrid x:Name="ResultsGrid" Grid.Row="1" Margin="0,12,0,0"
+                          AutoGenerateColumns="False" IsReadOnly="True"
+                          SelectionChanged="OnResultSelected"
+                          HorizontalScrollBarVisibility="Auto">
+                    <DataGrid.Columns>
+                        <DataGridTextColumn Header="开始时间" Binding="{Binding StartedAt}" Width="150"/>
+                        <DataGridTextColumn Header="单号" Binding="{Binding Waybill}" Width="160"/>
+                        <DataGridTextColumn Header="时长" Binding="{Binding Duration}" Width="80"/>
+                        <DataGridTextColumn Header="类型" Binding="{Binding Business}" Width="70"/>
+                        <DataGridTextColumn Header="会话" Binding="{Binding SessionId}" Width="*"/>
+                    </DataGrid.Columns>
+                </DataGrid>
+
+                <TextBlock Grid.Row="2" x:Name="SearchStatus" Margin="0,8,0,0"
+                           TextWrapping="Wrap" Foreground="#CC333333"/>
+            </Grid>
+        </TabItem>
+
+        <!-- ── 设置 ─────────────────────────────────────────── -->
+        <TabItem Header="设置">
+            <StackPanel Margin="16">
+                <TextBlock Text="分段时长（分钟）" FontWeight="SemiBold"/>
+                <TextBox x:Name="SegmentBox" Width="120" Margin="0,4,0,0"
+                         HorizontalAlignment="Left"/>
+                <TextBlock Text="单个分段的上限。到点自动滚下一段，用户无感。" Margin="0,2,0,0"
+                           Foreground="#88666666" TextWrapping="Wrap"/>
+
+                <TextBlock Text="回放服务端口" FontWeight="SemiBold" Margin="0,16,0,0"/>
+                <TextBox x:Name="PortBox" Width="120" Margin="0,4,0,0" HorizontalAlignment="Left"/>
+                <TextBlock Text="改了要重启才生效。" Margin="0,2,0,0"
+                           Foreground="#88666666"/>
+
+                <StackPanel Orientation="Horizontal" Margin="0,20,0,0">
+                    <Button x:Name="SaveSettingsButton" Content="保存设置" Padding="16,6"
+                            Click="OnSaveSettings"/>
+                    <TextBlock x:Name="SettingsStatus" Margin="12,0,0,0" VerticalAlignment="Center"/>
                 </StackPanel>
+
+                <TextBlock Text="需要注意" FontWeight="SemiBold" Margin="0,24,0,4"
+                           x:Name="WarningsHeader" Visibility="Collapsed"/>
+                <ListBox x:Name="WarningsList" MaxHeight="160"
+                         HorizontalContentAlignment="Stretch" Visibility="Collapsed"/>
+
+                <Button x:Name="ExportDiagnosticsButton" Content="导出诊断包"
+                        Padding="16,6" Margin="0,16,0,0" HorizontalAlignment="Left"
+                        Click="OnExportDiagnostics"/>
+                <TextBlock Text="把日志、设置与环境信息打成一个 zip，不含任何视频。"
+                           Margin="0,4,0,0" Foreground="#88666666" TextWrapping="Wrap"/>
             </StackPanel>
-        </Border>
-
-        <StackPanel Grid.Row="2" Orientation="Horizontal" Margin="0,14,0,0">
-            <Button x:Name="OpenPlaybackButton"
-                    Content="打开回放页面"
-                    Padding="14,6"
-                    IsEnabled="False"
-                    Click="OnOpenPlayback"/>
-            <Button x:Name="OpenDataFolderButton"
-                    Content="打开数据目录"
-                    Padding="14,6"
-                    Margin="8,0,0,0"
-                    IsEnabled="False"
-                    Click="OnOpenDataFolder"/>
-        </StackPanel>
-
-        <TextBlock Grid.Row="4"
-                   Margin="0,18,0,4"
-                   Text="需要注意"
-                   FontWeight="SemiBold"
-                   x:Name="WarningsHeader"
-                   Visibility="Collapsed"/>
-
-        <ListBox x:Name="WarningsList"
-                 Grid.Row="5"
-                 Margin="0,0,0,0"
-                 HorizontalContentAlignment="Stretch"
-                 Visibility="Collapsed"/>
-    </Grid>
+        </TabItem>
+    </TabControl>
 </Window>

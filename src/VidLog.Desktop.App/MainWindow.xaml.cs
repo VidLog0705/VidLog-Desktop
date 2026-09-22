@@ -1,78 +1,126 @@
 using System.ComponentModel;
 using System.Diagnostics;
+using System.IO;
 using System.Windows;
+using System.Windows.Controls;
+using System.Windows.Input;
 using System.Windows.Threading;
 using VidLog.Desktop.Core;
 using VidLog.Desktop.Core.Configuration;
-using VidLog.Desktop.Core.Media;
+using VidLog.Desktop.Core.Diagnostics;
+using VidLog.Desktop.Core.Labels;
+using VidLog.Desktop.Core.Punches;
 using VidLog.Desktop.Core.Recording;
+using VidLog.Desktop.Core.Scanning;
+using VidLog.Desktop.Core.Search;
 
 namespace VidLog.Desktop.App;
 
 /// <summary>
-/// 主窗口。
+/// 主窗口 —— 纯视图。
 /// </summary>
 /// <remarks>
-/// **刻意保持很薄** —— 只做三件事：装配（<see cref="DesktopServices.Create"/>）、
-/// 呈现启动报告、把用户操作转成系统动作。
-/// 「重启后收尾孤儿」「起回放服务」「分段滚动与收尾」这些行为都在 Core 里，
-/// 这样它们才测得到（见 <see cref="DesktopServices.StartAsync"/>、<see cref="RecordingSession"/>）。
+/// 装配与生命周期都在 <see cref="AppHost"/> 里：规格 §3.2.1 要求后台仍能收码，
+/// 而那要求钩子与录制协调器活得比窗口长。这里只做呈现与把操作转成 Core 调用。
 /// </remarks>
 public partial class MainWindow : Window
 {
-    private readonly DispatcherTimer _recordingTicker;
+    private readonly AppHost _host;
+    private readonly DispatcherTimer _ticker;
+    private bool _suppressSettingsEvents;
 
-    private DesktopServices? _services;
-    private string? _playbackUrl;
-    private RecordingSession? _session;
-    private Task? _recordingLoop;
-    private CancellationTokenSource? _recordingCancellation;
-
-    /// <summary>探测出来的编码器名。首次开录前探一次，之后复用。</summary>
-    private string? _encoder;
-
-    public MainWindow()
+    public MainWindow(AppHost host)
     {
+        _host = host;
         InitializeComponent();
-        Loaded += OnLoaded;
 
-        // 界面上的「已录 / 已存」只能靠定时刷新 —— RecordingSession 不推送事件，
-        // 它的 Elapsed 是拉取式的。500ms 足够让人看见秒在走，又不会白费 CPU。
-        _recordingTicker = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(500) };
-        _recordingTicker.Tick += (_, _) => UpdateRecordingStatus();
+        // 界面上「已录 / 已存」只能靠定时刷新 —— 协调器不推送进度，Elapsed 是拉取式的。
+        _ticker = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(500) };
+        _ticker.Tick += (_, _) => UpdateRecordingStatus();
+
+        Loaded += OnLoaded;
+        Closed += (_, _) => _ticker.Stop();
+
+        _host.Notice += OnNotice;
+        _host.Scanned += OnScanned;
     }
 
     private async void OnLoaded(object sender, RoutedEventArgs e)
     {
-        try
+        ShowWarnings();
+
+        SearchButton.IsEnabled = true;
+        OpenDataFolderButton.IsEnabled = true;
+
+        // 装钩子 —— 装不上要给用户看见（I3），不能让他一直奇怪扫码枪怎么没反应。
+        _host.StartKeyboardHook();
+
+        LoadSettingsIntoUi();
+        await LoadCamerasAsync();
+
+        // 回放服务起没起来，在启动报告里。
+        OpenPlaybackButton.IsEnabled = _host.Services.Server?.BaseUrl is { Length: > 0 };
+        StatusText.Text = _host.Services.Server?.BaseUrl is { Length: > 0 }
+            ? $"服务已就绪。回放地址：{_host.Services.Server.BaseUrl}"
+            : "服务已就绪。回放服务未启动。";
+    }
+
+    private void ShowWarnings()
+    {
+        if (_host.Warnings.Count == 0)
         {
-            _services = DesktopServices.Create(DataLayout.Default());
-
-            var report = await _services.StartAsync();
-
-            ShowReport(report);
-            await LoadCamerasAsync();
+            return;
         }
-        catch (Exception ex)
+
+        WarningsHeader.Visibility = Visibility.Visible;
+        WarningsList.Visibility = Visibility.Visible;
+
+        foreach (var warning in _host.Warnings)
         {
-            // 启动失败必须让用户看见，不能静默退出（I3 的同一条精神）。
-            StatusText.Text = $"启动失败：{ex.Message}";
+            WarningsList.Items.Add(warning);
         }
     }
 
-    // ─────────────────────────────────────────────
-    // 摄像头与单号
-    // ─────────────────────────────────────────────
+    private void LoadSettingsIntoUi()
+    {
+        _suppressSettingsEvents = true;
+        try
+        {
+            SelectByTag(ModeCombo, _host.Settings.Mode.ToString());
+            SelectByTag(StaticCombo, _host.Settings.StaticStop.ToString());
+            SelectByTag(DurationCombo, _host.Settings.DurationFallback.ToString());
+            SegmentBox.Text = _host.Settings.SegmentMinutes.ToString();
+            PortBox.Text = _host.Settings.PlaybackPort.ToString();
+        }
+        finally
+        {
+            _suppressSettingsEvents = false;
+        }
+    }
+
+    private static void SelectByTag(ComboBox combo, string tag)
+    {
+        foreach (var item in combo.Items.OfType<ComboBoxItem>())
+        {
+            if (string.Equals(item.Tag as string, tag, StringComparison.Ordinal))
+            {
+                combo.SelectedItem = item;
+                return;
+            }
+        }
+    }
+
+    private static string? TagOf(ComboBox combo) => (combo.SelectedItem as ComboBoxItem)?.Tag as string;
 
     private async Task LoadCamerasAsync()
     {
-        if (_services?.FfmpegPath is null)
+        if (_host.Services.FfmpegPath is null)
         {
             CameraHint.Text = "没有 FFmpeg，无法采集";
             return;
         }
 
-        var devices = await CameraDevices.ListAsync(_services.FfmpegPath);
+        var devices = await CameraDevices.ListAsync(_host.Services.FfmpegPath);
 
         if (devices.Count == 0)
         {
@@ -86,42 +134,57 @@ public partial class MainWindow : Window
             CameraCombo.Items.Add(device);
         }
 
-        CameraCombo.SelectedIndex = 0;
+        var remembered = _host.Settings.CameraDevice;
+        CameraCombo.SelectedIndex =
+            remembered is not null && devices.Contains(remembered) ? devices.ToList().IndexOf(remembered) : 0;
+
         CameraCombo.IsEnabled = true;
         WaybillBox.IsEnabled = true;
+        RefreshStartButton();
     }
 
-    private void OnCameraChanged(object sender, RoutedEventArgs e) => RefreshStartButton();
+    // ─────────────────────────────────────────────
+    // 工作
+    // ─────────────────────────────────────────────
 
-    private void OnWaybillChanged(object sender, RoutedEventArgs e) => RefreshStartButton();
+    /// <summary>扫码枪扫到了 —— 界面跟着填，让用户看得见识别到了什么。</summary>
+    private void OnScanned(ScanOutcome outcome)
+    {
+        WaybillBox.Text = outcome.Waybill.Value;
+        RefreshStartButton();
+    }
 
-    /// <summary>
-    /// 【开始工作】只在「有摄像头 + 单号能解析成合法单号」时可用。
-    /// </summary>
-    /// <remarks>
-    /// 单号走 <see cref="WaybillNumber.TryParse"/> 而不是非空判断：
-    /// 归一化后会变空的输入（全是空白）不该被放行 —— I5 说单号是唯一事实标识。
-    /// </remarks>
+    private void OnNotice(CoordinatorNotice notice)
+    {
+        // 通知可能从钩子线程来，派回 UI。
+        if (!Dispatcher.CheckAccess())
+        {
+            Dispatcher.BeginInvoke(() => OnNotice(notice));
+            return;
+        }
+
+        var line = $"{DateTime.Now:HH:mm:ss}  {notice.Message}";
+        var existing = NoticesText.Text;
+
+        // 只留最近若干条 —— 这是给人看的滚动条，不是日志（日志在文件里）。
+        var lines = new[] { line }.Concat(existing.Split('\n').Take(19));
+        NoticesText.Text = string.Join('\n', lines.Where(l => l.Length > 0));
+
+        UpdateRecordingStatus();
+    }
+
+    private void OnWaybillChanged(object sender, TextChangedEventArgs e) => RefreshStartButton();
+
     private void RefreshStartButton()
     {
         var hasCamera = CameraCombo.SelectedItem is not null;
         var hasWaybill = WaybillNumber.TryParse(WaybillBox.Text, out _, out _);
 
-        StartWorkButton.IsEnabled =
-            _session is null && hasCamera && hasWaybill && _services?.FfmpegPath is not null;
+        StartWorkButton.IsEnabled = hasCamera && hasWaybill && _host.Coordinator.CurrentWaybill is null;
     }
-
-    // ─────────────────────────────────────────────
-    // 开录 / 停录
-    // ─────────────────────────────────────────────
 
     private async void OnStartWork(object sender, RoutedEventArgs e)
     {
-        if (_services is null || CameraCombo.SelectedItem is not string device)
-        {
-            return;
-        }
-
         if (!WaybillNumber.TryParse(WaybillBox.Text, out var waybill, out var error))
         {
             RecordingStatus.Text = $"单号不能用：{error}";
@@ -129,77 +192,38 @@ public partial class MainWindow : Window
         }
 
         StartWorkButton.IsEnabled = false;
-        RecordingStatus.Text = "正在准备…";
 
         try
         {
-            // 规格 §3.1.5：编码能力必须实测，不假定硬件编码可用。
-            // 结果缓存起来 —— 探测要真跑几次编码，每件包裹都探一遍太慢。
-            _encoder ??= EncoderSelection.Select(await _services.EncoderProbe.ProbeAsync())
-                ?? throw new InvalidOperationException("本机没有任何可用的 H.264 编码器。");
-
-            var session = _services.CreateRecordingSession(device);
-            await session.StartAsync(waybill!, _encoder);
-
-            _session = session;
-            _recordingCancellation = new CancellationTokenSource();
-            _recordingLoop = session.RunAsync(_encoder, _recordingCancellation.Token);
-
-            _recordingTicker.Start();
-            UpdateRecordingStatus();
+            _host.Coordinator.StartWork();
+            await _host.Coordinator.SubmitAsync(waybill!, PunchSource.ManualEntry);
 
             StopWorkButton.IsEnabled = true;
+            _ticker.Start();
+            UpdateRecordingStatus();
         }
         catch (Exception ex)
         {
-            // I3：录制起不来必须让用户看见，不能静默失败。
+            // I3：开录失败必须让用户看见。
             RecordingStatus.Text = $"开录失败：{ex.Message}";
-            _session = null;
             RefreshStartButton();
         }
     }
 
     private async void OnStopWork(object sender, RoutedEventArgs e)
     {
-        var session = _session;
-        if (session is null)
-        {
-            return;
-        }
-
         StopWorkButton.IsEnabled = false;
-        RecordingStatus.Text = "正在收尾…";
 
         try
         {
-            if (_recordingCancellation is not null)
-            {
-                await _recordingCancellation.CancelAsync();
-            }
+            var outcome = await _host.Coordinator.StopWorkAsync();
+            _ticker.Stop();
 
-            // 循环自己也会收尾，这里再调一次是幂等的（TryStopAsync）——
-            // 用户点【结束】时不该等循环先发现令牌被取消。
-            var outcome = await session.TryStopAsync(StopReason.Manual);
-            await session.Completion;
-
-            _recordingTicker.Stop();
-
-            if (outcome is null)
-            {
-                RecordingStatus.Text = "已结束。";
-            }
-            else if (outcome.Succeeded)
-            {
-                var segments = outcome.Segments.Count;
-                RecordingStatus.Text = $"已入库 {segments} 段。";
-            }
-            else
-            {
-                // 收尾失败**必须**让用户看见（I3）—— 而且要说明东西还在，
-                // 否则用户会以为录像丢了。
-                RecordingStatus.Text =
-                    $"收尾失败：{outcome.FailureReason} 录像仍在工作区，下次启动会自动重试。";
-            }
+            RecordingStatus.Text = outcome is null
+                ? "已结束。"
+                : outcome.Succeeded
+                    ? $"已入库 {outcome.Segments.Count} 段。"
+                    : $"收尾失败：{outcome.FailureReason} 录像仍在工作区，下次启动会自动重试。";
         }
         catch (Exception ex)
         {
@@ -207,85 +231,131 @@ public partial class MainWindow : Window
         }
         finally
         {
-            if (_recordingLoop is not null)
-            {
-                await Task.WhenAny(_recordingLoop, Task.Delay(TimeSpan.FromSeconds(5)));
-            }
-
-            await session.DisposeAsync();
-
-            _session = null;
-            _recordingLoop = null;
-            _recordingCancellation?.Dispose();
-            _recordingCancellation = null;
-
-            _recordingTicker.Stop();
             RefreshStartButton();
         }
     }
 
     private void UpdateRecordingStatus()
     {
-        var session = _session;
-        if (session is null)
+        if (_host.Coordinator.CurrentWaybill is null)
         {
             return;
         }
 
-        var elapsed = session.Elapsed;
+        var elapsed = _host.Coordinator.Elapsed;
         var clock = $"{(int)elapsed.TotalHours:00}:{elapsed.Minutes:00}:{elapsed.Seconds:00}";
 
-        var problem = string.IsNullOrWhiteSpace(session.LastProblem)
-            ? string.Empty
-            : $" · {session.LastProblem}";
-
-        RecordingStatus.Text =
-            $"录制中 {clock} · 已存 {session.ClosedSegmentCount} 段{problem}";
+        RecordingStatus.Text = $"录制中 {clock} · {_host.Coordinator.CurrentWaybill.Value}";
+        StopWorkButton.IsEnabled = true;
     }
 
-    private void ShowReport(StartupReport report)
+    // ─────────────────────────────────────────────
+    // 检索与回放
+    // ─────────────────────────────────────────────
+
+    private async void OnSearch(object sender, RoutedEventArgs e) => await SearchAsync();
+
+    private async void OnSearchKeyDown(object sender, KeyEventArgs e)
     {
-        _playbackUrl = report.PlaybackUrl;
-
-        var recovered = report.RecoveredCount > 0
-            ? $"，收尾了 {report.RecoveredCount} 段上次没走完的录像"
-            : string.Empty;
-
-        StatusText.Text = _playbackUrl is null
-            ? $"服务已就绪{recovered}。回放服务未启动。"
-            : $"服务已就绪{recovered}。\n回放地址：{_playbackUrl}";
-
-        OpenPlaybackButton.IsEnabled = _playbackUrl is not null;
-        OpenDataFolderButton.IsEnabled = true;
-
-        if (report.Warnings.Count > 0)
+        if (e.Key == Key.Enter)
         {
-            WarningsHeader.Visibility = Visibility.Visible;
-            WarningsList.Visibility = Visibility.Visible;
-
-            foreach (var warning in report.Warnings)
-            {
-                WarningsList.Items.Add(warning);
-            }
+            await SearchAsync();
         }
+    }
+
+    private async Task SearchAsync()
+    {
+        var from = FromDate.SelectedDate;
+        var to = ToDate.SelectedDate;
+
+        var query = new RecordingQuery
+        {
+            WaybillText = string.IsNullOrWhiteSpace(SearchBox.Text) ? null : SearchBox.Text.Trim(),
+            MatchMode = TagOf(MatchCombo) switch
+            {
+                "Prefix" => WaybillMatchMode.Prefix,
+                "Fuzzy" => WaybillMatchMode.Contains,
+                _ => WaybillMatchMode.Exact,
+            },
+            // 结束那一天要**整日包含**，所以右边界取次日零点（半开区间）。
+            From = from is null ? null : new DateTimeOffset(from.Value.Date, DateTimeOffset.Now.Offset),
+            To = to is null ? null : new DateTimeOffset(to.Value.Date.AddDays(1), DateTimeOffset.Now.Offset),
+            BusinessType = TagOf(BusinessCombo) switch
+            {
+                "Outbound" => BusinessType.Outbound,
+                "Return" => BusinessType.Return,
+                _ => null,
+            },
+        };
+
+        SearchStatus.Text = "正在检索…";
+
+        try
+        {
+            var hits = await _host.Services.Search.SearchAsync(query);
+
+            ResultsGrid.ItemsSource = hits.Select(h => new
+            {
+                StartedAt = h.Entry.StartedAt.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss"),
+                Waybill = h.Entry.Waybill.Value,
+                Duration = $"{(int)h.Entry.Duration.TotalMinutes}:{h.Entry.Duration.Seconds:00}",
+                Business = h.BusinessType switch
+                {
+                    BusinessType.Outbound => "发货",
+                    BusinessType.Return => "退货",
+                    _ => "",
+                },
+                h.Entry.SessionId,
+                Hit = h,
+            }).ToList();
+
+            SearchStatus.Text = hits.Count == 0
+                ? "没有匹配的录像。"
+                : $"找到 {hits.Count} 条。选中一条可播放。";
+        }
+        catch (Exception ex)
+        {
+            SearchStatus.Text = $"检索出错：{ex.Message}";
+        }
+    }
+
+    private void OnResultSelected(object sender, SelectionChangedEventArgs e)
+    {
+        if (ResultsGrid.SelectedItem is null)
+        {
+            return;
+        }
+
+        // 播放交给系统默认播放器 —— 本地文件、离线可用（I10），
+        // 而且不引入任何播放器依赖。界面内播放留到需要时再做。
+        var hit = ResultsGrid.SelectedItem.GetType().GetProperty("Hit")?.GetValue(ResultsGrid.SelectedItem);
+        if (hit is not RecordingHit recording)
+        {
+            return;
+        }
+
+        var path = Path.Combine(_host.Services.Layout.ArchiveRoot, recording.Entry.Location.Value);
+        SearchStatus.Text = File.Exists(path)
+            ? $"双击可直接播放：{path}"
+            : $"成品不在盘上：{path}";
+
+        OpenInShell(path);
     }
 
     private void OnOpenPlayback(object sender, RoutedEventArgs e)
     {
-        OpenInShell(_playbackUrl ?? string.Empty);
-    }
-
-    private void OnOpenDataFolder(object sender, RoutedEventArgs e)
-    {
-        if (_services is not null)
+        if (_host.Services.Server?.BaseUrl is { Length: > 0 })
         {
-            OpenInShell(_services.Layout.RootDirectory);
+            OpenInShell(_host.Services.Server.BaseUrl);
         }
     }
 
+    private void OnOpenDataFolder(object sender, RoutedEventArgs e) =>
+        OpenInShell(_host.Services.Layout.RootDirectory);
+
     private static void OpenInShell(string target)
     {
-        if (string.IsNullOrWhiteSpace(target))
+        if (string.IsNullOrWhiteSpace(target) || !File.Exists(target) && !target.StartsWith("http", StringComparison.Ordinal))
         {
             return;
         }
@@ -300,30 +370,137 @@ public partial class MainWindow : Window
         }
     }
 
-    private void OnClosing(object? sender, CancelEventArgs e)
+    // ─────────────────────────────────────────────
+    // 设置
+    // ─────────────────────────────────────────────
+
+    private async void OnModeChanged(object sender, SelectionChangedEventArgs e) => await SaveUiSettingsAsync();
+
+    private async void OnStaticChanged(object sender, SelectionChangedEventArgs e) => await SaveUiSettingsAsync();
+
+    private async void OnDurationChanged(object sender, SelectionChangedEventArgs e) => await SaveUiSettingsAsync();
+
+    private async void OnSaveSettings(object sender, RoutedEventArgs e) => await SaveUiSettingsAsync();
+
+    /// <summary>
+    /// 把界面上的设置存下来。
+    /// </summary>
+    /// <remarks>
+    /// 越界的输入**不静默吞掉** —— 说清楚、并且不保存，而不是存进去一个
+    /// 之后会让人莫名其妙的值。
+    /// </remarks>
+    private async Task SaveUiSettingsAsync()
     {
-        var services = _services;
-        var session = _session;
-        _services = null;
-        _session = null;
-
-        _recordingTicker.Stop();
-
-        // 录制中关窗口：必须让采集进程停下来，否则它会成为孤儿占着分片文件 ——
-        // 那正是「收尾只有一条路径」（I9）要防的。会话的 DisposeAsync 会优雅停采集，
-        // 留下一个未收尾的分段，下次启动由孤儿恢复接上。
-        if (session is not null)
-        {
-            _ = session.DisposeAsync();
-        }
-
-        if (services is null)
+        if (_suppressSettingsEvents)
         {
             return;
         }
 
-        // 刻意**不**等它完成：关窗口不该卡住。监听套接字随进程退出一起收掉，
-        // 主动停一下只是为了让端口尽快释放、方便马上重启。
-        _ = services.DisposeAsync();
+        if (!int.TryParse(SegmentBox.Text, out var segment) || segment is < 1 or > 10)
+        {
+            SettingsStatus.Text = "分段时长要在 1~10 分钟之间，本次未保存。";
+            return;
+        }
+
+        if (!int.TryParse(PortBox.Text, out var port) || port is < 1024 or > 65535)
+        {
+            SettingsStatus.Text = "端口要在 1024~65535 之间，本次未保存。";
+            return;
+        }
+
+        var next = _host.Settings with
+        {
+            Mode = Enum.TryParse<WorkMode>(TagOf(ModeCombo), out var mode) ? mode : _host.Settings.Mode,
+            StaticStop = Enum.TryParse<StaticStopOption>(TagOf(StaticCombo), out var s) ? s : _host.Settings.StaticStop,
+            DurationFallback = Enum.TryParse<DurationFallbackOption>(TagOf(DurationCombo), out var d)
+                ? d : _host.Settings.DurationFallback,
+            SegmentMinutes = segment,
+            PlaybackPort = port,
+            CameraDevice = CameraCombo.SelectedItem as string,
+        };
+
+        try
+        {
+            await _host.SaveSettingsAsync(next);
+            SettingsStatus.Text = "已保存。工作模式与档位下次录段生效；端口要重启。";
+        }
+        catch (Exception ex)
+        {
+            SettingsStatus.Text = $"保存失败：{ex.Message}";
+        }
+    }
+
+    private async void OnExportDiagnostics(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            var package = new DiagnosticsPackage(new DiagnosticsSources(
+                _host.Services.Layout,
+                _host.Settings,
+                _host.Warnings,
+                _ => Task.FromResult<IReadOnlyList<string>>(BuildEnvironmentLines())));
+
+            var path = await package.ExportAsync(_host.Services.Layout.RootDirectory);
+
+            SettingsStatus.Text = $"诊断包已导出：{path}";
+            OpenInShell(_host.Services.Layout.RootDirectory);
+        }
+        catch (Exception ex)
+        {
+            SettingsStatus.Text = $"导出失败：{ex.Message}";
+        }
+    }
+
+    private IReadOnlyList<string> BuildEnvironmentLines()
+    {
+        var lines = new List<string>
+        {
+            $"OS: {Environment.OSVersion}",
+            $".NET: {Environment.Version}",
+            $"机器名: {Environment.MachineName}",
+            $"回放服务: {(_host.Services.Server?.BaseUrl is { Length: > 0 } ? _host.Services.Server.BaseUrl : "未启动")}",
+        };
+
+        if (_host.Services.FfmpegPath is { } ffmpeg)
+        {
+            lines.Add($"FFmpeg: {ffmpeg}");
+        }
+
+        lines.AddRange(_host.Warnings.Select(w => $"警告: {w}"));
+        return lines;
+    }
+
+    // ─────────────────────────────────────────────
+    // 关闭
+    // ─────────────────────────────────────────────
+
+    /// <summary>
+    /// 关窗口不等于退出 —— 规格 §3.2.1 要求后台仍能收码。
+    /// </summary>
+    /// <remarks>
+    /// 有在录的段时先收尾：直接退会留下一个未收尾的分段，
+    /// 虽然下次启动的孤儿恢复能接上，但**当场收掉**对用户更清楚。
+    /// </remarks>
+    private async void OnClosing(object? sender, CancelEventArgs e)
+    {
+        if (_host.Coordinator.CurrentWaybill is not null)
+        {
+            e.Cancel = true;
+
+            var answer = MessageBox.Show(
+                $"「{_host.Coordinator.CurrentWaybill.Value}」还在录。要结束它并退出吗？",
+                "VidLog", MessageBoxButton.YesNo, MessageBoxImage.Question);
+
+            if (answer != MessageBoxResult.Yes)
+            {
+                return;
+            }
+
+            await _host.Coordinator.StopWorkAsync();
+        }
+
+        _ticker.Stop();
+        await _host.DisposeAsync();
+        Application.Current.Shutdown();
     }
 }
