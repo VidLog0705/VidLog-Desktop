@@ -66,8 +66,19 @@ jobs:
       - name: 构建（Release）
         run: dotnet build -c Release --no-restore
 
-      # 自带守卫：任何测试被跳过就让 job 红。
-      # 理由同上 —— 跳过的测试会让 CI 变成一种虚假的安心。
+      # 自带守卫：被跳过的测试会让 CI 变成一种虚假的安心，所以**意外**跳过必须红。
+      #
+      # ⚠️ 但不能一律按「跳过数 > 0 就红」写死。有一类跳过是**环境本来就跑不了**的：
+      # 摄像头集成测试需要真设备，而 GitHub 的 runner 没有摄像头 ——
+      # 这台机器上它真跑，CI 上必然跳。把它算成失败，等于要求 CI 有一条它
+      # 无论如何都满足不了的规则。
+      #
+      # 所以判据改成「**只允许**环境受限的那几条跳；多出任何一条就红」。
+      # 守卫原有的价值一点没丢 —— 比如 FFmpeg 没装导致那十几条静默跳过时，
+      # 跳过的名字不在名单里，照样立刻失败。
+      #
+      # ⚠️ **必须按测试名判，不能按数量**。数量会被别的测试变动带偏，
+      # 而名字能直接指出「跳的是谁」，报错可读。
       - name: 测试（含打真 FFmpeg 的集成测试）
         run: |
           $output = & dotnet test -c Release --no-build --logger "trx;LogFileName=results.trx" 2>&1 | Out-String
@@ -77,9 +88,26 @@ jobs:
             throw "dotnet test 失败（退出码 $LASTEXITCODE）"
           }
 
-          # 中英文输出都拦
-          if ($output -match '(Skipped|已跳过)\D+([1-9]\d*)') {
-            throw "有测试被跳过（跳过数 $($Matches[2])）—— CI 绿了但那些测试什么都没验，先查为什么跳。"
+          # 环境受限、允许跳过的测试（按类名前缀匹配）。
+          # 目前只有一组：需要真摄像头的采集集成测试。
+          $allowedToSkip = 'FfmpegCameraCaptureIntegrationTests'
+
+          $trx = Get-ChildItem -Path . -Recurse -Filter 'results.trx' -ErrorAction SilentlyContinue |
+                 Select-Object -First 1
+          if (-not $trx) { throw '找不到测试结果文件 results.trx —— 没法判定有没有意外跳过' }
+
+          [xml]$results = Get-Content $trx.FullName
+          $skipped = @($results.TestRun.Results.UnitTestResult |
+                      Where-Object { $_.outcome -eq 'NotExecuted' })
+
+          $unexpected = @($skipped | Where-Object { $_.testName -notmatch $allowedToSkip })
+          if ($unexpected.Count -gt 0) {
+            $names = ($unexpected | ForEach-Object { $_.testName }) -join '; '
+            throw "有 $($unexpected.Count) 个测试被意外跳过：$names —— CI 绿了但那些测试什么都没验，先查为什么跳。"
+          }
+
+          if ($skipped.Count -gt 0) {
+            Write-Host "说明：$($skipped.Count) 个测试因本机环境限制跳过（CI 无摄像头），已按名单放行。"
           }
 
       - name: 上传测试结果

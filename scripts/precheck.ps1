@@ -155,10 +155,27 @@ if (-not $SkipTests) {
         # 它会**先匹配到上面逐条打印的 "已跳过 <测试名> [1 ms]"**，把耗时 1 当成
         # 跳过数 —— 明明跳了 12 个，却报「有 1 个测试被跳过」。
         # 一条守卫报错了数，比没有守卫更坏：它让人以为只差一点点。
+        #
+        # ⚠️ 但也不能按「> 0 就警惕」一刀切：有一类跳过是**这台机器本来就没有**的
+        # 东西（摄像头）。所以按**名字**分开报 —— 名单内的说明一下，
+        # 名单外的才值得查。判据与 CI 那条守卫保持一致（ci.yml）。
+        $allowedToSkip = 'FfmpegCameraCaptureIntegrationTests'
+
         if ($testOutput -match '(?:Skipped|已跳过)\s*[:：]\s*(\d+)') {
             $skipped = [int]$Matches[1]
             if ($skipped -gt 0) {
-                Warn "有 $skipped 个测试被跳过 —— 确认是不是缺 FFmpeg 之类的原因"
+                # 文本里"已跳过 X"的 X 是测试全名，用它判断跳的是不是名单内的那些。
+                $unexpected = @(
+                    [regex]::Matches($testOutput, '(?:Skipped|已跳过)\s+(\S+)') |
+                    ForEach-Object { $_.Groups[1].Value } |
+                    Where-Object { $_ -notmatch $allowedToSkip }
+                )
+
+                if ($unexpected.Count -gt 0) {
+                    Warn "有 $($unexpected.Count) 个测试被异常跳过：$($unexpected -join '; ')"
+                } else {
+                    Info "$skipped 个测试因本机环境限制跳过（无摄像头），已按名单放行"
+                }
             }
         }
     }
