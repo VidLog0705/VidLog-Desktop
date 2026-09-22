@@ -56,6 +56,15 @@ public enum StopReason
     /// <summary>同码复扫（规格 §3.3.2 错码保护通过后）。</summary>
     SameWaybillRescan,
 
+    /// <summary>
+    /// 连续扫下扫到了**另一个**单号 —— 换件，上一件到此为止。
+    /// </summary>
+    /// <remarks>
+    /// 规格 2026-09-22 的需求变更：连续扫从「只提示不停录」改成了换段式。
+    /// 这**不是**错误路径，是那个模式下的正常结束方式。
+    /// </remarks>
+    WaybillChanged,
+
     /// <summary>画面静止超时（规格 §3.3.3）。</summary>
     StaticTimeout,
 

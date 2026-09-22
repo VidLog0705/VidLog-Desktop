@@ -55,6 +55,13 @@ public sealed class RecordingSession : IAsyncDisposable
     private readonly DiskSpaceGuard _diskGuard;
     private readonly RecordingSessionOptions _options;
     private readonly Func<TimeSpan> _clock;
+
+    /// <summary>「开录那一刻」的时钟读数。<see cref="Elapsed"/> 是相对它的差值。</summary>
+    /// <remarks>
+    /// 不用「重新绑定 _clock」那种写法：那样第二次读会把已经减过的值再减一遍。
+    /// 显式记一个基准，含义一目了然，也不会随重置次数漂移。
+    /// </remarks>
+    private TimeSpan _clockOrigin;
     private readonly Func<TimeSpan, CancellationToken, Task> _delay;
     private readonly string _deviceName;
 
@@ -106,10 +113,14 @@ public sealed class RecordingSession : IAsyncDisposable
     /// <summary>本机的设备标识（端间契约 §2）。</summary>
     public string SourceDeviceId { get; }
 
+    /// <summary>本会话的单号。开录前为 <see langword="null"/>。</summary>
+    /// <remarks>打点要带着它落盘（规格 §3.2.4）。</remarks>
+    public WaybillNumber? Waybill => _manifest is null ? null : WaybillNumber.Parse(_manifest.Waybill);
+
     public RecordingSessionState State { get; private set; } = RecordingSessionState.Idle;
 
     /// <summary>从开录起算的已录时长（单调，I11）。</summary>
-    public TimeSpan Elapsed => _clock();
+    public TimeSpan Elapsed => _clock() - _clockOrigin;
 
     /// <summary>已经封闭、可以进收尾的分段数。</summary>
     public int ClosedSegmentCount
@@ -158,6 +169,9 @@ public sealed class RecordingSession : IAsyncDisposable
         {
             throw new InvalidOperationException($"会话已经在 {State} 状态，不能重复开录。");
         }
+
+        // 单调时钟的起点挪到开录这一刻 —— 会话可能在开录前先建好（协调器就是）。
+        RestartClock();
 
         _startedAt = DateTimeOffset.UtcNow;
         _manifest = new SessionManifest(
@@ -337,7 +351,19 @@ public sealed class RecordingSession : IAsyncDisposable
         _currentFileName = fileName;
     }
 
-    private async Task CloseCurrentSegmentAsync(CancellationToken cancellationToken)
+    /// <summary>
+    /// 只放掉相机，不做收尾。
+    /// </summary>
+    /// <remarks>
+    /// 单独拆出来是为了<b>连续扫换件</b>：换件要立刻以新单号开下一段，
+    /// 而收尾（remux + 解码校验）要几秒 —— 等它做完再开下一段，那几秒就白丢了。
+    /// 但相机是独占的（实测），所以**必须先放掉设备**下一个会话才开得起来。
+    /// <para>
+    /// 幂等：已经放过了就什么都不做。收尾仍然只有 <c>StopAsync</c> 那一条路（I9），
+    /// 这里只是把它内部的第一步提前了。
+    /// </para>
+    /// </remarks>
+    public async Task ReleaseCaptureAsync(CancellationToken cancellationToken = default)
     {
         var process = _currentProcess;
         if (process is null)
@@ -345,7 +371,6 @@ public sealed class RecordingSession : IAsyncDisposable
             return;
         }
 
-        var endedAt = Elapsed;
         var exitCode = await process.StopAsync(_options.StopGracePeriod, cancellationToken);
 
         if (exitCode is not null and not 0)
@@ -356,10 +381,32 @@ public sealed class RecordingSession : IAsyncDisposable
             LastProblem = $"采集进程以退出码 {exitCode} 结束，该段可能不完整。";
         }
 
+        _currentProcess = null;
+    }
+
+    private async Task CloseCurrentSegmentAsync(CancellationToken cancellationToken)
+    {
+        // 判据是**文件名**而不是进程：ReleaseCaptureAsync 会把进程清空，
+        // 但段还没登记。拿错了判据就会把同一段登记两次（重号会让时间轴错位）。
+        if (_currentFileName.Length == 0)
+        {
+            return;
+        }
+
+        var fileName = _currentFileName;
+        var sequence = _currentSequence;
+        var startedAt = _segmentStartedAt;
+
+        var endedAt = Elapsed;
+        await ReleaseCaptureAsync(cancellationToken);
+
+        // 登记完就清掉，保证幂等。
+        _currentFileName = string.Empty;
+
         var segment = new SegmentProduct(
-            _currentSequence,
-            Path.Combine(_workspace.SessionDirectory(SessionId), _currentFileName),
-            _startedAt + _segmentStartedAt,
+            sequence,
+            Path.Combine(_workspace.SessionDirectory(SessionId), fileName),
+            _startedAt + startedAt,
             _startedAt + endedAt);
 
         lock (_gate)
@@ -374,14 +421,12 @@ public sealed class RecordingSession : IAsyncDisposable
                     [
                         .. _manifest.Segments,
                         new SegmentManifest(
-                            _currentSequence, _currentFileName,
+                            sequence, fileName,
                             segment.StartedAt.ToString("O"), segment.EndedAt.ToString("O")),
                     ],
                 };
             }
         }
-
-        _currentProcess = null;
 
         // 立刻落盘：进程在这之后被杀，这批分段仍能被孤儿恢复找到。
         if (_manifest is not null)
@@ -389,6 +434,16 @@ public sealed class RecordingSession : IAsyncDisposable
             await _workspace.WriteManifestAsync(_manifest, cancellationToken);
         }
     }
+
+    /// <summary>
+    /// 把单调时钟的起点挪到「此刻」。
+    /// </summary>
+    /// <remarks>
+    /// 默认时钟是从**会话构造**那一刻开始走的，而会话可能在开录前先建好
+    /// （协调器就是这么用的）。不重置的话，开录后第一件事读到的就已经是几十毫秒，
+    /// 打点偏移会带上一段不存在的录制时间 —— 回放定位会偏。
+    /// </remarks>
+    private void RestartClock() => _clockOrigin = _clock();
 
     public async ValueTask DisposeAsync()
     {
