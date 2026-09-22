@@ -43,11 +43,21 @@ public sealed class DataLayout
 
     public string LabelStorePath => Path.Combine(RootDirectory, "labels.jsonl");
 
+    /// <summary>用户设置。损坏时回落默认值，不阻断启动（I4）。</summary>
+    public string SettingsPath => Path.Combine(RootDirectory, "settings.json");
+
+    /// <summary>清理审计 —— 每次「删了什么 / 为什么没删」都要留痕（规格 §3.5.5）。</summary>
+    public string CleanupAuditPath => Path.Combine(RootDirectory, "cleanup-audit.jsonl");
+
+    /// <summary>日志目录。</summary>
+    public string LogDirectory => Path.Combine(RootDirectory, "logs");
+
     /// <summary>建好所有目录。幂等。</summary>
     public void EnsureCreated()
     {
         Directory.CreateDirectory(RootDirectory);
         Directory.CreateDirectory(ArchiveRoot);
         Directory.CreateDirectory(WorkspaceRoot);
+        Directory.CreateDirectory(LogDirectory);
     }
 }
