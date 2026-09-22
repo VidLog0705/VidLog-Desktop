@@ -43,7 +43,10 @@ public sealed class DesktopServices : IAsyncDisposable
         PunchNavigation punchNavigation,
         PlaybackServer? server,
         IReadOnlyList<string> warnings,
-        int playbackPort)
+        int playbackPort,
+        RecordingWorkspace workspace,
+        IEncoderProbe encoderProbe,
+        string? ffmpegPath)
     {
         PlaybackPort = playbackPort;
         Layout = layout;
@@ -56,6 +59,9 @@ public sealed class DesktopServices : IAsyncDisposable
         PunchNavigation = punchNavigation;
         Server = server;
         Warnings = warnings;
+        Workspace = workspace;
+        EncoderProbe = encoderProbe;
+        FfmpegPath = ffmpegPath;
     }
 
     public DataLayout Layout { get; }
@@ -68,14 +74,20 @@ public sealed class DesktopServices : IAsyncDisposable
     public PunchNavigation PunchNavigation { get; }
     public PlaybackServer? Server { get; }
 
+    /// <summary>录制工作区。采集会话把分段落在它的根目录下。</summary>
+    public RecordingWorkspace Workspace { get; }
+
+    /// <summary>编码能力探测。规格 §3.1.5：实测，不假定。</summary>
+    public IEncoderProbe EncoderProbe { get; }
+
+    /// <summary>本机 FFmpeg 路径；没找到时为 <see langword="null"/>。</summary>
+    public string? FfmpegPath { get; }
+
     /// <summary>回放服务端口。</summary>
     public int PlaybackPort { get; }
 
     /// <summary>装配时发现的问题。界面应当把它们显示出来，而不是悄悄吞掉。</summary>
     public IReadOnlyList<string> Warnings { get; }
-
-    /// <summary>本机 FFmpeg 路径；没找到时为 <see langword="null"/>。</summary>
-    public string? FfmpegPath { get; private init; }
 
     /// <summary>默认回放端口。</summary>
     public const int DefaultPlaybackPort = 8720;
@@ -138,10 +150,12 @@ public sealed class DesktopServices : IAsyncDisposable
 
         return new DesktopServices(
             layout, index, punches, labels, finalizer, orphanRecovery,
-            search, punchNavigation, server, warnings, playbackPort ?? DefaultPlaybackPort)
-        {
-            FfmpegPath = resolvedFfmpeg,
-        };
+            search, punchNavigation, server, warnings, playbackPort ?? DefaultPlaybackPort,
+            workspace,
+            // 编码探测要用真 ffmpeg 串行试跑几个候选，所以只装配、不预热 ——
+            // 由调用方在开录前跑一次（规格 §3.1.5「首次录制前实测」）。
+            new FfmpegEncoderProbe(toolPath, runner),
+            resolvedFfmpeg);
     }
 
     /// <summary>
@@ -191,6 +205,34 @@ public sealed class DesktopServices : IAsyncDisposable
         }
 
         return new StartupReport(orphanOutcomes, playbackUrl, warnings);
+    }
+
+    /// <summary>
+    /// 开一次录制会话。
+    /// </summary>
+    /// <remarks>
+    /// 装配放在这里而不是让界面自己 new，理由与整个类相同：
+    /// 这样「会话拿到的是同一套收尾器」是结构保证的，
+    /// 而不是靠每个调用点记得传对 —— 规格 §4.1 要求收尾只有一条路径（I9）。
+    /// </remarks>
+    public RecordingSession CreateRecordingSession(
+        string deviceName,
+        string? sourceDeviceId = null,
+        RecordingSessionOptions? options = null)
+    {
+        var capture = FfmpegPath is null
+            ? throw new InvalidOperationException(
+                "没有可用的 FFmpeg，无法采集。请按提示放置 tools/ffmpeg.exe 或设置环境变量。")
+            : new FfmpegCameraCapture(FfmpegPath);
+
+        return new RecordingSession(
+            Workspace,
+            capture,
+            Finalizer,
+            new DiskSpaceGuard(new DriveSpaceProbe()),
+            deviceName,
+            sourceDeviceId ?? deviceName,
+            options);
     }
 
     public async ValueTask DisposeAsync()
