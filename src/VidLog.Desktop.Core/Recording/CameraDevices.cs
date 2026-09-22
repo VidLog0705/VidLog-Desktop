@@ -26,9 +26,8 @@ public static class CameraDevices
             FileName = ffmpegPath,
             UseShellExecute = false,
             CreateNoWindow = true,
-            RedirectStandardOutput = true,
+            // 只读 stderr：ffmpeg 的设备表就打在它上面，stdout 是空的。
             RedirectStandardError = true,
-            RedirectStandardInput = true,
         };
 
         foreach (var argument in BuildListArguments())

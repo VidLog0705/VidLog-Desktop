@@ -193,11 +193,6 @@ public sealed class RecordingSession : IAsyncDisposable
             {
                 await _delay(_options.PollInterval, _loopCancellation.Token);
 
-                if (State != RecordingSessionState.Recording)
-                {
-                    break;
-                }
-
                 if (_diskGuard.Check(_workspace.SessionDirectory(SessionId)).ShouldFinalize)
                 {
                     reason = StopReason.StorageLow;
@@ -227,7 +222,6 @@ public sealed class RecordingSession : IAsyncDisposable
             // 不往上抛：界面只 await 这一个 Task，抛出去就变成未处理异常，
             // 而用户需要的是一条**看得见的**说明（I3：不存在静默失败）。
             LastProblem = $"录制过程中出错：{ex.Message}";
-            reason = StopReason.Manual;
         }
         finally
         {

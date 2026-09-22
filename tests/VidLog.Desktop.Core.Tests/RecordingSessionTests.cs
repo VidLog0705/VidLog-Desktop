@@ -12,7 +12,7 @@ namespace VidLog.Desktop.Core.Tests;
 /// <para>
 /// 这里的替身是**记录型**的：价值不在「假采集能不能跑」，而在
 /// 「编排器调它时给的参数对不对、按什么顺序、落了几次盘」。
-/// 真采集那一半由 <see cref="FfmpegCaptureTests"/> 与真机回归负责。
+/// 真采集那一半由 <see cref="FfmpegCameraCaptureIntegrationTests"/> 与真机回归负责。
 /// </para>
 /// </remarks>
 public class RecordingSessionTests
@@ -21,7 +21,7 @@ public class RecordingSessionTests
     // 开录：manifest 必须立刻落盘
     // ─────────────────────────────────────────────
 
-    [RequiresFfmpegFact]
+    [Fact]
     public async Task 开录时立刻写第一版manifest_否则进程被杀后没有孤儿可恢复()
     {
         using var dir = new TempDir();
@@ -36,7 +36,7 @@ public class RecordingSessionTests
         Assert.True(File.Exists(manifestPath), "开录必须立刻写下 session.json");
     }
 
-    [RequiresFfmpegFact]
+    [Fact]
     public async Task 开录后采集进程收到的是设备名与目标路径()
     {
         using var dir = new TempDir();
@@ -55,7 +55,7 @@ public class RecordingSessionTests
     // 分段滚动 —— 规格 §3.1.1「不因切分而中断用户体验」
     // ─────────────────────────────────────────────
 
-    [RequiresFfmpegFact]
+    [Fact]
     public async Task 到分段时长就滚下一段_序号递增且文件名不重()
     {
         using var dir = new TempDir();
@@ -83,7 +83,7 @@ public class RecordingSessionTests
             capture.Starts.Select(s => Path.GetFileName(s.OutputPath)));
     }
 
-    [RequiresFfmpegFact]
+    [Fact]
     public async Task 每滚一段就更新一次manifest_进程被杀后已封闭的段仍可恢复()
     {
         using var dir = new TempDir();
@@ -112,7 +112,7 @@ public class RecordingSessionTests
         Assert.Contains("segment-001.mkv", json, StringComparison.Ordinal);
     }
 
-    [RequiresFfmpegFact]
+    [Fact]
     public async Task 编排循环异常退出时_会话仍会被收尾而不是卡在收尾中()
     {
         using var dir = new TempDir();
@@ -161,7 +161,7 @@ public class RecordingSessionTests
     // 收尾 —— 不变量 I9：只有一条路径
     // ─────────────────────────────────────────────
 
-    [RequiresFfmpegFact]
+    [Fact]
     public async Task 停录走的是既有的SessionFinalizer_不另起一条收尾路径()
     {
         using var dir = new TempDir();
@@ -184,7 +184,7 @@ public class RecordingSessionTests
         Assert.True(File.Exists(Path.Combine(dir.WorkspaceRoot, session.SessionId, "finalized.json")));
     }
 
-    [RequiresFfmpegFact]
+    [Fact]
     public async Task 收尾失败时不写finalized_留着让下次启动当孤儿重试()
     {
         using var dir = new TempDir();
@@ -207,7 +207,7 @@ public class RecordingSessionTests
         Assert.Single(orphans);
     }
 
-    [RequiresFfmpegFact]
+    [Fact]
     public async Task 停录原因原样传给收尾器_所有原因走同一条路径()
     {
         var reasons = Enum.GetValues<StopReason>();
@@ -229,7 +229,7 @@ public class RecordingSessionTests
         }
     }
 
-    [RequiresFfmpegFact]
+    [Fact]
     public async Task 一段都没录到时收尾失败并且原因对用户可见()
     {
         using var dir = new TempDir();
@@ -250,7 +250,7 @@ public class RecordingSessionTests
     // 时间：不变量 I11 —— 单调时钟，墙钟改了不算数
     // ─────────────────────────────────────────────
 
-    [RequiresFfmpegFact]
+    [Fact]
     public async Task 分段时长按单调时钟算_不随墙钟跳变()
     {
         using var dir = new TempDir();
@@ -275,7 +275,7 @@ public class RecordingSessionTests
     // 兜底
     // ─────────────────────────────────────────────
 
-    [RequiresFfmpegFact]
+    [Fact]
     public async Task 到时长上限自动收尾_原因是时长兜底()
     {
         using var dir = new TempDir();
@@ -301,7 +301,7 @@ public class RecordingSessionTests
         Assert.Equal(RecordingSessionState.Indexed, session.State);
     }
 
-    [RequiresFfmpegFact]
+    [Fact]
     public async Task 磁盘将满时主动收尾_而不是等崩溃()
     {
         using var dir = new TempDir();
@@ -409,9 +409,6 @@ public class RecordingSessionTests
     private sealed class FakeProcess(string outputPath, bool producesFile) : ICaptureProcess
     {
         public bool HasExited { get; private set; }
-
-        public Task<string?> ReadErrorLineAsync(CancellationToken cancellationToken = default) =>
-            Task.FromResult<string?>(null);
 
         public Task<int?> StopAsync(TimeSpan timeout, CancellationToken cancellationToken = default)
         {

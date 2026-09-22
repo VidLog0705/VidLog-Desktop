@@ -17,19 +17,6 @@ namespace VidLog.Desktop.Core.Recording;
 /// </remarks>
 public interface ICaptureProcess
 {
-    /// <summary>进程是否已经退出。</summary>
-    bool HasExited { get; }
-
-    /// <summary>
-    /// 读一行采集进程的错误输出。
-    /// </summary>
-    /// <returns>一行文本；流已经结束时返回 <see langword="null"/>。</returns>
-    /// <remarks>
-    /// ffmpeg 把进度与错误都写 stderr。收尾时要把这些附到失败原因里，
-    /// 否则「录不出来」在用户那里就是一句无话可说的「失败了」。
-    /// </remarks>
-    Task<string?> ReadErrorLineAsync(CancellationToken cancellationToken = default);
-
     /// <summary>
     /// 优雅停止：发 <c>q</c>，等它自己写完尾部退出。
     /// </summary>

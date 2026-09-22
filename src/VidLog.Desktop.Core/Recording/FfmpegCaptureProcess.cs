@@ -20,38 +20,9 @@ public sealed class FfmpegCaptureProcess : ICaptureProcess
         _process = process;
     }
 
-    public bool HasExited
-    {
-        get
-        {
-            try
-            {
-                return _process.HasExited;
-            }
-            catch (InvalidOperationException)
-            {
-                // 进程还没真正起来就被收掉了 —— 视同已退出。
-                return true;
-            }
-        }
-    }
-
-    public async Task<string?> ReadErrorLineAsync(CancellationToken cancellationToken = default)
-    {
-        try
-        {
-            return await _process.StandardError.ReadLineAsync(cancellationToken);
-        }
-        catch (Exception ex) when (ex is InvalidOperationException or ObjectDisposedException)
-        {
-            // 管道已经断了（进程退了）。不是错误，只是没有更多输出了。
-            return null;
-        }
-    }
-
     public async Task<int?> StopAsync(TimeSpan timeout, CancellationToken cancellationToken = default)
     {
-        if (HasExited)
+        if (HasExited())
         {
             return TryGetExitCode();
         }
@@ -84,11 +55,24 @@ public sealed class FfmpegCaptureProcess : ICaptureProcess
         }
     }
 
+    private bool HasExited()
+    {
+        try
+        {
+            return _process.HasExited;
+        }
+        catch (InvalidOperationException)
+        {
+            // 进程还没真正起来就被收掉了 —— 视同已退出。
+            return true;
+        }
+    }
+
     private void Kill()
     {
         try
         {
-            if (!_process.HasExited)
+            if (!HasExited())
             {
                 _process.Kill(entireProcessTree: true);
             }
