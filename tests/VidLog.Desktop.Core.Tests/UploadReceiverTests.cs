@@ -579,6 +579,51 @@ public class UploadReceiverTests
         Assert.False(canonical.EndsWith("\n", StringComparison.Ordinal));
     }
 
+    /// <summary>
+    /// 两端共用的签名向量 —— **手机端有一份一模一样的**
+    /// （`VidLog-Mobile/test/upload_protocol_test.dart`，测试名同此）。
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ 那两个字面量是**手抄过去的**，不是算出来的。算出来的只能证明「本端自洽」，
+    /// 而 `docs/05-上传接口形状.md` §2.7 要防的恰恰是「两端各自自洽、合起来不通」：
+    /// 那种坏法在两端各自的测试里都是绿的，只在现场表现成「回执验签失败」——
+    /// 而那看起来像被篡改了。
+    /// <para>
+    /// 谁改了规范串的行数、字段顺序、时间格式或 base64url 的填充，这一条
+    /// **或**手机端那一条会红。两边都绿才说明它们真的对得上。
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public void 签名向量_与手机端逐字一致()
+    {
+        // 32 字节 0x00..0x1F 的 base64url（不带 `=` 填充）。
+        const string credential = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8";
+
+        var receipt = new ReceiptPayload(
+            EvidenceId: "sess-1-000",
+            ContentHash: new string('a', 64),
+            PublishedAt: new DateTimeOffset(2026, 9, 23, 2, 31, 52, 117, TimeSpan.Zero),
+            TimeAnchor: new DateTimeOffset(2026, 9, 23, 2, 31, 52, 117, TimeSpan.Zero),
+            ReceiverDeviceId: "host-1",
+            ReceiverDeviceName: "packing-left",
+            Location: "2026/09/23/SF1000000001/sess-1_000.mp4");
+
+        Assert.Equal(
+            "vidlog-receipt/v1\n"
+            + "sess-1-000\n"
+            + new string('a', 64) + "\n"
+            + "2026-09-23T02:31:52.1170000+00:00\n"
+            + "2026-09-23T02:31:52.1170000+00:00\n"
+            + "host-1\n"
+            + "packing-left\n"
+            + "2026/09/23/SF1000000001/sess-1_000.mp4",
+            ReceiptSignature.Canonicalize(receipt));
+
+        Assert.Equal(
+            "omRj4j8WZTr74vJd-cXozVmrjecFPnQibPmpDpyAUC8",
+            ReceiptSignature.Compute(credential, receipt));
+    }
+
     [Fact]
     public void 换了内容签名就变()
     {
