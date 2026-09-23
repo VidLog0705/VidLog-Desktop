@@ -49,6 +49,39 @@ public sealed class DataLayout
     /// <summary>清理审计 —— 每次「删了什么 / 为什么没删」都要留痕（规格 §3.5.5）。</summary>
     public string CleanupAuditPath => Path.Combine(RootDirectory, "cleanup-audit.jsonl");
 
+    /// <summary>
+    /// 已入网的设备及其凭据（规格 §3.4.5）。
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ **这个文件里有密钥。** 它必须：不提交进任何仓库、不进诊断包、不随日志外发。
+    /// <para>
+    /// <b>已知缺口：明文存放。</b> 上 DPAPI 是本地一行的事，但**它挡不住真正的威胁** ——
+    /// 拿到这台机器文件系统的人，同样可以直接改 <c>index.jsonl</c>。
+    /// 凭据加密在这里不是最薄的那一环，所以先不做，记在这里。
+    /// </para>
+    /// </remarks>
+    public string DevicesPath => Path.Combine(RootDirectory, "devices.jsonl");
+
+    /// <summary>
+    /// 上传暂存区 —— 远端传来的分片先落这里，**提交之后**才发布到归档层。
+    /// </summary>
+    /// <remarks>
+    /// 规格 §5.1「原子发布」的落点：这个目录里的东西**不在索引里**，
+    /// 因此不参与检索、不参与回放、不参与归档回查（端间契约 §1.4）。
+    /// </remarks>
+    public string UploadIncomingRoot => Path.Combine(RootDirectory, "incoming");
+
+    /// <summary>
+    /// 远端上传的回执（`docs/05-上传接口形状.md` §2.6）。
+    /// </summary>
+    /// <remarks>
+    /// **为什么必须存**：发送方收到回执才算完成。回执在网络上丢了的时候，发送方会重发
+    /// commit —— 这时若重新签发一份，`timeAnchor` 就变了，而**同一条证据两次归档给出
+    /// 两个不同的时间锚，看起来就是被篡改了**（对取证产品来说是最坏的一种假象）。
+    /// 存下来才能「原样再给一份」。
+    /// </remarks>
+    public string ReceiptsPath => Path.Combine(RootDirectory, "receipts.jsonl");
+
     /// <summary>日志目录。</summary>
     public string LogDirectory => Path.Combine(RootDirectory, "logs");
 
@@ -59,5 +92,6 @@ public sealed class DataLayout
         Directory.CreateDirectory(ArchiveRoot);
         Directory.CreateDirectory(WorkspaceRoot);
         Directory.CreateDirectory(LogDirectory);
+        Directory.CreateDirectory(UploadIncomingRoot);
     }
 }

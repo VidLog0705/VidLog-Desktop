@@ -2,11 +2,14 @@ using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Sockets;
 using System.Text.Json;
+using VidLog.Desktop.Core.Configuration;
 using VidLog.Desktop.Core.Index;
 using VidLog.Desktop.Core.Labels;
+using VidLog.Desktop.Core.Media;
 using VidLog.Desktop.Core.Playback;
 using VidLog.Desktop.Core.Punches;
 using VidLog.Desktop.Core.Search;
+using VidLog.Desktop.Core.Upload;
 using VidLog.Desktop.Core.Web;
 
 namespace VidLog.Desktop.Core.Tests;
@@ -21,6 +24,26 @@ namespace VidLog.Desktop.Core.Tests;
 /// </remarks>
 public class PlaybackServerTests
 {
+    private const string DeviceName = "测试主机";
+
+    /// <summary>
+    /// 解码校验必定通过的假 FFmpeg。
+    /// </summary>
+    /// <remarks>
+    /// <see cref="UploadReceiver"/> 在发布前会让 FFmpeg 真解一遍
+    /// （规格 §3.1.4，手机端没有这一步，所以这是唯一一次能发现「手机产出坏文件」的机会）。
+    /// 这里上传的是随手造的字节，不是真 MP4，所以把那一关假掉 ——
+    /// **上传链路**本身要验的东西不受影响。
+    /// </remarks>
+    private sealed class AlwaysOkRunner : IProcessRunner
+    {
+        public Task<ProcessResult> RunAsync(
+            string executable,
+            IReadOnlyList<string> arguments,
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult(new ProcessResult(0, string.Empty, string.Empty));
+    }
+
     private sealed class TempDir : IDisposable
     {
         public string Path { get; }
@@ -118,11 +141,22 @@ public class PlaybackServerTests
         var port = FreePort();
         var baseUrl = $"http://localhost:{port}/";
 
+        var layout = new DataLayout(dir.Path);
+
         var server = new PlaybackServer(
             new PlaybackServerOptions { Prefix = baseUrl, ArchiveRoot = archiveRoot },
             new RecordingSearch(index, labels),
             index,
-            new PunchNavigation(index, punchLog));
+            new PunchNavigation(index, punchLog),
+            new UploadReceiver(
+                layout,
+                index,
+                punchLog,
+                labels,
+                new DecodeVerifier("ffmpeg", new AlwaysOkRunner()),
+                DeviceName),
+            new DeviceRegistry(layout.DevicesPath),
+            DeviceName);
 
         await server.StartAsync();
 

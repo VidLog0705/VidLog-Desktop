@@ -5,6 +5,7 @@ using VidLog.Desktop.Core.Index;
 using VidLog.Desktop.Core.Labels;
 using VidLog.Desktop.Core.Playback;
 using VidLog.Desktop.Core.Search;
+using VidLog.Desktop.Core.Upload;
 
 namespace VidLog.Desktop.Core.Web;
 
@@ -81,6 +82,9 @@ public sealed class PlaybackServer : IAsyncDisposable
     private readonly RecordingSearch _search;
     private readonly IRecordingIndex _index;
     private readonly PunchNavigation _punches;
+    private readonly UploadReceiver _upload;
+    private readonly DeviceRegistry _devices;
+    private readonly string _deviceName;
     private HttpListener _listener = new();
 
     private CancellationTokenSource? _loopCancellation;
@@ -90,12 +94,18 @@ public sealed class PlaybackServer : IAsyncDisposable
         PlaybackServerOptions options,
         RecordingSearch search,
         IRecordingIndex index,
-        PunchNavigation punches)
+        PunchNavigation punches,
+        UploadReceiver upload,
+        DeviceRegistry devices,
+        string deviceName)
     {
         _options = options;
         _search = search;
         _index = index;
         _punches = punches;
+        _upload = upload;
+        _devices = devices;
+        _deviceName = deviceName;
     }
 
     /// <summary>实际绑上的地址（可能不是配置里的首选地址 —— 见 <see cref="PlaybackServerOptions.FallbackPrefix"/>）。</summary>
@@ -234,6 +244,12 @@ public sealed class PlaybackServer : IAsyncDisposable
                 return;
             }
 
+            if (path.StartsWith("/api/v1/", StringComparison.Ordinal))
+            {
+                await HandleV1Async(context, path);
+                return;
+            }
+
             if (path.StartsWith("/media/", StringComparison.Ordinal))
             {
                 await WriteMediaAsync(context, Uri.UnescapeDataString(path["/media/".Length..]));
@@ -265,6 +281,241 @@ public sealed class PlaybackServer : IAsyncDisposable
                 // 同上。
             }
         }
+    }
+
+    // ───────────── /api/v1 · 手机端上传（M5） ─────────────
+
+    /// <summary>
+    /// M5 的上传与入网接口。形状见母仓 <c>docs/05-上传接口形状.md</c>。
+    /// </summary>
+    /// <remarks>
+    /// 老的三条 GET 路由（<c>/api/search</c> 等）**原样不动** —— 它们服务的网页回放已经验收过，
+    /// 「不动它」比「统一它」便宜。版本前缀 <c>v1</c> 只加在新接口上。
+    /// </remarks>
+    private async Task HandleV1Async(HttpListenerContext context, string path)
+    {
+        var isPost = string.Equals(context.Request.HttpMethod, "POST", StringComparison.OrdinalIgnoreCase);
+
+        if (path == "/api/v1/health" && !isPost)
+        {
+            await WriteJsonAsync(
+                context,
+                new HealthPayload(HealthPayload.ServiceName, HealthPayload.Version, _deviceName));
+            return;
+        }
+
+        if (!isPost)
+        {
+            await WriteErrorAsync(context, 404, UploadErrors.NotFound, "这个路径只接受 POST");
+            return;
+        }
+
+        switch (path)
+        {
+            case "/api/v1/enroll/request":
+                await GuardAsync(context, () => HandleEnrollRequestAsync(context));
+                return;
+
+            case "/api/v1/enroll/claim":
+                await GuardAsync(context, () => HandleEnrollClaimAsync(context));
+                return;
+        }
+
+        // 入网之外一律要凭据。
+        var auth = await AuthenticateAsync(context);
+        if (auth is null)
+        {
+            await WriteErrorAsync(context, 401, UploadErrors.BadCredential, "凭据无效，请在手机端重新配对电脑");
+            return;
+        }
+
+        // 取成局部量再进 lambda：可空元组在里面不会被收窄，而设备身份**必须**来自凭据。
+        var deviceId = auth.Value.Device.DeviceId;
+        var credential = auth.Value.Credential;
+
+        switch (path)
+        {
+            case "/api/v1/upload/probe":
+                await GuardAsync(context, async () =>
+                {
+                    var request = await ReadJsonAsync<ProbeRequest>(context);
+                    if (request is null)
+                    {
+                        await WriteErrorAsync(context, 400, UploadErrors.BadRequest, "请求体为空");
+                        return;
+                    }
+
+                    await WriteJsonAsync(context, await _upload.ProbeAsync(request));
+                });
+                return;
+
+            case "/api/v1/upload/commit":
+                await GuardAsync(context, async () =>
+                {
+                    var request = await ReadJsonAsync<CommitRequest>(context);
+                    if (request is null)
+                    {
+                        await WriteErrorAsync(context, 400, UploadErrors.BadRequest, "请求体为空");
+                        return;
+                    }
+
+                    await WriteJsonAsync(context, await _upload.CommitAsync(request, deviceId, credential));
+                });
+                return;
+        }
+
+        if (path.StartsWith("/api/v1/upload/chunk/", StringComparison.Ordinal))
+        {
+            await GuardAsync(context, () => HandleChunkAsync(context, path["/api/v1/upload/chunk/".Length..]));
+            return;
+        }
+
+        await WriteErrorAsync(context, 404, UploadErrors.NotFound, $"电脑端不认识这个路径：{path}");
+    }
+
+    private async Task HandleEnrollRequestAsync(HttpListenerContext context)
+    {
+        var request = await ReadJsonAsync<EnrollRequestPayload>(context);
+        if (request is null)
+        {
+            await WriteErrorAsync(context, 400, UploadErrors.BadRequest, "请求体为空");
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(request.DeviceId) || string.IsNullOrWhiteSpace(request.DeviceName))
+        {
+            await WriteErrorAsync(context, 400, UploadErrors.BadRequest, "deviceId / deviceName 不得为空");
+            return;
+        }
+
+        // ⚠️ 记下来就完了，**不自动批准**（规格 §3.4.5：入网必须经主机端人工批准）。
+        // 配对码要显示在**这台电脑的屏幕上**给用户读出来敲进手机。
+        await _devices.RequestAsync(request.DeviceId, request.DeviceName);
+
+        await WriteJsonAsync(context, new EnrollPendingPayload(EnrollPendingPayload.Pending));
+    }
+
+    private async Task HandleEnrollClaimAsync(HttpListenerContext context)
+    {
+        var request = await ReadJsonAsync<EnrollClaimPayload>(context);
+        if (request is null)
+        {
+            await WriteErrorAsync(context, 400, UploadErrors.BadRequest, "请求体为空");
+            return;
+        }
+
+        var result = await _devices.ClaimAsync(request.DeviceId, request.Code);
+
+        switch (result.Status)
+        {
+            case EnrollStatus.Approved:
+                await WriteJsonAsync(context, new EnrollCredentialPayload(result.Credential!));
+                return;
+
+            case EnrollStatus.BadCode:
+                await WriteErrorAsync(context, 403, UploadErrors.BadCode, result.Detail);
+                return;
+
+            default:
+                await WriteErrorAsync(context, 410, UploadErrors.NoPendingRequest, result.Detail);
+                return;
+        }
+    }
+
+    private async Task HandleChunkAsync(HttpListenerContext context, string tail)
+    {
+        var separator = tail.LastIndexOf('/');
+        if (separator <= 0)
+        {
+            await WriteErrorAsync(context, 400, UploadErrors.BadRequest, "分片路径要是 <evidenceId>/<下标>");
+            return;
+        }
+
+        var evidenceId = Uri.UnescapeDataString(tail[..separator]);
+
+        if (!int.TryParse(tail[(separator + 1)..], out var index))
+        {
+            await WriteErrorAsync(context, 400, UploadErrors.BadRequest, "分片下标不是整数");
+            return;
+        }
+
+        // ⚠️ 请求体是**裸字节**，不是 JSON —— 这里绝不能去反序列化它。
+        var accepted = await _upload.StoreChunkAsync(evidenceId, index, context.Request.InputStream);
+        await WriteJsonAsync(context, accepted);
+    }
+
+    /// <summary>
+    /// 把 <see cref="UploadRejectedException"/> 翻成状态码。
+    /// </summary>
+    /// <remarks>
+    /// 协议码 → 状态码的映射**只有这一处**。手机端按状态码分类重试与否（§3），
+    /// 所以这张表改了就是改了协议。
+    /// </remarks>
+    private async Task GuardAsync(HttpListenerContext context, Func<Task> action)
+    {
+        try
+        {
+            await action();
+        }
+        catch (UploadRejectedException ex)
+        {
+            await WriteErrorAsync(
+                context,
+                ex.Code switch
+                {
+                    UploadErrors.BadRequest => 400,
+                    UploadErrors.BadCredential => 401,
+                    _ => 409,
+                },
+                ex.Code,
+                ex.Message);
+        }
+        catch (JsonException ex)
+        {
+            await WriteErrorAsync(context, 400, UploadErrors.BadRequest, $"报文读不出来：{ex.Message}");
+        }
+    }
+
+    private async Task<(EnrolledDevice Device, string Credential)?> AuthenticateAsync(HttpListenerContext context)
+    {
+        const string scheme = "Bearer ";
+        var header = context.Request.Headers["Authorization"];
+
+        if (header is null || !header.StartsWith(scheme, StringComparison.OrdinalIgnoreCase))
+        {
+            return null;
+        }
+
+        var credential = header[scheme.Length..].Trim();
+        if (credential.Length == 0)
+        {
+            return null;
+        }
+
+        var device = await _devices.FindByCredentialAsync(credential);
+
+        return device is null ? null : (device, credential);
+    }
+
+    private static async Task<T?> ReadJsonAsync<T>(HttpListenerContext context)
+    {
+        using var reader = new StreamReader(context.Request.InputStream, Encoding.UTF8);
+        var text = await reader.ReadToEndAsync();
+
+        return string.IsNullOrWhiteSpace(text)
+            ? default
+            : JsonSerializer.Deserialize<T>(text, JsonOptions);
+    }
+
+
+    private static async Task WriteErrorAsync(
+        HttpListenerContext context,
+        int status,
+        string error,
+        string? detail)
+    {
+        context.Response.StatusCode = status;
+        await WriteJsonAsync(context, new ErrorPayload(error, detail));
     }
 
     private async Task WriteSearchAsync(HttpListenerContext context)

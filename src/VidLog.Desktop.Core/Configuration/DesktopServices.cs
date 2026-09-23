@@ -5,6 +5,7 @@ using VidLog.Desktop.Core.Playback;
 using VidLog.Desktop.Core.Punches;
 using VidLog.Desktop.Core.Recording;
 using VidLog.Desktop.Core.Search;
+using VidLog.Desktop.Core.Upload;
 using VidLog.Desktop.Core.Web;
 
 namespace VidLog.Desktop.Core.Configuration;
@@ -46,7 +47,10 @@ public sealed class DesktopServices : IAsyncDisposable
         int playbackPort,
         RecordingWorkspace workspace,
         IEncoderProbe encoderProbe,
-        string? ffmpegPath)
+        string? ffmpegPath,
+        UploadReceiver upload,
+        DeviceRegistry devices,
+        string deviceName)
     {
         PlaybackPort = playbackPort;
         Layout = layout;
@@ -62,6 +66,9 @@ public sealed class DesktopServices : IAsyncDisposable
         Workspace = workspace;
         EncoderProbe = encoderProbe;
         FfmpegPath = ffmpegPath;
+        Upload = upload;
+        Devices = devices;
+        DeviceName = deviceName;
     }
 
     public DataLayout Layout { get; }
@@ -86,6 +93,27 @@ public sealed class DesktopServices : IAsyncDisposable
     /// <summary>回放服务端口。</summary>
     public int PlaybackPort { get; }
 
+    /// <summary>远端上传的接收方（M5）。</summary>
+    public UploadReceiver Upload { get; }
+
+    /// <summary>
+    /// 已入网设备与待批准的入网请求（M5）。
+    /// </summary>
+    /// <remarks>
+    /// 界面用它把**配对码**显示出来给用户读 —— 那是「人工批准」真的挡住东西的那一环，
+    /// 不显示的话手机永远换不到凭据。
+    /// </remarks>
+    public DeviceRegistry Devices { get; }
+
+    /// <summary>
+    /// 本机在回执里的身份（<c>receiverDeviceId</c> / <c>receiverDeviceName</c>）。
+    /// </summary>
+    /// <remarks>
+    /// 与录制会话的 <c>sourceDeviceId</c> 取同一个值（<see cref="Environment.MachineName"/>），
+    /// 沿用既有约定，不另造一套设备命名。
+    /// </remarks>
+    public string DeviceName { get; }
+
     /// <summary>装配时发现的问题。界面应当把它们显示出来，而不是悄悄吞掉。</summary>
     public IReadOnlyList<string> Warnings { get; }
 
@@ -95,10 +123,15 @@ public sealed class DesktopServices : IAsyncDisposable
     /// <param name="playbackPort">
     /// 局域网回放端口。传 <see langword="null"/> 表示不起回放服务。
     /// </param>
+    /// <param name="deviceName">
+    /// 本机在回执里的身份。默认取 <see cref="Environment.MachineName"/> ——
+    /// 与录制会话的 <c>sourceDeviceId</c> 同源（<c>AppHost</c> 用的也是它）。
+    /// </param>
     public static DesktopServices Create(
         DataLayout layout,
         string? ffmpegPath = null,
-        int? playbackPort = DefaultPlaybackPort)
+        int? playbackPort = DefaultPlaybackPort,
+        string? deviceName = null)
     {
         layout.EnsureCreated();
 
@@ -131,6 +164,16 @@ public sealed class DesktopServices : IAsyncDisposable
         var search = new RecordingSearch(index, labels);
         var punchNavigation = new PunchNavigation(index, punches);
 
+        var resolvedDeviceName = deviceName ?? Environment.MachineName;
+        var devices = new DeviceRegistry(layout.DevicesPath);
+        var upload = new UploadReceiver(
+            layout,
+            index,
+            punches,
+            labels,
+            new DecodeVerifier(toolPath, runner),
+            resolvedDeviceName);
+
         PlaybackServer? server = null;
         if (playbackPort is not null)
         {
@@ -145,7 +188,10 @@ public sealed class DesktopServices : IAsyncDisposable
                 },
                 search,
                 index,
-                punchNavigation);
+                punchNavigation,
+                upload,
+                devices,
+                resolvedDeviceName);
         }
 
         return new DesktopServices(
@@ -155,7 +201,10 @@ public sealed class DesktopServices : IAsyncDisposable
             // 编码探测要用真 ffmpeg 串行试跑几个候选，所以只装配、不预热 ——
             // 由调用方在开录前跑一次（规格 §3.1.5「首次录制前实测」）。
             new FfmpegEncoderProbe(toolPath, runner),
-            resolvedFfmpeg);
+            resolvedFfmpeg,
+            upload,
+            devices,
+            resolvedDeviceName);
     }
 
     /// <summary>

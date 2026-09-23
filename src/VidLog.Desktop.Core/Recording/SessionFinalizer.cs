@@ -212,32 +212,10 @@ public sealed class SessionFinalizer
     /// 归档层里的相对路径。规格 §6.2：**绝对路径在应用重装、容器变更后必然失效**，
     /// 所以进索引的只有这一段。
     /// </summary>
+    /// <remarks>
+    /// 规则本身搬去了 <see cref="ArchiveLayout"/> —— 远端上传（M5）要把手机传上来的
+    /// 录像落在同一个布局上，两处各写一遍必然走岔，而走岔了不会报错。
+    /// </remarks>
     private static RelativePath BuildLocation(WaybillNumber waybill, string sessionId, SegmentProduct segment)
-    {
-        var started = segment.StartedAt;
-
-        // 按日期分目录：单号检索是主路径，但按日期清理（§3.5.2「保留最近 N 天」）
-        // 需要能按时间范围低成本地列文件，目录分层比全表扫描可靠。
-        var relative = string.Join(
-            '/',
-            started.ToString("yyyy"),
-            started.ToString("MM"),
-            started.ToString("dd"),
-            Sanitize(waybill.Value),
-            $"{Sanitize(sessionId)}_{segment.Sequence:000}.mp4");
-
-        return RelativePath.Parse(relative);
-    }
-
-    private static string Sanitize(string value)
-    {
-        var buffer = new char[value.Length];
-        for (var i = 0; i < value.Length; i++)
-        {
-            var ch = value[i];
-            buffer[i] = char.IsAsciiLetterOrDigit(ch) || ch == '-' || ch == '_' ? ch : '_';
-        }
-
-        return new string(buffer);
-    }
+        => ArchiveLayout.BuildLocation(waybill, sessionId, segment.Sequence, segment.StartedAt);
 }
