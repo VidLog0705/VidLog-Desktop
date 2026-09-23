@@ -18,6 +18,7 @@ using MessageBoxResult = System.Windows.MessageBoxResult;
 using SelectionChangedEventArgs = System.Windows.Controls.SelectionChangedEventArgs;
 using TextChangedEventArgs = System.Windows.Controls.TextChangedEventArgs;
 using VidLog.Desktop.Core;
+using VidLog.Desktop.Core.Cleanup;
 using VidLog.Desktop.Core.Configuration;
 using VidLog.Desktop.Core.Diagnostics;
 using VidLog.Desktop.Core.Labels;
@@ -101,14 +102,64 @@ public partial class MainWindow : Window
             SelectByTag(ModeCombo, _host.Settings.Mode.ToString());
             SelectByTag(StaticCombo, _host.Settings.StaticStop.ToString());
             SelectByTag(DurationCombo, _host.Settings.DurationFallback.ToString());
+            SelectByTag(ArchiveCombo, _host.Settings.ArchiveBackend.ToString());
             SegmentBox.Text = _host.Settings.SegmentMinutes.ToString();
             PortBox.Text = _host.Settings.PlaybackPort.ToString();
+            SelectRetention(OutboundRetentionCombo, _host.Settings.Retention.Outbound);
+            SelectRetention(ReturnRetentionCombo, _host.Settings.Retention.Return);
         }
         finally
         {
             _suppressSettingsEvents = false;
         }
+
+        ShowRetention();
     }
+
+    // ─────────────────────────────────────────────
+    // 保留期（规格 §3.5.1 / §3.5.2.1）
+    // ─────────────────────────────────────────────
+
+    /// <summary>
+    /// 归档层是本地时，保留期这块**根本不出现**。
+    /// </summary>
+    /// <remarks>
+    /// 规格 §3.5.1：那时盘上这份是唯一副本，不允许开启清理。
+    /// 与其给一个改了也不生效的下拉（踩坑 #13），不如不显示，并说明为什么 ——
+    /// 留白会让人以为没做，说清楚才是「不提供」。
+    /// </remarks>
+    private void ShowRetention()
+    {
+        var local = TagOf(ArchiveCombo) is not ("Nas" or "Cloud");
+
+        RetentionPanel.Visibility = local ? Visibility.Collapsed : Visibility.Visible;
+        RetentionAbsentNote.Visibility = local ? Visibility.Visible : Visibility.Collapsed;
+        RetentionAbsentNote.Text =
+            "归档层是本机磁盘 —— 盘上这份就是唯一副本，所以不提供保留期设置。"
+            + "改成 NAS 或网盘之后，这里才会出现。";
+    }
+
+    /// <summary>下拉里的项就是 <see cref="RetentionPolicies.Choices"/>，序号即索引。</summary>
+    private static void SelectRetention(ComboBox combo, RetentionPolicy policy)
+    {
+        if (combo.Items.Count == 0)
+        {
+            for (var i = 0; i < RetentionPolicies.Choices.Count; i++)
+            {
+                combo.Items.Add(RetentionPolicies.Choices[i].Label);
+            }
+        }
+
+        // 存着的值不在选项里（手改过设置文件）就落到第一项「全部保留」——
+        // 朝保守的那头落，不是朝第一项之外的东西落。
+        var index = RetentionPolicies.Choices.ToList().FindIndex(c => c.Policy == policy);
+        combo.SelectedIndex = index >= 0 ? index : 0;
+    }
+
+    private static RetentionPolicy RetentionOf(ComboBox combo) =>
+        combo.SelectedIndex >= 0 && combo.SelectedIndex < RetentionPolicies.Choices.Count
+            ? RetentionPolicies.Choices[combo.SelectedIndex].Policy
+            : RetentionPolicy.KeepAll;
 
     private static void SelectByTag(ComboBox combo, string tag)
     {
@@ -408,6 +459,14 @@ public partial class MainWindow : Window
 
     private async void OnDurationChanged(object sender, SelectionChangedEventArgs e) => await SaveUiSettingsAsync();
 
+    private async void OnArchiveChanged(object sender, SelectionChangedEventArgs e)
+    {
+        ShowRetention();
+        await SaveUiSettingsAsync();
+    }
+
+    private async void OnRetentionChanged(object sender, SelectionChangedEventArgs e) => await SaveUiSettingsAsync();
+
     private async void OnSaveSettings(object sender, RoutedEventArgs e) => await SaveUiSettingsAsync();
 
     /// <summary>
@@ -445,6 +504,10 @@ public partial class MainWindow : Window
             SegmentMinutes = segment,
             PlaybackPort = port,
             CameraDevice = CameraCombo.SelectedItem as string,
+            ArchiveBackend = Enum.TryParse<ArchiveBackendKind>(TagOf(ArchiveCombo), out var backend)
+                ? backend : _host.Settings.ArchiveBackend,
+            Retention = new RetentionPolicies(
+                RetentionOf(OutboundRetentionCombo), RetentionOf(ReturnRetentionCombo)),
         };
 
         try

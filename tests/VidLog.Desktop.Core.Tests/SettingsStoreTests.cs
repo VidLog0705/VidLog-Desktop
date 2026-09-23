@@ -1,3 +1,4 @@
+using VidLog.Desktop.Core.Cleanup;
 using VidLog.Desktop.Core.Configuration;
 using VidLog.Desktop.Core.Recording;
 using VidLog.Desktop.Core.Scanning;
@@ -93,6 +94,79 @@ public class SettingsStoreTests
         // 临时文件必须被改名掉，不能留下。
         Assert.Empty(Directory.GetFiles(dir.Path, "*.tmp"));
         Assert.True(File.Exists(dir.File("settings.json")));
+    }
+
+    // ─────────────────────────────────────────────
+    // 保留期与归档层（规格 §3.5.1 / §3.5.2.1）
+    // ─────────────────────────────────────────────
+
+    [Fact]
+    public void 出厂默认是两份全部保留_且归档层是本机磁盘()
+    {
+        // 「装完就有个默认 30 天」是不能接受的 —— 清理必须是用户主动开的（§6.2）。
+        Assert.Equal(ArchiveBackendKind.LocalDisk, AppSettings.Default.ArchiveBackend);
+        Assert.Equal(RetentionPolicies.KeepAll, AppSettings.Default.Retention);
+    }
+
+    [Fact]
+    public async Task 两份保留期分开存读_互不串()
+    {
+        using var dir = new TempDir();
+        var path = dir.File("settings.json");
+        var want = AppSettings.Default with
+        {
+            ArchiveBackend = ArchiveBackendKind.Nas,
+            Retention = new RetentionPolicies(
+                new RetentionPolicy(RetentionMode.ByDays, KeepDays: 7),
+                new RetentionPolicy(RetentionMode.ByDays, KeepDays: 30)),
+        };
+
+        await new SettingsStore(path).SaveAsync(want);
+        var result = await new SettingsStore(path).LoadAsync();
+
+        Assert.Empty(result.Warnings);
+        Assert.Equal(7, result.Settings.Retention.Outbound.KeepDays);
+        Assert.Equal(30, result.Settings.Retention.Return.KeepDays);
+    }
+
+    [Theory]
+    [InlineData(-5)]
+    [InlineData(999)]
+    public async Task 手改出来的越界保留天数整体回落(int days)
+    {
+        // 负数天数不会报错，只会让 cutoff 落到未来 ⇒ 判什么都超期 ⇒ 全删。
+        // 正是「不会报错、只会让行为变得莫名其妙」那一类，必须拦。
+        using var dir = new TempDir();
+        var path = dir.File("settings.json");
+        await File.WriteAllTextAsync(path,
+            """
+            {"ArchiveBackend":1,"Retention":{"Outbound":{"Mode":1,"KeepDays":DAYS},
+             "Return":{"Mode":1,"KeepDays":DAYS}}}
+            """.Replace("DAYS", days.ToString()));
+
+        var result = await new SettingsStore(path).LoadAsync();
+
+        Assert.Equal(AppSettings.Default, result.Settings);
+        Assert.NotEmpty(result.Warnings);
+    }
+
+    [Fact]
+    public void 两份保留期的变更分开留痕()
+    {
+        // 合成一行的话，看日志的人分不清是哪一份动了。
+        var before = AppSettings.Default;
+        var after = before with
+        {
+            Retention = new RetentionPolicies(
+                new RetentionPolicy(RetentionMode.ByDays, KeepDays: 7),
+                RetentionPolicy.KeepAll),
+        };
+
+        var changes = SettingsStore.DescribeChanges(before, after);
+
+        Assert.Single(changes);
+        Assert.Contains("Outbound", changes[0]);
+        Assert.DoesNotContain(changes, c => c.Contains("Return"));
     }
 
     // ─────────────────────────────────────────────

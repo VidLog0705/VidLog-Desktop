@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using VidLog.Desktop.Core.Cleanup;
 using VidLog.Desktop.Core.Recording;
 using VidLog.Desktop.Core.Scanning;
 
@@ -49,6 +50,23 @@ public sealed record AppSettings
     /// <summary>日志保留天数。</summary>
     public int LogRetainDays { get; init; } = 14;
 
+    /// <summary>
+    /// 归档层是本机磁盘、NAS、还是网盘（规格 §3.5.1）。
+    /// </summary>
+    /// <remarks>
+    /// 默认<see cref="ArchiveBackendKind.LocalDisk"/> = 盘上这份是**唯一副本**，
+    /// 于是规格 §3.5.1 不允许开启清理、界面上**不给保留期设置入口**。
+    /// 这个默认值就是「什么都没配过」时的真实处境，不是保守起见。
+    /// </remarks>
+    public ArchiveBackendKind ArchiveBackend { get; init; } = ArchiveBackendKind.LocalDisk;
+
+    /// <summary>归档成功后本地留多久，发货与退货各一份（规格 §3.5.2.1）。</summary>
+    /// <remarks>
+    /// 默认两份都是<see cref="RetentionPolicies.KeepAll"/>：规格 §6.2「数据删除必须极度克制」，
+    /// 清理必须是用户**主动开启**的。
+    /// </remarks>
+    public RetentionPolicies Retention { get; init; } = RetentionPolicies.KeepAll;
+
     public static AppSettings Default { get; } = new();
 
     /// <summary>允许的参数范围。越界即回落，不静默接受。</summary>
@@ -64,7 +82,25 @@ public sealed record AppSettings
         && s.Scanner.MaxInterKeyIntervalMs is >= 10 and <= 500
         && s.Scanner.MinLength is >= 1 and <= 64
         && s.Scanner.MaxLength is >= 1 and <= 256
-        && s.Scanner.MaxLength >= s.Scanner.MinLength;
+        && s.Scanner.MaxLength >= s.Scanner.MinLength
+        && Plausible(s.Retention.Outbound)
+        && Plausible(s.Retention.Return);
+
+    /// <summary>
+    /// 一份保留期的参数自洽吗。
+    /// </summary>
+    /// <remarks>
+    /// 这里拦的是**手改设置文件**能造出来的坑：负数天数会让
+    /// <c>now.AddDays(-(-5))</c> 变成「cutoff 在未来」，于是一律判超期 ⇒
+    /// 除了被豁免的全删。这类值不会报错，只会把东西删光 —— 正是本方法存在的理由。
+    /// </remarks>
+    private static bool Plausible(RetentionPolicy p) => p.Mode switch
+    {
+        RetentionMode.KeepAll => true,
+        RetentionMode.ByDays => p.KeepDays is >= 0 and <= 365,
+        RetentionMode.BySpace => p.MinFreeBytes is > 0,
+        _ => false,
+    };
 }
 
 /// <summary>设置读取的结果。</summary>
@@ -184,6 +220,11 @@ public sealed class SettingsStore
         Compare(nameof(AppSettings.PlaybackPort), previous.PlaybackPort, next.PlaybackPort);
         Compare(nameof(AppSettings.CameraDevice), previous.CameraDevice, next.CameraDevice);
         Compare(nameof(AppSettings.LogRetainDays), previous.LogRetainDays, next.LogRetainDays);
+        Compare(nameof(AppSettings.ArchiveBackend), previous.ArchiveBackend, next.ArchiveBackend);
+
+        // 两份保留期分开记 —— 合成一行的话，看日志的人分不清是哪一份动了。
+        Compare($"{nameof(AppSettings.Retention)}.Outbound", previous.Retention.Outbound, next.Retention.Outbound);
+        Compare($"{nameof(AppSettings.Retention)}.Return", previous.Retention.Return, next.Retention.Return);
 
         return changes;
     }
