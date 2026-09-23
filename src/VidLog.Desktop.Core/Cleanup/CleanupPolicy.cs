@@ -334,10 +334,29 @@ public sealed class CleanupPlanner
     public static long EstimateBytes(RecordingEntry entry) =>
         (long)Math.Max(0, entry.Duration.TotalSeconds * 160 * 1024);
 
+    /// <summary>
+    /// 这条录像有没有被用户锁上（规格 §3.5.3②，硬豁免）。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>认不出来的写法一律当锁着</b>（<c>"1"</c>、空串、被人手改坏的值）——
+    /// 朝<b>少删</b>的那头落，与 <c>RetentionSetting.fromConfig</c> 解析失败
+    /// 回落到「全部保留」、<c>ArchiveRecord</c> 认不出状态当 <c>pending</c>
+    /// 是同一条规矩。理由也一样：<b>把锁读丢了的代价是删掉用户锁上的证据</b>，
+    /// 而反过来只是少清一条（而且它在豁免列表里看得见，用户查得到）。
+    /// </para>
+    /// <para>
+    /// ⚠️ 但「标签不存在」必须判成<b>没锁</b> —— 那是绝大多数证据的常态，
+    /// 少了这一条，库会被永久锁死、什么都清不掉。
+    /// </para>
+    /// <para>
+    /// ⚠️ 手机端 <c>lifecycle.dart</c> 的 <c>_isLocked</c> 必须与这里<b>同向</b>，
+    /// 否则两端对同一条录像的锁判定会不一致。
+    /// </para>
+    /// </remarks>
     private static bool IsLocked(
         RecordingEntry entry, IReadOnlyDictionary<string, IReadOnlyDictionary<string, string>> labels) =>
         labels.TryGetValue(entry.EvidenceId, out var entryLabels)
         && entryLabels.TryGetValue(LabelKeys.Locked, out var raw)
-        && bool.TryParse(raw, out var locked)
-        && locked;
+        && (!bool.TryParse(raw, out var locked) || locked);
 }

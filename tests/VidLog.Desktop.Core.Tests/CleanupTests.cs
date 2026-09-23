@@ -74,6 +74,29 @@ public class CleanupTests
     }
 
     [Fact]
+    public void 认不出来的锁值一律当锁着()
+    {
+        // 朝**少删**的那头落。与 `RetentionSetting.fromConfig` 解析失败回落到
+        // 「全部保留」、归档状态认不出当 pending 是同一条规矩：把锁读丢了的代价是
+        // **删掉用户锁上的证据**，而反过来只是少清一条（它在豁免列表里看得见）。
+        // ⚠️ 手机端 `lifecycle.dart` 的 `_isLocked` 必须与这里同向。
+        foreach (var raw in new[] { "1", "yes", "", "TRUE ", "被人手改坏了" })
+        {
+            var labels = new Dictionary<string, IReadOnlyDictionary<string, string>>
+            {
+                ["e1"] = new Dictionary<string, string> { [LabelKeys.Locked] = raw },
+            };
+
+            var plan = new CleanupPlanner().Plan(
+                [Entry("e1", Now.AddDays(-365))], labels,
+                new RetentionPolicy(RetentionMode.ByDays, KeepDays: 7), Now);
+
+            Assert.Empty(plan.Candidates);
+            Assert.Contains(plan.Exempted, e => e.Why.Contains("锁定"));
+        }
+    }
+
+    [Fact]
     public void 超过保留期的进候选()
     {
         var plan = new CleanupPlanner().Plan(
