@@ -26,6 +26,20 @@ public static class LabelKeys
     public const string Company = "company";
     public const string Category = "category";
     public const string Note = "note";
+
+    /// <summary>
+    /// 锁定标记：被锁的录像**永不被自动清理**（规格 §3.5.3 的硬豁免）。
+    /// </summary>
+    /// <remarks>
+    /// 复用标签存储是**有意的**：标签是追加写、后者胜出，
+    /// 正好表达「解锁 = 再追加一条 false」，不必为此再造一套锁存储。
+    /// <para>
+    /// ⚠️ 但它与其他标签**性质不同**：别的标签是「可修正的描述」（I5），
+    /// 这个是一条**硬豁免**。清理逻辑读它时不能把它当普通标签随手改掉 ——
+    /// 那等于把用户锁上的东西解锁。
+    /// </para>
+    /// </remarks>
+    public const string Locked = "locked";
 }
 
 /// <summary><see cref="BusinessType"/> 与标签值之间的换算。</summary>
