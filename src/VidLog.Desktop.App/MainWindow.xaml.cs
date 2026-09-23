@@ -76,6 +76,16 @@ public partial class MainWindow : Window
         StatusText.Text = _host.Services.Server?.BaseUrl is { Length: > 0 }
             ? $"服务已就绪。回放地址：{_host.Services.Server.BaseUrl}"
             : "服务已就绪。回放服务未启动。";
+
+        // 上次没走完的录像收回来没有（规格 §3.1.1）。**必须说出来** ——
+        // 「悄悄收好了」和「其实什么都没收」在界面上长得一模一样，用户无从分辨。
+        // 收尾失败的会由 StartupReport.Warnings 走上面的「需要注意」区，不在这里重复。
+        var recovered = _host.Startup.RecoveredCount;
+        if (recovered > 0)
+        {
+            NoticesText.Text =
+                $"{DateTime.Now:HH:mm:ss}  上次有 {recovered} 段录像没走完收尾，已自动收好并入库。";
+        }
     }
 
     private void ShowWarnings()
@@ -513,7 +523,11 @@ public partial class MainWindow : Window
         try
         {
             await _host.SaveSettingsAsync(next);
-            SettingsStatus.Text = "已保存。工作模式与档位下次录段生效；端口要重启。";
+            // 逐项说清楚，别笼统写「下次生效」——
+            // 笼统的话就有一半是假的，而用户没法知道是哪一半。
+            SettingsStatus.Text =
+                "已保存。工作模式立即生效；时长兜底与分段时长下次开段生效；"
+                + "摄像头与端口要重启。";
         }
         catch (Exception ex)
         {

@@ -199,6 +199,99 @@ public class RecordingCoordinatorTests
         Assert.Contains("boom", notice.Message, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public async Task 改工作模式立刻算数_不必重启()
+    {
+        // 设置页写着「工作模式立即生效」—— 那句要真。策略若是构造时定死，
+        // 用户改完发现没反应，只会以为这个下拉坏了（踩坑 #13）。
+        using var dir = new TempDir();
+        await using var coordinator = Build(dir, WorkMode.StopOnSameWaybill, new FakePunchLog());
+
+        // 从「同码停」（扫到异码只提示）改成「连续扫」（扫到异码即换段）。
+        coordinator.Mode = WorkMode.Continuous;
+
+        await coordinator.SubmitAsync(A, PunchSource.KeyboardScanner);
+        await coordinator.SubmitAsync(B, PunchSource.KeyboardScanner);
+
+        // 换成新单号了 —— 说明新档位真的被用上了，不是只存进了设置。
+        Assert.Equal(B, coordinator.CurrentWaybill);
+    }
+
+    // ─────────────────────────────────────────────
+    // 编排循环：滚段与时长兜底（规格 §3.1.1 / §3.3.4）
+    // ─────────────────────────────────────────────
+
+    /// <summary>
+    /// 几百毫秒就能观察到滚段与时长兜底的参数。
+    /// </summary>
+    /// <remarks>
+    /// 协调器**不给**注入假时钟/假延时（那是会话层的口子，见
+    /// <c>RecordingSessionTests</c> 里那批用 <c>FakeClock</c> 的用例），
+    /// 所以这里只能走真实时间。把段压到 80ms、循环 10ms 一次，
+    /// 整条用例仍是亚秒级，而验的正是**生产走的那条路**。
+    /// </remarks>
+    private static RecordingSessionOptions FastRolling(
+        TimeSpan segment, TimeSpan max) => RecordingSessionOptions.Default with
+    {
+        SegmentDuration = segment,
+        MaxDuration = max,
+        PollInterval = TimeSpan.FromMilliseconds(10),
+    };
+
+    [Fact]
+    public async Task 分段时长到点会滚段()
+    {
+        // 规格 §3.1.1：连续分段录像，「长录不断、掉电不丢」。
+        // 段不滚的话，进程被杀时 manifest 里一段都没封闭 —— 什么都恢复不出来。
+        //
+        // ⚠️ 这条钉的是**协调器起没起编排循环**。会话层早已测透（见
+        // RecordingSessionTests 里那批 FakeClock 用例），但循环曾经根本没被启动：
+        // 整场只录一个永不滚动的段，而所有测试照样全绿。
+        using var dir = new TempDir();
+        var index = new RecordingIndexSpy();
+        await using var coordinator = Build(
+            dir, WorkMode.StopOnSameWaybill, new FakePunchLog(), index,
+            session: FastRolling(TimeSpan.FromMilliseconds(80), TimeSpan.FromSeconds(30)));
+
+        await coordinator.SubmitAsync(A, PunchSource.KeyboardScanner);
+
+        // 80ms 一段，等 500ms —— 足够滚好几段。
+        await Task.Delay(500);
+
+        var outcome = await coordinator.StopWorkAsync();
+
+        Assert.NotNull(outcome);
+        Assert.True(
+            outcome!.Segments.Count >= 2,
+            $"分段时长 80ms、录了约 500ms，应当已经滚过段；实际只有 {outcome.Segments.Count} 段");
+    }
+
+    [Fact]
+    public async Task 时长兜底到点会自动收尾并把状态接回来()
+    {
+        // 规格 §3.3.4：到点自动收尾。收尾是**循环自己**发起的，没人 await 得到 ——
+        // 协调器不接住的话，CurrentWaybill 会一直指着那个已经收尾的会话：
+        // 界面显示「录制中」，用户会一直等一个永远不会发生的停录。
+        using var dir = new TempDir();
+        var index = new RecordingIndexSpy();
+        var notices = new List<CoordinatorNotice>();
+        await using var coordinator = Build(
+            dir, WorkMode.StopOnSameWaybill, new FakePunchLog(), index,
+            session: FastRolling(TimeSpan.FromSeconds(30), TimeSpan.FromMilliseconds(150)));
+        coordinator.Notice += notices.Add;
+
+        await coordinator.SubmitAsync(A, PunchSource.KeyboardScanner);
+        await Task.Delay(700);
+
+        Assert.Null(coordinator.CurrentWaybill);
+
+        // 录像必须真的入了库 —— 自己停掉却没入库，那是丢证据。
+        Assert.Single(index.Entries);
+
+        // 而且要让用户看得见为什么停了（I3）。
+        Assert.Contains(notices, n => n.Message.Contains("时长上限", StringComparison.Ordinal));
+    }
+
     // ─────────────────────────────────────────────
     // 测试脚手架
     // ─────────────────────────────────────────────
@@ -208,7 +301,8 @@ public class RecordingCoordinatorTests
         WorkMode mode,
         IPunchLog punches,
         RecordingIndexSpy? index = null,
-        IProcessRunner? runner = null)
+        IProcessRunner? runner = null,
+        RecordingSessionOptions? session = null)
     {
         var ffmpeg = FfmpegLocator.TryFind() ?? "ffmpeg";
         var effectiveRunner = runner ?? new SucceedingRunner();
@@ -225,7 +319,10 @@ public class RecordingCoordinatorTests
             punches,
             NullLogger.Instance,
             new WorkModePolicy(mode, StaticStopOption.Off),
-            new CoordinatorOptions("Lenovo EasyCamera", "device-1", "libx264"));
+            new CoordinatorOptions("Lenovo EasyCamera", "device-1", "libx264"))
+        {
+            SessionOptions = session ?? RecordingSessionOptions.Default,
+        };
     }
 
     private sealed class FakeCapture : ICameraCapture

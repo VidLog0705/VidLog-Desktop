@@ -25,6 +25,37 @@ public sealed record RecordingSessionOptions(
         MaxDuration: TimeSpan.FromMinutes(30),
         StopGracePeriod: TimeSpan.FromSeconds(15),
         PollInterval: TimeSpan.FromMilliseconds(500));
+
+    /// <summary>
+    /// 「时长兜底」档位设成「关闭」时的取值。
+    /// </summary>
+    /// <remarks>
+    /// 用 <see cref="TimeSpan.MaxValue"/> 表示「永远比不到」，而不是把它改成可空：
+    /// 循环里只有一次 <c>Elapsed &gt;= MaxDuration</c> 的**比较**，没有任何算术 ——
+    /// 所以「比不到」正好就是「关闭」，不必为此加一条分支和一圈可空判断。
+    /// </remarks>
+    public static TimeSpan NoFallback { get; } = TimeSpan.MaxValue;
+
+    /// <summary>
+    /// 由设置构造（分段时长 = 界面上那个 1~10 分钟；时长兜底 = 档位）。
+    /// </summary>
+    /// <remarks>
+    /// 映射只此一处 —— 写两遍就会有一天两边不一致，而不一致的表现是
+    /// 「界面上写着 5 分钟，实际按 1 分钟录」，极难被发现。
+    /// </remarks>
+    public static RecordingSessionOptions From(int segmentMinutes, DurationFallbackOption durationFallback)
+    {
+        // 越界的值不抛：设置文件是可以被手改的，而一个改坏了的配置
+        // 不该让用户**录不了像**（I4 的同一条精神）。夹到合法区间继续用。
+        var minutes = Math.Clamp(segmentMinutes, 1, 10);
+        var fallback = durationFallback.Minutes();
+
+        return Default with
+        {
+            SegmentDuration = TimeSpan.FromMinutes(minutes),
+            MaxDuration = fallback is { } value ? TimeSpan.FromMinutes(value) : NoFallback,
+        };
+    }
 }
 
 /// <summary>
@@ -72,8 +103,23 @@ public sealed class RecordingSession : IAsyncDisposable
 
     private SessionManifest? _manifest;
     private ICaptureProcess? _currentProcess;
-    private string _currentFileName = string.Empty;
-    private int _currentSequence;
+    /// <summary>一段尚未封闭的分段。</summary>
+    /// <remarks>
+    /// 刻意做成**引用类型**：它要被 <see cref="Interlocked.Exchange{T}(ref T, T)"/> 交换，
+    /// 而那个泛型只接受引用类型／基元／枚举 —— 换成 <c>(string, int)?</c> 这种值类型，
+    /// 编译能过，运行时抛 <see cref="NotSupportedException"/>（2026-09-23 踩过）。
+    /// </remarks>
+    private sealed record OpenSegment(string FileName, int Sequence);
+
+    /// <summary>
+    /// 当前**尚未封闭**的分段。<c>null</c> 表示没有待登记的段。
+    /// </summary>
+    /// <remarks>
+    /// 文件名与序号挤在一个字段里，是为了能用**一次**交换原子地认领它 ——
+    /// 拆成两个字段的话，「认领的瞬间」可能读到上一段的序号，
+    /// 而重号会让时间轴错位（见 <see cref="CloseCurrentSegmentAsync"/> 的注释）。
+    /// </remarks>
+    private OpenSegment? _openSegment;
     private TimeSpan _segmentStartedAt;
     private DateTimeOffset _startedAt;
     private CancellationTokenSource? _loopCancellation;
@@ -152,6 +198,17 @@ public sealed class RecordingSession : IAsyncDisposable
     /// <see cref="RecordingSessionState.Finalizing"/>（这两种都发生过）。
     /// </remarks>
     public Task Completion => _completion.Task;
+
+    /// <summary>
+    /// 收尾结果。收尾走完之前为 <see langword="null"/>。
+    /// </summary>
+    /// <remarks>
+    /// 循环**自己**收尾时（时长兜底 / 磁盘将满），调用方手里没有返回值的来源 ——
+    /// <see cref="RunAsync"/> 把 <see cref="TryStopAsync"/> 的结果丢掉了。
+    /// 没有它，协调器只能报一句「停了」，说不出成没成功、入库了几段，
+    /// 而这正是 I3 不许的那种「失败了但没人知道」。
+    /// </remarks>
+    public FinalizeOutcome? Outcome { get; private set; }
 
     /// <summary>
     /// 开录。
@@ -305,8 +362,9 @@ public sealed class RecordingSession : IAsyncDisposable
             {
                 State = RecordingSessionState.FinalizeFailed;
                 LastProblem = "本次工作没有录到任何可收尾的分段（摄像头可能没能打开）。";
-                return new FinalizeOutcome(
+                return Outcome = new FinalizeOutcome(
                     RecordingSessionState.FinalizeFailed, reason, [], LastProblem);
+                // ↑ 结果留在属性上：循环自己收尾时没人接得住这个返回值。
             }
 
             var outcome = await _finalizer.FinalizeAsync(
@@ -314,6 +372,7 @@ public sealed class RecordingSession : IAsyncDisposable
                 segments, reason, cancellationToken);
 
             State = outcome.State;
+            Outcome = outcome;
 
             if (outcome.Succeeded)
             {
@@ -347,8 +406,8 @@ public sealed class RecordingSession : IAsyncDisposable
         _currentProcess = await _capture.StartAsync(
             _deviceName, outputPath, encoder, cancellationToken);
 
-        _currentSequence = sequence;
-        _currentFileName = fileName;
+        // 一次交换把两个值一起发布 —— 见 _openSegment 的说明。
+        Interlocked.Exchange(ref _openSegment, new OpenSegment(fileName, sequence));
     }
 
     /// <summary>
@@ -386,22 +445,25 @@ public sealed class RecordingSession : IAsyncDisposable
 
     private async Task CloseCurrentSegmentAsync(CancellationToken cancellationToken)
     {
-        // 判据是**文件名**而不是进程：ReleaseCaptureAsync 会把进程清空，
+        // 判据是**分段本身**而不是进程：ReleaseCaptureAsync 会把进程清空，
         // 但段还没登记。拿错了判据就会把同一段登记两次（重号会让时间轴错位）。
-        if (_currentFileName.Length == 0)
+        //
+        // ⚠️ 用一次原子交换**认领**这一段，而不是「先读、后面再清」：编排循环与
+        // StopAsync 可能在同一瞬间都想封闭当前段（循环刚到滚段点、用户正好点
+        // 【结束】）。先读后清会让两边都通过判据，把同一段登记两次 ——
+        // 而循环在 2026-09-23 之前根本没被启动过，所以这条竞态是新暴露的。
+        var claimed = Interlocked.Exchange(ref _openSegment, null);
+        if (claimed is not { } open)
         {
             return;
         }
 
-        var fileName = _currentFileName;
-        var sequence = _currentSequence;
+        var fileName = open.FileName;
+        var sequence = open.Sequence;
         var startedAt = _segmentStartedAt;
 
         var endedAt = Elapsed;
         await ReleaseCaptureAsync(cancellationToken);
-
-        // 登记完就清掉，保证幂等。
-        _currentFileName = string.Empty;
 
         var segment = new SegmentProduct(
             sequence,

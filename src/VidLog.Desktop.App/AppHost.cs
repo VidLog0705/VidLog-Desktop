@@ -26,6 +26,7 @@ public sealed class AppHost : IAsyncDisposable
 
     private AppHost(
         DesktopServices services,
+        StartupReport startup,
         AppSettings settings,
         FileLogger logger,
         WindowsKeyboardHook hook,
@@ -33,6 +34,7 @@ public sealed class AppHost : IAsyncDisposable
         RecordingCoordinator coordinator)
     {
         Services = services;
+        Startup = startup;
         Settings = settings;
         _logger = logger;
         Hook = hook;
@@ -41,6 +43,17 @@ public sealed class AppHost : IAsyncDisposable
     }
 
     public DesktopServices Services { get; }
+
+    /// <summary>
+    /// 启动报告：本次收尾了哪些孤儿、回放服务有没有起来。
+    /// </summary>
+    /// <remarks>
+    /// 界面要它来回答「上次崩掉的那段救回来没有」—— 那个问题**只有这里答得了**：
+    /// <see cref="DesktopServices.StartAsync"/> 跑完就把结果交出来了，
+    /// 之后再没人能重建这个事实。
+    /// </remarks>
+    public StartupReport Startup { get; }
+
     public AppSettings Settings { get; private set; }
     public WindowsKeyboardHook Hook { get; }
     public KeyboardScanBridge Bridge { get; }
@@ -119,6 +132,17 @@ public sealed class AppHost : IAsyncDisposable
 
         var services = DesktopServices.Create(layout, playbackPort: settings.PlaybackPort);
 
+        // ── 装配的最后一跳（曾经漏掉过，别再删）────────────────────────
+        // 两件事都发生在这里：收尾上次没走完的孤儿（规格 §3.1.1），
+        // 再起回放服务（M3 的验收项）。
+        //
+        // ⚠️ 漏掉它**不会有任何测试变红** —— 它落在 App 层，而 App 层没有测试工程。
+        // 后果是三个功能静默失效：孤儿永不被收尾（那段录像永远播不了、进不了索引）、
+        // 回放服务永不起、「局域网回放页」按钮永久禁用。三者的表现都只是「没反应」。
+        // 见 docs/实现决策.md「装配的最后一跳」。
+        var startup = await services.StartAsync(cancellationToken);
+        warnings.AddRange(startup.Warnings);
+
         // 编码器：规格 §3.1.5 要求实测，不假定。
         var encoder = EncoderSelection.Select(await services.EncoderProbe.ProbeAsync(cancellationToken));
         if (encoder is null)
@@ -138,12 +162,19 @@ public sealed class AppHost : IAsyncDisposable
             services.Punches,
             logger,
             new WorkModePolicy(settings.Mode, settings.StaticStop),
-            new CoordinatorOptions(device, Environment.MachineName, encoder ?? "libx264"));
+            new CoordinatorOptions(device, Environment.MachineName, encoder ?? "libx264"))
+        {
+            // 分段时长与时长兜底（规格 §3.1.1 / §3.3.4）。
+            // 不填的话用的是硬编码默认（1 分钟 / 30 分钟）——
+            // 界面上那两个档位就成了「改了没反应」（踩坑 #13）。
+            SessionOptions = RecordingSessionOptions.From(
+                settings.SegmentMinutes, settings.DurationFallback),
+        };
 
         var bridge = new KeyboardScanBridge(settings.Scanner);
         var hook = new WindowsKeyboardHook();
 
-        var host = new AppHost(services, settings, logger, hook, bridge, coordinator)
+        var host = new AppHost(services, startup, settings, logger, hook, bridge, coordinator)
         {
             Warnings = warnings,
         };
@@ -246,6 +277,13 @@ public sealed class AppHost : IAsyncDisposable
 
         await new SettingsStore(Services.Layout.SettingsPath).SaveAsync(next);
         Settings = next;
+
+        // 档位立即生效（下次开段时取值）—— 界面上写着「下次录段生效」，
+        // 不跟着更新的话那句话就是假的。
+        Coordinator.SessionOptions = RecordingSessionOptions.From(
+            next.SegmentMinutes, next.DurationFallback);
+        Coordinator.Mode = next.Mode;
+        Coordinator.StaticStop = next.StaticStop;
 
         if (changes.Count > 0)
         {

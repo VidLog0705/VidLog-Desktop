@@ -139,6 +139,70 @@ public class DesktopServicesTests
     }
 
     // ─────────────────────────────────────────────
+    // 绊线：装配根必须真的调 StartAsync
+    // ─────────────────────────────────────────────
+
+    /// <summary>
+    /// 钉住 <c>AppHost</c> 里那一跳：装配完必须调 <see cref="DesktopServices.StartAsync"/>。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>这条测试看的是源码文本，不是行为</b> —— 说清楚为什么只能这样：
+    /// 那一跳落在 <c>VidLog.Desktop.App</c>（WPF、<c>net9.0-windows</c>），
+    /// 而本测试工程是 <c>net9.0</c>，引用不了它；App 层也没有自己的测试工程。
+    /// 于是「组合根少调了一步」这类 bug 对整套测试**完全不可见**。
+    /// </para>
+    /// <para>
+    /// 这不是假想的风险，是**已经发生过一次**的：这一跳曾经漏掉，
+    /// 后果是孤儿永不收尾、回放服务永不起、「局域网回放页」永久禁用，
+    /// 三个功能静默失效而 337 条测试全绿。
+    /// </para>
+    /// <para>
+    /// ⚠️ <b>天花板</b>：文本绊线只挡「有人把这一行删了/注释了」，
+    /// 挡不住「改成一个不跑的路径」。把 App 层做成可测的（要么给它一个
+    /// <c>net9.0-windows</c> 测试工程，要么把 <c>DesktopServices.Create</c>
+    /// 与 <c>StartAsync</c> 合成一个忘不掉的方法）才是根治 —— 记在
+    /// <c>docs/实现决策.md</c>「装配的最后一跳」。那时这条绊线应当被删掉。
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public void AppHost_装配时会真的启动服务()
+    {
+        var path = Path.Combine(RepoRoot(), "src", "VidLog.Desktop.App", "AppHost.cs");
+
+        // 断言的是「调用形态」而非精确某一行 —— 改写措辞、加空行都不该让它变红，
+        // 只有**这一步不再发生**才该变红。
+        //
+        // 必须排除被注释掉的那一行：`// await services.StartAsync(...)` 里
+        // **仍然含有**这串文本。第一版漏了这一点，于是「把调用注释掉」这种
+        // 最常见的失活方式反而抓不住（2026-09-23 试出来的）。
+        Assert.Contains(
+            File.ReadAllLines(path),
+            line => line.Contains("await services.StartAsync(")
+                && !line.TrimStart().StartsWith("//"));
+    }
+
+    /// <summary>从测试程序集往上找到仓库根（含 <c>src</c> 与 <c>tests</c> 的那一层）。</summary>
+    private static string RepoRoot()
+    {
+        var dir = new DirectoryInfo(AppContext.BaseDirectory);
+
+        while (dir is not null)
+        {
+            if (Directory.Exists(Path.Combine(dir.FullName, "src"))
+                && Directory.Exists(Path.Combine(dir.FullName, "tests")))
+            {
+                return dir.FullName;
+            }
+
+            dir = dir.Parent;
+        }
+
+        throw new InvalidOperationException(
+            $"从 {AppContext.BaseDirectory} 往上找不到仓库根（含 src 与 tests 的目录）。");
+    }
+
+    // ─────────────────────────────────────────────
     // 端到端：被杀会话在下次启动时被收尾（规格 §3.1.1 / §8）
     // ─────────────────────────────────────────────
 

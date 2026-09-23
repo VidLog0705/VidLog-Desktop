@@ -97,6 +97,35 @@ public sealed class RecordingCoordinator : IAsyncDisposable
     /// </remarks>
     public Camera.CameraFrameScanner? Scanner { get; set; }
 
+    /// <summary>
+    /// 会话参数：分段时长与时长兜底（规格 §3.1.1 / §3.3.4）。
+    /// </summary>
+    /// <remarks>
+    /// 装配层在启动时按设置填一次，用户改设置时再填一次 —— 取值发生在
+    /// <b>每次开新段</b>那一刻，所以改动是「下次录段生效」，
+    /// 与界面上那句说明一致，不需要重启。
+    /// </remarks>
+    public RecordingSessionOptions SessionOptions { get; set; } = RecordingSessionOptions.Default;
+
+    /// <summary>
+    /// 工作模式（规格 §3.3.1）。改了**立刻算数**，不需要重启。
+    /// </summary>
+    /// <remarks>
+    /// 写穿到策略上。设置页写着「下次录段生效」，而只有把新值送到策略里才是真的。
+    /// </remarks>
+    public WorkMode Mode
+    {
+        get => _policy.Mode;
+        set => _policy.Mode = value;
+    }
+
+    /// <summary>静止停录档位（规格 §3.3.3）。</summary>
+    public StaticStopOption StaticStop
+    {
+        get => _policy.StaticStop;
+        set => _policy.StaticStop = value;
+    }
+
     /// <summary>当前段的单号；没有在录时为 <see langword="null"/>。</summary>
     public WaybillNumber? CurrentWaybill => _current?.Waybill;
 
@@ -225,10 +254,18 @@ public sealed class RecordingCoordinator : IAsyncDisposable
 
         var session = new RecordingSession(
             _workspace, _capture, _finalizer, _diskGuard,
-            _options.DeviceName, _options.SourceDeviceId);
+            _options.DeviceName, _options.SourceDeviceId, SessionOptions);
 
         await session.StartAsync(waybill, _options.Encoder, cancellationToken);
         _current = session;
+
+        // ── 起编排循环：到点滚段、到时长上限或磁盘将满就自动收尾 ──────────
+        // ⚠️ 这一句以前漏了，后果比「档位没接线」严重得多：
+        // 整场只会录一个**永不滚动**的分段，时长兜底永不触发 ——
+        // 而规格 §3.1.1 要求连续分段（「长录不断、掉电不丢」：
+        // 段不滚，进程被杀时 manifest 里就一段都没封闭，什么都恢复不出来）。
+        // 界面上「分段时长」「时长兜底」两个档位改起来毫无反应，根子也在这里。
+        _ = WatchSessionLoopAsync(session);
 
         await PunchAsync(session, waybill, source, cancellationToken);
 
@@ -311,6 +348,67 @@ public sealed class RecordingCoordinator : IAsyncDisposable
 
         return outcome;
     }
+
+    /// <summary>
+    /// 盯住会话的编排循环 —— 它**自己**收尾时（时长兜底 / 磁盘将满）把它接回来。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// 循环是 fire-and-forget 的，没人知道它什么时候自己停了。不盯的话
+    /// <see cref="_current"/> 会一直指着一个早已收尾的会话：界面显示「录制中」，
+    /// 而实际早停了 —— 用户会一直等一个永远不会发生的停录，也不会去点【结束】。
+    /// </para>
+    /// <para>
+    /// 用 <see cref="Interlocked.CompareExchange{T}(ref T, T, T)"/> 认领而不是先读后写：
+    /// 用户点【结束】或换件时，另一个线程也会把 <see cref="_current"/> 清掉／换成新会话，
+    /// 先读后写会把这个新会话误清成 null（表现是那一件包裹再也不会停录）。
+    /// </para>
+    /// </remarks>
+    private async Task WatchSessionLoopAsync(RecordingSession session)
+    {
+        try
+        {
+            await session.RunAsync(_options.Encoder).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            // RunAsync 自己保证不抛（异常都变成收尾结论）。这里是最后一道兜底，
+            // 漏出去就是未处理异常 —— 而用户需要的是一条看得见的说明（I3）。
+            _logger.Log(LogLevel.Error, "录制", $"编排循环异常退出：{ex.Message}");
+        }
+
+        // 是我们主动停的（结束工作 / 换件 / 复扫同码）就到此为止 ——
+        // 那几条路自己会收尾、自己会报告，这里再报一次就是重复。
+        if (!ReferenceEquals(Interlocked.CompareExchange(ref _current, null, session), session))
+        {
+            return;
+        }
+
+        if (session.Outcome is { } outcome)
+        {
+            ReportFinalize(session, outcome);
+        }
+
+        // 自己停了而用户没点过任何东西 —— 必须说出来。录像已经在库里了，
+        // 而界面还停在「录制中」的话，他会一直等下去。
+        Raise(CoordinatorNoticeKind.WorkStopped, session.Waybill, DescribeAutoStop(session.StoppedBecause));
+
+        await session.DisposeAsync();
+
+        // 还在工作中的话把取景接回去，否则下一件包裹扫不进来
+        // （与 StopCurrentSegmentAsync 同一条理由）。
+        if (IsWorking && Scanner is not null)
+        {
+            _ = Scanner.StartAsync();
+        }
+    }
+
+    private static string DescribeAutoStop(StopReason? reason) => reason switch
+    {
+        StopReason.DurationFallback => "到了时长上限，已自动结束并收尾。",
+        StopReason.StorageLow => "磁盘将满，已自动结束并收尾。",
+        _ => "已自动结束并收尾。",
+    };
 
     private void ReportFinalize(RecordingSession session, FinalizeOutcome outcome)
     {

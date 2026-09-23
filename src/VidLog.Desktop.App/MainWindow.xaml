@@ -47,6 +47,13 @@
                             <ComboBoxItem Tag="Six">6 分钟</ComboBoxItem>
                         </ComboBox>
                     </StackPanel>
+
+                    <!-- 踩坑 #13：一个改了没反应的开关，用户只会以为它坏了。
+                         静止停录卡在「录制中怎么拿到画面」—— 那条路已被实测否决
+                         （见 docs/实现决策.md §24、§25、§28）。如实写出来，
+                         比让它悄悄不生效强；但这句是待办，不是终态。 -->
+                    <TextBlock Margin="0,8,0,0" TextWrapping="Wrap" Foreground="#88666666"
+                               Text="⚠️ 静止停录暂不生效：录像中相机是独占的，另开取帧进程实测取不到画面，所以现在选哪个档位都不会自动停录。"/>
                 </StackPanel>
 
                 <Border Grid.Row="1" Margin="0,14,0,0" Padding="12"

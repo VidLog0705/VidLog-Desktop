@@ -69,14 +69,24 @@ public sealed record WorkModeState(
 /// </remarks>
 public sealed class WorkModePolicy
 {
-    private readonly WorkMode _mode;
-    private readonly StaticStopOption _staticOption;
-
     public WorkModePolicy(WorkMode mode, StaticStopOption staticOption)
     {
-        _mode = mode;
-        _staticOption = staticOption;
+        Mode = mode;
+        StaticStop = staticOption;
     }
+
+    /// <summary>
+    /// 工作模式（规格 §3.3.1）。
+    /// </summary>
+    /// <remarks>
+    /// 做成可写属性而不是 readonly 字段：设置页写着「下次录段生效」，
+    /// 而构造后就不再读设置的话那句话是假的（改完要重启才生效）。
+    /// 判定发生在**每次扫码/每次更新**那一刻，所以改了立刻算数。
+    /// </remarks>
+    public WorkMode Mode { get; set; }
+
+    /// <summary>静止停录档位（规格 §3.3.3）。</summary>
+    public StaticStopOption StaticStop { get; set; }
 
     /// <summary>识别到一个单号（扫码枪或摄像头）。</summary>
     public WorkDecision OnScan(WorkModeState state, WaybillNumber scanned)
@@ -89,7 +99,7 @@ public sealed class WorkModePolicy
         if (state.Current == scanned)
         {
             // 复扫同码。
-            return _mode switch
+            return Mode switch
             {
                 // 连续扫：同一件又扫一次是误触，**不停也不提示**。
                 WorkMode.Continuous => WorkDecision.Nothing.Instance,
@@ -100,7 +110,7 @@ public sealed class WorkModePolicy
         }
 
         // 扫到**不同**单号。
-        return _mode switch
+        return Mode switch
         {
             // 连续扫换段式（规格 2026-09-22 的需求变更）：换件是正常路径。
             // 那里**不播报「面单不同」** —— 每件都报一次既是错的，又会盖住下一件的开录播报。
@@ -126,7 +136,7 @@ public sealed class WorkModePolicy
         // 固定 2 秒、**不看档位**（档位设成「关闭」时它照样生效）。
         // 门槛是「被跟踪的面单曾离场又入场」—— 少了它，面单刚扫完就摆在框里，
         // 每段都会在开录 2 秒后自己结束。
-        if (_mode == WorkMode.StopOnStaticAfterRescan)
+        if (Mode == WorkMode.StopOnStaticAfterRescan)
         {
             if (state.TrackedWaybillLeftFrame
                 && state.StaticFor >= WorkModeOptions.RescanStaticHold)
@@ -140,7 +150,7 @@ public sealed class WorkModePolicy
         }
 
         // 另两个模式按档位走。
-        var minutes = _staticOption.Minutes();
+        var minutes = StaticStop.Minutes();
         if (minutes is null)
         {
             // 档位「关闭」。

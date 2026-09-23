@@ -52,6 +52,40 @@ public class RecordingSessionTests
     }
 
     // ─────────────────────────────────────────────
+    // 设置 → 会话参数的映射（规格 §3.3.4）
+    // ─────────────────────────────────────────────
+
+    [Fact]
+    public void 设置映射到会话参数()
+    {
+        var options = RecordingSessionOptions.From(
+            segmentMinutes: 5, durationFallback: DurationFallbackOption.Six);
+
+        Assert.Equal(TimeSpan.FromMinutes(5), options.SegmentDuration);
+        Assert.Equal(TimeSpan.FromMinutes(6), options.MaxDuration);
+    }
+
+    [Fact]
+    public void 时长兜底关掉时永不按时长自动停()
+    {
+        var options = RecordingSessionOptions.From(
+            segmentMinutes: 1, durationFallback: DurationFallbackOption.Off);
+
+        // 「关闭」的语义是**永远比不到**，而不是退回某个默认值 ——
+        // 退回默认的话，用户关掉它反而会被一个他没选的时长停掉。
+        Assert.Equal(RecordingSessionOptions.NoFallback, options.MaxDuration);
+        Assert.True(TimeSpan.FromDays(365) < options.MaxDuration);
+    }
+
+    [Fact]
+    public void 手改坏的分段时长被夹回合法区间而不是让录制起不来()
+    {
+        // 设置文件是可以被手改的。一个改坏了的配置不该让用户**录不了像**（I4 的同一条精神）。
+        Assert.Equal(TimeSpan.FromMinutes(1), RecordingSessionOptions.From(0, DurationFallbackOption.Off).SegmentDuration);
+        Assert.Equal(TimeSpan.FromMinutes(10), RecordingSessionOptions.From(999, DurationFallbackOption.Off).SegmentDuration);
+    }
+
+    // ─────────────────────────────────────────────
     // 分段滚动 —— 规格 §3.1.1「不因切分而中断用户体验」
     // ─────────────────────────────────────────────
 

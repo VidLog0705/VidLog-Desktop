@@ -34,14 +34,13 @@ public sealed class TrayIcon : IDisposable
             Visible = true,
         };
 
-        _icon.DoubleClick += (_, _) => Invoke(UiRequested);
+        // 取一次再调：事件在**没有任何订阅者**时是 null，直接 Invoke(null)
+        // 会在 UI 线程上抛 NRE —— 而它是在 Post 的回调里，没人接得住。
+        _icon.DoubleClick += (_, _) => Invoke(() => UiRequested?.Invoke());
     }
 
     /// <summary>用户双击图标 —— 要求把窗口显示出来。</summary>
     public event Action? UiRequested;
-
-    /// <summary>用户从菜单选了「退出」。</summary>
-    public event Action? ExitRequested;
 
     /// <summary>建好右键菜单。窗口那边拿到菜单项引用后自己挂。</summary>
     public void BuildMenu(Action onShow, Action onExit)
