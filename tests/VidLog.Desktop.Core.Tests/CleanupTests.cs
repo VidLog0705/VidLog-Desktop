@@ -127,6 +127,103 @@ public class CleanupTests
     }
 
     // ─────────────────────────────────────────────
+    // 按业务类型分开的保留期（规格 §3.5.2.1）
+    // ─────────────────────────────────────────────
+
+    [Fact]
+    public void 发货和退货各用自己那一份保留期()
+    {
+        // 需求方 2026-09-23：发货与退货**各自一份，不共用**。
+        var labels = Typed(("out", BusinessType.Outbound), ("ret", BusinessType.Return));
+
+        var plan = new CleanupPlanner().PlanPerBusinessType(
+            [Entry("out", Now.AddDays(-5)), Entry("ret", Now.AddDays(-5))],
+            labels,
+            new RetentionPolicies(
+                new RetentionPolicy(RetentionMode.ByDays, KeepDays: 3),
+                new RetentionPolicy(RetentionMode.ByDays, KeepDays: 30)),
+            Now);
+
+        // 同样录于 5 天前：发货那件超了 3 天，退货那件还在 30 天里。
+        var candidate = Assert.Single(plan.Candidates);
+        Assert.Equal("out", candidate.Entry.EvidenceId);
+        Assert.Contains(plan.Exempted, e => e.Entry.EvidenceId == "ret");
+    }
+
+    [Fact]
+    public void 改发货那一份不影响退货()
+    {
+        var labels = Typed(("ret", BusinessType.Return));
+
+        // 发货调到「不保留」，退货仍是 30 天 —— 退货这条不该被牵着走。
+        var plan = new CleanupPlanner().PlanPerBusinessType(
+            [Entry("ret", Now.AddDays(-5))], labels,
+            new RetentionPolicies(
+                new RetentionPolicy(RetentionMode.ByDays, KeepDays: 0),
+                new RetentionPolicy(RetentionMode.ByDays, KeepDays: 30)),
+            Now);
+
+        Assert.Empty(plan.Candidates);
+    }
+
+    [Fact]
+    public void 没有业务类型标签的一律不清_且说明原因()
+    {
+        // 判不出它是发货还是退货 —— 猜错的代价是删掉证据，猜不出的代价只是占地方。
+        var plan = new CleanupPlanner().PlanPerBusinessType(
+            [Entry("e1", Now.AddDays(-365))], NoLabels(),
+            new RetentionPolicies(
+                new RetentionPolicy(RetentionMode.ByDays, KeepDays: 0),
+                new RetentionPolicy(RetentionMode.ByDays, KeepDays: 0)),
+            Now);
+
+        Assert.Empty(plan.Candidates);
+        Assert.Contains(plan.Exempted, e => e.Why.Contains("业务类型"));
+    }
+
+    [Fact]
+    public void 不保留的实际语义是24小时()
+    {
+        // 规格 §3.5.2.1：「不保留」= 0 天；但 §3.5.3③ 的 24 小时豁免硬性、
+        // 用户不可关闭 —— 所以实际生效是 max(24h, 0) = 24 小时，不是「立刻删」。
+        var noKeep = new RetentionPolicies(
+            new RetentionPolicy(RetentionMode.ByDays, KeepDays: 0),
+            new RetentionPolicy(RetentionMode.ByDays, KeepDays: 0));
+
+        var fresh = new CleanupPlanner().PlanPerBusinessType(
+            [Entry("e1", Now.AddHours(-2))], Typed(("e1", BusinessType.Outbound)), noKeep, Now);
+        Assert.Empty(fresh.Candidates);
+
+        var stale = new CleanupPlanner().PlanPerBusinessType(
+            [Entry("e1", Now.AddHours(-25))], Typed(("e1", BusinessType.Outbound)), noKeep, Now);
+        Assert.Single(stale.Candidates);
+    }
+
+    [Fact]
+    public void 两份都是全部保留时谁都不清()
+    {
+        var plan = new CleanupPlanner().PlanPerBusinessType(
+            [Entry("out", Now.AddDays(-365)), Entry("ret", Now.AddDays(-365))],
+            Typed(("out", BusinessType.Outbound), ("ret", BusinessType.Return)),
+            RetentionPolicies.KeepAll,
+            Now);
+
+        Assert.Empty(plan.Candidates);
+        Assert.Equal(2, plan.Exempted.Count);
+    }
+
+    [Fact]
+    public void 下拉选项与需求方列举的一致()
+    {
+        // 需求方原话是「不保留/3/5/7/10/15/30/」；
+        // **「全部保留」是规格 §3.5.2 本来就规定的默认**，所以多这一项 ——
+        // 这个偏差要跟他确认（母仓 交接.md §5）。
+        Assert.Equal(
+            new[] { "全部保留", "不保留", "3 天", "5 天", "7 天", "10 天", "15 天", "30 天" },
+            RetentionPolicies.Choices.Select(c => c.Label));
+    }
+
+    // ─────────────────────────────────────────────
     // 执行：I8 的落点
     // ─────────────────────────────────────────────
 
@@ -246,6 +343,16 @@ public class CleanupTests
 
     private static IReadOnlyDictionary<string, IReadOnlyDictionary<string, string>> NoLabels() =>
         new Dictionary<string, IReadOnlyDictionary<string, string>>();
+
+    /// <summary>只给业务类型标签的标签表（规格 §3.5.2.1 判定要用的就这一个键）。</summary>
+    private static IReadOnlyDictionary<string, IReadOnlyDictionary<string, string>> Typed(
+        params (string EvidenceId, BusinessType Type)[] items) =>
+        items.ToDictionary(
+            i => i.EvidenceId,
+            i => (IReadOnlyDictionary<string, string>)new Dictionary<string, string>
+            {
+                [LabelKeys.BusinessType] = BusinessTypes.ToValue(i.Type),
+            });
 
     private static CleanupExecutor BuildExecutor(
         TempDir dir, IArchiveBackend archive, CleanupAuditLog? audit = null) =>

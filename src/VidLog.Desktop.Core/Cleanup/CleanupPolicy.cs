@@ -73,6 +73,47 @@ public enum RetentionMode
     BySpace,
 }
 
+/// <summary>
+/// 按业务类型分开的保留期（规格 §3.5.2.1）。
+/// </summary>
+/// <remarks>
+/// 需求方 2026-09-23 原话：「已备份后的本地保留期用户可自行选择，用下拉式选择
+/// 不保留/3/5/7/10/15/30/，**发货和退货视频同样**」；追问后裁决
+/// **发货与退货各自一份，不共用** —— 退货件争议多、体积小，
+/// 实践上不会和发货用同一个天数。
+/// </remarks>
+public sealed record RetentionPolicies(RetentionPolicy Outbound, RetentionPolicy Return)
+{
+    /// <summary>两份都是「全部保留」—— 出厂默认（规格 §3.5.2 表格第一行）。</summary>
+    public static RetentionPolicies KeepAll { get; } = new(RetentionPolicy.KeepAll, RetentionPolicy.KeepAll);
+
+    /// <summary>这一条该用哪一份。</summary>
+    public RetentionPolicy For(BusinessType type) =>
+        type == BusinessType.Return ? Return : Outbound;
+
+    /// <summary>
+    /// 下拉里的选项，按界面上的先后（规格 §3.5.2.1）。
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ **「不保留」是 <see cref="RetentionMode.ByDays"/> 配 0 天，不是「立刻删」。**
+    /// <see cref="CleanupPlanner.FreshWindow"/>（24 小时，规格 §3.5.3③）把它兜住了 ——
+    /// 那条豁免**硬性、用户不可关闭**，所以实际生效是「备份后最快 24 小时清」。
+    /// 界面**必须把这句话写出来**：用户选了「不保留」却看见东西还在，
+    /// 不说清楚他会以为坏了（踩坑 #13「改了没反应的开关」）。
+    /// </remarks>
+    public static IReadOnlyList<(string Label, RetentionPolicy Policy)> Choices { get; } =
+    [
+        ("全部保留", RetentionPolicy.KeepAll),
+        ("不保留", new RetentionPolicy(RetentionMode.ByDays, KeepDays: 0)),
+        ("3 天", new RetentionPolicy(RetentionMode.ByDays, KeepDays: 3)),
+        ("5 天", new RetentionPolicy(RetentionMode.ByDays, KeepDays: 5)),
+        ("7 天", new RetentionPolicy(RetentionMode.ByDays, KeepDays: 7)),
+        ("10 天", new RetentionPolicy(RetentionMode.ByDays, KeepDays: 10)),
+        ("15 天", new RetentionPolicy(RetentionMode.ByDays, KeepDays: 15)),
+        ("30 天", new RetentionPolicy(RetentionMode.ByDays, KeepDays: 30)),
+    ];
+}
+
 /// <summary>一条可清理的候选。</summary>
 public sealed record CleanupCandidate(RecordingEntry Entry, long SizeBytes, RelativePath Location, string Why);
 
@@ -212,6 +253,72 @@ public sealed class CleanupPlanner
 
         return new CleanupPlan(candidates, exempted);
     }
+
+    /// <summary>
+    /// 按业务类型各算一遍，再合起来（规格 §3.5.2.1）。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// 刻意**不动 <see cref="Plan"/>**：它已经是「给一份策略、算一批候选」这个
+    /// 正确的原语了，各算一遍再合并就够 —— 而且**分开算顺手保证了两份互不串**
+    /// （改发货的档位不可能碰到退货的判断）。
+    /// </para>
+    /// <para>
+    /// <b>没有业务类型标签的一律不清</b>，并把原因写进豁免列表。
+    /// 与规格 §6.2「数据删除必须极度克制」同源：判不出它是发货还是退货，
+    /// 就说不出它该用哪一份保留期。**猜错的代价是删掉证据，猜不出的代价只是占地方**
+    /// —— 而后者是**看得见的**（就在豁免列表里，用户查得到「这条为什么没删」）。
+    /// </para>
+    /// <para>
+    /// ⚠️ 两份策略都必须是「全部保留」或「按天数」。**「按空间」是全局的** ——
+    /// 磁盘满不满跟业务类型无关 —— 那种情况仍走单份的 <see cref="Plan"/>。
+    /// 需求方要的下拉只给这两类，所以正常路径到不了这里。
+    /// </para>
+    /// </remarks>
+    public CleanupPlan PlanPerBusinessType(
+        IReadOnlyList<RecordingEntry> entries,
+        IReadOnlyDictionary<string, IReadOnlyDictionary<string, string>> labels,
+        RetentionPolicies policies,
+        DateTimeOffset now,
+        long? freeBytes = null)
+    {
+        var candidates = new List<CleanupCandidate>();
+        var exempted = new List<ExemptedEntry>();
+
+        foreach (var group in entries.GroupBy(e => BusinessTypeOf(e, labels)))
+        {
+            if (group.Key is not { } type)
+            {
+                exempted.AddRange(group.Select(e => new ExemptedEntry(
+                    e, "没有业务类型标签，判不出该用哪一份保留期，按「全部保留」处理")));
+
+                continue;
+            }
+
+            var plan = Plan([.. group], labels, policies.For(type), now, freeBytes);
+
+            candidates.AddRange(plan.Candidates);
+            exempted.AddRange(plan.Exempted);
+        }
+
+        return new CleanupPlan(candidates, exempted);
+    }
+
+    /// <summary>
+    /// 这条录像的业务类型；标签里没有就返回 null。
+    /// </summary>
+    /// <remarks>
+    /// **不猜**：<see cref="BusinessTypes.TryParse"/> 认不出来时会给出 Outbound，
+    /// 那个默认值对检索够用，但拿它去决定「删不删」不行 —— 见
+    /// <see cref="PlanPerBusinessType"/> 的注释。
+    /// </remarks>
+    private static BusinessType? BusinessTypeOf(
+        RecordingEntry entry, IReadOnlyDictionary<string, IReadOnlyDictionary<string, string>> labels) =>
+        labels.TryGetValue(entry.EvidenceId, out var entryLabels)
+        && entryLabels.TryGetValue(LabelKeys.BusinessType, out var raw)
+        && BusinessTypes.TryParse(raw, out var type)
+            ? type
+            : null;
 
     /// <summary>
     /// 这条录像的成品占多大。
