@@ -88,6 +88,15 @@ public sealed class RecordingCoordinator : IAsyncDisposable
     /// <summary>是否处于「工作中」（规格 §3.3.1 的用词）。</summary>
     public bool IsWorking { get; private set; }
 
+    /// <summary>
+    /// 取景识码（规格 §3.2.1 的第二种识别入口）。
+    /// </summary>
+    /// <remarks>
+    /// 可以为 null —— 没摄像头、或没配解码器时就不装它。
+    /// 装上了的话，<see cref="StartWork"/> 会开始取景，扫到单号自动开录。
+    /// </remarks>
+    public Camera.CameraFrameScanner? Scanner { get; set; }
+
     /// <summary>当前段的单号；没有在录时为 <see langword="null"/>。</summary>
     public WaybillNumber? CurrentWaybill => _current?.Waybill;
 
@@ -120,6 +129,13 @@ public sealed class RecordingCoordinator : IAsyncDisposable
         IsWorking = true;
         _logger.Log(LogLevel.Info, "工作", "开始工作");
         Raise(CoordinatorNoticeKind.WorkStarted, null, "开始工作。");
+
+        // 开始取景识码 —— 扫到单号会自动开录（规格 §4.1 的状态机就是从
+        // 「识别到单号」起算的）。没装扫描器时用户仍可手打单号。
+        if (Scanner is not null)
+        {
+            _ = Scanner.StartAsync();
+        }
     }
 
     /// <summary>
@@ -133,6 +149,13 @@ public sealed class RecordingCoordinator : IAsyncDisposable
         }
 
         IsWorking = false;
+
+        // 先停取景 —— 结束时不该把相机留着开着（隐私指示灯长亮）。
+        if (Scanner is not null)
+        {
+            await Scanner.StopAsync(cancellationToken);
+        }
+
         var outcome = await StopCurrentSegmentAsync(StopReason.Manual, cancellationToken);
 
         _logger.Log(LogLevel.Info, "工作", "结束工作");
@@ -190,6 +213,14 @@ public sealed class RecordingCoordinator : IAsyncDisposable
         {
             IsWorking = true;
             Raise(CoordinatorNoticeKind.WorkStarted, null, "开始工作。");
+        }
+
+        // ⚠️ **必须先放掉取景识码进程**：相机是独占的（实测），
+        // 识码进程还开着的话，下面的采集进程会拿到 device already in use。
+        // StopAsync 会等到进程真的退出 —— 那正是为了让它把设备放开。
+        if (Scanner is { IsScanning: true })
+        {
+            await Scanner.StopAsync(cancellationToken);
         }
 
         var session = new RecordingSession(
@@ -270,6 +301,13 @@ public sealed class RecordingCoordinator : IAsyncDisposable
         var outcome = await session.StopAsync(reason, cancellationToken);
         ReportFinalize(session, outcome);
         await session.DisposeAsync();
+
+        // 相机随收尾释放了 —— 还在工作中的话要把取景接回去，
+        // 否则下一件包裹扫不进来（用户会以为扫码枪/摄像头坏了）。
+        if (IsWorking && Scanner is not null)
+        {
+            _ = Scanner.StartAsync();
+        }
 
         return outcome;
     }

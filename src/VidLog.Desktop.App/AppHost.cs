@@ -1,4 +1,5 @@
 using System.Windows;
+using VidLog.Desktop.Core.Camera;
 using VidLog.Desktop.Core.Configuration;
 using VidLog.Desktop.Core.Diagnostics;
 using VidLog.Desktop.Core.Media;
@@ -147,6 +148,26 @@ public sealed class AppHost : IAsyncDisposable
             Warnings = warnings,
         };
 
+        // 摄像头识码（规格 §3.2.1 的第二种入口）。装在协调器上，
+        // 【开始工作】时会自动开始取景，扫到单号自动开录。
+        if (services.FfmpegPath is { } ffmpegPath && device.Length > 0)
+        {
+            var scanner = new CameraFrameScanner(
+                ffmpegPath, device, new ZXingFrameScanner(), logger);
+
+            scanner.Scanned += waybill =>
+            {
+                logger.Log(LogLevel.Info, "识码", $"取景识别到 {waybill.Value}");
+                _ = coordinator.SubmitAsync(waybill, PunchSource.CameraDecoder);
+            };
+
+            // I3：识码起不来要说出来，否则用户只会觉得「摄像头怎么不好使」。
+            scanner.Failed += message => host.RaiseNotice(
+                new CoordinatorNotice(CoordinatorNoticeKind.FinalizeFailed, null, message));
+
+            coordinator.Scanner = scanner;
+        }
+
         host.Wire();
         logger.Log(LogLevel.Info, "启动", "应用已启动",
             new Dictionary<string, object?>
@@ -158,6 +179,9 @@ public sealed class AppHost : IAsyncDisposable
 
         return host;
     }
+
+    /// <summary>把一条通知发给订阅者（装配期也要能发）。</summary>
+    internal void RaiseNotice(CoordinatorNotice notice) => Notice?.Invoke(notice);
 
     private void Wire()
     {
