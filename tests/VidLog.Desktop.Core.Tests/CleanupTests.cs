@@ -24,7 +24,7 @@ public class CleanupTests
     public void 默认策略是全部保留_谁都不清()
     {
         var plan = new CleanupPlanner().Plan(
-            [Entry("e1", Now.AddDays(-365))], NoLabels(), RetentionPolicy.KeepAll, Now);
+            [Entry("e1", Now.AddDays(-365))], NoLabels(), Archived("e1"), RetentionPolicy.KeepAll, Now);
 
         Assert.Empty(plan.Candidates);
         Assert.Single(plan.Exempted);
@@ -35,7 +35,8 @@ public class CleanupTests
     {
         // 刚录完的东西往往还在被检查、被导出，而清理不可逆 —— 给一个冷静期。
         var plan = new CleanupPlanner().Plan(
-            [Entry("e1", Now.AddHours(-2))], NoLabels(), new RetentionPolicy(RetentionMode.ByDays, KeepDays: 7), Now);
+            [Entry("e1", Now.AddHours(-2))], NoLabels(), Archived("e1"),
+            new RetentionPolicy(RetentionMode.ByDays, KeepDays: 7), Now);
 
         Assert.Empty(plan.Candidates);
         Assert.Contains(plan.Exempted, e => e.Why.Contains("24"));
@@ -50,7 +51,7 @@ public class CleanupTests
         };
 
         var plan = new CleanupPlanner().Plan(
-            [Entry("e1", Now.AddDays(-365))], locked,
+            [Entry("e1", Now.AddDays(-365))], locked, Archived("e1"),
             new RetentionPolicy(RetentionMode.ByDays, KeepDays: 7), Now);
 
         Assert.Empty(plan.Candidates);
@@ -67,7 +68,7 @@ public class CleanupTests
         };
 
         var plan = new CleanupPlanner().Plan(
-            [Entry("e1", Now.AddDays(-365))], unlocked,
+            [Entry("e1", Now.AddDays(-365))], unlocked, Archived("e1"),
             new RetentionPolicy(RetentionMode.ByDays, KeepDays: 7), Now);
 
         Assert.Single(plan.Candidates);
@@ -88,7 +89,7 @@ public class CleanupTests
             };
 
             var plan = new CleanupPlanner().Plan(
-                [Entry("e1", Now.AddDays(-365))], labels,
+                [Entry("e1", Now.AddDays(-365))], labels, Archived("e1"),
                 new RetentionPolicy(RetentionMode.ByDays, KeepDays: 7), Now);
 
             Assert.Empty(plan.Candidates);
@@ -101,10 +102,47 @@ public class CleanupTests
     {
         var plan = new CleanupPlanner().Plan(
             [Entry("e1", Now.AddDays(-30)), Entry("e2", Now.AddDays(-2))],
-            NoLabels(), new RetentionPolicy(RetentionMode.ByDays, KeepDays: 7), Now);
+            NoLabels(),
+            // 一条 30 天前归档、一条 2 天前归档。**起算点是归档时刻**，
+            // 所以分界的是 e2 的归档时间，不是它「录于 2 天前」。
+            new Dictionary<string, DateTimeOffset>
+            {
+                ["e1"] = Now.AddDays(-30),
+                ["e2"] = Now.AddDays(-2),
+            },
+            new RetentionPolicy(RetentionMode.ByDays, KeepDays: 7), Now);
 
         Assert.Single(plan.Candidates);
         Assert.Equal("e1", plan.Candidates[0].Entry.EvidenceId);
+    }
+
+    [Fact]
+    public void 还没归档的一律不清_它是唯一副本()
+    {
+        // 规格 §3.5.3①，硬豁免。归档状态表里没有这条 = 它还没传上去，
+        // 本地这份就是**唯一副本**（I2）。与手机端 `planCleanup` 同一个判法。
+        var plan = new CleanupPlanner().Plan(
+            [Entry("e1", Now.AddDays(-365))], NoLabels(), NeverArchived(),
+            new RetentionPolicy(RetentionMode.ByDays, KeepDays: 7), Now);
+
+        Assert.Empty(plan.Candidates);
+        Assert.Contains(plan.Exempted, e => e.Why.Contains("唯一副本"));
+    }
+
+    [Fact]
+    public void 录完很久但刚归档的不清_起算点是归档成功时刻()
+    {
+        // 规格 §3.5.2.1：保留期自**归档成功时刻**起算，不自录制结束时刻。
+        // 依据是 §4.3 的合取式「归档成功 **且** 超过保留期」—— 一台离线 35 天的
+        // 机器若按录完时刻算，会在**刚归档那一瞬间**就被删掉，那等于绕开了
+        // 「至少一份副本」（I2）的意图。
+        // §9 的验收判据原文：「离线 35 天后才归档的段，**归档当天不算已过期**」。
+        var plan = new CleanupPlanner().Plan(
+            [Entry("e1", Now.AddDays(-35))], NoLabels(), ArchivedAt(Now.AddHours(-1), "e1"),
+            new RetentionPolicy(RetentionMode.ByDays, KeepDays: 3), Now);
+
+        Assert.Empty(plan.Candidates);
+        Assert.Contains(plan.Exempted, e => e.Why.Contains("还在 3 天保留期内"));
     }
 
     [Fact]
@@ -119,7 +157,7 @@ public class CleanupTests
 
         // 差 1MB；每条按时长估约 9.6MB/分钟 ⇒ 一条就够。
         var plan = new CleanupPlanner().Plan(
-            entries, NoLabels(),
+            entries, NoLabels(), Archived("old", "mid", "new"),
             new RetentionPolicy(RetentionMode.BySpace, MinFreeBytes: 10L * 1024 * 1024),
             Now, freeBytes: 9L * 1024 * 1024);
 
@@ -131,7 +169,7 @@ public class CleanupTests
     public void 空间充足时什么都不清()
     {
         var plan = new CleanupPlanner().Plan(
-            [Entry("e1", Now.AddDays(-30))], NoLabels(),
+            [Entry("e1", Now.AddDays(-30))], NoLabels(), Archived("e1"),
             new RetentionPolicy(RetentionMode.BySpace, MinFreeBytes: 1024),
             Now, freeBytes: 100L * 1024 * 1024 * 1024);
 
@@ -143,7 +181,7 @@ public class CleanupTests
     {
         // 规格 §3.5.5：用户要能问「这条为什么被删 / 为什么没删」。
         var plan = new CleanupPlanner().Plan(
-            [Entry("e1", Now.AddHours(-1))], NoLabels(),
+            [Entry("e1", Now.AddHours(-1))], NoLabels(), Archived("e1"),
             new RetentionPolicy(RetentionMode.ByDays, KeepDays: 7), Now);
 
         Assert.All(plan.Exempted, e => Assert.False(string.IsNullOrWhiteSpace(e.Why)));
@@ -162,12 +200,13 @@ public class CleanupTests
         var plan = new CleanupPlanner().PlanPerBusinessType(
             [Entry("out", Now.AddDays(-5)), Entry("ret", Now.AddDays(-5))],
             labels,
+            ArchivedAt(Now.AddDays(-5), "out", "ret"),
             new RetentionPolicies(
                 new RetentionPolicy(RetentionMode.ByDays, KeepDays: 3),
                 new RetentionPolicy(RetentionMode.ByDays, KeepDays: 30)),
             Now);
 
-        // 同样录于 5 天前：发货那件超了 3 天，退货那件还在 30 天里。
+        // 同样录于 5 天前、同样 5 天前归档：发货那件超了 3 天，退货那件还在 30 天里。
         var candidate = Assert.Single(plan.Candidates);
         Assert.Equal("out", candidate.Entry.EvidenceId);
         Assert.Contains(plan.Exempted, e => e.Entry.EvidenceId == "ret");
@@ -180,7 +219,7 @@ public class CleanupTests
 
         // 发货调到「不保留」，退货仍是 30 天 —— 退货这条不该被牵着走。
         var plan = new CleanupPlanner().PlanPerBusinessType(
-            [Entry("ret", Now.AddDays(-5))], labels,
+            [Entry("ret", Now.AddDays(-5))], labels, ArchivedAt(Now.AddDays(-5), "ret"),
             new RetentionPolicies(
                 new RetentionPolicy(RetentionMode.ByDays, KeepDays: 0),
                 new RetentionPolicy(RetentionMode.ByDays, KeepDays: 30)),
@@ -194,7 +233,7 @@ public class CleanupTests
     {
         // 判不出它是发货还是退货 —— 猜错的代价是删掉证据，猜不出的代价只是占地方。
         var plan = new CleanupPlanner().PlanPerBusinessType(
-            [Entry("e1", Now.AddDays(-365))], NoLabels(),
+            [Entry("e1", Now.AddDays(-365))], NoLabels(), Archived("e1"),
             new RetentionPolicies(
                 new RetentionPolicy(RetentionMode.ByDays, KeepDays: 0),
                 new RetentionPolicy(RetentionMode.ByDays, KeepDays: 0)),
@@ -214,11 +253,13 @@ public class CleanupTests
             new RetentionPolicy(RetentionMode.ByDays, KeepDays: 0));
 
         var fresh = new CleanupPlanner().PlanPerBusinessType(
-            [Entry("e1", Now.AddHours(-2))], Typed(("e1", BusinessType.Outbound)), noKeep, Now);
+            [Entry("e1", Now.AddHours(-2))], Typed(("e1", BusinessType.Outbound)),
+            Archived("e1"), noKeep, Now);
         Assert.Empty(fresh.Candidates);
 
         var stale = new CleanupPlanner().PlanPerBusinessType(
-            [Entry("e1", Now.AddHours(-25))], Typed(("e1", BusinessType.Outbound)), noKeep, Now);
+            [Entry("e1", Now.AddHours(-25))], Typed(("e1", BusinessType.Outbound)),
+            Archived("e1"), noKeep, Now);
         Assert.Single(stale.Candidates);
     }
 
@@ -228,6 +269,7 @@ public class CleanupTests
         var plan = new CleanupPlanner().PlanPerBusinessType(
             [Entry("out", Now.AddDays(-365)), Entry("ret", Now.AddDays(-365))],
             Typed(("out", BusinessType.Outbound), ("ret", BusinessType.Return)),
+            Archived("out", "ret"),
             RetentionPolicies.KeepAll,
             Now);
 
@@ -366,6 +408,23 @@ public class CleanupTests
 
     private static IReadOnlyDictionary<string, IReadOnlyDictionary<string, string>> NoLabels() =>
         new Dictionary<string, IReadOnlyDictionary<string, string>>();
+
+    /// <summary>空的归档状态表 —— 这些录像一条都还没成功归档（规格 §3.5.3①）。</summary>
+    private static IReadOnlyDictionary<string, DateTimeOffset> NeverArchived() =>
+        new Dictionary<string, DateTimeOffset>();
+
+    /// <summary>归档状态表：给定每条录像的**归档成功时刻**（回执里的 timeAnchor）。</summary>
+    private static IReadOnlyDictionary<string, DateTimeOffset> ArchivedAt(
+        DateTimeOffset anchor, params string[] ids) =>
+        ids.ToDictionary(id => id, _ => anchor);
+
+    /// <summary>默认归档状态：30 天前就归档成功了 —— 出了任何一档保留期，默认结论是「该清」。</summary>
+    /// <remarks>
+    /// 这个默认值是**故意挑的**：它让「该清」的用例不必自己造表，而
+    /// 要验「还没归档」或「刚归档」的用例**必须**自己传表 —— 那正是它们要验的东西。
+    /// </remarks>
+    private static IReadOnlyDictionary<string, DateTimeOffset> Archived(params string[] ids) =>
+        ArchivedAt(Now.AddDays(-30), ids);
 
     /// <summary>只给业务类型标签的标签表（规格 §3.5.2.1 判定要用的就这一个键）。</summary>
     private static IReadOnlyDictionary<string, IReadOnlyDictionary<string, string>> Typed(

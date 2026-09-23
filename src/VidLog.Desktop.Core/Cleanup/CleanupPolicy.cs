@@ -136,8 +136,19 @@ public sealed record CleanupPlan(
 /// 清理计划的制定。
 /// </summary>
 /// <remarks>
-/// 纯函数：给定「有哪些录像、多大、锁没锁、策略、现在几点」，算出该清谁。
-/// 它**不碰文件系统** —— 真正删除在别处，而且要先回查归档层（I8）。
+/// <para>
+/// 纯函数：给定「有哪些录像、多大、锁没锁、归档成功于何时、策略、现在几点」，
+/// 算出该清谁。它**不碰文件系统** —— 真正删除在别处，而且要先回查归档层（I8）。
+/// </para>
+/// <para>
+/// ⚠️ <b>谁来提供那份归档时刻表，目前还没有答案。</b>
+/// 回执里就有（<c>ReceiptPayload.TimeAnchor</c>），但 <c>ReceiptStore</c> 只有
+/// 按 id 查一个的 <c>FindAsync</c>，没有「一次读全表」。所以要真接上，
+/// 第一步是给 <c>ReceiptStore</c> 加一个 <c>LoadAllAsync</c>。
+/// <b>现在故意不加</b>：在本类有生产调用点之前，那会是一段没人调用、
+/// 也没法验证的代码 —— 电脑端刚因为「写完了、测过了、没插电」吃过一次亏
+/// （母仓 <c>HANDOFF.md</c> §6 第 19 条）。
+/// </para>
 /// </remarks>
 public sealed class CleanupPlanner
 {
@@ -150,9 +161,18 @@ public sealed class CleanupPlanner
     /// </remarks>
     public static readonly TimeSpan FreshWindow = TimeSpan.FromHours(24);
 
+    /// <summary>
+    /// 按一份策略算一批候选与豁免（规格 §3.5.2.1 / §3.5.3）。
+    /// </summary>
+    /// <param name="archiveAnchors">
+    /// <c>evidenceId</c> → **归档成功时刻**（回执里的 <c>timeAnchor</c>，外部时间锚）。
+    /// <b>表里没有的那条就是「还没成功归档」，必然被豁免</b>（规格 §3.5.3①）——
+    /// 所以这个参数是必填的，没有「不知道归档状态」这个中间态。
+    /// </param>
     public CleanupPlan Plan(
         IReadOnlyList<RecordingEntry> entries,
         IReadOnlyDictionary<string, IReadOnlyDictionary<string, string>> labels,
+        IReadOnlyDictionary<string, DateTimeOffset> archiveAnchors,
         RetentionPolicy policy,
         DateTimeOffset now,
         long? freeBytes = null)
@@ -167,24 +187,36 @@ public sealed class CleanupPlanner
                 [], [.. entries.Select(e => new ExemptedEntry(e, "保留策略是「全部保留」"))]);
         }
 
-        var eligible = new List<(RecordingEntry Entry, DateTimeOffset EndedAt)>();
+        var eligible = new List<(RecordingEntry Entry, DateTimeOffset Anchor)>();
 
         foreach (var entry in entries)
         {
-            // 规格 §3.5.3 的三条豁免，一条都不能少。
+            // 规格 §3.5.3 的三条豁免，一条都不能少，**按它自己的编号顺序**判 ——
+            // 顺序影响的是「理由怎么写」：一条既没归档又锁着的录像，
+            // 两端都该说「唯一副本」，而不是一边说锁、一边说没归档。
+            //
+            // ① 未成功归档的 —— 唯一副本（I2）。
+            if (!archiveAnchors.TryGetValue(entry.EvidenceId, out var anchor))
+            {
+                exempted.Add(new ExemptedEntry(entry, "还没成功归档到归档层，这是唯一副本"));
+                continue;
+            }
+
+            // ② 被锁定（规格 §3.5.3②，硬豁免）。
             if (IsLocked(entry, labels))
             {
                 exempted.Add(new ExemptedEntry(entry, "已被用户锁定"));
                 continue;
             }
 
+            // ③ 最近 24 小时内**录**的（不是归档的）。
             if (now - entry.EndedAt < FreshWindow)
             {
                 exempted.Add(new ExemptedEntry(entry, $"录完还不到 {FreshWindow.TotalHours:0} 小时"));
                 continue;
             }
 
-            eligible.Add((entry, entry.EndedAt));
+            eligible.Add((entry, anchor));
         }
 
         switch (policy.Mode)
@@ -193,12 +225,17 @@ public sealed class CleanupPlanner
                 {
                     var cutoff = now.AddDays(-days);
 
-                    foreach (var (entry, endedAt) in eligible)
+                    foreach (var (entry, anchor) in eligible)
                     {
-                        if (endedAt < cutoff)
+                        // ★ 起算点是**归档成功时刻**，不是录完时刻（规格 §3.5.2.1）。
+                        // 依据是 §4.3 的合取式「归档成功 **且** 超过保留期」：
+                        // 一台离线 35 天的机器若按录完时刻算，会在**刚归档那一瞬间**
+                        // 就被删掉 —— 那等于绕开了「至少一份副本」（I2）的意图。
+                        // 手机端 `lifecycle.dart` 用的是同一个字段、同一个算法。
+                        if (anchor < cutoff)
                         {
                             candidates.Add(new CleanupCandidate(
-                                entry, EstimateBytes(entry), entry.Location, $"录于 {endedAt:yyyy-MM-dd}，超过 {days} 天"));
+                                entry, EstimateBytes(entry), entry.Location, $"备份于 {anchor:yyyy-MM-dd}，超过 {days} 天"));
                         }
                         else
                         {
@@ -222,10 +259,12 @@ public sealed class CleanupPlanner
                     }
 
                     // 空间不够 —— **从最旧的开始**清，清到够了就停。
+                    // 这里按录制时刻排，不按归档时刻：空间紧张时先腾掉最老的素材，
+                    // 与「删哪个都不心疼」的直觉一致。（保留期的起算点仍是归档时刻。）
                     var need = floor - free;
                     long freed = 0;
 
-                    foreach (var (entry, _) in eligible.OrderBy(e => e.EndedAt))
+                    foreach (var (entry, _) in eligible.OrderBy(e => e.Entry.EndedAt))
                     {
                         if (freed >= need)
                         {
@@ -278,6 +317,7 @@ public sealed class CleanupPlanner
     public CleanupPlan PlanPerBusinessType(
         IReadOnlyList<RecordingEntry> entries,
         IReadOnlyDictionary<string, IReadOnlyDictionary<string, string>> labels,
+        IReadOnlyDictionary<string, DateTimeOffset> archiveAnchors,
         RetentionPolicies policies,
         DateTimeOffset now,
         long? freeBytes = null)
@@ -295,7 +335,7 @@ public sealed class CleanupPlanner
                 continue;
             }
 
-            var plan = Plan([.. group], labels, policies.For(type), now, freeBytes);
+            var plan = Plan([.. group], labels, archiveAnchors, policies.For(type), now, freeBytes);
 
             candidates.AddRange(plan.Candidates);
             exempted.AddRange(plan.Exempted);
