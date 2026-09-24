@@ -388,11 +388,34 @@ public sealed class PlaybackServer : IAsyncDisposable
             return;
         }
 
-        // ⚠️ 记下来就完了，**不自动批准**（规格 §3.4.5：入网必须经主机端人工批准）。
-        // 配对码要显示在**这台电脑的屏幕上**给用户读出来敲进手机。
-        await _devices.RequestAsync(request.DeviceId, request.DeviceName);
+        // ⚠️ **不自动批准**（规格 §3.4.5：入网必须经主机端人工批准）。
+        // 这里只记下"谁来了"，并**顺带告诉它现在批没批** ——
+        // 手机轮询的就是这个接口，它**只报警不发货**（凭据在 claim 那一步才产出）。
+        var result = await _devices.RequestAsync(request.DeviceId, request.DeviceName, request.Token);
 
-        await WriteJsonAsync(context, new EnrollPendingPayload(EnrollPendingPayload.Pending));
+        switch (result.Status)
+        {
+            case EnrollStatus.Pending:
+                await WriteJsonAsync(context, new EnrollPendingPayload(EnrollPendingPayload.Pending));
+                return;
+
+            case EnrollStatus.Approved:
+                await WriteJsonAsync(context, new EnrollPendingPayload(EnrollPendingPayload.Approved));
+                return;
+
+            case EnrollStatus.Rejected:
+                await WriteJsonAsync(context, new EnrollPendingPayload(EnrollPendingPayload.Rejected));
+                return;
+
+            case EnrollStatus.BadToken:
+                await WriteErrorAsync(context, 403, UploadErrors.BadToken, result.Detail);
+                return;
+
+            default:
+                // 屏幕上的码换了、或者已经超时 —— 手机该重新扫一次。
+                await WriteErrorAsync(context, 410, UploadErrors.NoPendingRequest, result.Detail);
+                return;
+        }
     }
 
     private async Task HandleEnrollClaimAsync(HttpListenerContext context)
@@ -404,7 +427,7 @@ public sealed class PlaybackServer : IAsyncDisposable
             return;
         }
 
-        var result = await _devices.ClaimAsync(request.DeviceId, request.Code);
+        var result = await _devices.ClaimAsync(request.DeviceId, request.Token);
 
         switch (result.Status)
         {
@@ -412,8 +435,21 @@ public sealed class PlaybackServer : IAsyncDisposable
                 await WriteJsonAsync(context, new EnrollCredentialPayload(result.Credential!));
                 return;
 
-            case EnrollStatus.BadCode:
-                await WriteErrorAsync(context, 403, UploadErrors.BadCode, result.Detail);
+            case EnrollStatus.Pending:
+                // 还没批 —— **不是错误**，是流程里正常的一步。回 200 + pending，
+                // 手机照着继续等。回 4xx 的话手机会把它当成"入网失败"。
+                await WriteJsonAsync(context, new EnrollPendingPayload(EnrollPendingPayload.Pending));
+                return;
+
+            case EnrollStatus.Rejected:
+                // 被拒了也要让手机看得见（规格 §3.4.5）。200 + rejected 而不是 4xx：
+                // 这不是"请求坏了"，是"人做的决定"，手机那边要显示的是
+                // 「电脑端拒绝了这次连接」，不是「网络错误」。
+                await WriteJsonAsync(context, new EnrollPendingPayload(EnrollPendingPayload.Rejected));
+                return;
+
+            case EnrollStatus.BadToken:
+                await WriteErrorAsync(context, 403, UploadErrors.BadToken, result.Detail);
                 return;
 
             default:

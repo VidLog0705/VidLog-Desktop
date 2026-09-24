@@ -36,8 +36,8 @@ public static class UploadErrors
     /// <summary>路径不认识。⚠️ 手机端把 404 读作「**电脑端版本太旧**」—— 这是一条给用户的提示，不是给日志的。</summary>
     public const string NotFound = "not_found";
 
-    /// <summary>配对码不对（§2.3）。</summary>
-    public const string BadCode = "bad_code";
+    /// <summary>令牌不对 —— 不是屏幕上那张码里的、已过期、或已经被用掉（§2.3）。</summary>
+    public const string BadToken = "bad_token";
 
     /// <summary>没有待批准的入网请求：没发起过、已过期、或凭据已经被领走过（§2.3）。</summary>
     public const string NoPendingRequest = "no_pending_request";
@@ -143,24 +143,36 @@ public sealed record HealthPayload(string Service, int ApiVersion, string Device
     public const int Version = 1;
 }
 
-/// <summary>入网请求（`docs/05-上传接口形状.md` §2.2）。</summary>
-public sealed record EnrollRequestPayload(string DeviceId, string DeviceName);
-
 /// <summary>
-/// 入网请求的响应。
+/// 入网请求（`docs/05-上传接口形状.md` §2.2）。
 /// </summary>
 /// <remarks>
-/// ⚠️ **它不回配对码。** 码是显示在**电脑端屏幕上**给用户读的，
+/// 2026-09-24 起带**令牌** —— 它来自电脑端屏幕上那张二维码（规格 §3.4.5）。
+/// 手机是**轮询**这个接口的：既报"我来了"，也顺便问**批没批**。
+/// </remarks>
+public sealed record EnrollRequestPayload(string DeviceId, string DeviceName, string? Token);
+
+/// <summary>
+/// 入网请求的响应 —— 手机轮询到的**处置**。
+/// </summary>
+/// <remarks>
+/// ⚠️ **它不回令牌、也不回凭据。** 令牌只出现在**电脑端屏幕上那张二维码**里，
 /// 回给手机就等于把「只有站在主机屏幕前的人才知道」这个前提拆了 ——
 /// 那样「人工批准」就又变成一个没挡东西的按钮。
+/// <para>
+/// 三个状态都要能被手机看见：<see cref="Pending"/> 继续等，
+/// <see cref="Approved"/> 去领凭据，<see cref="Rejected"/> **明确告诉用户被拒了**（不能一直转圈）。
+/// </para>
 /// </remarks>
 public sealed record EnrollPendingPayload(string Status)
 {
     public const string Pending = "pending";
+    public const string Approved = "approved";
+    public const string Rejected = "rejected";
 }
 
-/// <summary>凭配对码换取凭据（§2.3）。</summary>
-public sealed record EnrollClaimPayload(string DeviceId, string Code);
+/// <summary>凭令牌换凭据（§2.3）。</summary>
+public sealed record EnrollClaimPayload(string DeviceId, string? Token);
 
 /// <param name="Credential">base64url 的 32 字节。**只在这一次返回**，丢了要重新走一遍入网（不得降级为免凭据）。</param>
 public sealed record EnrollCredentialPayload(string Credential);
