@@ -11,6 +11,11 @@ public sealed record CoordinatorNotice(CoordinatorNoticeKind Kind, WaybillNumber
 
 public enum CoordinatorNoticeKind
 {
+    /// <summary>
+    /// 规格 §3.3.3：连续 N 分钟没有扫码或打点。<b>只提醒，不改录制状态。</b>
+    /// </summary>
+    Idle,
+
     /// <summary>开始工作了。</summary>
     WorkStarted,
 
@@ -74,6 +79,38 @@ public sealed class RecordingCoordinator : IAsyncDisposable
 
     private RecordingSession? _current;
 
+    /// <summary>闲置提醒的轮询间隔。1 秒：它只是「到点了没有」，密一点没有意义。</summary>
+    private static readonly TimeSpan IdlePollInterval = TimeSpan.FromSeconds(1);
+
+    /// <summary>单调时钟。闲置计时与 I11 同一条精神 —— 不读墙钟。</summary>
+    private readonly Func<TimeSpan> _clock;
+
+    /// <summary>等待。抽成可注入的，测试才不必真的等两分钟。</summary>
+    private readonly Func<TimeSpan, CancellationToken, Task> _delay;
+
+    /// <summary>
+    /// 最后一次活动（扫码 / 打点 / **开一段**）的单调刻度。
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ <b>「开录那一刻」也算一次活动</b> —— 这不是顺手写的，是规格 §3.3.3 那句
+    /// 「闲置计时**从开录那一刻起算**，不能拿『上次扫码到现在』当起点，
+    /// 否则架机半小时后一开录就会立刻被提醒」的落点。
+    /// <para>
+    /// 因为**开一段只可能由一次扫码触发**（<see cref="SubmitAsync"/> 与其中的换件），
+    /// 这条不变式是结构性成立的：开录那一刻必然刚更新过它。
+    /// 所以这里**不需要**再拿「本段已录时长」去封顶 —— 试过那样写：
+    /// 既永远不生效，又会让功能在假时钟下永远不触发。
+    /// 谁要是新加了一条「不经过扫码就开段」的路径，**那就是这条不变式破的时候**。
+    /// </para>
+    /// </remarks>
+    private TimeSpan _lastActivityAt;
+
+    /// <summary>这一段闲置里已经响过提醒了没有。</summary>
+    private bool _idleReminded;
+
+    /// <summary>闲置看门狗的取消源。</summary>
+    private CancellationTokenSource? _idleWatch;
+
     public RecordingCoordinator(
         RecordingWorkspace workspace,
         ICameraCapture capture,
@@ -83,8 +120,12 @@ public sealed class RecordingCoordinator : IAsyncDisposable
         IAppLogger logger,
         WorkModePolicy policy,
         CoordinatorOptions options,
-        ScanErrorLog? scanErrors = null)
+        ScanErrorLog? scanErrors = null,
+        Func<TimeSpan>? clock = null,
+        Func<TimeSpan, CancellationToken, Task>? delay = null)
     {
+        _clock = clock ?? NewDefaultClock();
+        _delay = delay ?? Task.Delay;
         _workspace = workspace;
         _capture = capture;
         _finalizer = finalizer;
@@ -94,6 +135,17 @@ public sealed class RecordingCoordinator : IAsyncDisposable
         _policy = policy;
         _options = options;
         _scanErrors = scanErrors;
+    }
+
+    /// <summary>默认时钟：一个从构造时开始走的秒表。</summary>
+    /// <remarks>
+    /// 与 <see cref="RecordingSession"/> 的默认时钟同一手法 —— 用单调时钟而不是
+    /// <c>DateTimeOffset.UtcNow</c>：闲置计时不该因为用户改了系统时间而跳（I11 的精神）。
+    /// </remarks>
+    private static Func<TimeSpan> NewDefaultClock()
+    {
+        var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+        return () => stopwatch.Elapsed;
     }
 
     /// <summary>是否处于「工作中」（规格 §3.3.1 的用词）。</summary>
@@ -130,11 +182,30 @@ public sealed class RecordingCoordinator : IAsyncDisposable
         set => _policy.Mode = value;
     }
 
-    /// <summary>静止停录档位（规格 §3.3.3）。</summary>
-    public StaticStopOption StaticStop
+    /// <summary>闲置提醒档位（规格 §3.3.3 电脑端那半）。</summary>
+    /// <remarks>
+    /// ⚠️ 改它会**立刻**决定看门狗跑不跑（设置页写着「立即生效」，那就得是真的）：
+    /// 关掉时停掉看门狗，打开时（且正在工作）起一个。
+    /// </remarks>
+    public IdleReminderOption IdleReminder
     {
-        get => _policy.StaticStop;
-        set => _policy.StaticStop = value;
+        get => _policy.IdleReminder;
+        set
+        {
+            _policy.IdleReminder = value;
+            SyncIdleWatch();
+        }
+    }
+
+    /// <summary>闲置提醒「自定义」档的分钟数。</summary>
+    public int IdleReminderMinutes
+    {
+        get => _policy.IdleReminderMinutes;
+        set
+        {
+            _policy.IdleReminderMinutes = value;
+            SyncIdleWatch();
+        }
     }
 
     /// <summary>当前段的单号；没有在录时为 <see langword="null"/>。</summary>
@@ -166,7 +237,8 @@ public sealed class RecordingCoordinator : IAsyncDisposable
             return;
         }
 
-        IsWorking = true;
+        BeginWorking();
+
         _logger.Log(LogLevel.Info, "工作", "开始工作");
         Raise(CoordinatorNoticeKind.WorkStarted, null, "开始工作。");
 
@@ -175,6 +247,66 @@ public sealed class RecordingCoordinator : IAsyncDisposable
         if (Scanner is not null)
         {
             _ = Scanner.StartAsync();
+        }
+    }
+
+    /// <summary>
+    /// 盯着「连续 N 分钟没有任何扫码或打点」（规格 §3.3.3 电脑端那半）。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// ⚠️ 它**只播报，绝不改录制状态** —— 规格原话「用户不理就一直录」。
+    /// 所以这个循环里没有任何 <c>Stop</c>：真正把录制停掉的是时长兜底（§3.3.4）。
+    /// </para>
+    /// <para>
+    /// ⚠️ 判据是「扫码或打点」，**不是画面**：电脑端那条路已被实测否决
+    /// （录制中相机独占，取不到画面，见 <c>docs/实现决策.md</c> §24/§25）。
+    /// 语义因此与「画面静止」不同，规格里写明并接受了这一点。
+    /// </para>
+    /// <para>
+    /// 一个闲置段里**只响一次**（<c>_idleReminded</c>）：规格没写「多久响一次」，
+    /// 而验收只说「等过档位 → 提醒，但仍在录」。一次比反复响更接近那句。
+    /// </para>
+    /// </remarks>
+    private async Task WatchIdleAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            while (!cancellationToken.IsCancellationRequested)
+            {
+                await _delay(IdlePollInterval, cancellationToken);
+                if (cancellationToken.IsCancellationRequested || _idleReminded)
+                {
+                    continue;
+                }
+
+                var state = Snapshot();
+                if (_policy.OnIdle(state) is not WorkDecision.Announce { Kind: AnnouncementKind.Idle })
+                {
+                    continue;
+                }
+
+                _idleReminded = true;
+
+                var minutes = IdleReminder.Minutes(IdleReminderMinutes) ?? 0;
+                _logger.Log(LogLevel.Info, "工作", "闲置提醒", new Dictionary<string, object?>
+                {
+                    ["分钟"] = minutes,
+                    ["会话"] = _current?.SessionId,
+                });
+
+                Raise(CoordinatorNoticeKind.Idle, state.Current,
+                    $"已经 {minutes} 分钟没有扫码或打点了。还在录 —— 要停就扫同一张面单，或者点【结束】。");
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // 结束工作 / 退出 —— 正常收场。
+        }
+        catch (Exception ex)
+        {
+            // 看门狗自己出问题**绝不能把录制带下去**（I4 的同一条精神）。
+            _logger.Log(LogLevel.Warn, "工作", $"闲置提醒的看门狗停了：{ex.Message}");
         }
     }
 
@@ -189,6 +321,9 @@ public sealed class RecordingCoordinator : IAsyncDisposable
         }
 
         IsWorking = false;
+
+        // 停掉闲置看门狗 —— 不结束工作的人不该继续收到提醒。
+        StopIdleWatch();
 
         // 先停取景 —— 结束时不该把相机留着开着（隐私指示灯长亮）。
         if (Scanner is not null)
@@ -218,6 +353,10 @@ public sealed class RecordingCoordinator : IAsyncDisposable
     {
         var state = Snapshot();
         var decision = _policy.OnScan(state, waybill);
+
+        // 一次扫码 = 一次活动：闲置计时从这里重算，已响过的提醒也解除。
+        _lastActivityAt = _clock();
+        _idleReminded = false;
 
         switch (decision)
         {
@@ -251,7 +390,9 @@ public sealed class RecordingCoordinator : IAsyncDisposable
         // 而那段录像**不进收尾**就没了（既不入库、也不写 finalized.json）。
         if (!IsWorking)
         {
-            IsWorking = true;
+            // ⚠️ 走 BeginWorking 而不是只把 IsWorking 置真：**闲置看门狗也得起来**
+            // （这条路径是「没按开始就扫码」，用户同样需要那条提醒）。
+            BeginWorking();
             Raise(CoordinatorNoticeKind.WorkStarted, null, "开始工作。");
         }
 
@@ -489,6 +630,80 @@ public sealed class RecordingCoordinator : IAsyncDisposable
 
             case AnnouncementKind.SwitchedWaybill:
                 break;
+
+            case AnnouncementKind.Idle:
+                // ⚠️ 这里**不该**走到：闲置提醒由看门狗直接 Raise（它没有「扫码事件」可依附）。
+                // 留着这一支是因为枚举上加了成员就必须处理 —— 空着比编一句话好。
+                break;
+        }
+    }
+
+    /// <summary>进入「工作中」：置标志、重置闲置计时、起看门狗。</summary>
+    /// <remarks>
+    /// 两个入口都用它：【开始工作】按钮，以及「没按开始就扫码」（规格 §4.1 的状态机
+    /// 从「识别到单号」起算）。后者漏了这一段的话，那条路上**永远不会有闲置提醒**。
+    /// </remarks>
+    private void BeginWorking()
+    {
+        IsWorking = true;
+
+        // 闲置计时从这里起算（它更常被「每一次扫码」推后，见 SubmitAsync）。
+        _lastActivityAt = _clock();
+        _idleReminded = false;
+
+        SyncIdleWatch();
+    }
+
+    /// <summary>让看门狗的存在状态与档位一致：档位是「关闭」就**根本不起它**。</summary>
+    /// <remarks>
+    /// <para>
+    /// 不只是省一点：一个每秒醒一次的循环，即使每次都得出「什么也不做」，
+    /// 也是**每个协调器一个定时器**。测试里那两个入口（<c>Build</c> 造了几十个协调器）
+    /// 全都用「关闭」，于是几十个定时器白跑 —— 而并行跑的全套里，
+    /// 这种白跑会**把既有的时序敏感用例的窗口撑大**（实测：加上它之后
+    /// `RecordingCoordinatorTests` 里那条 §30 的 flake 从 1/11 变成 2/6）。
+    /// </para>
+    /// <para>
+    /// 「关闭」的语义本来就该是**连看门狗都不跑**，而不是跑着然后每次都说不用提醒。
+    /// </para>
+    /// </remarks>
+    private void SyncIdleWatch()
+    {
+        var wanted = IdleReminder.Minutes(IdleReminderMinutes) is not null;
+
+        if (!wanted)
+        {
+            StopIdleWatch();
+            return;
+        }
+
+        if (!IsWorking || _idleWatch is not null)
+        {
+            return;
+        }
+
+        _idleWatch = new CancellationTokenSource();
+        _ = WatchIdleAsync(_idleWatch.Token);
+    }
+
+    /// <summary>停掉闲置看门狗（结束工作、退出）。幂等。</summary>
+    private void StopIdleWatch()
+    {
+        var watch = _idleWatch;
+        _idleWatch = null;
+
+        if (watch is null)
+        {
+            return;
+        }
+
+        try
+        {
+            watch.Cancel();
+        }
+        catch (ObjectDisposedException)
+        {
+            // 已经收过了。
         }
     }
 
@@ -515,13 +730,18 @@ public sealed class RecordingCoordinator : IAsyncDisposable
     private WorkModeState Snapshot() =>
         _current is null
             ? WorkModeState.Idle
-            : new WorkModeState(SegmentOpen: true, Current: _current.Waybill);
+            : new WorkModeState(
+                SegmentOpen: true,
+                Current: _current.Waybill,
+                IdleFor: _clock() - _lastActivityAt);
 
     private void Raise(CoordinatorNoticeKind kind, WaybillNumber? waybill, string message) =>
         Notice?.Invoke(new CoordinatorNotice(kind, waybill, message));
 
     public async ValueTask DisposeAsync()
     {
+        StopIdleWatch();
+
         var session = _current;
         _current = null;
 

@@ -4,6 +4,22 @@
     <ProjectReference Include="..\VidLog.Desktop.Core\VidLog.Desktop.Core.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!--
+      语音播报（闲置提醒，规格 §3.3.3 要的是「**语音播报**提醒」）。
+
+      ⚠️ 这是本仓的**第二个** NuGet 依赖（第一个是 Core 的 ZXing，只做条码解码）。
+      `System.Speech` 是微软自带的包 —— 它只是**调 Windows 语音引擎（SAPI）的门**，
+      **不携带任何音频数据**，所以「不许引入音频素材文件」那条账没有被它破坏
+      （与手机端走系统 TTS 是同一条理由）。
+
+      为什么不用 `SpeechSynthesizer` 之外的招：托盘气泡**不是**语音，而规格写的是
+      「语音播报提醒」；用户把窗口收进托盘时气泡还可能没被看见。两条一起出，
+      见 `Platform/Speech.cs` 与 `App.xaml.cs` 的 OnNotice。
+    -->
+    <PackageReference Include="System.Speech" Version="9.0.0" />
+  </ItemGroup>
+
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
     <TargetFramework>net9.0-windows</TargetFramework>

@@ -21,23 +21,30 @@
                     <TextBlock Text="VidLog · 电脑端" FontSize="20" FontWeight="SemiBold"/>
                     <TextBlock x:Name="StatusText" Margin="0,8,0,0" TextWrapping="Wrap" Text="正在启动…"/>
 
-                    <!-- 工作模式（规格 §3.3.1）。三者的差别全在「什么时候停」。 -->
+                    <!-- 工作模式（规格 §3.3.1）。**电脑端只有两种** —— 「扫码静止停录」
+                         已按需求方 2026-09-24 的裁定删掉（那一端拿不到画面，见 §28.5）。 -->
                     <StackPanel Orientation="Horizontal" Margin="0,12,0,0">
                         <TextBlock Text="工作模式" VerticalAlignment="Center" Width="66"/>
                         <ComboBox x:Name="ModeCombo" Width="190" SelectionChanged="OnModeChanged">
                             <ComboBoxItem Tag="Continuous">连续扫（换件即换段）</ComboBoxItem>
                             <ComboBoxItem Tag="StopOnSameWaybill">同码停（复扫同号停）</ComboBoxItem>
-                            <ComboBoxItem Tag="StopOnStaticAfterRescan">扫码静止停录</ComboBoxItem>
                         </ComboBox>
 
-                        <TextBlock Text="静止停录" VerticalAlignment="Center" Margin="20,0,0,0" Width="66"/>
-                        <ComboBox x:Name="StaticCombo" Width="110" SelectionChanged="OnStaticChanged">
+                        <!-- 闲置提醒（规格 §3.3.3 电脑端那半）：连续 N 分钟没有任何扫码或打点
+                             → 播报提醒，**绝不改录制状态**。它看的不是画面。 -->
+                        <TextBlock Text="闲置提醒" VerticalAlignment="Center" Margin="20,0,0,0" Width="66"/>
+                        <ComboBox x:Name="IdleCombo" Width="110" SelectionChanged="OnIdleReminderChanged">
                             <ComboBoxItem Tag="Off">关闭</ComboBoxItem>
                             <ComboBoxItem Tag="Two">2 分钟</ComboBoxItem>
                             <ComboBoxItem Tag="Three">3 分钟</ComboBoxItem>
                             <ComboBoxItem Tag="Four">4 分钟</ComboBoxItem>
                             <ComboBoxItem Tag="Five">5 分钟</ComboBoxItem>
+                            <ComboBoxItem Tag="Custom">自定义</ComboBoxItem>
                         </ComboBox>
+                        <TextBox x:Name="IdleMinutesBox" Width="46" Margin="6,0,0,0"
+                                 VerticalContentAlignment="Center"
+                                 LostFocus="OnIdleMinutesChanged"/>
+                        <TextBlock Text="分钟" VerticalAlignment="Center" Margin="4,0,0,0"/>
 
                         <TextBlock Text="时长兜底" VerticalAlignment="Center" Margin="20,0,0,0" Width="66"/>
                         <ComboBox x:Name="DurationCombo" Width="110" SelectionChanged="OnDurationChanged">
@@ -48,12 +55,8 @@
                         </ComboBox>
                     </StackPanel>
 
-                    <!-- 踩坑 #13：一个改了没反应的开关，用户只会以为它坏了。
-                         静止停录卡在「录制中怎么拿到画面」—— 那条路已被实测否决
-                         （见 docs/实现决策.md §24、§25、§28）。如实写出来，
-                         比让它悄悄不生效强；但这句是待办，不是终态。 -->
                     <TextBlock Margin="0,8,0,0" TextWrapping="Wrap" Foreground="#88666666"
-                               Text="⚠️ 静止停录暂不生效：录像中相机是独占的，另开取帧进程实测取不到画面，所以现在选哪个档位都不会自动停录。"/>
+                               Text="闲置提醒只看「有没有扫码或打点」，不看画面；到点只出声提醒，不会替你停录 —— 真正会停的是右边的时长兜底。"/>
                 </StackPanel>
 
                 <Border Grid.Row="1" Margin="0,14,0,0" Padding="12"

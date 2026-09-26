@@ -207,7 +207,7 @@ public sealed class AppHost : IAsyncDisposable
             new DiskSpaceGuard(new DriveSpaceProbe()),
             services.Punches,
             logger,
-            new WorkModePolicy(settings.Mode, settings.StaticStop),
+            new WorkModePolicy(settings.Mode, settings.IdleReminder, settings.IdleReminderMinutes),
             new CoordinatorOptions(device, Environment.MachineName, encoder ?? "libx264"),
             // 错误扫描（规格 §6.1「必须保存的事实」）。
             new ScanErrorLog(layout.ScanErrorsPath))
@@ -338,7 +338,8 @@ public sealed class AppHost : IAsyncDisposable
         Coordinator.SessionOptions = RecordingSessionOptions.From(
             next.SegmentMinutes, next.DurationFallback);
         Coordinator.Mode = next.Mode;
-        Coordinator.StaticStop = next.StaticStop;
+        Coordinator.IdleReminder = next.IdleReminder;
+        Coordinator.IdleReminderMinutes = next.IdleReminderMinutes;
 
         if (changes.Count > 0)
         {

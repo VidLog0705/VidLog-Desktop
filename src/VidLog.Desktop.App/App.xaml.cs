@@ -96,20 +96,36 @@ public partial class App : System.Windows.Application
     }
 
     /// <summary>
-    /// 把协调器的通知送到托盘 —— 窗口收起来之后，那是用户唯一看得见的地方。
+    /// 把协调器的通知送出去 —— 窗口收起来之后，那是用户唯一看得见的地方。
     /// </summary>
     /// <remarks>
+    /// <para>
     /// 只弹「需要用户知道」的那几类。每一件包裹都弹一次气泡是噪声，
     /// 用户会开始无视它 —— 那比不弹更糟。
+    /// </para>
+    /// <para>
+    /// ⚠️ <b>闲置提醒（规格 §3.3.3）走的是气泡 + 语音两条</b>，与别的不一样：
+    /// 规格原话要的是「**语音播报**提醒」，而这个窗口多半收在托盘里 ——
+    /// 只弹气泡的话用户根本看不见，那这条提醒就等于没做。
+    /// </para>
     /// </remarks>
     private void OnNotice(CoordinatorNotice notice)
     {
-        if (notice.Kind is not (CoordinatorNoticeKind.FinalizeFailed or CoordinatorNoticeKind.WrongWaybill))
+        switch (notice.Kind)
         {
-            return;
-        }
+            case CoordinatorNoticeKind.Idle:
+                _host?.Tray?.Notify("VidLog", notice.Message);
+                // 尽力而为：没装语音、语音被禁用都不该影响录制（I4 的同一条精神）。
+                Platform.Speech.Speak(notice.Message);
+                break;
 
-        _host?.Tray?.Notify("VidLog", notice.Message);
+            case CoordinatorNoticeKind.FinalizeFailed or CoordinatorNoticeKind.WrongWaybill:
+                _host?.Tray?.Notify("VidLog", notice.Message);
+                break;
+
+            default:
+                break;
+        }
     }
 
     private async Task ExitAsync()

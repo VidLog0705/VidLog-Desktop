@@ -3,10 +3,18 @@ using VidLog.Desktop.Core.Recording;
 namespace VidLog.Desktop.Core.Tests;
 
 /// <summary>
-/// 三种工作模式的判定（规格 §3.3.1 / §3.3.2 / §3.3.3）。
+/// 工作模式的判定（规格 §3.3.1 / §3.3.2 / §3.3.3）。
 /// </summary>
 /// <remarks>
+/// <para>
 /// 策略是**纯函数**，所以规格 §3.3.1 那张表的每一格都能直接断言。
+/// </para>
+/// <para>
+/// ⚠️ <b>电脑端只有两种模式</b>：规格 2026-09-24 裁定删掉「扫码静止停录」
+/// （§3.3.1）。原来那一组「静止停录 / 扫码静止那 2 秒」的用例
+/// **随功能一起删掉了** —— 不是"改成永远通过"，是那几个行为在这端不存在了。
+/// 手机端仍然有三种，那边的用例在 `VidLog-Mobile/test/stop_controller_test.dart`。
+/// </para>
 /// </remarks>
 public class WorkModePolicyTests
 {
@@ -14,19 +22,28 @@ public class WorkModePolicyTests
     private static readonly WaybillNumber B = WaybillNumber.Parse("SF9999999999");
 
     // ─────────────────────────────────────────────
-    // 开录：三个模式都一样
+    // 开录：两个模式都一样
     // ─────────────────────────────────────────────
 
     [Theory]
     [InlineData(WorkMode.Continuous)]
     [InlineData(WorkMode.StopOnSameWaybill)]
-    [InlineData(WorkMode.StopOnStaticAfterRescan)]
     public void 空闲时扫到单号就开录(WorkMode mode)
     {
         var decision = Build(mode).OnScan(WorkModeState.Idle, A);
 
         var start = Assert.IsType<WorkDecision.StartSegment>(decision);
         Assert.Equal(A, start.Waybill);
+    }
+
+    [Fact]
+    public void 电脑端只有两种模式_没有了扫码静止停录()
+    {
+        // 规格 §3.3.1 的原话：「电脑端不要静止停录，电脑端只保留连续扫码和同码停录模式。」
+        // 这条钉的是**枚举本身** —— 有人照着手机端（三种）把它加回来时会红。
+        Assert.Equal(
+            [WorkMode.Continuous, WorkMode.StopOnSameWaybill],
+            Enum.GetValues<WorkMode>());
     }
 
     // ─────────────────────────────────────────────
@@ -42,19 +59,17 @@ public class WorkModePolicyTests
         Assert.IsType<WorkDecision.Nothing>(decision);
     }
 
-    [Theory]
-    [InlineData(WorkMode.StopOnSameWaybill)]
-    [InlineData(WorkMode.StopOnStaticAfterRescan)]
-    public void 另两个模式复扫同码即停(WorkMode mode)
+    [Fact]
+    public void 同码停复扫同码即停()
     {
-        var decision = Build(mode).OnScan(Open(A), A);
+        var decision = Build(WorkMode.StopOnSameWaybill).OnScan(Open(A), A);
 
         var stop = Assert.IsType<WorkDecision.StopSegment>(decision);
         Assert.Equal(StopReason.SameWaybillRescan, stop.Reason);
     }
 
     // ─────────────────────────────────────────────
-    // 段中扫到**不同**单号 —— 三个模式在这里分道扬镳
+    // 段中扫到**不同**单号 —— 两个模式在这里分道扬镳
     // ─────────────────────────────────────────────
 
     [Fact]
@@ -67,134 +82,108 @@ public class WorkModePolicyTests
         Assert.Equal(B, next.Next);
     }
 
-    [Theory]
-    [InlineData(WorkMode.StopOnSameWaybill)]
-    [InlineData(WorkMode.StopOnStaticAfterRescan)]
-    public void 另两个模式扫到异码只提示不停录(WorkMode mode)
+    [Fact]
+    public void 同码停扫到异码只提示不停录()
     {
-        // 规格 §3.3.2 错码保护。
-        var decision = Build(mode).OnScan(Open(A), B);
+        // 规格 §3.3.2 错码保护。⚠️ 2026-09-24 起它**在电脑端只挂在「同码停」上**
+        // （另一处挂载点「扫码静止停录」已经删掉）。
+        var decision = Build(WorkMode.StopOnSameWaybill).OnScan(Open(A), B);
 
         var announce = Assert.IsType<WorkDecision.Announce>(decision);
         Assert.Equal(AnnouncementKind.WrongWaybill, announce.Kind);
     }
 
     // ─────────────────────────────────────────────
-    // 静止停录（规格 §3.3.3）
+    // 闲置提醒（规格 §3.3.3 电脑端那半）
     // ─────────────────────────────────────────────
 
     [Fact]
-    public void 档位关闭时静止不停录()
+    public void 档位关闭时永远不提醒()
     {
-        var decision = Build(WorkMode.StopOnSameWaybill, StaticStopOption.Off)
-            .OnStatic(Open(A) with { StaticFor = TimeSpan.FromHours(1) }, isStatic: true);
+        var decision = Build(WorkMode.StopOnSameWaybill, IdleReminderOption.Off)
+            .OnIdle(Open(A) with { IdleFor = TimeSpan.FromHours(1) });
 
         Assert.IsType<WorkDecision.Nothing>(decision);
     }
 
     [Fact]
-    public void 档位未到时不停录()
+    public void 档位未到时不提醒()
     {
-        var decision = Build(WorkMode.StopOnSameWaybill, StaticStopOption.Three)
-            .OnStatic(Open(A) with { StaticFor = TimeSpan.FromMinutes(2) }, isStatic: true);
+        var decision = Build(WorkMode.StopOnSameWaybill, IdleReminderOption.Three)
+            .OnIdle(Open(A) with { IdleFor = TimeSpan.FromMinutes(2) });
 
         Assert.IsType<WorkDecision.Nothing>(decision);
     }
 
     [Fact]
-    public void 档位到时按静止停录()
+    public void 档位到时提醒()
     {
-        var decision = Build(WorkMode.StopOnSameWaybill, StaticStopOption.Three)
-            .OnStatic(Open(A) with { StaticFor = TimeSpan.FromMinutes(3) }, isStatic: true);
+        var decision = Build(WorkMode.StopOnSameWaybill, IdleReminderOption.Three)
+            .OnIdle(Open(A) with { IdleFor = TimeSpan.FromMinutes(3) });
 
-        var stop = Assert.IsType<WorkDecision.StopSegment>(decision);
-        Assert.Equal(StopReason.StaticTimeout, stop.Reason);
+        var announce = Assert.IsType<WorkDecision.Announce>(decision);
+        Assert.Equal(AnnouncementKind.Idle, announce.Kind);
     }
 
     [Fact]
-    public void 画面没静止就不停()
+    public void 闲置提醒绝不产出停录()
     {
-        var decision = Build(WorkMode.StopOnSameWaybill, StaticStopOption.Two)
-            .OnStatic(Open(A) with { StaticFor = TimeSpan.FromHours(1) }, isStatic: false);
-
-        Assert.IsType<WorkDecision.Nothing>(decision);
-    }
-
-    [Fact]
-    public void 空闲时静止不停录()
-    {
-        // 没在录就无所谓静止 —— 否则架机久了会被判成「该停」。
-        var decision = Build(WorkMode.StopOnSameWaybill, StaticStopOption.Two)
-            .OnStatic(WorkModeState.Idle with { StaticFor = TimeSpan.FromHours(1) }, isStatic: true);
-
-        Assert.IsType<WorkDecision.Nothing>(decision);
-    }
-
-    // ─────────────────────────────────────────────
-    // 扫码静止停录**自己的** 2 秒（规格 2026-09-22 的语义澄清）
-    // ─────────────────────────────────────────────
-
-    [Fact]
-    public void 扫码静止的两秒不看档位_档位关闭时照样生效()
-    {
-        // 规格原话：「档位设成『关闭』时它照样生效」。
-        // 少了这条，本模式在「复扫同码就停」之后与同码停完全等价。
-        var policy = Build(WorkMode.StopOnStaticAfterRescan, StaticStopOption.Off);
-        var state = Open(A) with
+        // 规格 §3.3.3 原话：「**它只提醒，绝不改录制状态** —— 用户不理就一直录。
+        // 最终把它停掉的是 §3.3.4 的时长兜底」。
+        //
+        // 这条是这一组里最要紧的：把闲置接成「到点就停」是个很自然的写法
+        // （两个都叫"防忘停录"），而那样操作员离开一会儿就会被停掉一段录像。
+        foreach (var option in Enum.GetValues<IdleReminderOption>())
         {
-            TrackedWaybillLeftFrame = true,
-            StaticFor = TimeSpan.FromSeconds(2),
-        };
+            var decision = Build(WorkMode.StopOnSameWaybill, option, customMinutes: 1)
+                .OnIdle(Open(A) with { IdleFor = TimeSpan.FromDays(1) });
 
-        var decision = policy.OnStatic(state, isStatic: true);
-
-        var stop = Assert.IsType<WorkDecision.StopSegment>(decision);
-        Assert.Equal(StopReason.StaticTimeout, stop.Reason);
+            Assert.IsNotType<WorkDecision.StopSegment>(decision);
+        }
     }
 
     [Fact]
-    public void 面单没离场过时静止两秒不停()
+    public void 空闲时闲置不提醒()
     {
-        // 门槛：必须「离场后再入场」。少了它，面单刚扫完就摆在框里，
-        // 每段都会在开录 2 秒后自己结束。
-        var state = Open(A) with
-        {
-            TrackedWaybillLeftFrame = false,
-            StaticFor = TimeSpan.FromSeconds(10),
-        };
-
-        var decision = Build(WorkMode.StopOnStaticAfterRescan).OnStatic(state, isStatic: true);
+        // 没在录就没什么可提醒的 —— 而且调用方已经按「本段已录时长」封了顶（I12）。
+        var decision = Build(WorkMode.StopOnSameWaybill, IdleReminderOption.Two)
+            .OnIdle(WorkModeState.Idle with { IdleFor = TimeSpan.FromHours(1) });
 
         Assert.IsType<WorkDecision.Nothing>(decision);
     }
 
-    [Fact]
-    public void 扫码静止不满两秒不停()
+    [Theory]
+    [InlineData(1)]
+    [InlineData(7)]
+    [InlineData(120)]
+    public void 自定义档按填的分钟数走(int minutes)
     {
-        var state = Open(A) with
-        {
-            TrackedWaybillLeftFrame = true,
-            StaticFor = TimeSpan.FromSeconds(1.9),
-        };
+        var policy = Build(WorkMode.StopOnSameWaybill, IdleReminderOption.Custom, minutes);
 
-        var decision = Build(WorkMode.StopOnStaticAfterRescan).OnStatic(state, isStatic: true);
+        Assert.IsType<WorkDecision.Nothing>(
+            policy.OnIdle(Open(A) with { IdleFor = TimeSpan.FromMinutes(minutes - 1) }));
 
-        Assert.IsType<WorkDecision.Nothing>(decision);
+        var announce = Assert.IsType<WorkDecision.Announce>(
+            policy.OnIdle(Open(A) with { IdleFor = TimeSpan.FromMinutes(minutes) }));
+
+        Assert.Equal(AnnouncementKind.Idle, announce.Kind);
     }
 
-    [Fact]
-    public void 扫码静止模式下档位不会先触发()
+    [Theory]
+    [InlineData(0)]
+    [InlineData(-5)]
+    [InlineData(24 * 60 + 1)]
+    public void 自定义档越界时回落到默认三分钟_而不是夹到边界(int minutes)
     {
-        // 2 秒必定早于任何档位（最小 2 分钟）—— 那是**结果**，不是把档位关掉了。
-        var policy = Build(WorkMode.StopOnStaticAfterRescan, StaticStopOption.Two);
-        var state = Open(A) with
-        {
-            TrackedWaybillLeftFrame = false,
-            StaticFor = TimeSpan.FromMinutes(5),
-        };
+        // 与设置层一贯的「越界回落默认值」同一条规矩（I4 的精神）。
+        // 夹到边界的话，「自定义 0 分钟」会变成「1 分钟」—— 一开录就提醒。
+        var policy = Build(WorkMode.StopOnSameWaybill, IdleReminderOption.Custom, minutes);
 
-        // 面单没离场过 ⇒ 本模式自己的判据不成立 ⇒ 不停。
-        Assert.IsType<WorkDecision.Nothing>(policy.OnStatic(state, isStatic: true));
+        Assert.IsType<WorkDecision.Nothing>(
+            policy.OnIdle(Open(A) with { IdleFor = TimeSpan.FromMinutes(2) }));
+
+        Assert.IsType<WorkDecision.Announce>(
+            policy.OnIdle(Open(A) with { IdleFor = TimeSpan.FromMinutes(3) }));
     }
 
     // ─────────────────────────────────────────────
@@ -217,8 +206,10 @@ public class WorkModePolicyTests
     }
 
     private static WorkModePolicy Build(
-        WorkMode mode, StaticStopOption staticOption = StaticStopOption.Off) =>
-        new(mode, staticOption);
+        WorkMode mode,
+        IdleReminderOption idle = IdleReminderOption.Off,
+        int customMinutes = 0) =>
+        new(mode, idle, customMinutes);
 
     private static WorkModeState Open(WaybillNumber waybill) =>
         new(SegmentOpen: true, Current: waybill);

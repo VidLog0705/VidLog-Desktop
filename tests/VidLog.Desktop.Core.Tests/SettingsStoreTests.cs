@@ -71,7 +71,7 @@ public class SettingsStoreTests
         var want = AppSettings.Default with
         {
             Mode = WorkMode.Continuous,
-            StaticStop = StaticStopOption.Off,
+            IdleReminder = IdleReminderOption.Off,
             SegmentMinutes = 3,
             PlaybackPort = 9090,
         };
@@ -148,6 +148,44 @@ public class SettingsStoreTests
 
         Assert.Equal(AppSettings.Default, result.Settings);
         Assert.NotEmpty(result.Warnings);
+    }
+
+    [Fact]
+    public async Task 老配置里的扫码静止停录_回落到同码停并说出来()
+    {
+        // 规格 §3.3.1：电脑端删掉那个模式之后，「设置文件里存着它」要**回落到同码停**
+        // （不是连续扫 —— 同码停会自己停，不会一路录到把盘写满）。
+        //
+        // ⚠️ 老配置里的形态是**数字**：本仓没挂 JsonStringEnumConverter，
+        // 枚举一律按数字存（见 `SettingsStoreTests` 里那条保留期的字面量）。
+        // 规格那句「设置文件里存的是模式名字」对**手机端**成立（Dart 存 name），
+        // 对电脑端不成立 —— 所以这里钉的是数字 2。
+        using var dir = new TempDir();
+        var path = dir.File("settings.json");
+        await File.WriteAllTextAsync(path, """{"Mode":2}""");
+
+        var result = await new SettingsStore(path).LoadAsync();
+
+        Assert.Equal(WorkMode.StopOnSameWaybill, result.Settings.Mode);
+        Assert.NotEmpty(result.Warnings);
+        Assert.Contains(result.Warnings, w => w.Contains("扫码静止停录", StringComparison.Ordinal));
+
+        // 别的东西不该被这条回落带走 —— 只换模式，不是整份回落默认值。
+        Assert.Equal(AppSettings.Default.IdleReminder, result.Settings.IdleReminder);
+    }
+
+    [Fact]
+    public async Task 闲置提醒的档位存在老键名下_老配置读得回来()
+    {
+        // 属性叫 IdleReminder，而 JSON 键仍是 `StaticStop`（历史名）——
+        // 键名不动是为了**老配置不丢**：存的是数字，换了键名整条就回落默认值。
+        using var dir = new TempDir();
+        var path = dir.File("settings.json");
+        await File.WriteAllTextAsync(path, """{"StaticStop":1}""");
+
+        var result = await new SettingsStore(path).LoadAsync();
+
+        Assert.Equal(IdleReminderOption.Two, result.Settings.IdleReminder);
     }
 
     [Fact]

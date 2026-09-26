@@ -36,43 +36,54 @@ public enum AnnouncementKind
 
     /// <summary>换件（连续扫）。这是**正常路径**，不播报错。</summary>
     SwitchedWaybill,
+
+    /// <summary>
+    /// 规格 §3.3.3（电脑端那半）：连续 N 分钟没有任何扫码或打点。
+    /// <b>只提醒，绝不改录制状态</b> —— 用户不理就一直录。
+    /// </summary>
+    Idle,
 }
 
 /// <summary>策略做出决定的那一刻，它看到的局面。</summary>
 /// <param name="SegmentOpen">当前有没有在录的段。</param>
 /// <param name="Current">当前段的单号；空闲时为 null。</param>
-/// <param name="TrackedWaybillLeftFrame">
-/// 被跟踪的面单是否**已经离场过**（扫码静止那 2 秒的门槛，规格 §3.3.1 的语义澄清）。
+/// <param name="IdleFor">
+/// 距**最后一次扫码或打点**过了多久；还没开录时为 <see cref="TimeSpan.Zero"/>。
 /// </param>
-/// <param name="StaticFor">画面已经静止多久。<b>调用方必须按 I12 用它已录时长封顶</b>。</param>
 public sealed record WorkModeState(
     bool SegmentOpen = false,
     WaybillNumber? Current = null,
-    bool TrackedWaybillLeftFrame = false,
-    TimeSpan StaticFor = default)
+    TimeSpan IdleFor = default)
 {
     public static WorkModeState Idle { get; } = new();
 }
 
 /// <summary>
-/// 三种工作模式的判定（规格 §3.3.1 / §3.3.2 / §3.3.3 / §3.3.4）。
+/// 工作模式的判定（规格 §3.3.1 / §3.3.2 / §3.3.3 / §3.3.4）。
 /// </summary>
 /// <remarks>
 /// <para>
 /// 纯函数：同样的输入永远给同样的输出，不读时钟、不碰磁盘。
 /// </para>
 /// <para>
-/// <b>I12 的落点</b>：<see cref="WorkModeState.StaticFor"/> 由调用方传进来，
-/// 而它必须已经按「本段已录时长」封顶。少了这个封顶，
-/// 「架机半小时后才按开始」会在开录那一刻就判出静止、当场停录。
+/// ⚠️ <b>电脑端的模式只有两种</b>（§3.3.1 于 2026-09-24 删掉了「扫码静止停录」），
+/// 而「静止」这条判据整个不存在了：电脑端拿不到画面（§24/§25 实测否决）。
+/// 这里只剩下「什么时候停」与「什么时候提醒」两类判定。
+/// </para>
+/// <para>
+/// ⚠️ <b>闲置提醒的计时起点是「最后一次扫码或打点」，而 I12 另外要求它不早于开录时刻</b>
+/// —— 那是调用方的事：<see cref="WorkModeState.IdleFor"/> 传进来之前，
+/// 必须已经按「**本段已录时长**」封顶。少了这个封顶，
+/// 「架机半小时后才按开始」会在开录那一刻就收到一条闲置提醒。
 /// </para>
 /// </remarks>
 public sealed class WorkModePolicy
 {
-    public WorkModePolicy(WorkMode mode, StaticStopOption staticOption)
+    public WorkModePolicy(WorkMode mode, IdleReminderOption idleReminder, int idleReminderMinutes = 0)
     {
         Mode = mode;
-        StaticStop = staticOption;
+        IdleReminder = idleReminder;
+        IdleReminderMinutes = idleReminderMinutes;
     }
 
     /// <summary>
@@ -85,8 +96,11 @@ public sealed class WorkModePolicy
     /// </remarks>
     public WorkMode Mode { get; set; }
 
-    /// <summary>静止停录档位（规格 §3.3.3）。</summary>
-    public StaticStopOption StaticStop { get; set; }
+    /// <summary>闲置提醒档位（规格 §3.3.3 电脑端那半）。</summary>
+    public IdleReminderOption IdleReminder { get; set; }
+
+    /// <summary>自定义档位的分钟数；只有 <see cref="IdleReminderOption.Custom"/> 用得到。</summary>
+    public int IdleReminderMinutes { get; set; }
 
     /// <summary>识别到一个单号（扫码枪或摄像头）。</summary>
     public WorkDecision OnScan(WorkModeState state, WaybillNumber scanned)
@@ -104,7 +118,7 @@ public sealed class WorkModePolicy
                 // 连续扫：同一件又扫一次是误触，**不停也不提示**。
                 WorkMode.Continuous => WorkDecision.Nothing.Instance,
 
-                // 同码停 / 扫码静止：这是主要结束方式。
+                // 同码停：这是主要结束方式。
                 _ => new WorkDecision.StopSegment(StopReason.SameWaybillRescan),
             };
         }
@@ -116,49 +130,49 @@ public sealed class WorkModePolicy
             // 那里**不播报「面单不同」** —— 每件都报一次既是错的，又会盖住下一件的开录播报。
             WorkMode.Continuous => new WorkDecision.SwitchTo(scanned),
 
-            // 另两个模式：错码保护 —— 只提示，不停录（规格 §3.3.2）。
+            // 同码停：错码保护 —— 只提示，不停录（规格 §3.3.2）。
             _ => new WorkDecision.Announce(AnnouncementKind.WrongWaybill, scanned),
         };
     }
 
     /// <summary>
-    /// 画面静止状况更新。
+    /// 闲置提醒：连续 N 分钟没有任何扫码或打点。
     /// </summary>
-    /// <param name="isStatic">当前画面是否静止。</param>
-    public WorkDecision OnStatic(WorkModeState state, bool isStatic)
+    /// <remarks>
+    /// <para>
+    /// ⚠️ 它**只产出一次播报**，绝不产出 <see cref="WorkDecision.StopSegment"/> ——
+    /// 规格 §3.3.3 原话：「**它只提醒，绝不改录制状态**……用户不理就一直录。
+    /// 最终把它停掉的是 §3.3.4 的时长兜底」。
+    /// </para>
+    /// <para>
+    /// 到点之后**每次调用都返回提醒**（它是纯函数，不记「已经提醒过」）——
+    /// 「一段闲置里只响一次」由调用方去重（见 <c>RecordingCoordinator</c> 的
+    /// <c>_idleReminded</c>）。
+    /// </para>
+    /// <para>
+    /// ⚠️ 语义与「画面静止」**不同，别混**（规格 §3.3.3 写明并接受）：
+    /// 包裹一直摆在框里而人走开了，它**不会**提醒（一直在扫码）；人一直在搬东西
+    /// 只是没扫码，它**反而会**提醒。
+    /// </para>
+    /// </remarks>
+    public WorkDecision OnIdle(WorkModeState state)
     {
-        if (!state.SegmentOpen || !isStatic)
+        if (!state.SegmentOpen)
         {
+            // 还没开录就没什么可提醒的 —— 更实际的理由见 <see cref="WorkModeState.IdleFor"/>：
+            // 调用方按「本段已录时长」封顶，所以这时它本来就是 0。
             return WorkDecision.Nothing.Instance;
         }
 
-        // 扫码静止停录**自己的** 2 秒判据（规格 2026-09-22 的语义澄清）：
-        // 固定 2 秒、**不看档位**（档位设成「关闭」时它照样生效）。
-        // 门槛是「被跟踪的面单曾离场又入场」—— 少了它，面单刚扫完就摆在框里，
-        // 每段都会在开录 2 秒后自己结束。
-        if (Mode == WorkMode.StopOnStaticAfterRescan)
-        {
-            if (state.TrackedWaybillLeftFrame
-                && state.StaticFor >= WorkModeOptions.RescanStaticHold)
-            {
-                return new WorkDecision.StopSegment(StopReason.StaticTimeout);
-            }
-
-            // 本模式下档位不会先触发（2 秒必定早于任何档位，最小 2 分钟）——
-            // 那是**结果**，不是把档位关掉了。
-            return WorkDecision.Nothing.Instance;
-        }
-
-        // 另两个模式按档位走。
-        var minutes = StaticStop.Minutes();
+        var minutes = IdleReminder.Minutes(IdleReminderMinutes);
         if (minutes is null)
         {
             // 档位「关闭」。
             return WorkDecision.Nothing.Instance;
         }
 
-        return state.StaticFor >= TimeSpan.FromMinutes(minutes.Value)
-            ? new WorkDecision.StopSegment(StopReason.StaticTimeout)
+        return state.IdleFor >= TimeSpan.FromMinutes(minutes.Value)
+            ? new WorkDecision.Announce(AnnouncementKind.Idle)
             : WorkDecision.Nothing.Instance;
     }
 

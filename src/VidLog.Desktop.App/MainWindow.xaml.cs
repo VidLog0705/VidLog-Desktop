@@ -110,7 +110,8 @@ public partial class MainWindow : Window
         try
         {
             SelectByTag(ModeCombo, _host.Settings.Mode.ToString());
-            SelectByTag(StaticCombo, _host.Settings.StaticStop.ToString());
+            SelectByTag(IdleCombo, _host.Settings.IdleReminder.ToString());
+            IdleMinutesBox.Text = _host.Settings.IdleReminderMinutes.ToString();
             SelectByTag(DurationCombo, _host.Settings.DurationFallback.ToString());
             SelectByTag(ArchiveCombo, _host.Settings.ArchiveBackend.ToString());
             SegmentBox.Text = _host.Settings.SegmentMinutes.ToString();
@@ -465,7 +466,12 @@ public partial class MainWindow : Window
 
     private async void OnModeChanged(object sender, SelectionChangedEventArgs e) => await SaveUiSettingsAsync();
 
-    private async void OnStaticChanged(object sender, SelectionChangedEventArgs e) => await SaveUiSettingsAsync();
+    private async void OnIdleReminderChanged(object sender, SelectionChangedEventArgs e) =>
+        await SaveUiSettingsAsync();
+
+    /// <summary>自定义分钟数那一格失焦就存（不必等用户去按保存）。</summary>
+    private async void OnIdleMinutesChanged(object sender, RoutedEventArgs e) =>
+        await SaveUiSettingsAsync();
 
     private async void OnDurationChanged(object sender, SelectionChangedEventArgs e) => await SaveUiSettingsAsync();
 
@@ -505,10 +511,18 @@ public partial class MainWindow : Window
             return;
         }
 
+        // 自定义分钟数：只在选了「自定义」时才管它，否则保持原值
+        // （用户先填了 7 分钟又改回 3 分钟，那 7 不该丢 —— 下次切回自定义还要用）。
+        var idleMinutes = int.TryParse(IdleMinutesBox.Text, out var parsedMinutes)
+            ? Math.Clamp(parsedMinutes, WorkModeOptions.MinIdleMinutes, WorkModeOptions.MaxIdleMinutes)
+            : _host.Settings.IdleReminderMinutes;
+
         var next = _host.Settings with
         {
             Mode = Enum.TryParse<WorkMode>(TagOf(ModeCombo), out var mode) ? mode : _host.Settings.Mode,
-            StaticStop = Enum.TryParse<StaticStopOption>(TagOf(StaticCombo), out var s) ? s : _host.Settings.StaticStop,
+            IdleReminder = Enum.TryParse<IdleReminderOption>(TagOf(IdleCombo), out var idle)
+                ? idle : _host.Settings.IdleReminder,
+            IdleReminderMinutes = idleMinutes,
             DurationFallback = Enum.TryParse<DurationFallbackOption>(TagOf(DurationCombo), out var d)
                 ? d : _host.Settings.DurationFallback,
             SegmentMinutes = segment,

@@ -30,8 +30,26 @@ public sealed record AppSettings
     /// </remarks>
     public WorkMode Mode { get; init; } = WorkMode.StopOnSameWaybill;
 
-    /// <summary>静止停录档位（规格 §3.3.3）。</summary>
-    public StaticStopOption StaticStop { get; init; } = StaticStopOption.Three;
+    /// <summary>
+    /// 闲置提醒档位（规格 §3.3.3 **电脑端那半**）。
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ <b>JSON 键名仍是 <c>StaticStop</c></b>（它原来是「静止停录档位」）——
+    /// 键名不动是为了**老配置不丢**：本仓的枚举存的是**数字**，换了键名整条就回落默认值。
+    /// 类型与语义都已经换了：电脑端现在只有**闲置提醒**，没有静止停录（§3.3.1）。
+    /// </remarks>
+    [JsonPropertyName("StaticStop")]
+    public IdleReminderOption IdleReminder { get; init; } = IdleReminderOption.Three;
+
+    /// <summary>
+    /// 闲置提醒「自定义」档的分钟数。
+    /// </summary>
+    /// <remarks>
+    /// 新增字段 ⇒ 老配置里没有它 ⇒ 取默认 3 分钟（与档位默认档一致）。
+    /// 越界值由 <see cref="WorkModeOptions.Minutes(IdleReminderOption, int)"/> 回落，
+    /// 所以这里不做夹取。
+    /// </remarks>
+    public int IdleReminderMinutes { get; init; } = 3;
 
     /// <summary>时长兜底档位（规格 §3.3.4）。</summary>
     public DurationFallbackOption DurationFallback { get; init; } = DurationFallbackOption.Four;
@@ -166,7 +184,34 @@ public sealed class SettingsStore
                 [$"设置文件里有超出允许范围的值，已整体回落为默认值。原文件保留在 {_path}。"]);
         }
 
-        return new SettingsLoadResult(parsed, []);
+        // ⚠️ 老配置：电脑端**删掉了**「扫码静止停录」（规格 §3.3.1，2026-09-24）——
+        // 而本仓的枚举存的是**数字**，删掉那个成员之后，老配置里存着的 `2`
+        // 反序列化出来就是个**越界值**：它不是任何成员，行为会落到各个 switch 的
+        // 兜底分支上（恰好**看起来像**同码停）。靠巧合是对的，但**不是要求**——
+        // 规格 §3.3.1 明说要**回落到「同码停」**，所以这里显式做掉，并说出来。
+        var mode = Normalize(parsed.Mode, out var modeReplaced);
+        var warnings = new List<string>();
+
+        if (modeReplaced)
+        {
+            warnings.Add(
+                "设置文件里的工作模式是「扫码静止停录」—— 电脑端已经删掉这个模式"
+                + "（规格 §3.3.1，2026-09-24），已按最接近的「同码停」启动。");
+            parsed = parsed with { Mode = mode };
+        }
+
+        return new SettingsLoadResult(parsed, warnings);
+    }
+
+    /// <summary>认不出来的模式一律当「同码停」；返回值与「是否换过」。</summary>
+    /// <remarks>
+    /// 选同码停而不是连续扫，理由与规格里那句一致：**同码停会自己停**
+    /// （复扫同一张就收工），不会一路录到把盘写满。
+    /// </remarks>
+    private static WorkMode Normalize(WorkMode mode, out bool replaced)
+    {
+        replaced = !Enum.IsDefined(mode);
+        return replaced ? WorkMode.StopOnSameWaybill : mode;
     }
 
     public async Task SaveAsync(AppSettings settings, CancellationToken cancellationToken = default)
@@ -215,7 +260,11 @@ public sealed class SettingsStore
         }
 
         Compare(nameof(AppSettings.Mode), previous.Mode, next.Mode);
-        Compare(nameof(AppSettings.StaticStop), previous.StaticStop, next.StaticStop);
+        // ⚠️ 留痕里写的是**新名字**（`IdleReminder`），而文件里的键名仍是 `StaticStop`
+        // （见那一处属性的说明：键名不动是为了老配置不丢）。看日志的人和改文件的人
+        // 会看到两个名字 —— 这是刻意的取舍，不是笔误。
+        Compare(nameof(AppSettings.IdleReminder), previous.IdleReminder, next.IdleReminder);
+        Compare(nameof(AppSettings.IdleReminderMinutes), previous.IdleReminderMinutes, next.IdleReminderMinutes);
         Compare(nameof(AppSettings.DurationFallback), previous.DurationFallback, next.DurationFallback);
         Compare(nameof(AppSettings.SegmentMinutes), previous.SegmentMinutes, next.SegmentMinutes);
         Compare(nameof(AppSettings.PlaybackPort), previous.PlaybackPort, next.PlaybackPort);

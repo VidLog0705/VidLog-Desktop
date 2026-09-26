@@ -131,6 +131,188 @@ public class RecordingCoordinatorTests
     }
 
     // ─────────────────────────────────────────────
+    // 闲置提醒（规格 §3.3.3 电脑端那半 —— 2026-09-27 补）
+    // ─────────────────────────────────────────────
+
+    /// <summary>
+    /// 可拨的假时钟 + **闸门式**的等待。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// 真等两分钟当然不行。这个 <c>delay</c> 每被调用一次就把假时钟往前拨一个轮询间隔，
+    /// 于是看门狗「跑了 N 轮」= 「过了 N 秒」。
+    /// </para>
+    /// <para>
+    /// ⚠️ <b>它必须由测试显式放行（<see cref="Tick"/>），不能写成 <c>Task.Yield</c></b>：
+    /// 第一版就是 Yield，结果那个看门狗变成一个**热循环**，在并行跑的全套里抢线程池 ——
+    /// 表现是套件里**别的**用例的 flake 变多（`PlaybackServer` 的 Dispose 竞态、
+    /// 以及 `实现决策.md` §30 记的那条「采集进程被停两次」）。
+    /// 一个只该每秒醒一次的循环在测试里变成忙等，是**测试自己制造的**干扰。
+    /// </para>
+    /// <para>
+    /// 闸门式的另一个好处：循环在没被 <c>Tick</c> 时**就停在那儿**，
+    /// 于是「不该有第二条提醒」这种断言不必靠 sleep 去等 —— 时钟没动，它本来就不会响。
+    /// </para>
+    /// </remarks>
+    private sealed class IdleTicker
+    {
+        private readonly SemaphoreSlim _ticks = new(0);
+        private TimeSpan _now = TimeSpan.Zero;
+
+        public TimeSpan Now => _now;
+
+        public async Task WaitAsync(TimeSpan step, CancellationToken cancellationToken)
+        {
+            await _ticks.WaitAsync(cancellationToken);
+            _now += step;
+        }
+
+        /// <summary>放行 <paramref name="times"/> 轮（= 过 <paramref name="times"/> 秒）。</summary>
+        public void Tick(int times = 1) => _ticks.Release(times);
+    }
+
+    /// <summary>把闲置提醒数出来，并在第 <paramref name="target"/> 条时放行。</summary>
+    private static TaskCompletionSource<int> CountIdle(
+        RecordingCoordinator coordinator, int target, Action<int>? onCount = null)
+    {
+        var signaled = new TaskCompletionSource<int>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var count = 0;
+
+        coordinator.Notice += notice =>
+        {
+            if (notice.Kind != CoordinatorNoticeKind.Idle)
+            {
+                return;
+            }
+
+            var now = Interlocked.Increment(ref count);
+            onCount?.Invoke(now);
+
+            if (now >= target)
+            {
+                signaled.TrySetResult(now);
+            }
+        };
+
+        return signaled;
+    }
+
+    [Fact]
+    public async Task 闲置到点提醒一次_而且不停录()
+    {
+        using var dir = new TempDir();
+        var ticker = new IdleTicker();
+
+        var coordinator = Build(
+            dir, WorkMode.StopOnSameWaybill, new FakePunchLog(),
+            policy: new WorkModePolicy(WorkMode.StopOnSameWaybill, IdleReminderOption.Two),
+            clock: () => ticker.Now,
+            delay: ticker.WaitAsync);
+
+        var first = CountIdle(coordinator, 1);
+        var seen = new List<CoordinatorNotice>();
+        coordinator.Notice += seen.Add;
+
+        coordinator.StartWork();
+        await coordinator.SubmitAsync(A, PunchSource.KeyboardScanner);
+
+        Assert.True(coordinator.IsWorking);
+        // 「还录着」的证据就是**当前段还在**（协调器没有单独的 isRecording 属性，
+        // 而 `CurrentWaybill` 非空 == 有一段开着）。
+        Assert.Equal(A, coordinator.CurrentWaybill);
+
+        ticker.Tick(130); // 130 秒 > 档位那 2 分钟
+        await first.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+        var idle = Assert.Single(seen.Where(n => n.Kind == CoordinatorNoticeKind.Idle).ToList());
+        Assert.Contains("没有扫码", idle.Message, StringComparison.Ordinal);
+
+        // ⚠️ **它只提醒，绝不改录制状态** —— 规格 §3.3.3 原话「用户不理就一直录」。
+        // 把闲置接成「到点就停」是个很自然的写法（两个都叫"防忘停录"），
+        // 而那样操作员离开一会儿就会被停掉一段录像。这条盯着它。
+        Assert.True(coordinator.IsWorking, "还该在工作状态");
+        Assert.Equal(A, coordinator.CurrentWaybill); // ⚠️ 段还在 == 没被停掉
+
+        // 一段闲置里**只响一次**：再放过一大截，第二条也不该来
+        // —— 而且这里不必 sleep：闸门没开，时钟根本没动。
+        ticker.Tick(600);
+        await coordinator.DisposeAsync();
+
+        Assert.Single(seen.Where(n => n.Kind == CoordinatorNoticeKind.Idle).ToList());
+    }
+
+    [Fact]
+    public async Task 扫一次码就把闲置计时推后_而且下个闲置段会再提醒一次()
+    {
+        using var dir = new TempDir();
+        var ticker = new IdleTicker();
+
+        var coordinator = Build(
+            dir, WorkMode.StopOnSameWaybill, new FakePunchLog(),
+            policy: new WorkModePolicy(WorkMode.StopOnSameWaybill, IdleReminderOption.Two),
+            clock: () => ticker.Now,
+            delay: ticker.WaitAsync);
+
+        var first = CountIdle(coordinator, 1);
+        var second = CountIdle(coordinator, 2);
+
+        coordinator.StartWork();
+        await coordinator.SubmitAsync(A, PunchSource.KeyboardScanner);
+
+        ticker.Tick(130);
+        await first.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+        // 扫一次 —— **这是唯一能解除「已提醒」的东西**，同时把计时推后。
+        //
+        // ⚠️ 扫的是**别的**单号（B），不是同一张：同码停模式下复扫同码是**停录**，
+        // 停完之后 `Snapshot()` 就是空闲、再也不会提醒 —— 那样这条用例证明的
+        // 只是「停了就不提醒」，而不是「计时被推后」。
+        // 扫 B 走错码保护那条路：只提示、不停录（规格 §3.3.2）。
+        await coordinator.SubmitAsync(B, PunchSource.KeyboardScanner);
+
+        ticker.Tick(130);
+        await second.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+        await coordinator.DisposeAsync();
+    }
+
+    [Fact]
+    public async Task 结束工作之后不再提醒()
+    {
+        using var dir = new TempDir();
+        var ticker = new IdleTicker();
+
+        var coordinator = Build(
+            dir, WorkMode.StopOnSameWaybill, new FakePunchLog(),
+            policy: new WorkModePolicy(WorkMode.StopOnSameWaybill, IdleReminderOption.Two),
+            clock: () => ticker.Now,
+            delay: ticker.WaitAsync);
+
+        var count = 0;
+        var first = CountIdle(coordinator, 1, onCount: n => Volatile.Write(ref count, n));
+
+        coordinator.StartWork();
+        await coordinator.SubmitAsync(A, PunchSource.KeyboardScanner);
+
+        ticker.Tick(130);
+        await first.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        Assert.Equal(1, Volatile.Read(ref count));
+
+        await coordinator.StopWorkAsync();
+
+        // 结束之后**放行再多轮也不该有第二条**。
+        //
+        // ⚠️ 天花板说清楚：这条**分不开**两种原因 —— 看门狗被取消了，
+        // 还是「没在录了所以判据不成立」（`OnIdle` 见 `SegmentOpen == false` 就返回 Nothing）。
+        // 两种都算对，而这条也确实只该保证「不再提醒」这一件事。
+        ticker.Tick(600);
+        await Task.Delay(50);
+
+        await coordinator.DisposeAsync();
+        Assert.Equal(1, Volatile.Read(ref count));
+    }
+
+    // ─────────────────────────────────────────────
     // 错误扫描（规格 §6.1「必须保存的事实」—— 2026-09-26 补）
     // ─────────────────────────────────────────────
 
@@ -366,7 +548,10 @@ public class RecordingCoordinatorTests
         RecordingIndexSpy? index = null,
         IProcessRunner? runner = null,
         RecordingSessionOptions? session = null,
-        ScanErrorLog? scanErrors = null)
+        ScanErrorLog? scanErrors = null,
+        WorkModePolicy? policy = null,
+        Func<TimeSpan>? clock = null,
+        Func<TimeSpan, CancellationToken, Task>? delay = null)
     {
         var ffmpeg = FfmpegLocator.TryFind() ?? "ffmpeg";
         var effectiveRunner = runner ?? new SucceedingRunner();
@@ -382,9 +567,11 @@ public class RecordingCoordinatorTests
             new DiskSpaceGuard(new PlentyOfSpaceProbe()),
             punches,
             NullLogger.Instance,
-            new WorkModePolicy(mode, StaticStopOption.Off),
+            policy ?? new WorkModePolicy(mode, IdleReminderOption.Off),
             new CoordinatorOptions("Lenovo EasyCamera", "device-1", "libx264"),
-            scanErrors)
+            scanErrors,
+            clock,
+            delay)
         {
             SessionOptions = session ?? RecordingSessionOptions.Default,
         };
