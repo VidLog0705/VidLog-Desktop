@@ -68,12 +68,18 @@ public class BoundaryLoggingTests
     {
         // 失败时记的是 ffmpeg **自己说的话**（stderr 尾巴）——
         // 「编码器不存在」「文件头损坏」这些只有它说得清，从退出码上读不出来。
+        //
+        // ⚠️ 子进程的输出**刻意用 ASCII**：`cmd.exe` 的 stderr 走的是控制台代码页，
+        // 而那个页在两台机器上不一样 —— 本机（936）中文能原样回来，
+        // CI 的 windows-latest 上就是一串乱码。第一版断言的是中文，
+        // **本机全绿、CI 红**，正是「一条只在这台机器上成立的测试」。
+        // 这里要验的是「stderr 尾巴有没有被记下来」，不是「编码能不能过 cmd」。
         using var dir = new TempDir();
         using var logDir = new TempDir();
         var logger = new FileLogger(new FileLogOptions(logDir.Path, "vidlog"));
 
         var result = await new SystemProcessRunner(logger)
-            .RunAsync("cmd.exe", ["/c", "echo 编码器不存在 1>&2 & exit 3"]);
+            .RunAsync("cmd.exe", ["/c", "echo boom 1>&2 & exit 3"]);
 
         Assert.Equal(3, result.ExitCode);
 
@@ -82,7 +88,7 @@ public class BoundaryLoggingTests
         Assert.Contains("以 3 退出", TextOf(entry, "msg"), StringComparison.Ordinal);
 
         var data = entry.GetProperty("data");
-        Assert.Contains("编码器不存在", data.GetProperty("stderr").GetString(), StringComparison.Ordinal);
+        Assert.Contains("boom", data.GetProperty("stderr").GetString(), StringComparison.Ordinal);
     }
 
     [Fact]
