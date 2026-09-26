@@ -59,6 +59,22 @@ public sealed class AppHost : IAsyncDisposable
     public KeyboardScanBridge Bridge { get; }
     public RecordingCoordinator Coordinator { get; }
 
+    /// <summary>
+    /// **实际会用**的录制规格（启动时那次真开相机的探测结果）。
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ 它与 <see cref="Settings"/> 里用户选的那两档**可能不一样** ——
+    /// 规格 §3.1.7 要求「**回落必须可见**……**不得静默回落**」，
+    /// 所以界面必须显示这一个，而不是用户选的那个。
+    /// </remarks>
+    public RecordingSpec EffectiveSpec { get; private set; } = RecordingSpec.Default;
+
+    /// <summary>回落的原因；没回落过时为 <see langword="null"/>。</summary>
+    public string? SpecFallbackReason { get; private set; }
+
+    /// <summary>开录时用的编码器名（探测挑出来的那个）。</summary>
+    public string EncoderName { get; private set; } = "libx264";
+
     public TrayIcon? Tray { get; private set; }
 
     /// <summary>关窗口时问一句的钩子 —— 由窗口提供（它知道怎么弹对话框）。</summary>
@@ -242,8 +258,10 @@ public sealed class AppHost : IAsyncDisposable
             // 分段时长与时长兜底（规格 §3.1.1 / §3.3.4）。
             // 不填的话用的是硬编码默认（1 分钟 / 30 分钟）——
             // 界面上那两个档位就成了「改了没反应」（踩坑 #13）。
-            SessionOptions = RecordingSessionOptions.From(
-                settings.SegmentMinutes, settings.DurationFallback),
+            // 录制规格也在这里交给会话 —— 收尾时它要写进索引（§3.1.7 的连带项）。
+            SessionOptions = RecordingSessionOptions
+                .From(settings.SegmentMinutes, settings.DurationFallback)
+                .With(selection.Spec),
         };
 
         var bridge = new KeyboardScanBridge(settings.Scanner);
@@ -252,6 +270,9 @@ public sealed class AppHost : IAsyncDisposable
         var host = new AppHost(services, startup, settings, logger, hook, bridge, coordinator)
         {
             Warnings = warnings,
+            EffectiveSpec = selection.Spec,
+            SpecFallbackReason = selection.Reason,
+            EncoderName = encoder ?? "libx264",
         };
 
         // 清理也留痕（AGENTS.md §6「关键操作必须留痕」）——

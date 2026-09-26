@@ -636,7 +636,9 @@ public sealed class PlaybackServer : IAsyncDisposable
             hit.Entry.Waybill.Value,
             hit.Entry.StartedAt.ToString("O"),
             hit.Entry.Duration.TotalSeconds,
-            hit.BusinessType?.ToString() ?? "unknown"));
+            hit.BusinessType?.ToString() ?? "unknown",
+            // 规格 §3.1.7 的连带项：页面要如实告知「这条能不能在网页里播」。
+            hit.Entry.Codec));
 
         await WriteJsonAsync(context, payload);
     }
@@ -898,6 +900,8 @@ public sealed class PlaybackServer : IAsyncDisposable
         </table>
         <div id="punches"></div>
         <video id="player" controls playsinline></video>
+        <!-- 录制规格的如实告知（规格 §3.1.7 的连带项）。默认藏着，点开一条 H.265 的才出现。 -->
+        <div id="codecNote" class="note" style="display:none"></div>
         <p class="note">
           本页仅供内网回放。它不是证据分享链接 —— 分享链接指向归档层，
           而这里的视频来自本机本地副本，本地副本可能已被生命周期清理。
@@ -942,11 +946,31 @@ public sealed class PlaybackServer : IAsyncDisposable
           }
         }
 
-        function openRecording(evidenceId) {
+        function openRecording(evidenceId, codec) {
           player.style.display = 'block';
           player.src = '/media/' + encodeURIComponent(evidenceId);
           player.play();
           loadPunches(evidenceId);
+          showCodecNote(codec);
+        }
+
+        // ⚠️ 规格 §3.1.7 的连带项：**浏览器对 H.265 的支持不一致**，
+        // 所以网页**可能播不了 H.265 录的那条**。口径是「**如实告知**……**不得承诺
+        // 做不到的事**，**不为此砍掉 H.265 选项**」—— 于是这里把话说出来，
+        // 而不是让用户对着一个转圈的播放器自己猜。
+        //
+        // 只提一句「用系统播放器打开」：那是**肯定**能播的路径
+        // （文件本来就在这台机器上），不承诺浏览器能播。
+        function showCodecNote(codec) {
+          const note = document.getElementById('codecNote');
+          if (codec === 'H265') {
+            note.textContent = '这条录像是 H.265 编码。浏览器对它的支持不一致 —— '
+              + '要是这里放不出来，请用系统播放器打开这个文件（在上面那台电脑上，'
+              + '或者把它下载下来）。录像本身没问题。';
+            note.style.display = 'block';
+          } else {
+            note.style.display = 'none';
+          }
         }
 
         async function run() {
@@ -973,7 +997,7 @@ public sealed class PlaybackServer : IAsyncDisposable
             tr.children[1].textContent = new Date(it.startedAt).toLocaleString();
             tr.children[2].textContent = Math.round(it.durationSeconds) + ' 秒';
             tr.children[3].textContent = it.businessType;
-            tr.onclick = () => openRecording(it.evidenceId);
+            tr.onclick = () => openRecording(it.evidenceId, it.codec);
             rows.appendChild(tr);
           }
 
@@ -1004,9 +1028,20 @@ public sealed class PlaybackServer : IAsyncDisposable
 }
 
 /// <summary>检索接口返回的一项。</summary>
+/// <param name="Codec">
+/// 这条录像的编码（<c>H264</c> / <c>H265</c>）；老条目没有这个字段时为 <see langword="null"/>。
+/// </param>
+/// <remarks>
+/// ⚠️ 为什么回放页需要它（规格 §3.1.7 的连带项）：**浏览器对 H.265 的支持不一致**，
+/// 所以网页回放**可能播不了 H.265 录的那条**。规格给的口径是
+/// 「产品必须**如实告知**当前这条录像能不能在网页里播（**不得承诺做不到的事**），
+/// **不为此砍掉 H.265 选项**」—— 于是页面按这个字段把话说出来，
+/// 而不是让用户对着一个转圈的播放器自己猜。
+/// </remarks>
 public sealed record PlaybackSearchItem(
     string EvidenceId,
     string Waybill,
     string StartedAt,
     double DurationSeconds,
-    string BusinessType);
+    string BusinessType,
+    string? Codec);

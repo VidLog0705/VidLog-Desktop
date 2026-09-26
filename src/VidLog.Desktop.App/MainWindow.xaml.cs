@@ -15,6 +15,7 @@ using KeyEventArgs = System.Windows.Input.KeyEventArgs;
 using MessageBox = System.Windows.MessageBox;
 using MessageBoxImage = System.Windows.MessageBoxImage;
 using MessageBoxResult = System.Windows.MessageBoxResult;
+using RadioButton = System.Windows.Controls.RadioButton;
 using SelectionChangedEventArgs = System.Windows.Controls.SelectionChangedEventArgs;
 using TextChangedEventArgs = System.Windows.Controls.TextChangedEventArgs;
 using VidLog.Desktop.Core;
@@ -22,6 +23,7 @@ using VidLog.Desktop.Core.Cleanup;
 using VidLog.Desktop.Core.Configuration;
 using VidLog.Desktop.Core.Diagnostics;
 using VidLog.Desktop.Core.Labels;
+using VidLog.Desktop.Core.Media;
 using VidLog.Desktop.Core.Punches;
 using VidLog.Desktop.Core.Recording;
 using VidLog.Desktop.Core.Scanning;
@@ -114,6 +116,9 @@ public partial class MainWindow : Window
             IdleMinutesBox.Text = _host.Settings.IdleReminderMinutes.ToString();
             SelectByTag(DurationCombo, _host.Settings.DurationFallback.ToString());
             SelectByTag(ArchiveCombo, _host.Settings.ArchiveBackend.ToString());
+            SelectRadio(CodecButtons, _host.Settings.Codec.ToString());
+            SelectRadio(ResolutionButtons, _host.Settings.Resolution.ToString());
+            ShowEffectiveSpec();
             SegmentBox.Text = _host.Settings.SegmentMinutes.ToString();
             PortBox.Text = _host.Settings.PlaybackPort.ToString();
             SelectRetention(OutboundRetentionCombo, _host.Settings.Retention.Outbound);
@@ -185,6 +190,23 @@ public partial class MainWindow : Window
     }
 
     private static string? TagOf(ComboBox combo) => (combo.SelectedItem as ComboBoxItem)?.Tag as string;
+
+    /// <summary>把一组横排的单选按 <c>Tag</c> 选中一个。</summary>
+    /// <remarks>
+    /// 与 <see cref="SelectByTag"/> 同一件事，只是单选按钮不是 <c>Items</c> 集合 ——
+    /// 而这几个选项**必须是横排的**（规格 §3.1.7：「横排（**不用下拉**）」）。
+    /// </remarks>
+    private static void SelectRadio(IEnumerable<RadioButton> group, string tag)
+    {
+        foreach (var button in group)
+        {
+            button.IsChecked = string.Equals(button.Tag as string, tag, StringComparison.Ordinal);
+        }
+    }
+
+    /// <summary>横排单选里被选中的那个的 <c>Tag</c>。</summary>
+    private static string? TagOf(IEnumerable<RadioButton> group) =>
+        group.FirstOrDefault(b => b.IsChecked == true)?.Tag as string;
 
     private async Task LoadCamerasAsync()
     {
@@ -469,6 +491,39 @@ public partial class MainWindow : Window
     private async void OnIdleReminderChanged(object sender, SelectionChangedEventArgs e) =>
         await SaveUiSettingsAsync();
 
+    /// <summary>编码 / 分辨率那一组横排单选。</summary>
+    private RadioButton[] CodecButtons => [CodecH264, CodecH265];
+
+    private RadioButton[] ResolutionButtons => [Res4K, Res1080, Res720];
+
+    private async void OnRecordingSpecChanged(object sender, RoutedEventArgs e) =>
+        await SaveUiSettingsAsync();
+
+    /// <summary>
+    /// 显示**实际会用**的录制规格（规格 §3.1.7：「**回落必须可见**……**不得静默回落**」）。
+    /// </summary>
+    /// <remarks>
+    /// 取值来自启动时那次**真开相机**的探测（<c>AppHost.EffectiveSpec</c>）。
+    /// 与用户选的不一样时把原因也说出来 —— 只说「实际是 H.264」而不说为什么，
+    /// 用户会以为自己选错了。
+    /// </remarks>
+    private void ShowEffectiveSpec()
+    {
+        var effective = _host.EffectiveSpec;
+        var wanted = new RecordingSpec(_host.Settings.Codec, _host.Settings.Resolution);
+
+        EffectiveSpecText.Text = effective == wanted
+            ? $"这台电脑按 {effective.Label} 录制。"
+            : $"⚠️ 你选的是 {wanted.Label}，但这台电脑跑不通 —— 实际按 {effective.Label} 录制。"
+              + (string.IsNullOrWhiteSpace(_host.SpecFallbackReason)
+                  ? string.Empty
+                  : $"原因：{_host.SpecFallbackReason}");
+
+        EffectiveSpecText.Foreground = effective == wanted
+            ? System.Windows.Media.Brushes.Gray
+            : System.Windows.Media.Brushes.OrangeRed;
+    }
+
     /// <summary>自定义分钟数那一格失焦就存（不必等用户去按保存）。</summary>
     private async void OnIdleMinutesChanged(object sender, RoutedEventArgs e) =>
         await SaveUiSettingsAsync();
@@ -520,6 +575,10 @@ public partial class MainWindow : Window
         var next = _host.Settings with
         {
             Mode = Enum.TryParse<WorkMode>(TagOf(ModeCombo), out var mode) ? mode : _host.Settings.Mode,
+            Codec = Enum.TryParse<VideoCodec>(TagOf(CodecButtons), out var codec)
+                ? codec : _host.Settings.Codec,
+            Resolution = Enum.TryParse<VideoResolution>(TagOf(ResolutionButtons), out var resolution)
+                ? resolution : _host.Settings.Resolution,
             IdleReminder = Enum.TryParse<IdleReminderOption>(TagOf(IdleCombo), out var idle)
                 ? idle : _host.Settings.IdleReminder,
             IdleReminderMinutes = idleMinutes,

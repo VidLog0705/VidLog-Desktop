@@ -120,6 +120,9 @@ public class PlaybackServerTests
             ContentHash.Parse(new string('a', 64)),
             "device-1"));
 
+        // ⚠️ 这一条**带录制规格**（H.265 / 4K），另一条（e1）不带 ——
+        // 于是「回包里 codec 有没有真的从索引流过来」验得出来：
+        // 两条都是 null 的话，「字段在」与「值是对的」分不开。
         await index.AddAsync(new RecordingEntry(
             "e2",
             "session-2",
@@ -129,7 +132,9 @@ public class PlaybackServerTests
             TimeSpan.FromMinutes(2),
             RelativePath.Parse("2026/09/16/YT9999999999/e2.mp4"),
             ContentHash.Parse(new string('b', 64)),
-            "device-1"));
+            "device-1",
+            Codec: "H265",
+            Resolution: "Uhd4K"));
 
         var labels = new JsonLinesLabelStore(dir.File("labels.jsonl"));
         await labels.SetAsync(evidenceId, LabelKeys.BusinessType, BusinessTypes.OutboundValue);
@@ -335,6 +340,38 @@ public class PlaybackServerTests
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         Assert.Equal(2, items.GetArrayLength());
+    }
+
+    [Fact]
+    public async Task 检索回包里带着编码_页面据此如实告知_H265_可能播不了()
+    {
+        // 规格 §3.1.7 的连带项：「**网页回放的兼容性** —— H.265 已确定要做，
+        // 而**浏览器对它的支持不一致** ⇒ 局域网网页回放**可能播不了 H.265 录的**。
+        // …产品必须**如实告知**当前这条录像能不能在网页里播（**不得承诺做不到的事**），
+        // **不为此砍掉 H.265 选项**」。
+        using var dir = new TempDir();
+        await using var fixture = await StartAsync(dir);
+
+        // ① 回包里带着**这条录像自己的**编码 —— 夹具里 e2 是 H.265、e1 没记，
+        //    正好证明它是从索引来的，不是个写死的值。
+        var json = await (await fixture.Client.GetAsync("/api/search")).Content.ReadAsStringAsync();
+        var items = JsonSerializer.Deserialize<JsonElement>(json);
+
+        var h265 = items.EnumerateArray()
+            .Single(i => i.GetProperty("evidenceId").GetString() == "e2");
+        Assert.Equal("H265", h265.GetProperty("codec").GetString());
+
+        var old = items.EnumerateArray()
+            .Single(i => i.GetProperty("evidenceId").GetString() == "e1");
+        Assert.Equal(JsonValueKind.Null, old.GetProperty("codec").ValueKind);
+
+        // ② 页面里有那段告知（藏在一个点了 H.265 才显示的元素里）。
+        var html = await fixture.Client.GetStringAsync("/");
+
+        Assert.Contains("codecNote", html, StringComparison.Ordinal);
+        Assert.Contains("H.265", html, StringComparison.Ordinal);
+        // ⚠️ 不许承诺「一定能播」—— 那是做不到的事。
+        Assert.DoesNotContain("都能播放", html, StringComparison.Ordinal);
     }
 
     [Fact]
