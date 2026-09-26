@@ -183,4 +183,38 @@ public static class EnrollQr
 
         return modules;
     }
+
+    /// <summary>
+    /// 把模块矩阵摊成一幅灰度图：**一个模块一个字节**，深色 0、浅色 255。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// 抽在 Core 而不是留在地界面层，是为了让「深色到底是 0 还是 255」这个约定
+    /// **只有一处，而且被往返测试盯着**。写反了的表现是一张**反色码** ——
+    /// 有静区、有方阵、比例也对，看着完全正常，扫不出来。
+    /// </para>
+    /// <para>
+    /// 放大交给画画的那一层（WPF 用最近邻）。这里一个模块就是一个字节 ——
+    /// 在 Core 里按屏幕像素画的话，「几个像素一个模块」就成了渲染细节，
+    /// 缩放时容易糊出灰边，而糊掉的码同样是**看着正常、扫不出来**。
+    /// </para>
+    /// </remarks>
+    public static byte[] Pixels(bool[,] modules)
+    {
+        ArgumentNullException.ThrowIfNull(modules);
+
+        var width = modules.GetLength(0);
+        var height = modules.GetLength(1);
+        var pixels = new byte[width * height];
+
+        for (var y = 0; y < height; y++)
+        {
+            for (var x = 0; x < width; x++)
+            {
+                pixels[(y * width) + x] = modules[x, y] ? (byte)0 : (byte)255;
+            }
+        }
+
+        return pixels;
+    }
 }

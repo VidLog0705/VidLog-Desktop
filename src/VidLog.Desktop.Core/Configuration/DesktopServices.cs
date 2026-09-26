@@ -100,7 +100,8 @@ public sealed class DesktopServices : IAsyncDisposable
     /// 已入网设备与待批准的入网请求（M5）。
     /// </summary>
     /// <remarks>
-    /// 界面用它把**配对码**显示出来给用户读 —— 那是「人工批准」真的挡住东西的那一环，
+    /// 界面用它把**二维码**显示出来给用户扫（原来是配对码，2026-09-24 改的）——
+    /// 那是「人工批准」真的挡住东西的那一环：码只在本机屏幕上，
     /// 不显示的话手机永远换不到凭据。
     /// </remarks>
     public DeviceRegistry Devices { get; }

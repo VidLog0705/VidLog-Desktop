@@ -1,0 +1,297 @@
+using System.Windows;
+using System.Windows.Media;
+using System.Windows.Media.Imaging;
+using System.Windows.Threading;
+using VidLog.Desktop.Core.Upload;
+
+// 本工程同时开了 UseWPF 与 UseWindowsForms（后者只为托盘图标），
+// ImplicitUsings 会把两边的命名空间都带进来，于是 MessageBox 这类同名类型
+// 变成「不明确」。这里用**别名钉死成 WPF 的那套** —— 这个文件里全是 WPF 的。
+using MessageBox = System.Windows.MessageBox;
+using MessageBoxButton = System.Windows.MessageBoxButton;
+using MessageBoxImage = System.Windows.MessageBoxImage;
+using MessageBoxResult = System.Windows.MessageBoxResult;
+
+namespace VidLog.Desktop.App;
+
+/// <summary>
+/// 【连接电脑/手机】弹出来的那张二维码（规格 §3.4.5）。
+/// </summary>
+/// <remarks>
+/// <para>
+/// 这一页是「人工批准」真的挡住东西的那一环：<b>二维码只显示在本机屏幕上</b>，
+/// 站在屏幕前的人才扫得到。手机扫到之后**并不会**自动拿到凭据 ——
+/// 它只发起一条请求，等这里的人点头。
+/// </para>
+/// <para>
+/// <b>为什么要单独一个窗口而不是塞进主窗口</b>：这张码必须能被手机清楚地扫到，
+/// 所以它得足够大、而且旁边不能堆着别的控件。主窗口密密麻麻。
+/// </para>
+/// <para>
+/// ⚠️ <b>这里是 App 层，没有测试工程</b> —— 所以「装配少跳一步」对整套测试不可见
+/// （见 <c>docs/实现决策.md</c>「装配的最后一跳」）。本文件里那几个调用点由
+/// <c>DesktopServicesTests.入网二维码在界面上真的有出路</c> 这条文本绊线守着。
+/// </para>
+/// </remarks>
+public partial class EnrollWindow : Window
+{
+    private readonly AppHost _host;
+    private readonly DispatcherTimer _ticker;
+
+    /// <summary>已经弹过窗的设备 —— 同一条请求不再弹第二次。</summary>
+    /// <remarks>
+    /// 挡的是「一条关不掉的弹窗」：万一<see cref="DeviceRegistry.DecideAsync"/>
+    /// 没能落上（请求已经不在了），下一轮轮询它又是个待批准的请求，
+    /// 再弹一次就永远出不来。
+    /// </remarks>
+    private readonly HashSet<string> _asked = new(StringComparer.Ordinal);
+
+    /// <summary>写进二维码的那个本机地址；挑不出来时为 <see langword="null"/>。</summary>
+    private string? _address;
+
+    /// <summary>上一次显示出来的设备列表，用来判断要不要重设 <c>ItemsSource</c>。</summary>
+    private List<string> _deviceLines = [];
+
+    /// <summary>弹窗还开着 —— 挡轮询重入。</summary>
+    /// <remarks>
+    /// WPF 的模态弹窗会跑一个嵌套消息循环，<see cref="DispatcherTimer"/> 在里面**照样触发**，
+    /// 于是 <see cref="OnTick"/> 会在上一次还卡在 <c>MessageBox.Show</c> 里时被再调一次。
+    /// 没有这个守卫，一轮申请能弹出一串一模一样的窗。
+    /// </remarks>
+    private bool _busy;
+
+    public EnrollWindow(AppHost host)
+    {
+        _host = host;
+        InitializeComponent();
+
+        _ticker = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
+        _ticker.Tick += OnTick;
+
+        Loaded += async (_, _) => await RegenerateAsync();
+        Closed += (_, _) => _ticker.Stop();
+    }
+
+    // ─────────────────────────────────────────────
+    // 生成这张码
+    // ─────────────────────────────────────────────
+
+    private async void OnRegenerate(object sender, RoutedEventArgs e) => await RegenerateAsync();
+
+    private async Task RegenerateAsync()
+    {
+        // 换一张码 = 上一张连同它下面那些请求一起作废（DeviceRegistry 的约定），
+        // 所以「弹过谁」这份记录也跟着清掉。
+        _asked.Clear();
+        FootNote.Text = string.Empty;
+
+        _address = LanAddress.Discover();
+
+        if (BlockerReason() is { } blocker)
+        {
+            // 发不出码的时候**绝不显示一张假的**：宁可什么都没有，并说清为什么。
+            _ticker.Stop();
+            QrImage.Source = null;
+
+            BlockerText.Text = blocker;
+            BlockerText.Visibility = Visibility.Visible;
+            StatusLine.Text = "这台电脑现在发不出二维码。";
+            AddressLine.Text = string.Empty;
+            RegenerateButton.IsEnabled = false;
+
+            // 设备列表照旧要显示 —— 发不出新码不代表以前连过的那些不算数。
+            await RefreshDevicesAsync();
+            return;
+        }
+
+        BlockerText.Visibility = Visibility.Collapsed;
+        RegenerateButton.IsEnabled = true;
+
+        var session = await _host.Services.Devices.OpenSessionAsync();
+
+        var payload = EnrollQr.Payload(_address!, _host.Services.PlaybackPort, session.Token);
+        QrImage.Source = BuildBitmap(EnrollQr.Modules(payload));
+        QrImage.Opacity = 1;
+        AddressLine.Text =
+            $"手机连不上时，可以在手机端手填地址：{_address}:{_host.Services.PlaybackPort}";
+
+        // 先把心跳点上再轮询一次 —— 反过来的话，PollAsync 里万一走到 Expire()
+        // 停掉了心跳，紧接着这一句又把它打开了（那之后就再也没人停它）。
+        _ticker.Start();
+        await PollAsync();
+    }
+
+    /// <summary>现在发不出二维码的原因；发得出来返回 <see langword="null"/>。</summary>
+    /// <remarks>
+    /// 这些都是**机器状态**，不是用户做错了什么，所以每条都给出「怎么才能好」。
+    /// 少了这几句的话，用户看到的是一张扫不动的码 —— 而他会以为是手机的问题。
+    /// </remarks>
+    private string? BlockerReason()
+    {
+        if (_host.Services.Server is null)
+        {
+            return "回放服务没有装配（端口设成了空）。手机连不上本机，先看主窗口里的提示。";
+        }
+
+        if (_host.Services.Server.BaseUrl is not { Length: > 0 })
+        {
+            return "回放服务没起来，手机连不上本机。原因见主窗口「需要注意」那一段。";
+        }
+
+        if (_host.Services.Server.IsUsingFallback)
+        {
+            return $"回放服务只绑到了本机（{_host.Services.Server.BaseUrl}），别的设备访问不了。"
+                + $"原因：{_host.Services.Server.FallbackReason} "
+                + $"按主窗口里的提示，以管理员身份执行一次 netsh http add urlacl url=http://+:{_host.Services.PlaybackPort}/ user=Everyone 之后再试。";
+        }
+
+        if (_address is null)
+        {
+            return "没有挑到可用的局域网地址 —— 这台电脑现在可能没连在网络上（无线没连上，或者只插了虚拟网卡）。";
+        }
+
+        return null;
+    }
+
+    // ─────────────────────────────────────────────
+    // 轮询：谁在申请、还剩多久、已经连过谁
+    // ─────────────────────────────────────────────
+
+    private async void OnTick(object? sender, EventArgs e)
+    {
+        if (_busy)
+        {
+            return;
+        }
+
+        _busy = true;
+        try
+        {
+            await PollAsync();
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    private async Task PollAsync()
+    {
+        var registry = _host.Services.Devices;
+
+        var session = await registry.SessionAsync();
+        if (session is null)
+        {
+            Expire();
+            return;
+        }
+
+        var left = DeviceRegistry.SessionLifetime - (DateTimeOffset.UtcNow - session.OpenedAt);
+        var seconds = (int)Math.Max(0, left.TotalSeconds);
+        StatusLine.Text = $"这张码还能用 {seconds / 60:00}:{seconds % 60:00}";
+
+        await RefreshDevicesAsync();
+
+        // 只看「还没决定的」。已经批过的不再问，被拒的也不再问 ——
+        // 手机要一直等在那儿，它下一轮轮询拿到的就是同一个答复。
+        var waiting = (await registry.PendingAsync())
+            .FirstOrDefault(p => p.Decision == EnrollDecision.Pending && !_asked.Contains(p.DeviceId));
+
+        if (waiting is not null)
+        {
+            await AskAsync(waiting);
+        }
+    }
+
+    /// <summary>码失效了（超时，或者已经被手机领走）。</summary>
+    /// <remarks>
+    /// 两种情况**故意用同一句话**：从这台机器上看它们长得一模一样，
+    /// 分不清就别说死是哪一种（说了就是编）。两边的下一步都是「重新生成」。
+    /// </remarks>
+    private void Expire()
+    {
+        _ticker.Stop();
+        QrImage.Opacity = 0.15;
+        StatusLine.Text = "这张码已经失效了（被手机领走，或者超过了 5 分钟）。";
+        AddressLine.Text = "要再接一台设备，点【重新生成二维码】。";
+    }
+
+    private async Task AskAsync(PendingEnrollment pending)
+    {
+        _asked.Add(pending.DeviceId);
+
+        var name = string.IsNullOrWhiteSpace(pending.DeviceName) ? "一台设备" : pending.DeviceName;
+
+        var answer = MessageBox.Show(
+            this,
+            $"{name} 申请连接。\n\n同意之后，这台设备就能把录像传到本机。",
+            "有一台设备申请连接",
+            MessageBoxButton.YesNo,
+            MessageBoxImage.Question,
+            // 默认落在「否」—— 回车、或者直接关掉，都**不该**等于同意。
+            MessageBoxResult.No);
+
+        var approved = answer == MessageBoxResult.Yes;
+        var decided = await _host.Services.Devices.DecideAsync(pending.DeviceId, approved);
+
+        if (!decided)
+        {
+            // 落空不吭声的话，用户会以为「点了同意」，而手机上什么都不会发生。
+            FootNote.Text = "这条请求已经不在了（手机可能重新扫了一次码）。";
+            return;
+        }
+
+        FootNote.Text = approved ? $"已同意 {name}。" : $"已拒绝 {name}。";
+    }
+
+    private async Task RefreshDevicesAsync()
+    {
+        var devices = await _host.Services.Devices.DevicesAsync();
+
+        var lines = devices
+            .Select(d =>
+                string.IsNullOrWhiteSpace(d.DeviceName)
+                    ? $"(没报上名字)　·　{d.ApprovedAt.ToLocalTime():yyyy-MM-dd HH:mm} 连上"
+                    : $"{d.DeviceName}　·　{d.ApprovedAt.ToLocalTime():yyyy-MM-dd HH:mm} 连上")
+            .ToList();
+
+        var any = lines.Count > 0;
+        DeviceList.Visibility = any ? Visibility.Visible : Visibility.Collapsed;
+        DeviceEmpty.Visibility = any ? Visibility.Collapsed : Visibility.Visible;
+
+        // 列表每秒都被轮询刷一遍。内容没变就别重设 ItemsSource ——
+        // 重设会把整个列表重建一次，用户正在看的那一行会跳一下。
+        if (lines.SequenceEqual(_deviceLines))
+        {
+            return;
+        }
+
+        _deviceLines = lines;
+        DeviceList.ItemsSource = lines;
+    }
+
+    private void OnClose(object sender, RoutedEventArgs e) => Close();
+
+    // ─────────────────────────────────────────────
+    // 画码
+    // ─────────────────────────────────────────────
+
+    /// <summary>把模块矩阵转成位图：一个模块一个像素，放大交给最近邻。</summary>
+    /// <remarks>
+    /// 字节怎么摊由 <see cref="EnrollQr.Pixels"/> 决定（深色 0、浅色 255），
+    /// 于是**喂给屏幕的这些字节，就是往返测试解回来过的那一份**。
+    /// 这里用 <see cref="PixelFormats.Gray8"/>（一字节一像素）而不是 <c>BlackWhite</c>：
+    /// 后者按位打包，0 是黑还是白得看约定 —— 而这个函数里就剩这一处会写反。
+    /// </remarks>
+    private static BitmapSource BuildBitmap(bool[,] modules)
+    {
+        var width = modules.GetLength(0);
+        var height = modules.GetLength(1);
+
+        var bitmap = BitmapSource.Create(
+            width, height, 96, 96, PixelFormats.Gray8, null, EnrollQr.Pixels(modules), width);
+
+        bitmap.Freeze();
+        return bitmap;
+    }
+}

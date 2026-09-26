@@ -3,6 +3,7 @@ using System.Net.Sockets;
 using VidLog.Desktop.Core.Configuration;
 using VidLog.Desktop.Core.Media;
 using VidLog.Desktop.Core.Recording;
+using VidLog.Desktop.Core.Upload;
 
 namespace VidLog.Desktop.Core.Tests;
 
@@ -180,6 +181,48 @@ public class DesktopServicesTests
             File.ReadAllLines(path),
             line => line.Contains("await services.StartAsync(")
                 && !line.TrimStart().StartsWith("//"));
+    }
+
+    /// <summary>
+    /// 钉住「那张二维码真的显示得出来、批准真的点得下去」—— App 层必须真的调到那三个方法。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// 只能看源码文本的理由与上一条相同（App 层是 <c>net9.0-windows</c>，没有测试工程）。
+    /// 但这一条挡的是**另一种**失效，而且那种失效**真的发生过**：
+    /// 2026-09-24 收工时 <see cref="DeviceRegistry.PendingAsync"/> 与
+    /// <c>DevicesAsync</c> 是**零调用点** —— Core 逻辑、单测、CI 全绿，
+    /// 而**屏幕上根本没有地方能显示出那张二维码**，于是手机永远换不到凭据、
+    /// M5 端到端走不通。那不是「没联过」，是这一步根本没做。
+    /// </para>
+    /// <para>
+    /// ⚠️ <b>天花板</b>：文本绊线只挡「有人把这一行删了/注释了」（注释先被剥掉，
+    /// 所以注释掉也挡得住），挡不住「改成一个不跑的路径」。
+    /// 根治办法与上一条同一句话：把 App 层做成可测的。
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public void 入网二维码在界面上真的有出路()
+    {
+        var checks = new (string File, string Fragment, string Why)[]
+        {
+            ("EnrollWindow.xaml.cs", "OpenSessionAsync(", "屏幕上那张码就生成不出来"),
+            ("EnrollWindow.xaml.cs", "PendingAsync(", "界面不知道谁在申请，也就没有人去批"),
+            ("EnrollWindow.xaml.cs", "DecideAsync(", "同意 / 拒绝落不下去，手机会一直等"),
+            ("MainWindow.xaml.cs", "new EnrollWindow(", "设置里那个按钮点不开二维码窗口"),
+        };
+
+        foreach (var (file, fragment, why) in checks)
+        {
+            var code = string.Join(
+                '\n',
+                File.ReadAllLines(Path.Combine(RepoRoot(), "src", "VidLog.Desktop.App", file))
+                    .Where(line => !line.TrimStart().StartsWith("//")));
+
+            Assert.True(
+                code.Contains(fragment, StringComparison.Ordinal),
+                $"{file} 里没有 {fragment} —— {why}。见 docs/实现决策.md「装配的最后一跳」。");
+        }
     }
 
     /// <summary>从测试程序集往上找到仓库根（含 <c>src</c> 与 <c>tests</c> 的那一层）。</summary>

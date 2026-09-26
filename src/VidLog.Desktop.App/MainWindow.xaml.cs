@@ -535,6 +535,17 @@ public partial class MainWindow : Window
         }
     }
 
+    /// <summary>
+    /// 【连接电脑/手机】—— 弹出二维码（规格 §3.4.5）。
+    /// </summary>
+    /// <remarks>
+    /// 模态：一次只有一个。否则用户可以开出两份二维码，而
+    /// <see cref="VidLog.Desktop.Core.Upload.DeviceRegistry"/> 只留得住**最后一张** ——
+    /// 屏幕上摆着两张，能用的只有一张，那是最难解释的一种「扫了没反应」。
+    /// </remarks>
+    private void OnEnroll(object sender, RoutedEventArgs e) =>
+        new EnrollWindow(_host) { Owner = this }.ShowDialog();
+
     private async void OnExportDiagnostics(object sender, RoutedEventArgs e)
     {
         try

@@ -153,12 +153,23 @@ public class EnrollQrTests
 
     /// <summary>把矩阵放大画成灰度图，再用同一个库解回来。</summary>
     /// <remarks>
+    /// <para>
+    /// <b>字节走 <see cref="EnrollQr.Pixels"/></b>（界面喂给屏幕的就是这一份），
+    /// 这里只负责放大。所以那条往返测试实际证明的是
+    /// 「<b>画到屏幕上的那些字节</b>解得回原串」—— 颜色写反、轴序写错都在里面。
+    /// 以前这里自己写了一遍同样的循环，等于把约定抄了两份，而**界面那份没人看**。
+    /// </para>
+    /// <para>
     /// **解不出来就在这里断言失败**，不返回 null —— 那样每条用例都能直接拿字符串用，
     /// 而"解不出来"这件事只会有一个失败点，报错信息也只有一处。
+    /// </para>
     /// </remarks>
     private static string Decode(bool[,] modules, int scale = 8)
     {
-        var width = modules.GetLength(0) * scale;
+        var source = EnrollQr.Pixels(modules);
+        var sourceWidth = modules.GetLength(0);
+
+        var width = sourceWidth * scale;
         var height = modules.GetLength(1) * scale;
         var pixels = new byte[width * height];
 
@@ -166,7 +177,7 @@ public class EnrollQrTests
         {
             for (var x = 0; x < width; x++)
             {
-                pixels[(y * width) + x] = modules[x / scale, y / scale] ? (byte)0 : (byte)255;
+                pixels[(y * width) + x] = source[((y / scale) * sourceWidth) + (x / scale)];
             }
         }
 

@@ -153,7 +153,13 @@
         <!-- ── 设置 ─────────────────────────────────────────── -->
         <TabItem Header="设置">
             <StackPanel Margin="16">
-                <TextBlock Text="分段时长（分钟）" FontWeight="SemiBold"/>
+                <TextBlock Text="连接电脑 / 手机" FontWeight="SemiBold"/>
+                <Button x:Name="EnrollButton" Content="连接电脑/手机" Padding="16,6"
+                        Margin="0,4,0,0" HorizontalAlignment="Left" Click="OnEnroll"/>
+                <TextBlock Margin="0,2,0,0" Foreground="#88666666" TextWrapping="Wrap"
+                           Text="点开弹出一张二维码，手机端扫它来申请连接。申请到了由你决定同意还是拒绝 —— 没有这一步，手机换不到凭据，录像传不上来。"/>
+
+                <TextBlock Text="分段时长（分钟）" FontWeight="SemiBold" Margin="0,20,0,0"/>
                 <TextBox x:Name="SegmentBox" Width="120" Margin="0,4,0,0"
                          HorizontalAlignment="Left"/>
                 <TextBlock Text="单个分段的上限。到点自动滚下一段，用户无感。" Margin="0,2,0,0"
