@@ -414,17 +414,32 @@ public sealed class RecordingSession : IAsyncDisposable
     /// 只放掉相机，不做收尾。
     /// </summary>
     /// <remarks>
+    /// <para>
     /// 单独拆出来是为了<b>连续扫换件</b>：换件要立刻以新单号开下一段，
     /// 而收尾（remux + 解码校验）要几秒 —— 等它做完再开下一段，那几秒就白丢了。
     /// 但相机是独占的（实测），所以**必须先放掉设备**下一个会话才开得起来。
+    /// </para>
     /// <para>
     /// 幂等：已经放过了就什么都不做。收尾仍然只有 <c>StopAsync</c> 那一条路（I9），
     /// 这里只是把它内部的第一步提前了。
     /// </para>
+    /// <para>
+    /// ⚠️ <b>用 <see cref="Interlocked.Exchange{T}(ref T, T)"/> 认领这个进程，谁认领谁停。</b>
+    /// 原来是「先读、后清」—— 那个写法会让两个调用方**都通过判据**，把同一个采集进程
+    /// <b>停两次</b>：一次来自编排循环的 <c>finally</c>（<c>TryStopAsync</c> →
+    /// <c>CloseCurrentSegmentAsync</c> → 这里），另一次来自 <c>DisposeAsync</c>。
+    /// 两次都会往同一个分段文件写字 —— 测试里的 <c>FakeProcess</c> 直接以
+    /// <c>IOException：文件正被另一个进程使用</c> 暴露它（真进程那边则是两次写 stdin）。
+    /// </para>
+    /// <para>
+    /// 这个写法与 <see cref="CloseCurrentSegmentAsync"/> 认领 <c>_openSegment</c>
+    /// <b>完全同源</b>（那里的注释写着「先读后清会让两边都通过判据」）——
+    /// 上一次只覆盖了**分段**，漏了**进程**，见 <c>docs/实现决策.md</c> §30。
+    /// </para>
     /// </remarks>
     public async Task ReleaseCaptureAsync(CancellationToken cancellationToken = default)
     {
-        var process = _currentProcess;
+        var process = Interlocked.Exchange(ref _currentProcess, null);
         if (process is null)
         {
             return;
@@ -439,8 +454,6 @@ public sealed class RecordingSession : IAsyncDisposable
             // 而不是在这里替它下结论（那正是「编译绿≠正确」的翻版）。
             LastProblem = $"采集进程以退出码 {exitCode} 结束，该段可能不完整。";
         }
-
-        _currentProcess = null;
     }
 
     private async Task CloseCurrentSegmentAsync(CancellationToken cancellationToken)
@@ -517,11 +530,10 @@ public sealed class RecordingSession : IAsyncDisposable
             loop.Dispose();
         }
 
-        if (_currentProcess is not null)
-        {
-            await _currentProcess.StopAsync(_options.StopGracePeriod);
-            _currentProcess = null;
-        }
+        // ⚠️ 走 ReleaseCaptureAsync 而不是自己读一次 `_currentProcess`：
+        // 这里是**另一个**停进程的入口，而「先读后清」会让它和编排循环同时通过判据。
+        // 认领（Interlocked.Exchange）在那一处，两个入口共用它 —— 见那个方法的说明。
+        await ReleaseCaptureAsync(CancellationToken.None);
     }
 
     /// <summary>
