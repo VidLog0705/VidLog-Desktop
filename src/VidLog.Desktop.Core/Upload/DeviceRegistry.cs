@@ -116,16 +116,18 @@ public sealed class DeviceRegistry
 
     private readonly string _path;
     private readonly Func<DateTimeOffset> _now;
+    private readonly IAppLogger _logger;
     private readonly SemaphoreSlim _gate = new(1, 1);
     private readonly Dictionary<string, PendingEnrollment> _pending = new(StringComparer.Ordinal);
 
     /// <summary>屏幕上那张二维码对应的会话；没开时为 null。</summary>
     private EnrollSession? _session;
 
-    public DeviceRegistry(string path, Func<DateTimeOffset>? now = null)
+    public DeviceRegistry(string path, Func<DateTimeOffset>? now = null, IAppLogger? logger = null)
     {
         _path = path;
         _now = now ?? (() => DateTimeOffset.UtcNow);
+        _logger = logger ?? NullLogger.Instance;
     }
 
     /// <summary>
@@ -272,6 +274,15 @@ public sealed class DeviceRegistry
                 Decision = approved ? EnrollDecision.Approved : EnrollDecision.Rejected,
             };
 
+            // 入网决策是**安全事件**：谁被放进来了、谁被挡在外面了，要留痕。
+            // ⚠️ 只记 deviceId —— 凭据与令牌**绝不进日志**（见 Sanitizer）。
+            _logger.Log(LogLevel.Info, "入网", approved ? "同意了一台设备连接" : "拒绝了一台设备连接",
+                new Dictionary<string, object?>
+                {
+                    ["deviceId"] = deviceId,
+                    ["设备名"] = pending.DeviceName,
+                });
+
             return true;
         }
         finally
@@ -337,6 +348,13 @@ public sealed class DeviceRegistry
 
         var credential = NewCredential();
         await AppendAsync(new EnrolledDevice(deviceId, pending.DeviceName, credential, _now()), cancellationToken);
+
+        // 签发了凭据 = 这台设备从此能上传。留痕，但**绝不记凭据本身**。
+        _logger.Log(LogLevel.Info, "入网", "签发了设备凭据", new Dictionary<string, object?>
+        {
+            ["deviceId"] = deviceId,
+            ["设备名"] = pending.DeviceName,
+        });
 
         return new ClaimResult(EnrollStatus.Approved, credential, null);
     }

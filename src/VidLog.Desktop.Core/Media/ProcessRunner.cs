@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using VidLog.Desktop.Core.Diagnostics;
 
 namespace VidLog.Desktop.Core.Media;
 
@@ -27,6 +28,16 @@ public interface IProcessRunner
 /// <summary>真实子进程实现。</summary>
 public sealed class SystemProcessRunner : IProcessRunner
 {
+    private readonly IAppLogger _logger;
+
+    /// <param name="logger">
+    /// **这一处就覆盖了全部 FFmpeg 调用** —— remux、解码校验、编码器探测
+    /// 都是包在这个接口上的几行（<c>RemuxPipeline</c> / <c>DecodeVerifier</c> /
+    /// <c>FfmpegEncoderProbe</c>），所以不必给那三个类各铺一个 logger。
+    /// </param>
+    public SystemProcessRunner(IAppLogger? logger = null) =>
+        _logger = logger ?? NullLogger.Instance;
+
     public async Task<ProcessResult> RunAsync(
         string executable,
         IReadOnlyList<string> arguments,
@@ -71,6 +82,31 @@ public sealed class SystemProcessRunner : IProcessRunner
 
         await process.WaitForExitAsync(cancellationToken);
 
-        return new ProcessResult(process.ExitCode, await stdout, await stderr);
+        var result = new ProcessResult(process.ExitCode, await stdout, await stderr);
+
+        // ⚠️ **只在失败时记**：这三条链路每次收尾都要跑，成功也记的话
+        // 日志会被正常流量淹掉，而淹掉的日志等于没有日志。
+        //
+        // 失败时记的是 ffmpeg **自己说的话**（stderr 尾巴）——
+        // 那个只有它说得清（「编码器不存在」「文件头损坏」），
+        // 我们从退出码上读不出来。
+        if (!result.Succeeded)
+        {
+            _logger.Log(LogLevel.Warn, "外部进程", $"{System.IO.Path.GetFileName(executable)} 以 {result.ExitCode} 退出",
+                new Dictionary<string, object?>
+                {
+                    ["参数"] = string.Join(' ', arguments),
+                    ["stderr"] = Tail(result.StandardError),
+                });
+        }
+
+        return result;
+    }
+
+    /// <summary>stderr 的尾巴。ffmpeg 开头几行多半是版本与编译选项，真话在后面。</summary>
+    private static string Tail(string text, int lines = 8)
+    {
+        var all = text.Split('\n', StringSplitOptions.RemoveEmptyEntries);
+        return all.Length <= lines ? text.Trim() : string.Join('\n', all[^lines..]).Trim();
     }
 }

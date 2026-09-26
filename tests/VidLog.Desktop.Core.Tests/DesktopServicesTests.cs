@@ -306,6 +306,46 @@ public class DesktopServicesTests
         Assert.Contains("ToString()", code, StringComparison.Ordinal);
     }
 
+    /// <summary>
+    /// 钉住「组合根真的把日志器递下去了」—— 三处边界都得拿到它。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// ⚠️ <b>为什么不能靠行为测试</b>：<c>BoundaryLoggingTests</c> 是**直接构造**
+    /// 那几个类的（传自己的 logger），所以它证明的是「这些类会记」，
+    /// **不是「生产上有人把 logger 递给它们」**。这一点是试出来的：
+    /// 把 <c>DesktopServices</c> 里那三处 <c>logger</c> 参数删掉，
+    /// 那几条用例**照样全绿**。
+    /// </para>
+    /// <para>
+    /// 与 §«装配的最后一跳» 同一类毛病：零件齐了、各自都测过，**接起来那一步没人看**。
+    /// 现在把三处调用形态钉住，任何一处被摘掉都会红。
+    /// </para>
+    /// <para>
+    /// ⚠️ 天花板与另几条绊线相同：只挡「删了 / 改了」，挡不住「改成一条不跑的路径」。
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public void 组合根把日志器递给了三处边界()
+    {
+        var path = Path.Combine(
+            RepoRoot(), "src", "VidLog.Desktop.Core", "Configuration", "DesktopServices.cs");
+
+        var code = string.Join(
+            '\n',
+            File.ReadAllLines(path).Where(line => !line.TrimStart().StartsWith("//")));
+
+        // ① FFmpeg 的每一次调用（一处覆盖 remux / 解码校验 / 编码器探测）
+        Assert.Contains("new SystemProcessRunner(logger)", code, StringComparison.Ordinal);
+
+        // ② 收尾（I9 的唯一落点）
+        Assert.Contains("layout.ArchiveRoot,\n            logger);", code.Replace("\r\n", "\n"),
+            StringComparison.Ordinal);
+
+        // ③ 入网决策（安全事件）
+        Assert.Contains("new DeviceRegistry(layout.DevicesPath, logger: logger)", code, StringComparison.Ordinal);
+    }
+
     /// <summary>从测试程序集往上找到仓库根（含 <c>src</c> 与 <c>tests</c> 的那一层）。</summary>
     private static string RepoRoot()
     {

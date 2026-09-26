@@ -1,3 +1,4 @@
+using VidLog.Desktop.Core.Diagnostics;
 using VidLog.Desktop.Core.Index;
 using VidLog.Desktop.Core.Media;
 
@@ -74,17 +75,20 @@ public sealed class SessionFinalizer
     private readonly DecodeVerifier _verifier;
     private readonly IRecordingIndex _index;
     private readonly string _archiveRoot;
+    private readonly IAppLogger _logger;
 
     public SessionFinalizer(
         RemuxPipeline remux,
         DecodeVerifier verifier,
         IRecordingIndex index,
-        string archiveRoot)
+        string archiveRoot,
+        IAppLogger? logger = null)
     {
         _remux = remux;
         _verifier = verifier;
         _index = index;
         _archiveRoot = archiveRoot;
+        _logger = logger ?? NullLogger.Instance;
     }
 
     /// <summary>规格 §4.1 的收尾序列：封闭 → remux → 实际解码校验 → 算哈希 → 写索引。</summary>
@@ -130,6 +134,24 @@ public sealed class SessionFinalizer
         var state = allPublished
             ? RecordingSessionState.Indexed
             : RecordingSessionState.FinalizeFailed;
+
+        // 收尾是「一次录制到底有没有变成可检索的证据」的那条线，
+        // 而它是这个应用**唯一会丢证据**的地方 —— 成败都留痕。
+        // 失败那条带上原因：remux 失败 / 解码校验不过 / 写索引失败，
+        // 三种要修的东西完全不同，而用户在界面上一律只看到「收尾失败」。
+        _logger.Log(
+            allPublished ? LogLevel.Info : LogLevel.Error,
+            "收尾",
+            allPublished
+                ? $"{waybill.Value} 收尾完成（{finalized.Count} 段，停因 {reason}）"
+                : $"{waybill.Value} 收尾失败：{firstFailure}",
+            new Dictionary<string, object?>
+            {
+                ["会话"] = sessionId,
+                ["停因"] = reason.ToString(),
+                ["分段数"] = finalized.Count,
+                ["成功段数"] = finalized.Count(s => s.IsPublished),
+            });
 
         return new FinalizeOutcome(state, reason, finalized, allPublished ? null : firstFailure);
     }

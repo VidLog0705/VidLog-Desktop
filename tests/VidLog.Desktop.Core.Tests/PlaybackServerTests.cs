@@ -181,28 +181,61 @@ public class PlaybackServerTests
     // 请求日志（2026-09-26）
     // ─────────────────────────────────────────────
 
-    /// <summary>等到日志文件里出现至少 <paramref name="count"/> 行。</summary>
+    /// <summary>
+    /// 等到日志文件里出现至少 <paramref name="count"/> 行，且**每一行都能当 JSON 解析**。
+    /// </summary>
     /// <remarks>
-    /// 日志是**异步落盘**的（后台队列），而请求的 `finally` 也可能还没跑到 ——
-    /// 直接读会读到一半，于是测试变成间歇性红。等一小会儿比 sleep 一个魔数诚实。
+    /// <para>
+    /// 两个理由都要等，缺一个就是间歇性红：
+    /// </para>
+    /// <list type="number">
+    /// <item>日志是**异步落盘**的（后台队列），而请求的 `finally` 也可能还没跑到 ——
+    /// 直接读会读到一半。</item>
+    /// <item>⚠️ 更阴的一个：**边写边读会读到半行**。写入是一个 syscall，
+    /// 但读者可能在它落完之前就看到文件变长了 —— 于是最后一行是残缺的 JSON，
+    /// `JsonDocument.Parse` 当场抛。所以判据不是「行数够了」，
+    /// 而是「行数够了**而且都解析得动**」。</item>
+    /// </list>
     /// </remarks>
-    private static async Task<string[]> WaitForLogLinesAsync(string path, int count)
+    private static async Task<List<JsonElement>> WaitForLogEntriesAsync(string path, int count)
     {
         for (var attempt = 0; attempt < 100; attempt++)
         {
             if (File.Exists(path))
             {
                 var lines = await File.ReadAllLinesAsync(path);
-                if (lines.Length >= count)
+
+                if (lines.Length >= count && TryParseAll(lines, out var entries))
                 {
-                    return lines;
+                    return entries;
                 }
             }
 
             await Task.Delay(20);
         }
 
-        return File.Exists(path) ? await File.ReadAllLinesAsync(path) : [];
+        Assert.Fail($"{path} 里始终没有出现 {count} 行可解析的日志（等到超时）");
+        return [];
+    }
+
+    private static bool TryParseAll(string[] lines, out List<JsonElement> entries)
+    {
+        entries = [];
+
+        foreach (var line in lines)
+        {
+            try
+            {
+                entries.Add(JsonDocument.Parse(line).RootElement.Clone());
+            }
+            catch (JsonException)
+            {
+                // 多半是最后那行还没写完 —— 下一轮再看。
+                return false;
+            }
+        }
+
+        return true;
     }
 
     [Fact]
@@ -219,12 +252,10 @@ public class PlaybackServerTests
         await fixture.Client.GetAsync("/");
         await fixture.Client.GetAsync("/api/nope");
 
-        var lines = await WaitForLogLinesAsync(logger.Path, 2);
+        var entries = await WaitForLogEntriesAsync(logger.Path, 2);
         await logger.DisposeAsync();
 
-        Assert.Equal(2, lines.Length);
-
-        var entries = lines.Select(line => JsonDocument.Parse(line).RootElement).ToList();
+        Assert.Equal(2, entries.Count);
 
         var ok = Assert.Single(entries, e => e.GetProperty("data").GetProperty("path").GetString() == "/");
         Assert.Equal(200, ok.GetProperty("data").GetProperty("status").GetInt32());

@@ -153,7 +153,10 @@ public sealed class DesktopServices : IAsyncDisposable
                 $"可在应用目录放置 tools/ffmpeg.exe，或设置环境变量 {FfmpegLocator.EnvironmentVariable}。");
         }
 
-        var runner = new SystemProcessRunner();
+        // ⚠️ 这一处、加上下面 finalizer 那一处，就是「把日志铺给服务」的**全部**：
+        // FFmpeg 调用全走 runner（remux / 解码校验 / 编码器探测都是它上面的几行），
+        // 收尾只有 finalizer 一条路（I9）。两处挂上，五个类一起有记录。
+        var runner = new SystemProcessRunner(logger);
         var toolPath = resolvedFfmpeg ?? "ffmpeg";
 
         var index = new JsonLinesRecordingIndex(layout.IndexPath);
@@ -164,7 +167,8 @@ public sealed class DesktopServices : IAsyncDisposable
             new RemuxPipeline(toolPath, runner),
             new DecodeVerifier(toolPath, runner),
             index,
-            layout.ArchiveRoot);
+            layout.ArchiveRoot,
+            logger);
 
         var workspace = new RecordingWorkspace(layout.WorkspaceRoot);
         var orphanRecovery = new OrphanRecovery(workspace, finalizer);
@@ -173,7 +177,7 @@ public sealed class DesktopServices : IAsyncDisposable
         var punchNavigation = new PunchNavigation(index, punches);
 
         var resolvedDeviceName = deviceName ?? Environment.MachineName;
-        var devices = new DeviceRegistry(layout.DevicesPath);
+        var devices = new DeviceRegistry(layout.DevicesPath, logger: logger);
         var upload = new UploadReceiver(
             layout,
             index,
