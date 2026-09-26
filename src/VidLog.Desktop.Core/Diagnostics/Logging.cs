@@ -236,6 +236,14 @@ public sealed class FileLogger : IAppLogger, IAsyncDisposable
                 writer.WriteString("cat", category);
                 writer.WriteString("msg", Sanitizer.Sanitize(message));
 
+                // 关联 id **由日志器自己从异步上下文里取**，不在每处调用点传。
+                // 一次上传要过七八层，漏传一层就是那一段日志串不起来 ——
+                // 而串起来正是它存在的全部理由。不在请求里时不写这个字段。
+                if (Trace.Current is { Length: > 0 } trace)
+                {
+                    writer.WriteString("trace", trace);
+                }
+
                 if (data.Count > 0)
                 {
                     writer.WriteStartObject("data");

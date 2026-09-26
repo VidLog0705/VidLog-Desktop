@@ -1,6 +1,7 @@
 using System.Net;
 using System.Text;
 using System.Text.Json;
+using VidLog.Desktop.Core.Diagnostics;
 using VidLog.Desktop.Core.Index;
 using VidLog.Desktop.Core.Labels;
 using VidLog.Desktop.Core.Playback;
@@ -85,11 +86,16 @@ public sealed class PlaybackServer : IAsyncDisposable
     private readonly UploadReceiver _upload;
     private readonly DeviceRegistry _devices;
     private readonly string _deviceName;
+    private readonly IAppLogger _logger;
     private HttpListener _listener = new();
 
     private CancellationTokenSource? _loopCancellation;
     private Task? _loopTask;
 
+    /// <param name="logger">
+    /// 请求日志。**可选**（默认不记）—— 加可选参数而不是必填，
+    /// 是为了让那几十处测试的构造调用一行都不用改。
+    /// </param>
     public PlaybackServer(
         PlaybackServerOptions options,
         RecordingSearch search,
@@ -97,7 +103,8 @@ public sealed class PlaybackServer : IAsyncDisposable
         PunchNavigation punches,
         UploadReceiver upload,
         DeviceRegistry devices,
-        string deviceName)
+        string deviceName,
+        IAppLogger? logger = null)
     {
         _options = options;
         _search = search;
@@ -106,6 +113,7 @@ public sealed class PlaybackServer : IAsyncDisposable
         _upload = upload;
         _devices = devices;
         _deviceName = deviceName;
+        _logger = logger ?? NullLogger.Instance;
     }
 
     /// <summary>实际绑上的地址（可能不是配置里的首选地址 —— 见 <see cref="PlaybackServerOptions.FallbackPrefix"/>）。</summary>
@@ -220,12 +228,30 @@ public sealed class PlaybackServer : IAsyncDisposable
         }
     }
 
+    /// <summary>
+    /// 一个请求的进与出。**这是全站唯一的单一入口/出口** ——
+    /// 请求日志挂在这里，一处就覆盖所有路由。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// ⚠️ 2026-09-26 之前这里**一行日志都没有**，而 <c>:catch</c> 是
+    /// **静默吞掉**的（只回 500）—— 于是「手机传不上来」这种现象在电脑端
+    /// 完全无迹可查，只能靠手机那边的提示猜。
+    /// </para>
+    /// <para>
+    /// <c>Trace.Start()</c> 必须在这里设：AsyncLocal 的流动是向下的，
+    /// 在里面设了外面看不见（见 <see cref="Trace"/>）。
+    /// </para>
+    /// </remarks>
     private async Task HandleAsync(HttpListenerContext context)
     {
+        var trace = Trace.Start();
+        var startedAt = System.Diagnostics.Stopwatch.GetTimestamp();
+        var path = context.Request.Url?.AbsolutePath ?? "/";
+        var method = context.Request.HttpMethod;
+
         try
         {
-            var path = context.Request.Url?.AbsolutePath ?? "/";
-
             if (path is "/" or "/index.html")
             {
                 await WriteHtmlAsync(context, BuildPage());
@@ -258,8 +284,17 @@ public sealed class PlaybackServer : IAsyncDisposable
 
             context.Response.StatusCode = 404;
         }
-        catch (Exception)
+        catch (Exception ex)
         {
+            // ⚠️ **必须记下来**（含完整堆栈）。这里以前是空 catch：
+            // 手机那边只看到「500」，而电脑端连出了什么事都不知道。
+            _logger.Log(LogLevel.Error, "回放", $"{method} {path} 处理失败", new Dictionary<string, object?>
+            {
+                ["method"] = method,
+                ["path"] = path,
+                ["异常"] = ex.ToString(),
+            });
+
             // 单个请求出错不能拖垮服务；能回 500 就回。
             try
             {
@@ -272,6 +307,28 @@ public sealed class PlaybackServer : IAsyncDisposable
         }
         finally
         {
+            // 出口记一行。**失败的那些也要记**（上面 catch 之后仍会走到这里）——
+            // 「哪个路径在报错」正是靠状态码看出来的。
+            //
+            // ⚠️ 只记出口、不另记一条入口：出口那行已经有方法、路径、状态与耗时，
+            // 入口行提供不了新信息，只会把量翻一倍。真要在半路崩掉时看「进没进来」，
+            // 还有 `trace` 可以把这一串行串起来。
+            _logger.Log(
+                context.Response.StatusCode >= 400 ? LogLevel.Warn : LogLevel.Info,
+                "回放",
+                $"{method} {path} → {context.Response.StatusCode}",
+                new Dictionary<string, object?>
+                {
+                    // 四个**可筛的字段**，而不是把状态码塞在消息里：
+                    // 「昨天有没有 5xx」「哪个路径最慢」这种问题要能一句话问出来。
+                    ["method"] = method,
+                    ["path"] = path,
+                    ["status"] = context.Response.StatusCode,
+                    ["耗时ms"] = Math.Round(System.Diagnostics.Stopwatch.GetElapsedTime(startedAt).TotalMilliseconds, 1),
+                });
+
+            Trace.Clear();
+
             try
             {
                 context.Response.Close();

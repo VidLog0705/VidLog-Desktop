@@ -1,3 +1,4 @@
+using VidLog.Desktop.Core.Diagnostics;
 using VidLog.Desktop.Core.Index;
 using VidLog.Desktop.Core.Labels;
 using VidLog.Desktop.Core.Media;
@@ -128,11 +129,17 @@ public sealed class DesktopServices : IAsyncDisposable
     /// 本机在回执里的身份。默认取 <see cref="Environment.MachineName"/> ——
     /// 与录制会话的 <c>sourceDeviceId</c> 同源（<c>AppHost</c> 用的也是它）。
     /// </param>
+    /// <param name="logger">
+    /// 日志器。**可选**（默认不记）—— 组合根传真的那个。
+    /// 这一层是「把 logger 铺给服务」的唯一入口：回放服务、上传接收那些类
+    /// 都在这里 new 出来，所以在这里传一次就够，不必让每个调用点都记得。
+    /// </param>
     public static DesktopServices Create(
         DataLayout layout,
         string? ffmpegPath = null,
         int? playbackPort = DefaultPlaybackPort,
-        string? deviceName = null)
+        string? deviceName = null,
+        IAppLogger? logger = null)
     {
         layout.EnsureCreated();
 
@@ -192,7 +199,8 @@ public sealed class DesktopServices : IAsyncDisposable
                 punchNavigation,
                 upload,
                 devices,
-                resolvedDeviceName);
+                resolvedDeviceName,
+                logger);
         }
 
         return new DesktopServices(

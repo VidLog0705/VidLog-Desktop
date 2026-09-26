@@ -3,6 +3,7 @@ using System.Net.Http.Headers;
 using System.Net.Sockets;
 using System.Text.Json;
 using VidLog.Desktop.Core.Configuration;
+using VidLog.Desktop.Core.Diagnostics;
 using VidLog.Desktop.Core.Index;
 using VidLog.Desktop.Core.Labels;
 using VidLog.Desktop.Core.Media;
@@ -88,7 +89,8 @@ public class PlaybackServerTests
         return port;
     }
 
-    private static async Task<Fixture> StartAsync(TempDir dir)
+    /// <param name="logger">请求日志。不传就不记（默认）。</param>
+    private static async Task<Fixture> StartAsync(TempDir dir, IAppLogger? logger = null)
     {
         const string evidenceId = "e1";
         const string relative = "2026/09/16/SF1000000001/e1.mp4";
@@ -156,7 +158,8 @@ public class PlaybackServerTests
                 new DecodeVerifier("ffmpeg", new AlwaysOkRunner()),
                 DeviceName),
             new DeviceRegistry(layout.DevicesPath),
-            DeviceName);
+            DeviceName,
+            logger);
 
         await server.StartAsync();
 
@@ -173,6 +176,75 @@ public class PlaybackServerTests
     // ─────────────────────────────────────────────
     // 页面
     // ─────────────────────────────────────────────
+
+    // ─────────────────────────────────────────────
+    // 请求日志（2026-09-26）
+    // ─────────────────────────────────────────────
+
+    /// <summary>等到日志文件里出现至少 <paramref name="count"/> 行。</summary>
+    /// <remarks>
+    /// 日志是**异步落盘**的（后台队列），而请求的 `finally` 也可能还没跑到 ——
+    /// 直接读会读到一半，于是测试变成间歇性红。等一小会儿比 sleep 一个魔数诚实。
+    /// </remarks>
+    private static async Task<string[]> WaitForLogLinesAsync(string path, int count)
+    {
+        for (var attempt = 0; attempt < 100; attempt++)
+        {
+            if (File.Exists(path))
+            {
+                var lines = await File.ReadAllLinesAsync(path);
+                if (lines.Length >= count)
+                {
+                    return lines;
+                }
+            }
+
+            await Task.Delay(20);
+        }
+
+        return File.Exists(path) ? await File.ReadAllLinesAsync(path) : [];
+    }
+
+    [Fact]
+    public async Task 每个请求都留下一条带_trace_与状态码的日志()
+    {
+        // 2026-09-26 之前这里**一行日志都没有**，而出错那个 catch 是**静默吞掉**的：
+        // 手机那边只看到 500，电脑端连出了什么事都不知道。
+        using var dir = new TempDir();
+        using var logDir = new TempDir();
+        var logger = new FileLogger(new FileLogOptions(logDir.Path, "vidlog"));
+
+        await using var fixture = await StartAsync(dir, logger);
+
+        await fixture.Client.GetAsync("/");
+        await fixture.Client.GetAsync("/api/nope");
+
+        var lines = await WaitForLogLinesAsync(logger.Path, 2);
+        await logger.DisposeAsync();
+
+        Assert.Equal(2, lines.Length);
+
+        var entries = lines.Select(line => JsonDocument.Parse(line).RootElement).ToList();
+
+        var ok = Assert.Single(entries, e => e.GetProperty("data").GetProperty("path").GetString() == "/");
+        Assert.Equal(200, ok.GetProperty("data").GetProperty("status").GetInt32());
+        Assert.Equal("INFO", ok.GetProperty("lvl").GetString());
+        Assert.Equal("GET", ok.GetProperty("data").GetProperty("method").GetString());
+
+        // ⚠️ `trace` 是**日志器自己从异步上下文里取的**，调用点一个字都没传 ——
+        // 这一条证明那条路通了，否则「把一次上传的七八行串起来」就是空话。
+        Assert.False(string.IsNullOrWhiteSpace(ok.GetProperty("trace").GetString()));
+
+        // 4xx 以上是 Warn：一次错误的路径请求不该和正常的页面请求一个级别，
+        // 否则「昨天有没有异常请求」要靠人肉翻完整份日志。
+        // ⚠️ 路径用 ASCII 的：日志里记的是 `Url.AbsolutePath`，也就是**参与路由的那个
+        // 原始路径**（中文会被客户端百分号编码）。这是有意的 ——
+        // 日志要如实反映「路由当时看到的是什么」，而不是事后美化过的样子。
+        var missing = Assert.Single(
+            entries, e => e.GetProperty("data").GetProperty("path").GetString() == "/api/nope");
+        Assert.Equal(404, missing.GetProperty("data").GetProperty("status").GetInt32());
+        Assert.Equal("WARN", missing.GetProperty("lvl").GetString());
+    }
 
     [Fact]
     public async Task 根路径返回回放页面()

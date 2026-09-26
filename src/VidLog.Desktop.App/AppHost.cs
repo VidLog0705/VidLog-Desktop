@@ -175,7 +175,8 @@ public sealed class AppHost : IAsyncDisposable
 
         var warnings = new List<string>(loaded.Warnings);
 
-        var services = DesktopServices.Create(layout, playbackPort: settings.PlaybackPort);
+        var services = DesktopServices.Create(
+            layout, playbackPort: settings.PlaybackPort, logger: logger);
 
         // ── 装配的最后一跳（曾经漏掉过，别再删）────────────────────────
         // 两件事都发生在这里：收尾上次没走完的孤儿（规格 §3.1.1），
