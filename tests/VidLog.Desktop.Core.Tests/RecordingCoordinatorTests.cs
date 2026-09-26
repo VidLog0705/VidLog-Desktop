@@ -130,6 +130,69 @@ public class RecordingCoordinatorTests
         Assert.Equal(2, punches.Written.Count);
     }
 
+    // ─────────────────────────────────────────────
+    // 错误扫描（规格 §6.1「必须保存的事实」—— 2026-09-26 补）
+    // ─────────────────────────────────────────────
+
+    [Fact]
+    public async Task 扫到别的面单要落一条错误扫描记录()
+    {
+        // 这一条是规格 §6.1 点名的「错误扫描（错码保护触发的事件，诊断用）」，
+        // 2026-09-26 之前**两端都没实现**：错码保护只做了界面提示与播报，
+        // 事后查不出操作员那一刻扫到了什么。
+        using var dir = new TempDir();
+        var scanErrors = new ScanErrorLog(Path.Combine(dir.Path, "scan-errors.jsonl"));
+
+        await using var coordinator = Build(
+            dir, WorkMode.StopOnSameWaybill, new FakePunchLog(), scanErrors: scanErrors);
+
+        await coordinator.SubmitAsync(A, PunchSource.KeyboardScanner);
+        var sessionId = coordinator.CurrentSessionId;
+
+        await coordinator.SubmitAsync(B, PunchSource.KeyboardScanner);
+
+        var entry = Assert.Single(await scanErrors.LoadAllAsync());
+
+        // 四个字段逐字对齐母仓 docs/02-数据模型.md §1.7。
+        Assert.Equal(sessionId, entry.SessionId);
+        Assert.Equal(A.Value, entry.ExpectedWaybill.Value);
+        Assert.Equal(B.Value, entry.ScannedWaybill.Value);
+        Assert.NotEqual(default, entry.OccurredAt);
+    }
+
+    [Fact]
+    public async Task 复扫同码不记错误扫描_那是正常停止路径()
+    {
+        using var dir = new TempDir();
+        var scanErrors = new ScanErrorLog(Path.Combine(dir.Path, "scan-errors.jsonl"));
+
+        await using var coordinator = Build(
+            dir, WorkMode.StopOnSameWaybill, new FakePunchLog(), scanErrors: scanErrors);
+
+        await coordinator.SubmitAsync(A, PunchSource.KeyboardScanner);
+        await coordinator.SubmitAsync(A, PunchSource.KeyboardScanner);
+
+        Assert.Empty(await scanErrors.LoadAllAsync());
+    }
+
+    [Fact]
+    public async Task 不装错误扫描日志时_错码保护照样提示()
+    {
+        // ⚠️ 这一条守的是「诊断记录写不下去不能把录制带下去」：
+        // 不装（或者盘写不进去）时，提示这条路径必须一个字都不少。
+        using var dir = new TempDir();
+        var notices = new List<CoordinatorNotice>();
+
+        await using var coordinator = Build(dir, WorkMode.StopOnSameWaybill, new FakePunchLog());
+        coordinator.Notice += notices.Add;
+
+        await coordinator.SubmitAsync(A, PunchSource.KeyboardScanner);
+        await coordinator.SubmitAsync(B, PunchSource.KeyboardScanner);
+
+        Assert.Contains(notices, n => n.Kind == CoordinatorNoticeKind.WrongWaybill);
+        Assert.Equal(A, coordinator.CurrentWaybill);
+    }
+
     [Fact]
     public async Task 连续扫下复扫同码不停也不提示()
     {
@@ -302,7 +365,8 @@ public class RecordingCoordinatorTests
         IPunchLog punches,
         RecordingIndexSpy? index = null,
         IProcessRunner? runner = null,
-        RecordingSessionOptions? session = null)
+        RecordingSessionOptions? session = null,
+        ScanErrorLog? scanErrors = null)
     {
         var ffmpeg = FfmpegLocator.TryFind() ?? "ffmpeg";
         var effectiveRunner = runner ?? new SucceedingRunner();
@@ -319,7 +383,8 @@ public class RecordingCoordinatorTests
             punches,
             NullLogger.Instance,
             new WorkModePolicy(mode, StaticStopOption.Off),
-            new CoordinatorOptions("Lenovo EasyCamera", "device-1", "libx264"))
+            new CoordinatorOptions("Lenovo EasyCamera", "device-1", "libx264"),
+            scanErrors)
         {
             SessionOptions = session ?? RecordingSessionOptions.Default,
         };

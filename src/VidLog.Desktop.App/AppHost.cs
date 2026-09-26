@@ -208,7 +208,9 @@ public sealed class AppHost : IAsyncDisposable
             services.Punches,
             logger,
             new WorkModePolicy(settings.Mode, settings.StaticStop),
-            new CoordinatorOptions(device, Environment.MachineName, encoder ?? "libx264"))
+            new CoordinatorOptions(device, Environment.MachineName, encoder ?? "libx264"),
+            // 错误扫描（规格 §6.1「必须保存的事实」）。
+            new ScanErrorLog(layout.ScanErrorsPath))
         {
             // 分段时长与时长兜底（规格 §3.1.1 / §3.3.4）。
             // 不填的话用的是硬编码默认（1 分钟 / 30 分钟）——

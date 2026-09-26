@@ -50,6 +50,15 @@ public sealed class DataLayout
     public string CleanupAuditPath => Path.Combine(RootDirectory, "cleanup-audit.jsonl");
 
     /// <summary>
+    /// 错误扫描记录（规格 §6.1「必须保存的事实」）。
+    /// </summary>
+    /// <remarks>
+    /// 与手机端**同一个文件名、同一层位置**（<c>&lt;root&gt;/scan-errors.jsonl</c>）——
+    /// 两端写的是同一份形态，键名也逐字相同（PascalCase）。
+    /// </remarks>
+    public string ScanErrorsPath => Path.Combine(RootDirectory, "scan-errors.jsonl");
+
+    /// <summary>
     /// 已入网的设备及其凭据（规格 §3.4.5）。
     /// </summary>
     /// <remarks>

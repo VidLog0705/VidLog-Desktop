@@ -346,6 +346,28 @@ public class DesktopServicesTests
         Assert.Contains("new DeviceRegistry(layout.DevicesPath, logger: logger)", code, StringComparison.Ordinal);
     }
 
+    /// <summary>
+    /// 钉住「错误扫描真的接上了」—— <c>AppHost</c> 必须把 <c>ScanErrorLog</c>
+    /// 交给协调器。
+    /// </summary>
+    /// <remarks>
+    /// 只能看源码文本的理由与上面几条相同（App 层没有测试工程）。
+    /// 这条挡的失效是**已经发生过**的同一类：零件写好了、测过了，**没人接**。
+    /// 与那几条不同的是，它这次是**规格欠账**：§6.1 点名要这条记录，
+    /// 而在此之前两端都没实现。
+    /// </remarks>
+    [Fact]
+    public void AppHost_把错误扫描交给协调器()
+    {
+        var path = Path.Combine(RepoRoot(), "src", "VidLog.Desktop.App", "AppHost.cs");
+
+        var code = string.Join(
+            '\n',
+            File.ReadAllLines(path).Where(line => !line.TrimStart().StartsWith("//")));
+
+        Assert.Contains("new ScanErrorLog(layout.ScanErrorsPath)", code, StringComparison.Ordinal);
+    }
+
     /// <summary>从测试程序集往上找到仓库根（含 <c>src</c> 与 <c>tests</c> 的那一层）。</summary>
     private static string RepoRoot()
     {

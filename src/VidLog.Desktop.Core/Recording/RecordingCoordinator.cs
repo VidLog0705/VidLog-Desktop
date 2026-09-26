@@ -63,6 +63,15 @@ public sealed class RecordingCoordinator : IAsyncDisposable
     private readonly WorkModePolicy _policy;
     private readonly CoordinatorOptions _options;
 
+    /// <summary>
+    /// 错误扫描记录（规格 §6.1「必须保存的事实」里的那一条）。
+    /// </summary>
+    /// <remarks>
+    /// 可空：它是一条**诊断**记录，缺了不影响录制 ——
+    /// 所以那些不关心它的装配（以及测试）不必硬塞一个。
+    /// </remarks>
+    private readonly ScanErrorLog? _scanErrors;
+
     private RecordingSession? _current;
 
     public RecordingCoordinator(
@@ -73,7 +82,8 @@ public sealed class RecordingCoordinator : IAsyncDisposable
         IPunchLog punches,
         IAppLogger logger,
         WorkModePolicy policy,
-        CoordinatorOptions options)
+        CoordinatorOptions options,
+        ScanErrorLog? scanErrors = null)
     {
         _workspace = workspace;
         _capture = capture;
@@ -83,6 +93,7 @@ public sealed class RecordingCoordinator : IAsyncDisposable
         _logger = logger;
         _policy = policy;
         _options = options;
+        _scanErrors = scanErrors;
     }
 
     /// <summary>是否处于「工作中」（规格 §3.3.1 的用词）。</summary>
@@ -223,7 +234,7 @@ public sealed class RecordingCoordinator : IAsyncDisposable
                 break;
 
             case WorkDecision.Announce announce:
-                HandleAnnounce(announce);
+                await HandleAnnounceAsync(announce, cancellationToken);
                 break;
 
             case WorkDecision.Nothing:
@@ -432,7 +443,16 @@ public sealed class RecordingCoordinator : IAsyncDisposable
         Raise(CoordinatorNoticeKind.FinalizeFailed, session.Waybill, message);
     }
 
-    private void HandleAnnounce(WorkDecision.Announce announce)
+    /// <summary>
+    /// 提示类决策（规格 §3.3.2）。错码保护那一条**同时要落一条记录**。
+    /// </summary>
+    /// <remarks>
+    /// 规格 §6.1「必须保存的事实」里点名要有「错误扫描（错码保护触发的事件，诊断用）」，
+    /// 而 2026-09-26 之前**两端都没实现** —— 错码保护只做了界面提示与播报，
+    /// 事后查不出操作员那一刻扫到了什么。
+    /// </remarks>
+    private async Task HandleAnnounceAsync(
+        WorkDecision.Announce announce, CancellationToken cancellationToken)
     {
         switch (announce.Kind)
         {
@@ -440,6 +460,31 @@ public sealed class RecordingCoordinator : IAsyncDisposable
                 // 规格 §3.3.2 的措辞。
                 Raise(CoordinatorNoticeKind.WrongWaybill, announce.Waybill,
                     "面单错误，请扫描正确面单");
+
+                // ⚠️ 写失败**不能把这一下带下去**：本表按规格「不是控制流的输入」，
+                // 而这一下正在**录着像**。诊断记录丢了是小事，
+                // 让错码保护这条路径整个失败是大事（`RecordingCoordinatorTests`
+                // 里有一条专门盯着「错码保护这条路径整个失败」的用例）。
+                // 「扫到的那个单号」在这条决策里是可空的（类型上没有更强的保证）——
+                // 拿不到就不记，**不编一个**：一条编出来的诊断记录比没有更坏。
+                if (_scanErrors is not null
+                    && _current?.Waybill is { } expected
+                    && announce.Waybill is { } scanned)
+                {
+                    try
+                    {
+                        await _scanErrors.AppendAsync(
+                            new ScanErrorEvent(
+                                _current.SessionId, expected, scanned, DateTimeOffset.UtcNow),
+                            cancellationToken);
+                    }
+                    catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+                    {
+                        _logger.Log(LogLevel.Warn, "扫码", "错误扫描记录写不下去",
+                            new Dictionary<string, object?> { ["原因"] = ex.Message });
+                    }
+                }
+
                 break;
 
             case AnnouncementKind.SwitchedWaybill:
