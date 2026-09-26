@@ -5,38 +5,13 @@ using VidLog.Desktop.Core.Index;
 
 namespace VidLog.Desktop.Core.Cleanup;
 
-/// <summary>归档层是本机磁盘时的回查。</summary>
-/// <remarks>
-/// 规格 §3.5.1：归档层就是本机磁盘时，该副本是**唯一副本**，不提供清理选项。
-/// 所以这个实现**只用于「确认文件还在」**，不用于放行删除 ——
-/// 放行删除前由 <see cref="CleanupExecutor"/> 挡掉。
-/// </remarks>
-public sealed class LocalFolderArchiveBackend : IArchiveBackend
-{
-    private readonly string _root;
-
-    public LocalFolderArchiveBackend(string root)
-    {
-        _root = root;
-    }
-
-    public ArchiveBackendKind Kind => ArchiveBackendKind.LocalDisk;
-
-    public Task<ArchiveVerifyResult> VerifyAsync(
-        RelativePath location, CancellationToken cancellationToken = default)
-    {
-        var path = Path.Combine(_root, location.Value);
-
-        // 查不了（路径越界、权限不足）要报出来，而不是当成「不存在」。
-        if (!location.Value.StartsWith(_root, StringComparison.Ordinal)
-            && !Path.GetFullPath(path).StartsWith(Path.GetFullPath(_root), StringComparison.OrdinalIgnoreCase))
-        {
-            return Task.FromResult(new ArchiveVerifyResult(false, "路径越出归档根"));
-        }
-
-        return Task.FromResult(new ArchiveVerifyResult(File.Exists(path), null));
-    }
-}
+// ── 归档层的回查实现在 `ArchiveBackends.cs` ──
+//
+// 原来这里有一个 `LocalFolderArchiveBackend`（只认本机磁盘）。
+// 2026-09-27 起换成 `DirectoryArchiveBackend`：**同一份代码**吃本机磁盘、
+// NAS、挂载网络驱动器三种（规格 §3.4.6 点名的「目录型」）。
+// 本机那一档的语义没变（发布是空操作、回查看文件在不在），
+// 而「归档层是本机时不删」那条 gate 仍在 `CleanupExecutor.CanCleanup` 里。
 
 /// <summary>一次清理的结果。</summary>
 /// <param name="Deleted">真删掉的。</param>

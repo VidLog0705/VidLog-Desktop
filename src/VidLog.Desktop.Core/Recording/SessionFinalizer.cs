@@ -1,3 +1,4 @@
+using VidLog.Desktop.Core.Cleanup;
 using VidLog.Desktop.Core.Diagnostics;
 using VidLog.Desktop.Core.Index;
 using VidLog.Desktop.Core.Media;
@@ -76,19 +77,27 @@ public sealed class SessionFinalizer
     private readonly IRecordingIndex _index;
     private readonly string _archiveRoot;
     private readonly IAppLogger _logger;
+    private readonly ArchiveRelay? _relay;
 
+    /// <param name="relay">
+    /// 把成品再发一份到归档层（规格 §3.4.6 的 NAS / 挂载盘 / 网盘）。
+    /// <b>归档层就是本机时传 <see langword="null"/></b> —— 那时本机这一份就是归档层那一份，
+    /// 发布是空操作，建一个对象只会让「发过没有」这个问题多一个没意义的答案。
+    /// </param>
     public SessionFinalizer(
         RemuxPipeline remux,
         DecodeVerifier verifier,
         IRecordingIndex index,
         string archiveRoot,
-        IAppLogger? logger = null)
+        IAppLogger? logger = null,
+        ArchiveRelay? relay = null)
     {
         _remux = remux;
         _verifier = verifier;
         _index = index;
         _archiveRoot = archiveRoot;
         _logger = logger ?? NullLogger.Instance;
+        _relay = relay;
     }
 
     /// <summary>规格 §4.1 的收尾序列：封闭 → remux → 实际解码校验 → 算哈希 → 写索引。</summary>
@@ -238,6 +247,17 @@ public sealed class SessionFinalizer
             // 成品已经落盘且可播，但没进索引 —— 不能算收尾成功，
             // 否则用户检索不到这条，等于「看起来存在其实找不到」。
             return new FinalizedSegment(segment, destination, location, contentHash, $"写索引失败：{ex.Message}");
+        }
+
+        // 5. 发一份到归档层（规格 §3.4.6）。
+        //
+        // ⚠️ **失败不算收尾失败，也不清本机这一份。** 本机这一份已经在索引里、
+        // 能播能检索 —— 它是这个系统的第一份。归档层那份没上去的代价是
+        // 「这条还不能被清理」（回查会不通过 ⇒ 拒删），而不是「这条录像没了」。
+        // 这正是 I2 的方向：**宁可多占地方，不可少一份证据**。
+        if (_relay is not null)
+        {
+            await _relay.PublishAsync(location, destination, cancellationToken);
         }
 
         return new FinalizedSegment(segment, destination, location, contentHash, null);

@@ -3,7 +3,12 @@ using VidLog.Desktop.Core.Labels;
 
 namespace VidLog.Desktop.Core.Cleanup;
 
-/// <summary>归档层的种类。</summary>
+/// <summary>归档层的种类（规格 §3.4.6 的**四种**）。</summary>
+/// <remarks>
+/// ⚠️ <b>枚举值落进设置文件（<c>settings.json</c> 的 <c>ArchiveBackend</c>），
+/// 所以顺序即格式，别重排。</b> <see cref="MountedDrive"/> 是 2026-09-27 追加的，
+/// 值取 3 而不是插在中间 —— 插进去会把所有老配置的意思改掉，而且是**静默**的。
+/// </remarks>
 public enum ArchiveBackendKind
 {
     /// <summary>归档层就是**本机磁盘**。</summary>
@@ -11,10 +16,23 @@ public enum ArchiveBackendKind
     /// 规格 §3.5.1：此时该副本是**唯一副本**，不提供清理选项 ——
     /// 「显示了但禁用」和「根本不显示」是两回事，后者才符合「不提供」。
     /// </remarks>
-    LocalDisk,
+    LocalDisk = 0,
 
-    Nas,
-    Cloud,
+    /// <summary>NAS —— **目录型**，与挂载盘共用一份实现。</summary>
+    Nas = 1,
+
+    /// <summary>百度网盘 —— **网盘型**，走它的接口。</summary>
+    Cloud = 2,
+
+    /// <summary>
+    /// 挂载网络驱动器（`Z:\` 或 `\\nas\vidlog`）。
+    /// </summary>
+    /// <remarks>
+    /// 规格 §3.4.6：让用户填一个盘符或 UNC 路径，**网络那一层由用户自己在系统里解决**，
+    /// 我们只当成一个目录用。⚠️ 这个路径**只当配置里的根**，绝不进索引
+    /// （<c>RelativePath</c> 拒绝绝对路径与 UNC，规格 §6.2）。
+    /// </remarks>
+    MountedDrive = 3,
 }
 
 /// <summary>回查归档层的结果。</summary>

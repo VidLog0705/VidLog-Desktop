@@ -4,6 +4,7 @@ using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using VidLog.Desktop.Core.Cleanup;
 using VidLog.Desktop.Core.Configuration;
 using VidLog.Desktop.Core.Index;
 using VidLog.Desktop.Core.Labels;
@@ -123,7 +124,8 @@ public sealed class UploadReceiver
         ILabelStore labels,
         DecodeVerifier verifier,
         string deviceName,
-        Func<DateTimeOffset>? now = null)
+        Func<DateTimeOffset>? now = null,
+        ArchiveRelay? relay = null)
     {
         _layout = layout;
         _index = index;
@@ -133,7 +135,18 @@ public sealed class UploadReceiver
         _deviceName = deviceName;
         _now = now ?? (() => DateTimeOffset.UtcNow);
         _receipts = new ReceiptStore(layout.ReceiptsPath);
+        _relay = relay;
     }
+
+    /// <summary>
+    /// 把刚发布的那一份再发一份到归档层（规格 §3.4.6）。
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ **发布失败不回滚、不改回执。** 回执说的是「这台电脑端收下了」——
+    /// 那是事实，而且手机端拿到它才会走下一步（§3.4.4）。归档层那份没上去的代价是
+    /// 「手机端那条还不能被清理」（回查不通过 ⇒ 拒删），不是「这条录像没了」。
+    /// </remarks>
+    private readonly ArchiveRelay? _relay;
 
     /// <summary>
     /// 分片清单查询（§2.4）。**接收方算，发送方绝不拿自己记的进度续传**（规格 §3.4.2）。
@@ -407,6 +420,13 @@ public sealed class UploadReceiver
         await IndexOnceAsync(evidenceId, request, waybill, location, contentHash!, authenticatedDeviceId, cancellationToken);
 
         await CleanupIncomingAsync(directory, cancellationToken);
+
+        // 再发一份到归档层（规格 §3.4.6）。排在最后：回执与索引都已经落了盘，
+        // 这一份没上去**不会**影响手机端拿到的那个答复。
+        if (_relay is not null)
+        {
+            await _relay.PublishAsync(location, destination, cancellationToken);
+        }
 
         return new CommitResponse(receipt, ReceiptSignature.Compute(credential, receipt));
     }

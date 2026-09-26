@@ -338,12 +338,20 @@ public class DesktopServicesTests
         // ① FFmpeg 的每一次调用（一处覆盖 remux / 解码校验 / 编码器探测）
         Assert.Contains("new SystemProcessRunner(logger)", code, StringComparison.Ordinal);
 
-        // ② 收尾（I9 的唯一落点）
-        Assert.Contains("layout.ArchiveRoot,\n            logger);", code.Replace("\r\n", "\n"),
+        // ② 收尾（I9 的唯一落点）。
+        // ⚠️ 2026-09-27 起它还接一个 relay —— 归档层那一份的**发布点就在这条路上**。
+        // 只到 `logger);` 的话，把 relay 接掉（改回 `logger);`）这条绊线照样绿，
+        // 而表现是「设了 NAS、文件却没发过去」（踩坑 #13 的又一张脸）。
+        Assert.Contains("layout.ArchiveRoot,\n            logger,\n            relay);", code.Replace("\r\n", "\n"),
             StringComparison.Ordinal);
 
         // ③ 入网决策（安全事件）
         Assert.Contains("new DeviceRegistry(layout.DevicesPath, logger: logger)", code, StringComparison.Ordinal);
+
+        // ④ 另一个发布点：接收远端上传之后也要发一份到归档层。
+        // 少这一处的话，「电脑端自己录的」会发到 NAS，而**手机传上来的**不会 ——
+        // 一半有、一半没有，比两条都不发更难发现。
+        Assert.Contains("relay: relay);", code, StringComparison.Ordinal);
     }
 
     /// <summary>

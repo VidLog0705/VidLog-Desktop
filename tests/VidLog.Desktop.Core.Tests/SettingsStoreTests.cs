@@ -109,6 +109,54 @@ public class SettingsStoreTests
     }
 
     [Fact]
+    public async Task 归档目录存得住_而且不落盘成一个多余的字段组()
+    {
+        // `Archive` 是由 `ArchiveBackend` + `ArchiveDirectory` 算出来的（不落盘），
+        // 所以「存了什么」要看那两个字段本身。
+        using var dir = new TempDir();
+        var path = dir.File("settings.json");
+        var want = AppSettings.Default with
+        {
+            ArchiveBackend = ArchiveBackendKind.MountedDrive,
+            ArchiveDirectory = @"Z:\vidlog",
+        };
+
+        await new SettingsStore(path).SaveAsync(want);
+        var result = await new SettingsStore(path).LoadAsync();
+
+        Assert.Empty(result.Warnings);
+        Assert.Equal(ArchiveBackendKind.MountedDrive, result.Settings.ArchiveBackend);
+        Assert.Equal(@"Z:\vidlog", result.Settings.ArchiveDirectory);
+
+        var archive = result.Settings.Archive;
+        Assert.True(archive.IsDirectoryType);
+        Assert.True(archive.AllowsCleanup, "挂载盘算「在别处」，所以允许开清理（§3.5.1）");
+        Assert.Null(archive.ConfigurationProblem);
+
+        // 那个合成的属性本身**不写进文件** —— 写了就会出现两份真相。
+        Assert.DoesNotContain("\"Archive\":", await File.ReadAllTextAsync(path), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task 老设置文件里只有归档层没有目录_照样读得出来()
+    {
+        // 2026-09-27 之前的 settings.json 里没有 ArchiveDirectory 这个键。
+        using var dir = new TempDir();
+        var path = dir.File("settings.json");
+        await File.WriteAllTextAsync(path, """{"ArchiveBackend":1}""");
+
+        var result = await new SettingsStore(path).LoadAsync();
+
+        Assert.Equal(ArchiveBackendKind.Nas, result.Settings.ArchiveBackend);
+        Assert.Null(result.Settings.ArchiveDirectory);
+
+        // 老文件里的 NAS **没有路径** —— 那是「没配好」，不是「配好了没生效」。
+        var problem = result.Settings.Archive.ConfigurationProblem;
+        Assert.NotNull(problem);
+        Assert.Contains("还没填归档目录", problem);
+    }
+
+    [Fact]
     public async Task 两份保留期分开存读_互不串()
     {
         using var dir = new TempDir();

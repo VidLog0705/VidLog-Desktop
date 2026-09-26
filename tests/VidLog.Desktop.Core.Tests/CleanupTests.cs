@@ -297,7 +297,8 @@ public class CleanupTests
     {
         // 规格 §3.5.1：那时该副本是唯一副本，不提供清理选项。
         using var dir = new TempDir();
-        var executor = BuildExecutor(dir, new LocalFolderArchiveBackend(dir.ArchiveRoot));
+        var executor = BuildExecutor(
+            dir, new DirectoryArchiveBackend(dir.ArchiveRoot, ArchiveBackendKind.LocalDisk));
         var plan = PlanFor(Entry("e1", Now.AddDays(-365)));
 
         Assert.False(executor.CanCleanup);

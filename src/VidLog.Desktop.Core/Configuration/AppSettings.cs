@@ -81,14 +81,33 @@ public sealed record AppSettings
     public int LogRetainDays { get; init; } = 14;
 
     /// <summary>
-    /// 归档层是本机磁盘、NAS、还是网盘（规格 §3.5.1）。
+    /// 归档层是本机磁盘、NAS、挂载盘、还是网盘（规格 §3.4.6 / §3.5.1）。
     /// </summary>
     /// <remarks>
     /// 默认<see cref="ArchiveBackendKind.LocalDisk"/> = 盘上这份是**唯一副本**，
     /// 于是规格 §3.5.1 不允许开启清理、界面上**不给保留期设置入口**。
     /// 这个默认值就是「什么都没配过」时的真实处境，不是保守起见。
+    /// <para>
+    /// ⚠️ 这一项**沿用老的 JSON 键名与数字值**（老配置里写的就是它），
+    /// 所以它的类型从枚举窄化成「枚举 + 目录」那个记录时**没有动落盘形状** ——
+    /// 只是多了一个兄弟字段 <see cref="ArchiveDirectory"/>。
+    /// </para>
     /// </remarks>
     public ArchiveBackendKind ArchiveBackend { get; init; } = ArchiveBackendKind.LocalDisk;
+
+    /// <summary>
+    /// 目录型归档层的根（NAS 或挂载盘的路径）。
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ 这是**配置里的根**，不进索引：索引里存的永远是相对路径
+    /// （<c>RelativePath</c> 拒绝绝对路径与 UNC，规格 §6.2）。
+    /// 换一台机器把它挂到别的盘符时，索引照样读得出来。
+    /// </remarks>
+    public string? ArchiveDirectory { get; init; }
+
+    /// <summary>归档层配置（枚举 + 目录合成一个）。**不落盘**，它是由那两个字段算出来的。</summary>
+    [JsonIgnore]
+    public ArchiveTarget Archive => ArchiveTarget.FromConfig(ArchiveBackend, ArchiveDirectory);
 
     /// <summary>归档成功后本地留多久，发货与退货各一份（规格 §3.5.2.1）。</summary>
     /// <remarks>

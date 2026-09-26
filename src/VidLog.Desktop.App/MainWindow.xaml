@@ -211,17 +211,32 @@
                           HorizontalAlignment="Left" SelectionChanged="OnArchiveChanged">
                     <ComboBoxItem Tag="LocalDisk">本机磁盘</ComboBoxItem>
                     <ComboBoxItem Tag="Nas">NAS</ComboBoxItem>
-                    <ComboBoxItem Tag="Cloud">网盘</ComboBoxItem>
+                    <ComboBoxItem Tag="MountedDrive">挂载网络驱动器</ComboBoxItem>
+                    <ComboBoxItem Tag="Cloud">百度网盘</ComboBoxItem>
                 </ComboBox>
                 <TextBlock Text="录像备份到哪儿去了。只有在别处还有一份时，清掉盘上这份才是安全的。"
                            Margin="0,2,0,0" Foreground="#88666666" TextWrapping="Wrap"/>
+                <TextBlock x:Name="ArchiveReachNote" Margin="0,2,0,0"
+                           Foreground="#88666666" TextWrapping="Wrap"/>
+
+                <!-- 目录型的路径（NAS / 挂载盘）。这两档**共用一份实现**（规格 §3.4.6），
+                     所以界面上也是同一个输入框 —— 再拆一个只会让两条路慢慢走岔。 -->
+                <StackPanel x:Name="ArchivePathPanel" Margin="0,8,0,0" Visibility="Collapsed">
+                    <TextBlock Text="归档目录" FontWeight="SemiBold"/>
+                    <TextBox x:Name="ArchivePathBox" Width="360" Margin="0,4,0,0"
+                             HorizontalAlignment="Left"/>
+                    <TextBlock Margin="0,2,0,0" Foreground="#88666666" TextWrapping="Wrap"
+                               Text="填一个可读写的目录，例如 \\nas\vidlog 或 Z:\vidlog。网络那一层（登录、凭据）由你在系统里挂好，我们只当成一个目录用。"/>
+                    <TextBlock Margin="0,2,0,0" Foreground="#88666666" TextWrapping="Wrap"
+                               Text="⚠️ 这个路径只是「去哪儿找归档层」，不进索引 —— 换台机器挂到别的盘符，录像照样查得到。"/>
+                </StackPanel>
 
                 <!-- 归档层 = 本机磁盘时这块**不出现**（规格 §3.5.1）——
                      那时盘上这份是唯一副本，给了开关也只能是「改了没反应」。 -->
                 <StackPanel x:Name="RetentionPanel" Margin="0,16,0,0" Visibility="Collapsed">
-                    <TextBlock Text="已备份后的本地保留期（发货 / 退货各一份）" FontWeight="SemiBold"/>
+                    <TextBlock Text="已备份后的本地保留期（发货 / 退货 × 已备份 / 未备份 = 四个数）" FontWeight="SemiBold"/>
                     <TextBlock Margin="0,2,0,0" Foreground="#88666666" TextWrapping="Wrap"
-                               Text="这份设置现在只是记下你的选择 —— 真正开删要等归档层接通（M5/M6）。今天不会有任何文件被删。"/>
+                               Text="这份设置现在只是记下你的选择 —— 真正开删要等清理执行层接通（M6）。今天不会有任何文件被删。"/>
                     <StackPanel Orientation="Horizontal" Margin="0,4,0,0">
                         <TextBlock Text="发货" VerticalAlignment="Center" Width="40"/>
                         <ComboBox x:Name="OutboundRetentionCombo" Width="120"
@@ -237,6 +252,11 @@
                 </StackPanel>
                 <TextBlock x:Name="RetentionAbsentNote" Margin="0,16,0,0"
                            Foreground="#88666666" TextWrapping="Wrap"/>
+
+                <!-- 归档层那一份没发上去（规格 §3.4.6）。**必须说出来**：
+                     它意味着盘上这份只有一份，而用户可能以为自己已经双份了。 -->
+                <TextBlock x:Name="ArchiveRelayNote" Margin="0,16,0,0"
+                           Foreground="#CC6600" TextWrapping="Wrap" Visibility="Collapsed"/>
 
                 <StackPanel Orientation="Horizontal" Margin="0,20,0,0">
                     <Button x:Name="SaveSettingsButton" Content="保存设置" Padding="16,6"

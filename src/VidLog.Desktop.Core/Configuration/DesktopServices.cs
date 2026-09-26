@@ -1,3 +1,4 @@
+using VidLog.Desktop.Core.Cleanup;
 using VidLog.Desktop.Core.Diagnostics;
 using VidLog.Desktop.Core.Index;
 using VidLog.Desktop.Core.Labels;
@@ -94,6 +95,22 @@ public sealed class DesktopServices : IAsyncDisposable
     /// <summary>回放服务端口。</summary>
     public int PlaybackPort { get; }
 
+    /// <summary>当前用的归档层（规格 §3.4.6）。</summary>
+    public ArchiveTarget ArchiveTarget { get; private init; } = ArchiveTarget.Default;
+
+    /// <summary>归档层的回查实现（清理的前置 gates 用它）。</summary>
+    public IArchiveBackend ArchiveBackend { get; private init; } = null!;
+
+    /// <summary>
+    /// 发布到归档层那一步；<b>归档层就是本机时为 <see langword="null"/></b>。
+    /// </summary>
+    /// <remarks>
+    /// 界面要读它的 <see cref="ArchiveRelay.LastFailure"/> ——
+    /// 「归档层那份没发上去」意味着本机这份**只有一份**，用户必须知道，
+    /// 否则他可能手动删掉唯一的那一份。
+    /// </remarks>
+    public ArchiveRelay? ArchiveRelay { get; private init; }
+
     /// <summary>远端上传的接收方（M5）。</summary>
     public UploadReceiver Upload { get; }
 
@@ -134,12 +151,16 @@ public sealed class DesktopServices : IAsyncDisposable
     /// 这一层是「把 logger 铺给服务」的唯一入口：回放服务、上传接收那些类
     /// 都在这里 new 出来，所以在这里传一次就够，不必让每个调用点都记得。
     /// </param>
+    /// <param name="archive">
+    /// 归档层配置（规格 §3.4.6）。不传 = 本机磁盘那一档（出厂默认）。
+    /// </param>
     public static DesktopServices Create(
         DataLayout layout,
         string? ffmpegPath = null,
         int? playbackPort = DefaultPlaybackPort,
         string? deviceName = null,
-        IAppLogger? logger = null)
+        IAppLogger? logger = null,
+        ArchiveTarget? archive = null)
     {
         layout.EnsureCreated();
 
@@ -163,12 +184,31 @@ public sealed class DesktopServices : IAsyncDisposable
         var punches = new JsonLinesPunchLog(layout.PunchLogPath);
         var labels = new JsonLinesLabelStore(layout.LabelStorePath);
 
+        // ── 归档层（规格 §3.4.6 的四种后端）────────────────────────────
+        //
+        // 一处解析，两处发布（收尾那一条路 + 接收远端上传那一条路）。
+        // ⚠️ 本机磁盘那一档**不建 relay**：那时本机这一份就是归档层那一份，
+        // 发布是空操作，而「发过没有」这个问题在那一档下没有意义。
+        var target = archive ?? ArchiveTarget.Default;
+        var archiveBackend = new DirectoryArchiveBackend(layout.ArchiveRoot, target.Kind);
+        var relay = target.IsOnThisMachine
+            ? null
+            : new ArchiveRelay(archiveBackend, target.Label, logger);
+
+        if (target.ConfigurationProblem is { } problem)
+        {
+            // I3：归档层配错了**必须让用户看见**。看不见的后果很具体：
+            // 他以为录像已经双份了，于是手动删掉本机上唯一的那一份。
+            warnings.Add($"归档层没配好：{problem}本机这份仍然是好的，但它现在**只有一份**。");
+        }
+
         var finalizer = new SessionFinalizer(
             new RemuxPipeline(toolPath, runner),
             new DecodeVerifier(toolPath, runner),
             index,
             layout.ArchiveRoot,
-            logger);
+            logger,
+            relay);
 
         var workspace = new RecordingWorkspace(layout.WorkspaceRoot);
         var orphanRecovery = new OrphanRecovery(workspace, finalizer);
@@ -184,7 +224,9 @@ public sealed class DesktopServices : IAsyncDisposable
             punches,
             labels,
             new DecodeVerifier(toolPath, runner),
-            resolvedDeviceName);
+            resolvedDeviceName,
+            now: null,
+            relay: relay);
 
         PlaybackServer? server = null;
         if (playbackPort is not null)
@@ -217,7 +259,12 @@ public sealed class DesktopServices : IAsyncDisposable
             resolvedFfmpeg,
             upload,
             devices,
-            resolvedDeviceName);
+            resolvedDeviceName)
+        {
+            ArchiveTarget = target,
+            ArchiveBackend = archiveBackend,
+            ArchiveRelay = relay,
+        };
     }
 
     /// <summary>

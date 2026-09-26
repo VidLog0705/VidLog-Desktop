@@ -192,7 +192,13 @@ public sealed class AppHost : IAsyncDisposable
         var warnings = new List<string>(loaded.Warnings);
 
         var services = DesktopServices.Create(
-            layout, playbackPort: settings.PlaybackPort, logger: logger);
+            layout,
+            playbackPort: settings.PlaybackPort,
+            logger: logger,
+            // 归档层（规格 §3.4.6）。⚠️ 它决定两件事：成品的第二份发到哪儿，
+            // 以及**允不允许开本地清理**（§3.5.1）—— 所以必须在装配期就定下来，
+            // 而不是等到清理那一刻才读设置。
+            archive: settings.Archive);
 
         // ── 装配的最后一跳（曾经漏掉过，别再删）────────────────────────
         // 两件事都发生在这里：收尾上次没走完的孤儿（规格 §3.1.1），

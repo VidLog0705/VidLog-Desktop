@@ -116,6 +116,7 @@ public partial class MainWindow : Window
             IdleMinutesBox.Text = _host.Settings.IdleReminderMinutes.ToString();
             SelectByTag(DurationCombo, _host.Settings.DurationFallback.ToString());
             SelectByTag(ArchiveCombo, _host.Settings.ArchiveBackend.ToString());
+            ArchivePathBox.Text = _host.Settings.ArchiveDirectory ?? string.Empty;
             SelectRadio(CodecButtons, _host.Settings.Codec.ToString());
             SelectRadio(ResolutionButtons, _host.Settings.Resolution.ToString());
             ShowEffectiveSpec();
@@ -146,14 +147,68 @@ public partial class MainWindow : Window
     /// </remarks>
     private void ShowRetention()
     {
-        var local = TagOf(ArchiveCombo) is not ("Nas" or "Cloud");
+        var target = SelectedArchiveTarget();
 
-        RetentionPanel.Visibility = local ? Visibility.Collapsed : Visibility.Visible;
-        RetentionAbsentNote.Visibility = local ? Visibility.Visible : Visibility.Collapsed;
+        RetentionPanel.Visibility =
+            target.AllowsCleanup ? Visibility.Visible : Visibility.Collapsed;
+        RetentionAbsentNote.Visibility =
+            target.AllowsCleanup ? Visibility.Collapsed : Visibility.Visible;
         RetentionAbsentNote.Text =
             "归档层是本机磁盘 —— 盘上这份就是唯一副本，所以不提供保留期设置。"
-            + "改成 NAS 或网盘之后，这里才会出现。";
+            + "改成 NAS、挂载网络驱动器或百度网盘之后，这里才会出现。";
+
+        // 目录型（NAS / 挂载盘）才要那个路径框。⚠️ 这两档**共用一份实现**
+        // （规格 §3.4.6），所以界面上也是同一个框。
+        ArchivePathPanel.Visibility =
+            target.IsDirectoryType ? Visibility.Visible : Visibility.Collapsed;
+
+        // 「能不能跨网」要如实说（规格 §2.3：**不得承诺做不到的事**）。
+        ArchiveReachNote.Text = target.Reachability;
+
+        ShowArchiveRelayFailure();
     }
+
+    /// <summary>
+    /// 「归档层那一份没发上去」——**必须说出来**。
+    /// </summary>
+    /// <remarks>
+    /// 后果很具体：盘上这份现在**只有一份**。用户若以为已经双份了，
+    /// 就可能手动删掉唯一的那一份（那正是 I2 要防的事）。
+    /// <para>
+    /// 归档层就是本机磁盘时没有 relay —— 那一档下「发上去」是空操作，
+    /// 本来就不存在这个失败。
+    /// </para>
+    /// </remarks>
+    private void ShowArchiveRelayFailure()
+    {
+        var relay = _host.Services.ArchiveRelay;
+
+        if (relay?.LastFailure is not { Length: > 0 } failure)
+        {
+            ArchiveRelayNote.Visibility = Visibility.Collapsed;
+            return;
+        }
+
+        ArchiveRelayNote.Visibility = Visibility.Visible;
+        ArchiveRelayNote.Text =
+            $"⚠️ 最近一次发布到{relay.Label}没成功：{failure}\n"
+            + "盘上这一份仍然是好的、也能检索 —— 但它现在**只有一份**，"
+            + "在发上去之前别删它。修好之后下次收尾会自动再发。";
+    }
+
+    /// <summary>界面上当前选中的归档层。</summary>
+    /// <remarks>
+    /// 认不出的 Tag 一律回落到本机磁盘 —— 与
+    /// <see cref="ArchiveTarget.FromConfig"/> 同一个方向（朝**少删**的那头落）。
+    /// </remarks>
+    private ArchiveTarget SelectedArchiveTarget() =>
+        TagOf(ArchiveCombo) switch
+        {
+            "Nas" => new ArchiveTarget(ArchiveBackendKind.Nas, ArchivePathBox.Text),
+            "MountedDrive" => new ArchiveTarget(ArchiveBackendKind.MountedDrive, ArchivePathBox.Text),
+            "Cloud" => new ArchiveTarget(ArchiveBackendKind.Cloud),
+            _ => ArchiveTarget.Default,
+        };
 
     /// <summary>下拉里的项就是 <see cref="RetentionPolicies.Choices"/>，序号即索引。</summary>
     private static void SelectRetention(ComboBox combo, RetentionPolicy policy)
@@ -589,6 +644,10 @@ public partial class MainWindow : Window
             CameraDevice = CameraCombo.SelectedItem as string,
             ArchiveBackend = Enum.TryParse<ArchiveBackendKind>(TagOf(ArchiveCombo), out var backend)
                 ? backend : _host.Settings.ArchiveBackend,
+            // 目录型那两档的根。别的档位下这个框是藏着的，但值仍然记着 ——
+            // 用户在 NAS 与挂载盘之间来回切时不必重填一遍。
+            ArchiveDirectory = string.IsNullOrWhiteSpace(ArchivePathBox.Text)
+                ? null : ArchivePathBox.Text.Trim(),
             Retention = new RetentionPolicies(
                 RetentionOf(OutboundRetentionCombo), RetentionOf(ReturnRetentionCombo)),
         };

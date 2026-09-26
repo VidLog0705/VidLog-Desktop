@@ -1,5 +1,6 @@
 using System.Reflection;
 using System.Security.Cryptography;
+using VidLog.Desktop.Core.Cleanup;
 using VidLog.Desktop.Core.Index;
 using VidLog.Desktop.Core.Media;
 using VidLog.Desktop.Core.Recording;
@@ -34,8 +35,11 @@ public class SessionFinalizerTests
     /// <summary>成功路径的假 FFmpeg：会真的造出产物文件，让后续校验能过。</summary>
     private sealed class SucceedingRunner : IProcessRunner
     {
+        /// <summary>产物内容。归档层那一份要跟它一比一。</summary>
+        public const string DefaultPayload = "published-bytes";
+
         public List<IReadOnlyList<string>> Invocations { get; } = [];
-        public string Payload { get; set; } = "published-bytes";
+        public string Payload { get; set; } = DefaultPayload;
 
         public Task<ProcessResult> RunAsync(
             string executable,
@@ -108,13 +112,16 @@ public class SessionFinalizerTests
     private static SessionFinalizer BuildFinalizer(
         TempDir dir,
         IProcessRunner runner,
-        IRecordingIndex index)
+        IRecordingIndex index,
+        ArchiveRelay? relay = null)
     {
         return new SessionFinalizer(
             new RemuxPipeline("ffmpeg", runner),
             new DecodeVerifier("ffmpeg", runner),
             index,
-            dir.Dir("archive"));
+            dir.Dir("archive"),
+            logger: null,
+            relay: relay);
     }
 
     private static SegmentProduct CreateSegment(TempDir dir, int sequence = 0)
@@ -124,6 +131,76 @@ public class SessionFinalizerTests
 
         var started = new DateTimeOffset(2026, 9, 16, 10, 30, 0, TimeSpan.FromHours(8));
         return new SegmentProduct(sequence, path, started, started.AddMinutes(1));
+    }
+
+    // ─────────────────────────────────────────────
+    // 归档层那一份（规格 §3.4.6）
+    // ─────────────────────────────────────────────
+
+    [Fact]
+    public async Task 收尾之后归档层上也要有一份()
+    {
+        using var dir = new TempDir();
+        var runner = new SucceedingRunner();
+        var index = new RecordingIndexSpy();
+
+        var nas = dir.Dir("nas");
+        var relay = new ArchiveRelay(
+            new DirectoryArchiveBackend(nas, ArchiveBackendKind.Nas), "NAS");
+
+        var finalizer = BuildFinalizer(dir, runner, index, relay);
+
+        var outcome = await finalizer.FinalizeAsync(
+            "sess-1", WaybillNumber.Parse("SF1000000001"), "device-1",
+            [CreateSegment(dir)], StopReason.Manual);
+
+        Assert.True(outcome.Succeeded);
+
+        // 本机那一份
+        var entry = Assert.Single(index.Entries);
+        Assert.True(File.Exists(System.IO.Path.Combine(dir.Dir("archive"), entry.Location.Value)));
+
+        // 归档层那一份：**同样的相对路径**，内容一样。
+        var onNas = System.IO.Path.Combine(nas, entry.Location.Value);
+        Assert.True(File.Exists(onNas), $"归档层上应当有 {entry.Location.Value}");
+        Assert.Equal(SucceedingRunner.DefaultPayload, await File.ReadAllTextAsync(onNas));
+
+        Assert.Null(relay.LastFailure);
+    }
+
+    [Fact]
+    public async Task 归档层发不上去时本机这一份照样入库()
+    {
+        // ⚠️ 这条是这一段的**方向性**判据：归档层那份没上去，代价是
+        // 「这条还不能被清理」（回查会拒），**不是**「这条录像没了」。
+        // 反过来做（发布失败 ⇒ 整个收尾失败）会让本机这一份变成孤儿，
+        // 每次启动重收一遍 —— 那是拿 I2 去换一个「发上去了没有」的仪式。
+        using var dir = new TempDir();
+        var runner = new SucceedingRunner();
+        var index = new RecordingIndexSpy();
+
+        // 拿一个文件当归档根：发布必然失败。
+        var blocker = dir.File("not-a-directory");
+        await File.WriteAllTextAsync(blocker, "x");
+
+        var relay = new ArchiveRelay(
+            new DirectoryArchiveBackend(
+                System.IO.Path.Combine(blocker, "nas"), ArchiveBackendKind.Nas),
+            "NAS");
+
+        var finalizer = BuildFinalizer(dir, runner, index, relay);
+
+        var outcome = await finalizer.FinalizeAsync(
+            "sess-1", WaybillNumber.Parse("SF1000000001"), "device-1",
+            [CreateSegment(dir)], StopReason.Manual);
+
+        Assert.True(outcome.Succeeded, "归档层发不上去**不该**让收尾失败");
+        Assert.Single(index.Entries);
+        Assert.NotNull(relay.LastFailure);
+
+        var entry = index.Entries[0];
+        Assert.True(File.Exists(System.IO.Path.Combine(dir.Dir("archive"), entry.Location.Value)),
+            "本机那一份必须还在");
     }
 
     // ─────────────────────────────────────────────
