@@ -1,3 +1,4 @@
+using System.Text.Json;
 using VidLog.Desktop.Core.Diagnostics;
 
 namespace VidLog.Desktop.Core.Tests;
@@ -73,7 +74,7 @@ public class LoggingTests
     // ─────────────────────────────────────────────
 
     [Fact]
-    public async Task 写进去的行能被读回来()
+    public async Task 写进去的行能当_JSON_读回来()
     {
         using var dir = new TempDir();
         var logger = new FileLogger(new FileLogOptions(dir.Path, "vidlog"));
@@ -81,14 +82,26 @@ public class LoggingTests
         logger.Log(LogLevel.Info, "录制", "开录了");
         await logger.DisposeAsync();
 
-        var text = await File.ReadAllTextAsync(logger.Path);
-        Assert.Contains("开录了", text, StringComparison.Ordinal);
-        Assert.Contains("[INFO ]", text, StringComparison.Ordinal);
-        Assert.Contains("[录制]", text, StringComparison.Ordinal);
+        // ⚠️ 这一条以前断言的是 `[INFO ]` 与 `[录制]` —— 那是旧的**自由文本**格式。
+        // 换成 JSON 是有意的（结构化是为了按字段查，而不是 grep 一段人读的文本），
+        // 所以这里是**有意识地换断言**，不是"改到绿为止"：级别与分类各自成字段。
+        var line = Assert.Single(await File.ReadAllLinesAsync(logger.Path));
+        using var json = JsonDocument.Parse(line);
+        var root = json.RootElement;
+
+        Assert.Equal("INFO", root.GetProperty("lvl").GetString());
+        Assert.Equal("录制", root.GetProperty("cat").GetString());
+        Assert.Equal("开录了", root.GetProperty("msg").GetString());
+
+        // 时间戳**必须带偏移量**：不带的话，同一个诊断包里两台机器的 17:10
+        // 是歧义的，而排事件顺序正是要拿它。
+        var ts = root.GetProperty("ts").GetString()!;
+        Assert.Matches(
+            @"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d+[+-]\d{2}:\d{2}$", ts);
     }
 
     [Fact]
-    public async Task 附带的数据会写进同一行()
+    public async Task 附带的数据进同一个_JSON_对象的_data_里()
     {
         using var dir = new TempDir();
         var logger = new FileLogger(new FileLogOptions(dir.Path, "vidlog"));
@@ -97,9 +110,95 @@ public class LoggingTests
             new Dictionary<string, object?> { ["设备"] = "EasyCamera", ["码"] = 123 });
         await logger.DisposeAsync();
 
-        var text = await File.ReadAllTextAsync(logger.Path);
-        Assert.Contains("设备=EasyCamera", text, StringComparison.Ordinal);
-        Assert.Contains("码=123", text, StringComparison.Ordinal);
+        var line = Assert.Single(await File.ReadAllLinesAsync(logger.Path));
+        using var json = JsonDocument.Parse(line);
+        var data = json.RootElement.GetProperty("data");
+
+        Assert.Equal("EasyCamera", data.GetProperty("设备").GetString());
+        // 数字要还是数字 —— 全写成字符串的话，按耗时排序这种查询就得先转型。
+        Assert.Equal(123, data.GetProperty("码").GetInt32());
+    }
+
+    [Fact]
+    public async Task 消息里的引号与换行不会把一条日志劈成两行()
+    {
+        // 手拼 JSON 最典型的坏法：`message` 里一个 `"` 或一个 `\n` ——
+        // 轻则不是 JSON，重则**把一条事件劈成两行、整份 JSONL 报废**。
+        // 这是选 `Utf8JsonWriter` 而不是字符串拼接的全部理由。
+        using var dir = new TempDir();
+        var logger = new FileLogger(new FileLogOptions(dir.Path, "vidlog"));
+
+        logger.Log(LogLevel.Info, "扫码", "扫到 \"引号\" 与\n换行");
+        await logger.DisposeAsync();
+
+        var lines = await File.ReadAllLinesAsync(logger.Path);
+        var line = Assert.Single(lines); // 一条日志就是一行
+        using var json = JsonDocument.Parse(line); // 而且是合法 JSON
+        Assert.Contains("换行", json.RootElement.GetProperty("msg").GetString()!);
+    }
+
+    [Fact]
+    public async Task 低于阈值的日志不落盘()
+    {
+        using var dir = new TempDir();
+        var logger = new FileLogger(
+            new FileLogOptions(dir.Path, "vidlog", MinLevel: LogLevel.Warn));
+
+        logger.Log(LogLevel.Debug, "录制", "开发细节");
+        logger.Log(LogLevel.Info, "录制", "普通信息");
+        logger.Log(LogLevel.Warn, "录制", "值得看一眼");
+        await logger.DisposeAsync();
+
+        // 生产上开 DEBUG 会把日志淹掉，而**淹掉的日志等于没有日志**。
+        var line = Assert.Single(await File.ReadAllLinesAsync(logger.Path));
+        Assert.Contains("值得看一眼", line, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task 一次写很多条_一条都不少也不乱序()
+    {
+        // 走的是「排干再刷」那条批量路径。少了顺序保证的话，
+        // 「先开录后停录」会被读成反过来 —— 那比丢一条更难发现。
+        using var dir = new TempDir();
+        var logger = new FileLogger(new FileLogOptions(dir.Path, "vidlog"));
+
+        for (var i = 0; i < 200; i++)
+        {
+            logger.Log(LogLevel.Info, "录制", $"第 {i} 条");
+        }
+
+        await logger.DisposeAsync();
+
+        var lines = await File.ReadAllLinesAsync(logger.Path);
+        Assert.Equal(200, lines.Length);
+
+        for (var i = 0; i < 200; i++)
+        {
+            Assert.Contains($"第 {i} 条", lines[i], StringComparison.Ordinal);
+        }
+    }
+
+    [Fact]
+    public async Task 日志文件被删掉之后_下一条会把它重新建出来()
+    {
+        // ⚠️ **常开句柄带来的新失败模式**：文件被外部删掉（用户清理、备份工具）之后，
+        // 句柄还指着那个已经不存在的对象继续写 —— 表现是**日志静默消失**，
+        // 而且没有任何一处会报错。
+        using var dir = new TempDir();
+        var logger = new FileLogger(new FileLogOptions(dir.Path, "vidlog"));
+
+        logger.Log(LogLevel.Info, "录制", "第一条");
+        await logger.FlushAsync();
+        Assert.True(File.Exists(logger.Path));
+
+        File.Delete(logger.Path);
+
+        logger.Log(LogLevel.Info, "录制", "删掉之后这一条");
+        await logger.FlushAsync();
+
+        Assert.True(File.Exists(logger.Path), "被删掉之后必须自己长回来");
+        var line = Assert.Single(await File.ReadAllLinesAsync(logger.Path));
+        Assert.Contains("删掉之后这一条", line, StringComparison.Ordinal);
     }
 
     [Fact]
