@@ -198,11 +198,38 @@ public sealed class AppHost : IAsyncDisposable
 
         var device = await ResolveCameraAsync(services, settings, warnings, cancellationToken);
 
+        // ── 录制规格：**真实**的可用性检查（规格 §3.1.7）──────────────────
+        //
+        // ⚠️ 为什么要真开一次相机：规格原话「组合是稀疏的……设备能真跑通的**远少于**这个数
+        // （4K + H.265 在多数手机上就不行）。所以**录制前要做一次真实的可用性检查**，
+        // 而不是假定『列出来了就能用』」。合成源什么尺寸都收，只有真相机能说话。
+        //
+        // ⚠️ 回落的结论**必须说出来**：规格「**不得静默回落**」。
+        var wantedSpec = new RecordingSpec(settings.Codec, settings.Resolution);
+        var selection = services.FfmpegPath is null
+            ? new SpecSelection(wantedSpec, false, null)
+            : await SpecSelectionPolicy.SelectAsync(
+                wantedSpec, device, new FfmpegSpecProbe(services.FfmpegPath, new SystemProcessRunner(logger)),
+                cancellationToken);
+
+        if (selection.ChangedFromRequested)
+        {
+            warnings.Add(
+                $"录制规格回落到了 {selection.Spec.Label}（你选的是 {wantedSpec.Label}）。"
+                + $"原因：{selection.Reason}");
+        }
+
+        logger.Log(LogLevel.Info, "启动", $"录制规格 {selection.Spec.Label}", new Dictionary<string, object?>
+        {
+            ["用户选的"] = wantedSpec.Label,
+            ["回落"] = selection.ChangedFromRequested,
+        });
+
         var coordinator = new RecordingCoordinator(
             services.Workspace,
             services.FfmpegPath is null
                 ? throw new InvalidOperationException("没有可用的 FFmpeg，无法采集。")
-                : new FfmpegCameraCapture(services.FfmpegPath),
+                : new FfmpegCameraCapture(services.FfmpegPath, selection.Spec),
             services.Finalizer,
             new DiskSpaceGuard(new DriveSpaceProbe()),
             services.Punches,

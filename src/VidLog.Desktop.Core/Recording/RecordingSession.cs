@@ -9,7 +9,10 @@ public sealed record RecordingSessionOptions(
     TimeSpan SegmentDuration,
     TimeSpan MaxDuration,
     TimeSpan StopGracePeriod,
-    TimeSpan PollInterval)
+    TimeSpan PollInterval,
+    // 追加字段（规格 §3.1.7 的连带项：索引要记编码 / 分辨率）。
+    // 可空 ⇒ 老调用点与老条目都不受影响。
+    Media.RecordingSpec? Spec = null)
 {
     /// <summary>
     /// 默认值。
@@ -56,6 +59,14 @@ public sealed record RecordingSessionOptions(
             MaxDuration = fallback is { } value ? TimeSpan.FromMinutes(value) : NoFallback,
         };
     }
+
+    /// <summary>带上录制规格（规格 §3.1.7 的连带项：索引要记编码 / 分辨率）。</summary>
+    /// <remarks>
+    /// 单独一个方法而不是往 <see cref="From"/> 里再加一个参数：
+    /// 那个方法的调用点有十几处（大多是测试），它们关心的是时长档位，
+    /// 不该被一个跟它们无关的参数牵连着全改一遍。
+    /// </remarks>
+    public RecordingSessionOptions With(Media.RecordingSpec spec) => this with { Spec = spec };
 }
 
 /// <summary>
@@ -369,7 +380,9 @@ public sealed class RecordingSession : IAsyncDisposable
 
             var outcome = await _finalizer.FinalizeAsync(
                 SessionId, WaybillNumber.Parse(manifest.Waybill), SourceDeviceId,
-                segments, reason, cancellationToken);
+                segments, reason, cancellationToken,
+                // 规格进索引（§3.1.7 的连带项）—— 由这次会话的选项带过来。
+                spec: _options.Spec);
 
             State = outcome.State;
             Outcome = outcome;

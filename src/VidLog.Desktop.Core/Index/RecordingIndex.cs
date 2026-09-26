@@ -29,6 +29,26 @@ namespace VidLog.Desktop.Core.Index;
 /// 那是把编码格式当契约用，格式一改就全线崩，而且没有任何编译期保护。
 /// </para>
 /// </remarks>
+/// <param name="Codec">
+/// 编码名（<c>H264</c> / <c>H265</c>）。**追加字段**，老条目没有 ⇒ null。
+/// </param>
+/// <param name="Resolution">分辨率名（<c>Uhd4K</c> / <c>P1080</c> / <c>P720</c>）。追加字段。</param>
+/// <param name="Orientation">
+/// 方向名。**电脑端恒为 null** —— 规格 §3.1.7 ②：方向选项**只在手机端**
+/// （电脑端的摄像头方向由设备与安装决定）。手机端那一半会写它。
+/// </param>
+/// <remarks>
+/// <para>
+/// <b>为什么索引要记这三个</b>：规格 §3.1.7 的连带项原话 ——「否则回放端不知道该按什么播、
+/// 容量也估不准」。容量那一半是真的承重：电脑端「按空间清理」正是靠
+/// 「每个文件大概多大」决定删到够为止，而 4K 与 720P 差好几倍。
+/// </para>
+/// <para>
+/// ⚠️ 存的是**枚举名**（不是数字，也不是界面上的「H.264」）：
+/// 索引是要进诊断包、要被人打开看的，而 <c>H264</c> 一眼能认、也不会被翻译错。
+/// 界面上的名字另有 <c>RecordingSpec.CodecLabel</c> 一处产出（规格要求**不得出现 HEVC**）。
+/// </para>
+/// </remarks>
 public sealed record RecordingEntry(
     string EvidenceId,
     string SessionId,
@@ -38,7 +58,10 @@ public sealed record RecordingEntry(
     TimeSpan Duration,
     RelativePath Location,
     ContentHash ContentHash,
-    string SourceDeviceId);
+    string SourceDeviceId,
+    string? Codec = null,
+    string? Resolution = null,
+    string? Orientation = null);
 
 /// <summary>录像索引。</summary>
 public interface IRecordingIndex
@@ -193,7 +216,12 @@ public sealed class JsonLinesRecordingIndex : IRecordingIndex
                 TimeSpan.FromSeconds(Number(root, "DurationSeconds", "Duration") ?? 0),
                 RelativePath.Parse(location),
                 VidLog.Desktop.Core.ContentHash.Parse(contentHash),
-                sourceDeviceId);
+                sourceDeviceId,
+                // 追加字段：老条目没有它们 ⇒ null（不是空串 —— 「没记」与「记了个空」
+                // 是两件事，容量估算那边靠 null 才敢回落到保守值）。
+                Text(root, "Codec"),
+                Text(root, "Resolution"),
+                Text(root, "Orientation"));
 
             return true;
         }
@@ -295,7 +323,10 @@ public sealed record RecordingEntryDto(
     double DurationSeconds,
     string Location,
     string ContentHash,
-    string SourceDeviceId)
+    string SourceDeviceId,
+    string? Codec,
+    string? Resolution,
+    string? Orientation)
 {
     public static RecordingEntryDto From(RecordingEntry entry) => new(
         entry.EvidenceId,
@@ -306,5 +337,8 @@ public sealed record RecordingEntryDto(
         entry.Duration.TotalSeconds,
         entry.Location.Value,
         entry.ContentHash.Value,
-        entry.SourceDeviceId);
+        entry.SourceDeviceId,
+        entry.Codec,
+        entry.Resolution,
+        entry.Orientation);
 }

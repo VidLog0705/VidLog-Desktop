@@ -364,15 +364,63 @@ public sealed class CleanupPlanner
     /// 这条录像的成品占多大。
     /// </summary>
     /// <remarks>
+    /// <para>
     /// 用**时长推算**而不是去问文件系统：计划制定这一步刻意不碰磁盘
     /// （那样会有「算的过程中文件被别的东西删了」这类竞态）。
     /// 真实大小在执行阶段复核 —— 那里本来就要 stat 一次。
+    /// </para>
     /// <para>
-    /// 码率按 640x480@30 的 H.264 实测约 160 KB/s 估。
+    /// ⚠️ <b>必须按录制规格估，不能用一个写死的系数</b>（规格 §3.5.5 的连带项）：
+    /// 原话「分辨率/编码一变，每个文件的体积差好几倍……拿一个写死的系数算，
+    /// 4K 下会错得离谱 —— 而电脑端「按空间清理」**正是用它决定删到够为止**，
+    /// 估错就是『删了还不够』」。
+    /// </para>
+    /// <para>
+    /// ⚠️ <b>表里的是纸面值</b>（按各档的常见码率取**偏大**的一侧），**没有真机标定** ——
+    /// 与 §26 的静止阈值同一条账。取偏大是**有意的**：估小了不够删，
+    /// 估大了只是多删一条而已（而多删的那条仍然要过回查与豁免）。
+    /// </para>
+    /// <para>
+    /// ⚠️ 老条目没有那两个字段（追加字段之前录的）⇒ 按**默认档**（H.264 1080P）估，
+    /// 而不是回到原来那个 640x480 的系数 —— 那个只对旧的低清录像准，
+    /// 而「默认档」至少对得上今天真实录出来的东西。
     /// </para>
     /// </remarks>
-    public static long EstimateBytes(RecordingEntry entry) =>
-        (long)Math.Max(0, entry.Duration.TotalSeconds * 160 * 1024);
+    public static long EstimateBytes(RecordingEntry entry)
+    {
+        var seconds = Math.Max(0, entry.Duration.TotalSeconds);
+        return (long)(seconds * BytesPerSecond(entry.Codec, entry.Resolution));
+    }
+
+    /// <summary>每秒字节数（偏大估）。</summary>
+    /// <remarks>
+    /// 认不出的规格一律走 <see cref="Media.RecordingSpec.Default"/> 那一格 ——
+    /// 与设置层「越界回落默认值」同一条规矩。
+    /// </remarks>
+    private static double BytesPerSecond(string? codec, string? resolution)
+    {
+        var kind = Enum.TryParse<Media.VideoCodec>(codec, out var parsedCodec)
+            ? parsedCodec
+            : Media.RecordingSpec.Default.Codec;
+
+        var size = Enum.TryParse<Media.VideoResolution>(resolution, out var parsedResolution)
+            ? parsedResolution
+            : Media.RecordingSpec.Default.Resolution;
+
+        // 单位 KB/s。
+        var kilobytesPerSecond = (kind, size) switch
+        {
+            (Media.VideoCodec.H265, Media.VideoResolution.Uhd4K) => 2500,
+            (Media.VideoCodec.H265, Media.VideoResolution.P1080) => 700,
+            (Media.VideoCodec.H265, Media.VideoResolution.P720) => 350,
+            (Media.VideoCodec.H264, Media.VideoResolution.Uhd4K) => 4000,
+            (Media.VideoCodec.H264, Media.VideoResolution.P720) => 550,
+            _ => 1100, // H.264 1080P = 默认档
+        };
+
+        return kilobytesPerSecond * 1024;
+    }
+
 
     /// <summary>
     /// 这条录像有没有被用户锁上（规格 §3.5.3②，硬豁免）。

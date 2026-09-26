@@ -2,6 +2,7 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using VidLog.Desktop.Core.Cleanup;
 using VidLog.Desktop.Core.Diagnostics;
+using VidLog.Desktop.Core.Media;
 using VidLog.Desktop.Core.Recording;
 using VidLog.Desktop.Core.Scanning;
 
@@ -51,6 +52,16 @@ public sealed record AppSettings
     /// </remarks>
     public int IdleReminderMinutes { get; init; } = 3;
 
+    /// <summary>录制编码（规格 §3.1.7）。默认 H.264（兼容优先）。</summary>
+    /// <remarks>
+    /// 界面上一律写「H.265」，**不得出现 HEVC** —— 名字由
+    /// <c>RecordingSpec.CodecLabel</c> 一处产出。
+    /// </remarks>
+    public VideoCodec Codec { get; init; } = VideoCodec.H264;
+
+    /// <summary>录制分辨率（规格 §3.1.7）。默认 1080P。</summary>
+    public VideoResolution Resolution { get; init; } = VideoResolution.P1080;
+
     /// <summary>时长兜底档位（规格 §3.3.4）。</summary>
     public DurationFallbackOption DurationFallback { get; init; } = DurationFallbackOption.Four;
 
@@ -95,7 +106,9 @@ public sealed record AppSettings
     /// 那比拒绝更糟。
     /// </remarks>
     public static bool IsPlausible(AppSettings s) =>
-        s.SegmentMinutes is >= 1 and <= 10
+        Enum.IsDefined(s.Codec)
+        && Enum.IsDefined(s.Resolution)
+        && s.SegmentMinutes is >= 1 and <= 10
         && s.PlaybackPort is >= 1024 and <= 65535
         && s.LogRetainDays is >= 1 and <= 365
         && s.Scanner.MaxInterKeyIntervalMs is >= 10 and <= 500
@@ -260,6 +273,8 @@ public sealed class SettingsStore
         }
 
         Compare(nameof(AppSettings.Mode), previous.Mode, next.Mode);
+        Compare(nameof(AppSettings.Codec), previous.Codec, next.Codec);
+        Compare(nameof(AppSettings.Resolution), previous.Resolution, next.Resolution);
         // ⚠️ 留痕里写的是**新名字**（`IdleReminder`），而文件里的键名仍是 `StaticStop`
         // （见那一处属性的说明：键名不动是为了老配置不丢）。看日志的人和改文件的人
         // 会看到两个名字 —— 这是刻意的取舍，不是笔误。

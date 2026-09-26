@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using VidLog.Desktop.Core.Media;
 
 namespace VidLog.Desktop.Core.Recording;
 
@@ -32,9 +33,18 @@ public sealed class FfmpegCameraCapture : ICameraCapture
     /// </remarks>
     private readonly BoundedTextTail _errorTail = new();
 
-    public FfmpegCameraCapture(string ffmpegPath)
+    /// <summary>录制规格（编码已由 <paramref name="encoder"/> 带，这里管尺寸与帧率）。</summary>
+    /// <remarks>
+    /// 为 <see langword="null"/> 时**不带 <c>-video_size</c> / <c>-framerate</c>**，
+    /// 相机用它自己的默认档 —— 那是改动前的行为，也是「启动时那次规格探测失败、
+    /// 但总得录得起来」时的兜底。
+    /// </remarks>
+    private readonly RecordingSpec? _spec;
+
+    public FfmpegCameraCapture(string ffmpegPath, RecordingSpec? spec = null)
     {
         _ffmpegPath = ffmpegPath;
+        _spec = spec;
     }
 
     public Task<ICaptureProcess> StartAsync(
@@ -60,7 +70,7 @@ public sealed class FfmpegCameraCapture : ICameraCapture
             RedirectStandardInput = true,
         };
 
-        foreach (var argument in BuildArguments(device, outputPath, encoder))
+        foreach (var argument in BuildArguments(device, outputPath, encoder, _spec))
         {
             startInfo.ArgumentList.Add(argument);
         }
@@ -119,20 +129,46 @@ public sealed class FfmpegCameraCapture : ICameraCapture
     /// 换顺序会让一批测试静默失效。
     /// </para>
     /// </remarks>
-    public static IReadOnlyList<string> BuildArguments(string device, string outputPath, string encoder) =>
-    [
-        "-hide_banner",
-        "-v", "error",
-        "-f", "dshow",
-        "-rtbufsize", BufferSize,
-        "-i", $"video={device}",
-        "-c:v", encoder,
-        // 摄像头出的是 yuyv422，H.264 要 4:2:0。让 ffmpeg 显式转，
-        // 而不是指望编码器自己接受 —— libx264 接受不了 yuyv422 会直接失败。
-        "-pix_fmt", "yuv420p",
-        "-f", "matroska",
-        "-y", outputPath,
-    ];
+    /// <param name="spec">
+    /// 录制规格（规格 §3.1.7）。为 <see langword="null"/> 时不带尺寸与帧率 —— 见那个字段的说明。
+    /// </param>
+    public static IReadOnlyList<string> BuildArguments(
+        string device, string outputPath, string encoder, RecordingSpec? spec = null)
+    {
+        var arguments = new List<string>
+        {
+            "-hide_banner",
+            "-v", "error",
+            "-f", "dshow",
+            "-rtbufsize", BufferSize,
+        };
+
+        if (spec is not null)
+        {
+            // ⚠️ 这两个都必须是**输入选项**（放在 `-i` 之前）：对 dshow 来说
+            // `-video_size` 是「按这个模式打开设备」，写在 `-i` 后面会变成
+            // 「把画面缩到这个尺寸」—— 前者打不开就报错（那是对的，探测要的就是这个），
+            // 后者会悄悄缩放，于是**探测永远成功、而画质不是用户选的那一档**。
+            arguments.Add("-video_size");
+            arguments.Add(spec.FfmpegSize);
+            arguments.Add("-framerate");
+            arguments.Add(RecordingSpec.FrameRate.ToString(
+                System.Globalization.CultureInfo.InvariantCulture));
+        }
+
+        arguments.AddRange(
+        [
+            "-i", $"video={device}",
+            "-c:v", encoder,
+            // 摄像头出的是 yuyv422，H.264 要 4:2:0。让 ffmpeg 显式转，
+            // 而不是指望编码器自己接受 —— libx264 接受不了 yuyv422 会直接失败。
+            "-pix_fmt", "yuv420p",
+            "-f", "matroska",
+            "-y", outputPath,
+        ]);
+
+        return arguments;
+    }
 }
 
 /// <summary>

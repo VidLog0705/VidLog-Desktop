@@ -92,13 +92,18 @@ public sealed class SessionFinalizer
     }
 
     /// <summary>规格 §4.1 的收尾序列：封闭 → remux → 实际解码校验 → 算哈希 → 写索引。</summary>
+    /// <param name="spec">
+    /// 本次录制的规格（编码 / 分辨率），写进索引（规格 §3.1.7 的连带项）。
+    /// 排在最后且可选 —— 时长档位那些调用点（大多是测试）不该被它牵连着全改一遍。
+    /// </param>
     public async Task<FinalizeOutcome> FinalizeAsync(
         string sessionId,
         WaybillNumber waybill,
         string sourceDeviceId,
         IReadOnlyList<SegmentProduct> segments,
         StopReason reason,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        RecordingSpec? spec = null)
     {
         if (segments.Count == 0)
         {
@@ -117,7 +122,7 @@ public sealed class SessionFinalizer
             cancellationToken.ThrowIfCancellationRequested();
 
             var result = await FinalizeSegmentAsync(
-                sessionId, waybill, sourceDeviceId, segment, cancellationToken);
+                sessionId, waybill, sourceDeviceId, segment, spec, cancellationToken);
 
             if (!result.IsPublished && firstFailure is null)
             {
@@ -161,6 +166,7 @@ public sealed class SessionFinalizer
         WaybillNumber waybill,
         string sourceDeviceId,
         SegmentProduct segment,
+        RecordingSpec? spec,
         CancellationToken cancellationToken)
     {
         if (!File.Exists(segment.SourcePath))
@@ -214,7 +220,14 @@ public sealed class SessionFinalizer
             Duration: segment.EndedAt - segment.StartedAt,
             Location: location,
             ContentHash: contentHash,
-            SourceDeviceId: sourceDeviceId);
+            SourceDeviceId: sourceDeviceId,
+            // 规格 §3.1.7 的连带项：索引要记编码 / 分辨率。
+            // 规格为空（老调用点、或探测没跑成）时是 null —— 容量估算那边
+            // 靠 null 才敢回落到保守值（见 CleanupPlanner.EstimateBytes）。
+            Codec: spec?.Codec.ToString(),
+            Resolution: spec?.Resolution.ToString(),
+            // 电脑端恒为 null：方向选项只在手机端（规格 §3.1.7 ②）。
+            Orientation: null);
 
         try
         {
