@@ -202,6 +202,55 @@ public class LoggingTests
     }
 
     [Fact]
+    public async Task 凭据塞进_credential_键里_落盘那一行读不到它()
+    {
+        // 诊断包会把 logs/* **整个**打包外发，所以「写盘时就是干净的」这件事
+        // 必须在**这一层**成立 —— 导出时再过滤就是第二个过滤器了。
+        using var dir = new TempDir();
+        var logger = new FileLogger(new FileLogOptions(dir.Path, "vidlog"));
+
+        logger.Log(LogLevel.Info, "入网", "签发了凭据", new Dictionary<string, object?>
+        {
+            ["credential"] = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8",
+            ["deviceId"] = "phone-1",
+        });
+        await logger.DisposeAsync();
+
+        var line = Assert.Single(await File.ReadAllLinesAsync(logger.Path));
+        Assert.DoesNotContain("AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8", line, StringComparison.Ordinal);
+        Assert.Contains(SensitiveName.Redacted, line, StringComparison.Ordinal);
+
+        // 同一个对象里的其它字段照常写 —— 脱敏不该把整行变成一句空话。
+        using var json = JsonDocument.Parse(line);
+        Assert.Equal("phone-1", json.RootElement.GetProperty("data").GetProperty("deviceId").GetString());
+    }
+
+    [Fact]
+    public async Task 非标量的值只留一个类型名_不反射出它的字段()
+    {
+        // ⚠️ **绊线**：这是结构层那一层，也是最硬的一层。
+        // 反射式序列化会把 EnrolledDevice 的凭据原样写进日志 ——
+        // 所以这里刻意不认识对象图，只写「<对象:Xxx>」。
+        // 谁要是哪天图方便改成反射式序列化，这条会红。
+        using var dir = new TempDir();
+        var logger = new FileLogger(new FileLogOptions(dir.Path, "vidlog"));
+
+        logger.Log(LogLevel.Info, "入网", "看看这个对象",
+            new Dictionary<string, object?> { ["设备"] = new FakeEnrolled() });
+        await logger.DisposeAsync();
+
+        var line = Assert.Single(await File.ReadAllLinesAsync(logger.Path));
+        Assert.DoesNotContain("不该出现在日志里的凭据", line, StringComparison.Ordinal);
+        Assert.Contains("<对象:FakeEnrolled>", line, StringComparison.Ordinal);
+    }
+
+    private sealed class FakeEnrolled
+    {
+        // 名字起得直白：它出现在落盘行里就是错。
+        public string Credential { get; } = "不该出现在日志里的凭据";
+    }
+
+    [Fact]
     public async Task 目录不可写时不抛_只丢日志()
     {
         // I4 的同一条精神：日志坏了不能拖垮录制。

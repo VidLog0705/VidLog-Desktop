@@ -2,6 +2,7 @@ using System.Buffers.Text;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using VidLog.Desktop.Core.Diagnostics;
 
 namespace VidLog.Desktop.Core.Upload;
 
@@ -477,6 +478,10 @@ public sealed class DeviceRegistry
                 var dto = JsonSerializer.Deserialize<EnrolledDeviceDto>(line, DiskOptions);
                 if (dto?.DeviceId is { Length: > 0 } id && dto.Credential is { Length: > 0 } credential)
                 {
+                    // 读回来的凭据也登记给脱敏层 —— 这一句覆盖的是**这次改动之前
+                    // 就已经发出去的那些**（`NewCredential` 那处只覆盖新签发的）。
+                    Sanitizer.RegisterSecret(credential);
+
                     result.Add(new EnrolledDevice(id, dto.DeviceName ?? string.Empty, credential, dto.ApprovedAt));
                 }
             }
@@ -529,11 +534,21 @@ public sealed class DeviceRegistry
     /// 短才能用；现在它是被**扫**的，没人需要念出来 —— 那就没有理由便宜它。
     /// （6 位码是 10⁶ 量级，得靠"连错 5 次作废"兜着；128 位不需要那道兜底。）
     /// </remarks>
-    private static string NewToken() =>
-        Base64Url.EncodeToString(RandomNumberGenerator.GetBytes(16));
+    /// <remarks>
+    /// ⚠️ 生成的那一刻顺手**登记给脱敏层**（<see cref="Sanitizer"/>）：
+    /// 这两个串永远不该出现在日志里，而诊断包会把 <c>logs/*</c> 整个打包外发。
+    /// 放在这里而不是调用点 —— 调用点将来会变多，**漏一处的表现是凭据静默落盘**。
+    /// </remarks>
+    private static string NewToken() => Register(Base64Url.EncodeToString(RandomNumberGenerator.GetBytes(16)));
 
     private static string NewCredential() =>
-        Base64Url.EncodeToString(RandomNumberGenerator.GetBytes(32));
+        Register(Base64Url.EncodeToString(RandomNumberGenerator.GetBytes(32)));
+
+    private static string Register(string secret)
+    {
+        Sanitizer.RegisterSecret(secret);
+        return secret;
+    }
 
     /// <summary>定长比较，不因为「第几位开始不一样」而泄露时间。</summary>
     private static bool FixedTimeEquals(string expected, string actual)

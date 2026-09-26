@@ -202,13 +202,20 @@ public sealed class FileLogger : IAppLogger, IAsyncDisposable
                 writer.WriteString("ts", DateTimeOffset.Now.ToString("O"));
                 writer.WriteString("lvl", Level(level));
                 writer.WriteString("cat", category);
-                writer.WriteString("msg", message);
+                writer.WriteString("msg", Sanitizer.Sanitize(message));
 
                 if (data.Count > 0)
                 {
                     writer.WriteStartObject("data");
                     foreach (var (key, value) in data)
                     {
+                        // 键名命中密钥类 ⇒ **连值都不看**，直接写占位。
+                        if (Sanitizer.RedactionFor(key) is { } placeholder)
+                        {
+                            writer.WriteString(key, placeholder);
+                            continue;
+                        }
+
                         WriteValue(writer, key, value);
                     }
 
@@ -243,7 +250,9 @@ public sealed class FileLogger : IAppLogger, IAsyncDisposable
                 writer.WriteNull(key);
                 break;
             case string s:
-                writer.WriteString(key, s);
+                // 字符串一律过一遍值层脱敏：一个叫「内容」的键里塞了凭据，
+                // 键名判据看不出来，登记过的值能看出来。
+                writer.WriteString(key, Sanitizer.Sanitize(s));
                 break;
             case bool b:
                 writer.WriteBoolean(key, b);

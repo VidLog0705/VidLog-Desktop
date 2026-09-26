@@ -3,6 +3,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using VidLog.Desktop.Core.Configuration;
+using VidLog.Desktop.Core.Diagnostics;
 using VidLog.Desktop.Core.Index;
 using VidLog.Desktop.Core.Labels;
 using VidLog.Desktop.Core.Media;
@@ -674,6 +675,35 @@ public class UploadReceiverTests
         Assert.NotNull(device);
         Assert.Equal(DeviceId, device.DeviceId);
         Assert.Equal("打包手机-1", device.DeviceName);
+    }
+
+    [Fact]
+    public async Task 签发出去的凭据会登记给脱敏层()
+    {
+        // ⚠️ 这一条钉的是**装配的那一跳**：`DeviceRegistry` 里那两处
+        // `Sanitizer.RegisterSecret` 少了任何一处，都**没有别的测试会红** ——
+        // 而要等它出事的场景是「某天有人在 log 里插值了凭据，诊断包被发出去」。
+        Sanitizer.ResetForTesting();
+
+        try
+        {
+            using var h = Build();
+
+            var session = await h.Registry.OpenSessionAsync();
+            await h.Registry.RequestAsync(DeviceId, "打包手机-1", session.Token);
+            await h.Registry.DecideAsync(DeviceId, approved: true);
+
+            var credential = (await h.Registry.ClaimAsync(DeviceId, session.Token)).Credential!;
+
+            // 令牌（二维码里那串）与凭据（领回来的那串）都不该原样出现在日志里。
+            Assert.DoesNotContain(session.Token, Sanitizer.Sanitize($"令牌是 {session.Token}"));
+            Assert.DoesNotContain(credential, Sanitizer.Sanitize($"凭据是 {credential}"));
+        }
+        finally
+        {
+            // 静态状态会跨用例 —— 不清理的话，别的用例里的固定串可能被它抹掉。
+            Sanitizer.ResetForTesting();
+        }
     }
 
     [Fact]
