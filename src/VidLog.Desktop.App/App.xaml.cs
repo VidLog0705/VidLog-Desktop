@@ -26,9 +26,15 @@ public partial class App : System.Windows.Application
     {
         base.OnStartup(e);
 
+        // ⚠️ 日志器与崩溃钩子必须在**任何业务代码之前**：
+        // 这个应用是 WinExe（没有控制台），此前未捕获异常的表现是
+        // 「窗口直接消失，磁盘上一个字都没有」。三个钩子全无，也没有任何测试会红。
+        var logger = AppHost.CreateBootstrapLogger();
+        Platform.CrashGuard.Install(logger);
+
         try
         {
-            _host = await AppHost.StartAsync();
+            _host = await AppHost.StartAsync(logger);
 
             _window = new MainWindow(_host);
             MainWindow = _window;
@@ -47,8 +53,12 @@ public partial class App : System.Windows.Application
         catch (Exception ex)
         {
             // 启动失败必须让用户看见，不能静默退出（I3 的同一条精神）。
+            // **同时要留痕**：只弹一个框的话，用户说「它打不开」时没有任何可查的，
+            // 而启动失败的原因（端口占了、配置坏了、FFmpeg 找不到）恰恰最需要那份现场。
+            Platform.CrashGuard.LogStartupFailure(logger, ex);
+
             MessageBox.Show(
-                $"启动失败：{ex.Message}",
+                $"启动失败：{ex.Message}\n\n（原因已记进日志：{logger.Path}）",
                 "VidLog", MessageBoxButton.OK, MessageBoxImage.Error);
 
             Shutdown(1);

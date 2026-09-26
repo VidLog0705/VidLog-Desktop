@@ -247,6 +247,65 @@ public class DesktopServicesTests
         Assert.Contains("FileLogger.PurgeExpired(", code, StringComparison.Ordinal);
     }
 
+    /// <summary>
+    /// 钉住「崩溃兜底装上了，而且装在任何业务代码**之前**」。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// 只能看源码文本的理由与上两条相同（App 层是 <c>net9.0-windows</c>，没有测试工程）。
+    /// 这一条挡的失效**已经发生过**：2026-09-26 之前三个钩子**一个都没有**，
+    /// 而这个应用是 <c>WinExe</c>（无控制台）—— 未捕获异常的表现是
+    /// **窗口直接消失、磁盘上一个字都没有**。
+    /// </para>
+    /// <para>
+    /// ⚠️ <b>顺序是这条测试的一半</b>：钩子挂在 <c>AppHost.StartAsync</c> **之后**的话，
+    /// 启动过程里崩掉就没有记录 —— 而「启动失败」恰恰是最需要现场的那一种。
+    /// 所以断言的是「谁在前」，不是「两个都在」。
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public void App_崩溃兜底装在任何业务代码之前()
+    {
+        var path = Path.Combine(RepoRoot(), "src", "VidLog.Desktop.App", "App.xaml.cs");
+
+        var code = string.Join(
+            '\n',
+            File.ReadAllLines(path).Where(line => !line.TrimStart().StartsWith("//")));
+
+        var install = code.IndexOf("CrashGuard.Install(", StringComparison.Ordinal);
+        var start = code.IndexOf("AppHost.StartAsync(", StringComparison.Ordinal);
+
+        Assert.True(install >= 0, "App.xaml.cs 里没有装崩溃兜底");
+        Assert.True(start >= 0, "App.xaml.cs 里没有启动 AppHost？");
+        Assert.True(install < start, "崩溃兜底必须在 AppHost.StartAsync **之前**装上");
+    }
+
+    /// <summary>
+    /// 钉住三个钩子都挂了 —— 少一个就是一类异常永远没记录。
+    /// </summary>
+    /// <remarks>
+    /// 三个各挡一类，缺一不可：
+    /// <c>AppDomain.UnhandledException</c>（非 UI 线程，进程会死）、
+    /// <c>Application.DispatcherUnhandledException</c>（UI 线程）、
+    /// <c>TaskScheduler.UnobservedTaskException</c>（本仓有好几处
+    /// <c>_ = Task.Run(...)</c>，.NET Core 默认把这类异常**静默丢掉**）。
+    /// </remarks>
+    [Fact]
+    public void 崩溃兜底挂了三个钩子()
+    {
+        var path = Path.Combine(RepoRoot(), "src", "VidLog.Desktop.App", "Platform", "CrashGuard.cs");
+        var code = string.Join(
+            '\n',
+            File.ReadAllLines(path).Where(line => !line.TrimStart().StartsWith("//")));
+
+        Assert.Contains("AppDomain.CurrentDomain.UnhandledException +=", code, StringComparison.Ordinal);
+        Assert.Contains("DispatcherUnhandledException +=", code, StringComparison.Ordinal);
+        Assert.Contains("TaskScheduler.UnobservedTaskException +=", code, StringComparison.Ordinal);
+
+        // 遗言要带堆栈，不是只有一句 Message（这个仓此前 22 处日志全是 Message）。
+        Assert.Contains("ToString()", code, StringComparison.Ordinal);
+    }
+
     /// <summary>从测试程序集往上找到仓库根（含 <c>src</c> 与 <c>tests</c> 的那一层）。</summary>
     private static string RepoRoot()
     {

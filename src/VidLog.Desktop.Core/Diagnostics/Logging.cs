@@ -161,6 +161,38 @@ public sealed class FileLogger : IAppLogger, IAsyncDisposable
     }
 
     /// <summary>
+    /// **同步**写一条，绕过队列。给「进程马上就要死」那一处用。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// 为什么不能走队列：未捕获异常之后进程随时会被终止，
+    /// <see cref="DisposeAsync"/> 那两秒的等待**根本等不到**，
+    /// 于是**最要紧的那一行（带堆栈的遗言）恰好落不下**。
+    /// 这一条必须当场落盘，所以它是同步的。
+    /// </para>
+    /// <para>
+    /// ⚠️ 它**不受 <see cref="FileLogOptions.MinLevel"/> 限制**：阈值是给日常噪声用的，
+    /// 不是给遗言的。同样地，写不进去也**不抛** —— 崩溃路径上再抛一次更没意义。
+    /// </para>
+    /// </remarks>
+    public void WriteSync(
+        LogLevel level, string category, string message, IReadOnlyDictionary<string, object?>? data = null)
+    {
+        var line = Format(level, category, message, data ?? new Dictionary<string, object?>());
+
+        try
+        {
+            Directory.CreateDirectory(_options.Directory);
+            File.AppendAllText(_path, line + Environment.NewLine);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException
+            or NotSupportedException or ObjectDisposedException)
+        {
+            // 遗言写不下去也没办法了。
+        }
+    }
+
+    /// <summary>
     /// 把**调用这一刻已经在队列里的**行写完并落盘。
     /// </summary>
     /// <remarks>

@@ -78,6 +78,45 @@ public class LoggingTests
     // ─────────────────────────────────────────────
 
     [Fact]
+    public async Task 同步写不排队_不等_Dispose_就在盘上()
+    {
+        // ⚠️ 崩溃那一行靠的就是这个：进程随时会被终止，
+        // 走队列等于把最要紧的那条遗言交给一个可能来不及跑的写入器。
+        using var dir = new TempDir();
+        var logger = new FileLogger(new FileLogOptions(dir.Path, "vidlog"));
+
+        logger.WriteSync(LogLevel.Error, "崩溃", "未捕获异常",
+            new Dictionary<string, object?> { ["异常"] = "NullReferenceException" });
+
+        // 关键：**还没有 Dispose**。
+        var line = Assert.Single(await File.ReadAllLinesAsync(logger.Path));
+        Assert.Contains("未捕获异常", line, StringComparison.Ordinal);
+
+        using var json = JsonDocument.Parse(line);
+        Assert.Equal("ERROR", json.RootElement.GetProperty("lvl").GetString());
+    }
+
+    [Fact]
+    public void 同步写不受级别阈值限制()
+    {
+        // 阈值是给日常噪声用的，不是给遗言的。
+        using var dir = new TempDir();
+        var logger = new FileLogger(new FileLogOptions(dir.Path, "vidlog", MinLevel: LogLevel.Error));
+
+        logger.WriteSync(LogLevel.Debug, "崩溃", "阈值拦不住这一条");
+
+        Assert.Contains("阈值拦不住这一条", File.ReadAllText(logger.Path), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void 同步写在目录建不起来时不抛()
+    {
+        var logger = new FileLogger(new FileLogOptions("Z:\\不存在的盘\\logs", "vidlog"));
+
+        logger.WriteSync(LogLevel.Error, "崩溃", "写不进去也不能再抛一次");
+    }
+
+    [Fact]
     public void 清理真的把过期文件删掉_近的留着()
     {
         // ⚠️ `SelectExpired` 一直是对的、也一直有测试；坏的是**没有人调它**。

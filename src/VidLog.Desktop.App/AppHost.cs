@@ -117,7 +117,46 @@ public sealed class AppHost : IAsyncDisposable
     /// <summary>协调器要告诉用户的事。</summary>
     public event Action<CoordinatorNotice>? Notice;
 
-    public static async Task<AppHost> StartAsync(CancellationToken cancellationToken = default)
+    /// <summary>日志器的参数：生产 INFO、开发 DEBUG，保留天数取用户设置。</summary>
+    /// <remarks>
+    /// 级别用**构建配置**判断 —— 这是「这份二进制是给谁跑的」唯一一个不用猜的信号。
+    /// 生产上开着 DEBUG，日志会被淹掉，而**淹掉的日志等于没有日志**。
+    /// </remarks>
+    private static FileLogOptions LogOptionsFor(DataLayout layout, AppSettings settings)
+    {
+#if DEBUG
+        const LogLevel minLevel = LogLevel.Debug;
+#else
+        const LogLevel minLevel = LogLevel.Info;
+#endif
+
+        return new FileLogOptions(layout.LogDirectory, "vidlog", settings.LogRetainDays, minLevel);
+    }
+
+    /// <summary>
+    /// 建一个**先于设置加载**的日志器：崩溃兜底要用它。
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ 它用的是 <see cref="AppSettings.Default"/> 的保留天数，而真正的保留期
+    /// 在 <see cref="StartAsync"/> 里按用户设置算 ——
+    /// 这不矛盾：<c>RetainDays</c> **只被 <c>PurgeExpired</c> 读**，
+    /// 而这个日志器自带的那个副本没人读。文件名与级别都不受此影响。
+    /// （写在这里是为了别让下一个人以为这是个 bug。）
+    /// </remarks>
+    public static FileLogger CreateBootstrapLogger()
+    {
+        var layout = DataLayout.Default();
+        return new FileLogger(LogOptionsFor(layout, AppSettings.Default));
+    }
+
+    /// <param name="logger">
+    /// 已经建好的日志器。<c>App</c> 会先建一个并把崩溃钩子挂上去
+    /// （<c>Platform/CrashGuard</c>）—— **不传也能跑**（自己建一个），
+    /// 但那样「启动过程中崩掉」就没有记录了。
+    /// </param>
+    public static async Task<AppHost> StartAsync(
+        FileLogger? logger = null,
+        CancellationToken cancellationToken = default)
     {
         var layout = DataLayout.Default();
         layout.EnsureCreated();
@@ -126,17 +165,8 @@ public sealed class AppHost : IAsyncDisposable
         var loaded = await store.LoadAsync(cancellationToken);
         var settings = loaded.Settings;
 
-        // 生产 INFO、开发 DEBUG。用**构建配置**判断 —— 这是「这份二进制是给谁跑的」
-        // 唯一一个不用猜的信号。生产上开着 DEBUG，日志会被淹掉，
-        // 而淹掉的日志等于没有日志。
-#if DEBUG
-        const LogLevel minLevel = LogLevel.Debug;
-#else
-        const LogLevel minLevel = LogLevel.Info;
-#endif
-
-        var logOptions = new FileLogOptions(layout.LogDirectory, "vidlog", settings.LogRetainDays, minLevel);
-        var logger = new FileLogger(logOptions);
+        var logOptions = LogOptionsFor(layout, settings);
+        logger ??= new FileLogger(logOptions);
 
         // 保留期的那一跳（2026-09-26 补）。`LogRetention.SelectExpired` 一直是写对的、
         // 也一直有测试，**只是从来没有人调它** —— 于是「保留 N 天」是个死值，日志只增不减。
