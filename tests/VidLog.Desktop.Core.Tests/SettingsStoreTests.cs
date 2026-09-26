@@ -199,9 +199,17 @@ public class SettingsStoreTests
     {
         // AGENTS.md §6：密钥类字段只记「已修改」，不记值。
         // 今天还没有密钥字段，但这条判据先立住 —— 等有了再补就晚了。
-        var changes = SettingsStore.DescribeChanges(
-            AppSettings.Default, AppSettings.Default);
+        //
+        // ⚠️ 这条以前是**绿在一个巧合上**的：它拿 `Default` 与 `Default` 比，
+        // 留痕本来就是空的，空集合当然不含 "token" —— 判据换成恒真也照样绿。
+        // 2026-09-27 改成真的造一处变化再断言。
+        var previous = AppSettings.Default;
+        var next = previous with { SegmentMinutes = previous.SegmentMinutes + 1 };
 
+        var changes = SettingsStore.DescribeChanges(previous, next);
+
+        // 先证明这份留痕**确实有内容**（否则下面那句又是空集合上的恒真）。
+        Assert.Contains(changes, c => c.StartsWith(nameof(AppSettings.SegmentMinutes), StringComparison.Ordinal));
         Assert.DoesNotContain(changes, c => c.Contains("token"));
     }
 

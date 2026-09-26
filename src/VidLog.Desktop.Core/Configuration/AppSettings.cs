@@ -1,6 +1,7 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using VidLog.Desktop.Core.Cleanup;
+using VidLog.Desktop.Core.Diagnostics;
 using VidLog.Desktop.Core.Recording;
 using VidLog.Desktop.Core.Scanning;
 
@@ -209,7 +210,7 @@ public sealed class SettingsStore
         {
             if (!EqualityComparer<T>.Default.Equals(a, b))
             {
-                changes.Add(IsSensitive(name) ? $"{name}（已修改）" : $"{name}: {a} → {b}");
+                changes.Add(IsSensitive(name) ? $"{name}{SensitiveName.Redacted}" : $"{name}: {a} → {b}");
             }
         }
 
@@ -229,9 +230,9 @@ public sealed class SettingsStore
         return changes;
     }
 
-    private static bool IsSensitive(string name) =>
-        name.Contains("secret", StringComparison.OrdinalIgnoreCase)
-        || name.Contains("token", StringComparison.OrdinalIgnoreCase)
-        || name.Contains("password", StringComparison.OrdinalIgnoreCase)
-        || name.Contains("key", StringComparison.OrdinalIgnoreCase);
+    /// <remarks>
+    /// 判据搬到了 <see cref="SensitiveName.Is"/>（日志落盘前脱敏要用同一套）。
+    /// 这里是转调，**行为一个字都没变**。
+    /// </remarks>
+    private static bool IsSensitive(string name) => SensitiveName.Is(name);
 }
