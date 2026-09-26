@@ -394,6 +394,64 @@ public sealed class FileLogger : IAppLogger, IAsyncDisposable
         _ => "?",
     };
 
+    /// <summary>删掉过期的日志文件，返回删掉了几个。</summary>
+    /// <remarks>
+    /// <para>
+    /// ⚠️ 这个方法是 <see cref="LogRetention.SelectExpired"/>（纯函数、有测试）
+    /// 与文件系统之间的**那一跳**。2026-09-26 之前**那一跳根本不存在** ——
+    /// <c>SelectExpired</c> 在 <c>src</c> 里零调用点，于是「保留 N 天」是个死值：
+    /// 日志只增不减。这与「装配的最后一跳」是同一类毛病：
+    /// **方法写对了、测过了，没人调它。**
+    /// </para>
+    /// <para>
+    /// 删不动（正被别的进程占着、没权限）就跳过那一个 —— 一次清理失败绝不是错误。
+    /// </para>
+    /// </remarks>
+    public static int PurgeExpired(FileLogOptions options, DateTimeOffset now)
+    {
+        // 保留期小于一天时**整个不删**：那种配置下「过期」会把今天这个正在写的文件
+        // 也算进去，而删掉正在写的日志是纯损失。`AppSettings.IsPlausible` 已经把
+        // 下限定在 1 天，这里再挡一道 —— 这个参数是能被直接构造的。
+        if (options.RetainDays < 1)
+        {
+            return 0;
+        }
+
+        try
+        {
+            if (!Directory.Exists(options.Directory))
+            {
+                return 0;
+            }
+
+            var names = Directory
+                .EnumerateFiles(options.Directory)
+                .Select(System.IO.Path.GetFileName)
+                .OfType<string>()
+                .ToList();
+
+            var deleted = 0;
+            foreach (var name in LogRetention.SelectExpired(names, options, now))
+            {
+                try
+                {
+                    File.Delete(System.IO.Path.Combine(options.Directory, name));
+                    deleted++;
+                }
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+                {
+                    // 这一个删不掉就留着 —— 下次启动再试。
+                }
+            }
+
+            return deleted;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return 0;
+        }
+    }
+
     public async ValueTask DisposeAsync()
     {
         _queue.Writer.TryComplete();

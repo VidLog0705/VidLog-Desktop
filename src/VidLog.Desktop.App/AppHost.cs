@@ -126,7 +126,22 @@ public sealed class AppHost : IAsyncDisposable
         var loaded = await store.LoadAsync(cancellationToken);
         var settings = loaded.Settings;
 
-        var logger = new FileLogger(new FileLogOptions(layout.LogDirectory, "vidlog", settings.LogRetainDays));
+        // 生产 INFO、开发 DEBUG。用**构建配置**判断 —— 这是「这份二进制是给谁跑的」
+        // 唯一一个不用猜的信号。生产上开着 DEBUG，日志会被淹掉，
+        // 而淹掉的日志等于没有日志。
+#if DEBUG
+        const LogLevel minLevel = LogLevel.Debug;
+#else
+        const LogLevel minLevel = LogLevel.Info;
+#endif
+
+        var logOptions = new FileLogOptions(layout.LogDirectory, "vidlog", settings.LogRetainDays, minLevel);
+        var logger = new FileLogger(logOptions);
+
+        // 保留期的那一跳（2026-09-26 补）。`LogRetention.SelectExpired` 一直是写对的、
+        // 也一直有测试，**只是从来没有人调它** —— 于是「保留 N 天」是个死值，日志只增不减。
+        // 与「装配的最后一跳」同一类毛病（见 docs/实现决策.md）：方法写对了、没人调。
+        var purged = FileLogger.PurgeExpired(logOptions, DateTimeOffset.Now);
 
         var warnings = new List<string>(loaded.Warnings);
 
@@ -178,6 +193,13 @@ public sealed class AppHost : IAsyncDisposable
         {
             Warnings = warnings,
         };
+
+        // 清理也留痕（AGENTS.md §6「关键操作必须留痕」）——
+        // 一条日志都没有的清理，出事时说不清它到底跑没跑。
+        if (purged > 0)
+        {
+            logger.Log(LogLevel.Info, "启动", $"清掉了 {purged} 个过期日志文件");
+        }
 
         // 摄像头识码（规格 §3.2.1 的第二种入口）。装在协调器上，
         // 【开始工作】时会自动开始取景，扫到单号自动开录。

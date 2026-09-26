@@ -225,6 +225,28 @@ public class DesktopServicesTests
         }
     }
 
+    /// <summary>
+    /// 钉住「保留期真的执行了」—— <c>AppHost</c> 必须调 <c>FileLogger.PurgeExpired</c>。
+    /// </summary>
+    /// <remarks>
+    /// 只能看源码文本的理由与上一条相同（App 层是 <c>net9.0-windows</c>，没有测试工程）。
+    /// 这一条挡的失效**已经发生过**：<c>LogRetention.SelectExpired</c> 写对了、
+    /// 有 4 条测试盯着它，而在 <c>src</c> 里**零调用点** ⇒
+    /// 「保留 14 天」是个死值，日志只增不减 —— 而整套测试全绿。
+    /// 与「装配的最后一跳」是同一类：**方法写对了、没人调**。
+    /// </remarks>
+    [Fact]
+    public void AppHost_启动时会真的清理过期日志()
+    {
+        var path = Path.Combine(RepoRoot(), "src", "VidLog.Desktop.App", "AppHost.cs");
+
+        var code = string.Join(
+            '\n',
+            File.ReadAllLines(path).Where(line => !line.TrimStart().StartsWith("//")));
+
+        Assert.Contains("FileLogger.PurgeExpired(", code, StringComparison.Ordinal);
+    }
+
     /// <summary>从测试程序集往上找到仓库根（含 <c>src</c> 与 <c>tests</c> 的那一层）。</summary>
     private static string RepoRoot()
     {

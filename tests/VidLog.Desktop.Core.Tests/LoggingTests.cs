@@ -73,6 +73,69 @@ public class LoggingTests
     // 写入
     // ─────────────────────────────────────────────
 
+    // ─────────────────────────────────────────────
+    // 清理 —— SelectExpired 与文件系统之间的那一跳
+    // ─────────────────────────────────────────────
+
+    [Fact]
+    public void 清理真的把过期文件删掉_近的留着()
+    {
+        // ⚠️ `SelectExpired` 一直是对的、也一直有测试；坏的是**没有人调它**。
+        // 这条测的是「有人调了，而且删的是对的那几个」。
+        using var dir = new TempDir();
+
+        var old = Path.Combine(dir.Path, "vidlog-20200101-120000.log");
+        var fresh = Path.Combine(dir.Path, "vidlog-20260120-120000.log");
+        File.WriteAllText(old, "旧");
+        File.WriteAllText(fresh, "新");
+
+        var now = new DateTimeOffset(2026, 1, 20, 12, 0, 0, TimeSpan.Zero);
+        var deleted = FileLogger.PurgeExpired(Options with { Directory = dir.Path }, now);
+
+        Assert.Equal(1, deleted);
+        Assert.False(File.Exists(old));
+        Assert.True(File.Exists(fresh));
+    }
+
+    [Fact]
+    public void 清理不动认不出名字的文件()
+    {
+        // 不知道它是什么就删，那是赌 —— 与 SelectExpired 同一条规矩。
+        using var dir = new TempDir();
+        File.WriteAllText(Path.Combine(dir.Path, "别的什么.log"), "x");
+        File.WriteAllText(Path.Combine(dir.Path, "vidlog.log"), "y");
+
+        var deleted = FileLogger.PurgeExpired(
+            Options with { Directory = dir.Path },
+            new DateTimeOffset(2000, 1, 1, 0, 0, 0, TimeSpan.Zero));
+
+        Assert.Equal(0, deleted);
+        Assert.True(File.Exists(Path.Combine(dir.Path, "别的什么.log")));
+    }
+
+    [Fact]
+    public void 保留期小于一天时什么都不删()
+    {
+        // 那种配置下「过期」会把今天这个正在写的文件也算进去。
+        using var dir = new TempDir();
+        File.WriteAllText(Path.Combine(dir.Path, "vidlog-20200101-120000.log"), "旧");
+
+        var deleted = FileLogger.PurgeExpired(
+            Options with { Directory = dir.Path, RetainDays = 0 },
+            new DateTimeOffset(2026, 1, 20, 12, 0, 0, TimeSpan.Zero));
+
+        Assert.Equal(0, deleted);
+    }
+
+    [Fact]
+    public void 目录不存在时不抛()
+    {
+        using var dir = new TempDir();
+        var missing = Path.Combine(dir.Path, "还没有这个目录");
+
+        Assert.Equal(0, FileLogger.PurgeExpired(Options with { Directory = missing }, DateTimeOffset.Now));
+    }
+
     [Fact]
     public async Task 写进去的行能当_JSON_读回来()
     {
