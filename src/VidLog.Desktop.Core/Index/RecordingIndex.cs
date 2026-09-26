@@ -97,6 +97,30 @@ public sealed class JsonLinesRecordingIndex : IRecordingIndex
         }
     }
 
+    /// <summary>
+    /// 读全部记录。<b>放宽着读</b> —— 字段名按下面的候选表逐个试，大小写不敏感。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// ⚠️ <b>为什么不能直接用 <c>JsonSerializer.Deserialize</c> 绑 DTO</b>：
+    /// 两端写的**字段名根本不一样**，而且是历史造成的（2026-09-27 核过）：
+    /// </para>
+    /// <list type="bullet">
+    /// <item>本仓自己的：<c>Waybill</c> / <c>StartedAt</c> / <c>DurationSeconds</c>…（PascalCase）；</item>
+    /// <item>手机端写的：<c>waybill</c> / <c>startedAt</c> / <c>durationSeconds</c>…（camelCase）；</item>
+    /// <item>而母仓 <c>docs/02-数据模型.md</c> §1.1 那张表用的是
+    /// <c>WaybillNumber</c> / <c>RecordingStartedAt</c> —— <b>两端的落盘名都不是它</b>。</item>
+    /// </list>
+    /// <para>
+    /// 所以「加一个 <c>PropertyNameCaseInsensitive</c>」**不够**：`Waybill` 与 `WaybillNumber`
+    /// 大小写相同也对不上。真要收口得改两端的写入端，而两端的文件**都已经在盘上了**
+    /// （手机上装的是 19/21/22 号包）⇒ 读端必须宽容，写端维持原样。
+    /// </para>
+    /// <para>
+    /// ⚠️ 宽容的是**字段名**，不是**内容**：认不出来的记录仍然整条丢掉（一条坏行
+    /// 不该让整份索引读不出来），但丢掉的那条**不会被编造**出来。
+    /// </para>
+    /// </remarks>
     public async Task<IReadOnlyList<RecordingEntry>> LoadAllAsync(
         CancellationToken cancellationToken = default)
     {
@@ -115,14 +139,125 @@ public sealed class JsonLinesRecordingIndex : IRecordingIndex
                 continue;
             }
 
-            var dto = JsonSerializer.Deserialize<RecordingEntryDto>(line, SerializerOptions);
-            if (dto is not null)
+            if (TryReadEntry(line, out var entry))
             {
-                entries.Add(dto.ToEntry());
+                entries.Add(entry);
             }
         }
 
         return entries;
+    }
+
+    /// <summary>宽容地读一行。认不出来（缺关键字段、类型不对、坏 JSON）返回 false。</summary>
+    private static bool TryReadEntry(string line, out RecordingEntry entry)
+    {
+        entry = null!;
+
+        JsonElement root;
+        try
+        {
+            root = JsonDocument.Parse(line).RootElement;
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
+
+        if (root.ValueKind != JsonValueKind.Object)
+        {
+            return false;
+        }
+
+        // 关键字段少一个就整条不认 —— 与其编一条出来，不如当它不存在。
+        if (Text(root, "EvidenceId") is not { } evidenceId
+            || Text(root, "Waybill", "WaybillNumber") is not { } waybill
+            || Text(root, "StartedAt", "RecordingStartedAt") is not { } startedAt
+            || Text(root, "EndedAt", "RecordingEndedAt") is not { } endedAt
+            || Text(root, "Location") is not { } location
+            || Text(root, "ContentHash") is not { } contentHash
+            || Text(root, "SourceDeviceId") is not { } sourceDeviceId)
+        {
+            return false;
+        }
+
+        try
+        {
+            entry = new RecordingEntry(
+                evidenceId,
+                // 早期写入的记录没有 SessionId。退化成「自己是自己的会话」——
+                // 单段录像本来就等价于此，而它至少不会把不同会话错并到一起。
+                Text(root, "SessionId") ?? evidenceId,
+                WaybillNumber.Parse(waybill),
+                DateTimeOffset.Parse(startedAt, null, System.Globalization.DateTimeStyles.RoundtripKind),
+                DateTimeOffset.Parse(endedAt, null, System.Globalization.DateTimeStyles.RoundtripKind),
+                TimeSpan.FromSeconds(Number(root, "DurationSeconds", "Duration") ?? 0),
+                RelativePath.Parse(location),
+                VidLog.Desktop.Core.ContentHash.Parse(contentHash),
+                sourceDeviceId);
+
+            return true;
+        }
+        catch (Exception ex) when (ex is FormatException or ArgumentException)
+        {
+            // 字段在、但内容不合法（单号格式、时间格式、哈希长度…）——
+            // 与「缺字段」同样处理：丢掉这一条，不编。
+            return false;
+        }
+    }
+
+    /// <summary>按候选名取一个字符串，**大小写不敏感**；取不到返回 null。</summary>
+    private static string? Text(JsonElement root, params string[] names)
+    {
+        foreach (var name in names)
+        {
+            foreach (var property in root.EnumerateObject())
+            {
+                if (!string.Equals(property.Name, name, StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                if (property.Value.ValueKind == JsonValueKind.String
+                    && property.Value.GetString() is { Length: > 0 } value)
+                {
+                    return value;
+                }
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>按候选名取一个数（数字或能当数字的字符串）；取不到返回 null。</summary>
+    private static double? Number(JsonElement root, params string[] names)
+    {
+        foreach (var name in names)
+        {
+            foreach (var property in root.EnumerateObject())
+            {
+                if (!string.Equals(property.Name, name, StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                if (property.Value.ValueKind == JsonValueKind.Number)
+                {
+                    return property.Value.GetDouble();
+                }
+
+                if (property.Value.ValueKind == JsonValueKind.String
+                    && double.TryParse(
+                        property.Value.GetString(),
+                        System.Globalization.NumberStyles.Float,
+                        System.Globalization.CultureInfo.InvariantCulture,
+                        out var parsed))
+                {
+                    return parsed;
+                }
+            }
+        }
+
+        return null;
     }
 
     private void EnsureDirectory()
@@ -136,13 +271,20 @@ public sealed class JsonLinesRecordingIndex : IRecordingIndex
 }
 
 /// <summary>
-/// 索引的落盘形态。
+/// 索引的**写入**形态。
 /// </summary>
 /// <remarks>
+/// <para>
 /// 单独立一个 DTO 而不是直接序列化 <see cref="RecordingEntry"/>：
 /// 那几个值对象（单号 / 相对路径 / 内容哈希）用的是私有构造函数，
-/// 直接反序列化会绕不过去。用 DTO 把「磁盘上的形状」和「内存里的类型」分开，
-/// 顺带让格式变更有个明确的落点。
+/// 直接序列化会把它们摊成对象。用 DTO 把「磁盘上的形状」和「内存里的类型」分开。
+/// </para>
+/// <para>
+/// ⚠️ <b>它只管写，不管读</b>（2026-09-27）：读那一侧是
+/// <c>TryReadEntry</c> 的手写查找 —— 因为两端的字段名不一样，
+/// 而且两端的文件都已经在盘上了，读端必须宽容。**改这里的属性名 = 改落盘格式**，
+/// 而读端认得新名字之前，老文件会读不出来；要改就两边一起。
+/// </para>
 /// </remarks>
 public sealed record RecordingEntryDto(
     string EvidenceId,
@@ -165,18 +307,4 @@ public sealed record RecordingEntryDto(
         entry.Location.Value,
         entry.ContentHash.Value,
         entry.SourceDeviceId);
-
-    public RecordingEntry ToEntry() => new(
-        EvidenceId,
-        // 早期写入的记录没有 SessionId 字段。退化成「自己是自己的会话」——
-        // 单段录像本来就等价于此，而它至少不会把不同会话错并到一起。
-        string.IsNullOrEmpty(SessionId) ? EvidenceId : SessionId,
-        WaybillNumber.Parse(Waybill),
-        DateTimeOffset.Parse(StartedAt, null, System.Globalization.DateTimeStyles.RoundtripKind),
-        DateTimeOffset.Parse(EndedAt, null, System.Globalization.DateTimeStyles.RoundtripKind),
-        TimeSpan.FromSeconds(DurationSeconds),
-        RelativePath.Parse(Location),
-        // 属性名与类型名同名，这里必须全限定才不会被解析成属性本身。
-        VidLog.Desktop.Core.ContentHash.Parse(ContentHash),
-        SourceDeviceId);
 }
