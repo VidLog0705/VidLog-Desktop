@@ -240,6 +240,14 @@
                 <TextBlock Text="单个分段的上限。到点自动滚下一段，用户无感。" Margin="0,2,0,0"
                            Foreground="#88666666" TextWrapping="Wrap"/>
 
+                <!-- 重复单号检测（规格 §3.2.5：「N 可配置」）——
+                     必须给得出「关掉」这个值，否则它在连续扫的工位上就是噪声。 -->
+                <TextBlock Text="重复单号检测（天）" FontWeight="SemiBold" Margin="0,16,0,0"/>
+                <TextBox x:Name="DuplicateDaysBox" Width="120" Margin="0,4,0,0"
+                         HorizontalAlignment="Left"/>
+                <TextBlock Margin="0,2,0,0" Foreground="#88666666" TextWrapping="Wrap"
+                           Text="扫到的单号若在这么多天内录过，会提醒你（气泡 + 语音）。⚠️ 它**只提醒、不挡开录** —— 录制照常开始，你事后核对是不是重复录件或单号扫错了。填 0 关掉。"/>
+
                 <!-- 时间校准（规格 §3.6.4）。**未校准不能开始录制** —— 所以它
                      必须摆在设置页里、说清三件事：为什么 / 怎么办 / 已有录像照常可用。 -->
                 <TextBlock Text="时间校准" FontWeight="SemiBold" Margin="0,16,0,0"/>

@@ -136,6 +136,19 @@ public partial class App : System.Windows.Application
                 _host?.Tray?.Notify("VidLog", notice.Message);
                 break;
 
+            // ── 重复单号检测（规格 §3.2.5）──────────────────────────────
+            //
+            // ⚠️ 与闲置提醒同一族（气泡 + 语音两条）：这条说的是「这个单号
+            // 最近录过」—— 操作员这时手上正拿着包裹，**很可能没看屏幕**，
+            // 光弹气泡等于没说。
+            //
+            // ⚠️ 它**不挡开录**（规格：那三项「全部异步执行，绝不阻塞开录」）
+            // —— 这一句只是事后提醒，录制已经开始了。
+            case CoordinatorNoticeKind.DuplicateWaybill:
+                _host?.Tray?.Notify("VidLog", notice.Message);
+                Platform.Speech.Speak(notice.Message);
+                break;
+
             default:
                 break;
         }

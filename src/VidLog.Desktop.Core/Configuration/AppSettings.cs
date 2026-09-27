@@ -121,6 +121,20 @@ public sealed record AppSettings
     /// <see cref="RetentionSettingJsonConverter"/>（它认得老形状）。
     /// </para>
     /// </remarks>
+    /// <summary>
+    /// 重复单号检测回看几天（规格 §3.2.5：「识别到的单号若在**近 N 天内**已有
+    /// 未删除记录，必须提示。**N 可配置**」）。
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ <b><c>0</c> = 关闭</b>：规格说「N 可配置」，那就得允许关掉 ——
+    /// 一个关不掉的提醒在连续扫的工位上就是噪声，而噪声会被无视。
+    /// <para>
+    /// ⚠️ 默认 <b>7 天</b>是**本仓标定**的（规格没给数），理由写在
+    /// <see cref="Recording.CoordinatorOptions.DuplicateCheckDays"/>。
+    /// </para>
+    /// </remarks>
+    public int DuplicateCheckDays { get; init; } = 7;
+
     public RetentionSettings Retention { get; init; } = RetentionSettings.KeepAll;
 
     public static AppSettings Default { get; } = new();
@@ -137,6 +151,8 @@ public sealed record AppSettings
         && s.SegmentMinutes is >= 1 and <= 10
         && s.PlaybackPort is >= 1024 and <= 65535
         && s.LogRetainDays is >= 1 and <= 365
+        // 重复单号检测：0 = 关闭，上限 365 天（一年前的单号翻出来没有意义）。
+        && s.DuplicateCheckDays is >= 0 and <= 365
         && s.Scanner.MaxInterKeyIntervalMs is >= 10 and <= 500
         && s.Scanner.MinLength is >= 1 and <= 64
         && s.Scanner.MaxLength is >= 1 and <= 256

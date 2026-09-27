@@ -609,6 +609,164 @@ public class RecordingCoordinatorTests
     }
 
     // ─────────────────────────────────────────────
+    // 重复单号检测（规格 §3.2.5）
+    // ─────────────────────────────────────────────
+    //
+    // 规格原话：「识别到的单号若在**近 N 天内**已有未删除记录，必须提示。**N 可配置**。」
+    // 硬约束：「这三项**全部异步执行，绝不阻塞开录**」。
+
+    /// <summary>造一条「若干天前录的」记录（同单号）。</summary>
+    private static RecordingEntry OldEntryFor(WaybillNumber waybill, int daysAgo) =>
+        new("ev-old", "sess-old", waybill,
+            DateTimeOffset.UtcNow.AddDays(-daysAgo),
+            DateTimeOffset.UtcNow.AddDays(-daysAgo),
+            TimeSpan.FromMinutes(5),
+            RelativePath.Parse("2026/09/20/ev-old.mp4"),
+            ContentHash.Parse(new string('a', 64)),
+            "device-1");
+
+    /// <summary>检测是**异步**的（规格要求），所以不能立刻断言 —— 等它出现。</summary>
+    private static async Task WaitForNoticeAsync(
+        List<CoordinatorNotice> notices, CoordinatorNoticeKind kind, int timeoutMs = 5000)
+    {
+        var deadline = Environment.TickCount64 + timeoutMs;
+
+        while (!notices.Any(n => n.Kind == kind))
+        {
+            if (Environment.TickCount64 > deadline)
+            {
+                throw new TimeoutException($"等不到 {kind} 通知");
+            }
+
+            await Task.Delay(10);
+        }
+    }
+
+    [Fact]
+    public async Task 近N天录过就提示_而且没有挡住开录()
+    {
+        using var dir = new TempDir();
+        var notices = new List<CoordinatorNotice>();
+        var queried = new List<string>();
+
+        await using var coordinator = Build(
+            dir, WorkMode.StopOnSameWaybill, new FakePunchLog(),
+            duplicateProbe: (waybill, _) =>
+            {
+                queried.Add(waybill.Value);
+                return Task.FromResult<IReadOnlyList<RecordingEntry>>([OldEntryFor(waybill, 3)]);
+            },
+            duplicateCheckDays: 7);
+        coordinator.Notice += notices.Add;
+
+        await coordinator.SubmitAsync(A, PunchSource.KeyboardScanner);
+        await WaitForNoticeAsync(notices, CoordinatorNoticeKind.DuplicateWaybill);
+
+        var notice = Assert.Single(notices, n => n.Kind == CoordinatorNoticeKind.DuplicateWaybill);
+        Assert.Contains(A.Value, notice.Message, StringComparison.Ordinal);
+        Assert.Contains("7 天", notice.Message, StringComparison.Ordinal);
+        Assert.Contains("1 次", notice.Message, StringComparison.Ordinal);
+
+        // ★ 而且**开录照常**：这条检测绝不挡路（规格原话「绝不阻塞开录」）。
+        Assert.Equal(A, coordinator.CurrentWaybill);
+        Assert.Equal([A.Value], queried);
+    }
+
+    [Fact]
+    public async Task N天以外的不提示_但检测确实跑过了()
+    {
+        using var dir = new TempDir();
+        var notices = new List<CoordinatorNotice>();
+        var queried = false;
+
+        await using var coordinator = Build(
+            dir, WorkMode.StopOnSameWaybill, new FakePunchLog(),
+            duplicateProbe: (waybill, _) =>
+            {
+                queried = true;
+                // 30 天前录的，而窗口是 7 天。
+                return Task.FromResult<IReadOnlyList<RecordingEntry>>([OldEntryFor(waybill, 30)]);
+            },
+            duplicateCheckDays: 7);
+        coordinator.Notice += notices.Add;
+
+        await coordinator.SubmitAsync(A, PunchSource.KeyboardScanner);
+
+        // ⚠️ 先等「检测真的跑过」再断言「没提示」—— 否则这条会**绿在巧合上**
+        // （检测还没跑，当然没有通知）。
+        await WaitUntilAsync(() => queried);
+
+        Assert.DoesNotContain(notices, n => n.Kind == CoordinatorNoticeKind.DuplicateWaybill);
+    }
+
+    [Fact]
+    public async Task 重复单号检测绝不阻塞开录_哪怕探测永远不返回()
+    {
+        // 规格 §3.2.5 的硬约束：「这三项**全部异步执行，绝不阻塞开录**」。
+        // 所以这里让探测**永远不返回** —— 开录必须照样完成。
+        //
+        // ⚠️ 变红配方：把 `_ = CheckDuplicateWaybillAsync(...)` 改成
+        // `await CheckDuplicateWaybillAsync(...)` ⇒ 这条**挂住**（开录永不返回），
+        // 表现为测试超时。
+        using var dir = new TempDir();
+
+        var never = new TaskCompletionSource<IReadOnlyList<RecordingEntry>>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        await using var coordinator = Build(
+            dir, WorkMode.StopOnSameWaybill, new FakePunchLog(),
+            duplicateProbe: (_, _) => never.Task,
+            duplicateCheckDays: 7);
+
+        await coordinator.SubmitAsync(A, PunchSource.KeyboardScanner);
+
+        // ★ 开录回来了、而且真的在录 —— 探测挂着不影响它。
+        Assert.Equal(A, coordinator.CurrentWaybill);
+    }
+
+    [Fact]
+    public async Task 关掉时连探测都不发()
+    {
+        // 规格说「N 可配置」，那 0 就得真的关掉 —— 不只是「不提示」，
+        // 而是**连索引都不读**（连续扫的工位上每件读一次索引是白花钱）。
+        using var dir = new TempDir();
+        var queried = false;
+
+        await using var coordinator = Build(
+            dir, WorkMode.StopOnSameWaybill, new FakePunchLog(),
+            duplicateProbe: (waybill, _) =>
+            {
+                queried = true;
+                return Task.FromResult<IReadOnlyList<RecordingEntry>>([OldEntryFor(waybill, 1)]);
+            },
+            duplicateCheckDays: 0);
+        var notices = new List<CoordinatorNotice>();
+        coordinator.Notice += notices.Add;
+
+        await coordinator.SubmitAsync(A, PunchSource.KeyboardScanner);
+        await Task.Delay(150);   // 给「假如它要跑」留出时间
+
+        Assert.False(queried, "关掉之后连探测都不该发");
+        Assert.DoesNotContain(notices, n => n.Kind == CoordinatorNoticeKind.DuplicateWaybill);
+    }
+
+    /// <summary>等一个条件成立（用于等异步检测真的跑过）。</summary>
+    private static async Task WaitUntilAsync(Func<bool> condition, int timeoutMs = 5000)
+    {
+        var deadline = Environment.TickCount64 + timeoutMs;
+
+        while (!condition())
+        {
+            if (Environment.TickCount64 > deadline)
+            {
+                throw new TimeoutException("等不到那个条件");
+            }
+
+            await Task.Delay(10);
+        }
+    }
+
+    // ─────────────────────────────────────────────
     // 测试脚手架
     // ─────────────────────────────────────────────
 
@@ -623,7 +781,9 @@ public class RecordingCoordinatorTests
         WorkModePolicy? policy = null,
         Func<TimeSpan>? clock = null,
         Func<TimeSpan, CancellationToken, Task>? delay = null,
-        ITrustedClock? trustedClock = null)
+        ITrustedClock? trustedClock = null,
+        Func<WaybillNumber, CancellationToken, Task<IReadOnlyList<RecordingEntry>>>? duplicateProbe = null,
+        int duplicateCheckDays = 0)
     {
         var ffmpeg = FfmpegLocator.TryFind() ?? "ffmpeg";
         var effectiveRunner = runner ?? new SucceedingRunner();
@@ -640,11 +800,13 @@ public class RecordingCoordinatorTests
             punches,
             NullLogger.Instance,
             policy ?? new WorkModePolicy(mode, IdleReminderOption.Off),
-            new CoordinatorOptions("Lenovo EasyCamera", "device-1", "libx264"),
+            new CoordinatorOptions("Lenovo EasyCamera", "device-1", "libx264", duplicateCheckDays),
             scanErrors,
             clock,
             delay,
-            trustedClock)
+            trustedClock,
+            license: null,
+            duplicateProbe: duplicateProbe)
         {
             SessionOptions = session ?? RecordingSessionOptions.Default,
         };

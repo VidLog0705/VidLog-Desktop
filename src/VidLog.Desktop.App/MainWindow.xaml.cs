@@ -196,6 +196,7 @@ public partial class MainWindow : Window
             SelectRadio(ResolutionButtons, _host.Settings.Resolution.ToString());
             ShowEffectiveSpec();
             SegmentBox.Text = _host.Settings.SegmentMinutes.ToString();
+            DuplicateDaysBox.Text = _host.Settings.DuplicateCheckDays.ToString();
             PortBox.Text = _host.Settings.PlaybackPort.ToString();
             SelectRetention(ArchivedOutboundCombo, _host.Settings.Retention.ArchivedOutbound);
             SelectRetention(ArchivedReturnCombo, _host.Settings.Retention.ArchivedReturn);
@@ -1107,6 +1108,15 @@ public partial class MainWindow : Window
             return;
         }
 
+        // 重复单号检测的天数（规格 §3.2.5「N 可配置」）。**0 = 关闭。**
+        // ⚠️ 界面上写清「0 = 关闭」，而这里也接受 0 —— 否则那句话就是空话。
+        if (!int.TryParse(DuplicateDaysBox.Text, out var duplicateDays)
+            || duplicateDays is < 0 or > 365)
+        {
+            SettingsStatus.Text = "重复单号检测要填 0~365 天（0 = 关闭），本次未保存。";
+            return;
+        }
+
         // 自定义分钟数：只在选了「自定义」时才管它，否则保持原值
         // （用户先填了 7 分钟又改回 3 分钟，那 7 不该丢 —— 下次切回自定义还要用）。
         var idleMinutes = int.TryParse(IdleMinutesBox.Text, out var parsedMinutes)
@@ -1126,6 +1136,7 @@ public partial class MainWindow : Window
             DurationFallback = Enum.TryParse<DurationFallbackOption>(TagOf(DurationCombo), out var d)
                 ? d : _host.Settings.DurationFallback,
             SegmentMinutes = segment,
+            DuplicateCheckDays = duplicateDays,
             PlaybackPort = port,
             CameraDevice = CameraCombo.SelectedItem as string,
             ArchiveBackend = Enum.TryParse<ArchiveBackendKind>(TagOf(ArchiveCombo), out var backend)

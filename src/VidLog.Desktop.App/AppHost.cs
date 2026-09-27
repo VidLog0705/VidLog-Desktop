@@ -257,7 +257,12 @@ public sealed class AppHost : IAsyncDisposable
             services.Punches,
             logger,
             new WorkModePolicy(settings.Mode, settings.IdleReminder, settings.IdleReminderMinutes),
-            new CoordinatorOptions(device, Environment.MachineName, encoder ?? "libx264"),
+            new CoordinatorOptions(
+                device,
+                Environment.MachineName,
+                encoder ?? "libx264",
+                // 重复单号检测回看几天（规格 §3.2.5 的「N 可配置」，0 = 关闭）。
+                settings.DuplicateCheckDays),
             // 错误扫描（规格 §6.1「必须保存的事实」）。
             new ScanErrorLog(layout.ScanErrorsPath),
             // ⚠️ 可信时钟 —— **未校准不得开始录制**（规格 §3.6.4）。
@@ -266,7 +271,28 @@ public sealed class AppHost : IAsyncDisposable
             trustedClock: services.TrustedClock,
             // ⚠️ 许可 —— **未激活不得录制**（`04-许可设计.md` L5）。
             // 同样传真的那个；它**只挡新录**，已有录像照常（L8）。
-            license: services.License)
+            license: services.License,
+            // 重复单号检测（规格 §3.2.5）—— 接**检索**那一层：
+            // 它的 `SearchAsync` 已经实现了「按单号精确查」+ 单号归一化
+            // （`WaybillNumber.Normalize`），再写一份就会与它走岔。
+            // ⚠️ 关了（天数 ≤ 0）时**根本不给这个委托** —— 那样协调器连
+            // 一次索引都不用读。
+            duplicateProbe: settings.DuplicateCheckDays <= 0
+                ? null
+                : async (waybill, token) =>
+                {
+                    var hits = await services.Search.SearchAsync(
+                        new Core.Search.RecordingQuery
+                        {
+                            WaybillText = waybill.Value,
+                            MatchMode = Core.Search.WaybillMatchMode.Exact,
+                            // 只需要「有没有 / 几次」，50 条足够说明问题。
+                            Limit = 50,
+                        },
+                        token);
+
+                    return hits.Select(h => h.Entry).ToList();
+                })
         {
             // 分段时长与时长兜底（规格 §3.1.1 / §3.3.4）。
             // 不填的话用的是硬编码默认（1 分钟 / 30 分钟）——

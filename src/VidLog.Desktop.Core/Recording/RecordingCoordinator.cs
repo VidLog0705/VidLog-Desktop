@@ -39,6 +39,15 @@ public enum CoordinatorNoticeKind
     FinalizeFailed,
 
     /// <summary>
+    /// 规格 §3.2.5：这个单号近 N 天里录过（**重复单号检测**）。
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ 它只是个**提醒** —— 不挡开录、也不改任何录制状态。
+    /// 规格那条的硬约束是「全部异步执行，**绝不阻塞开录**」。
+    /// </remarks>
+    DuplicateWaybill,
+
+    /// <summary>
     /// 规格 §3.3.4：录制到档位时间了，**问**用户要不要停。
     /// </summary>
     /// <remarks>
@@ -53,10 +62,23 @@ public enum CoordinatorNoticeKind
 }
 
 /// <summary>协调器的可调参数。</summary>
+/// <param name="DuplicateCheckDays">
+/// 重复单号检测回看几天（规格 §3.2.5：「识别到的单号若在**近 N 天内**已有未删除
+/// 记录，必须提示。**N 可配置**」）。
+/// <para>
+/// ⚠️ <b><c>0</c> = 关闭</b> —— 规格说「N 可配置」，那就得允许用户关掉它：
+/// 一个关不掉的提醒在连续扫的工位上就是噪声，而噪声会被无视。
+/// </para>
+/// <para>
+/// ⚠️ <b>7 天</b>是<b>本仓标定</b>的默认值（规格没给数）：比「同一批货重复录」
+/// 的时间跨度长，又短于退货周期，够用且不至于把半年前的旧单号翻出来。
+/// </para>
+/// </param>
 public sealed record CoordinatorOptions(
     string DeviceName,
     string SourceDeviceId,
-    string Encoder);
+    string Encoder,
+    int DuplicateCheckDays = 0);
 
 /// <summary>
 /// 一次「工作」的编排 —— 规格 §3.3.1 的三种工作模式都落在这里。
@@ -138,8 +160,16 @@ public sealed class RecordingCoordinator : IAsyncDisposable
         Func<TimeSpan>? clock = null,
         Func<TimeSpan, CancellationToken, Task>? delay = null,
         ITrustedClock? trustedClock = null,
-        License.LicenseService? license = null)
+        License.LicenseService? license = null,
+        // 重复单号检测（规格 §3.2.5）：问一句「这个单号近 N 天录过没有」。
+        //
+        // ⚠️ 做成**注入的委托**而不是让协调器持有索引 —— 与 `RecordingSession` 的
+        // `durationPrompted` 同一个手法：这一层不该知道检索那一层的存在（它只管
+        // 「一次工作」的编排）。生产那边接的是 `RecordingSearch`（已经实现了
+        // 「按单号精确查」+ 单号归一化，不必再写一份）。
+        Func<WaybillNumber, CancellationToken, Task<IReadOnlyList<Index.RecordingEntry>>>? duplicateProbe = null)
     {
+        _duplicateProbe = duplicateProbe;
         _clock = clock ?? NewDefaultClock();
         _delay = delay ?? Task.Delay;
         _workspace = workspace;
@@ -177,6 +207,10 @@ public sealed class RecordingCoordinator : IAsyncDisposable
     /// 生产路径由 `DesktopServices` 传真的那个。
     /// </remarks>
     private readonly ITrustedClock? _trustedClock;
+
+    /// <summary>「这个单号近 N 天录过没有」—— 见构造函数的说明。</summary>
+    private readonly Func<WaybillNumber, CancellationToken, Task<IReadOnlyList<Index.RecordingEntry>>>?
+        _duplicateProbe;
 
     /// <summary>默认时钟：一个从构造时开始走的秒表。</summary>
     /// <remarks>
@@ -546,6 +580,70 @@ public sealed class RecordingCoordinator : IAsyncDisposable
             new Dictionary<string, object?> { ["会话"] = session.SessionId, ["来源"] = source });
 
         Raise(CoordinatorNoticeKind.SegmentStarted, waybill, $"开始录制 {waybill.Value}。");
+
+        // 重复单号检测（规格 §3.2.5）—— ⚠️ **异步、绝不阻塞开录**（规格原话）。
+        // 所以它排在 `Raise(SegmentStarted)` **之后**，而且**没人 await**。
+        _ = CheckDuplicateWaybillAsync(waybill, session.SessionId);
+    }
+
+    /// <summary>
+    /// 这个单号近 N 天录过没有（规格 §3.2.5）。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// 规格那条： 「识别到的单号若在近 N 天内已有未删除记录，必须提示。N 可配置。」
+    /// 它的硬约束是「**全部异步执行，绝不阻塞开录**」—— 所以这里是开录之后起的。
+    /// </para>
+    /// <para>
+    /// ⚠️ <b>没人 await 的 Task，异常会被静默丢掉</b>（.NET 默认行为，见
+    /// <c>Platform/CrashGuard</c> 的说明）⇒ 这里**必须自己兜住**：
+    /// 否则一次索引读失败会**无声无息**，而用户以为检测做了。
+    /// </para>
+    /// <para>
+    /// ⚠️ 时间用**墙钟**（不是可信时钟）：它只是个提醒，不参与任何证据。
+    /// 可信时钟是给「录像里的时间」用的（§3.6.3），拿它来算「近 N 天」是误用。
+    /// </para>
+    /// </remarks>
+    private async Task CheckDuplicateWaybillAsync(WaybillNumber waybill, string sessionId)
+    {
+        if (_duplicateProbe is null || _options.DuplicateCheckDays <= 0)
+        {
+            return;
+        }
+
+        try
+        {
+            var entries = await _duplicateProbe(waybill, CancellationToken.None);
+            var since = DateTimeOffset.UtcNow.AddDays(-_options.DuplicateCheckDays);
+
+            var recent = entries
+                // ⚠️ 排掉**正在录的这一段**：它已经在索引里了吗？没有 ——
+                // 索引是收尾时才写的。但换件那条路（连续扫）里，上一件刚入库，
+                // 而同一张面单被复扫时就会命中它自己。排掉更稳。
+                .Where(e => !string.Equals(e.SessionId, sessionId, StringComparison.Ordinal))
+                .Where(e => e.StartedAt >= since)
+                .OrderByDescending(e => e.StartedAt)
+                .ToList();
+
+            if (recent.Count == 0)
+            {
+                return;
+            }
+
+            _logger.Log(LogLevel.Info, "录制", $"重复单号：{waybill.Value} 近 {_options.DuplicateCheckDays} 天录过",
+                new Dictionary<string, object?> { ["次数"] = recent.Count });
+
+            Raise(CoordinatorNoticeKind.DuplicateWaybill, waybill,
+                $"{waybill.Value} 在最近 {_options.DuplicateCheckDays} 天里录过 {recent.Count} 次"
+                + $"（最近一次 {recent[0].StartedAt.ToLocalTime():MM-dd HH:mm}）。"
+                + "核对一下是不是重复录件或者单号扫错了。");
+        }
+        catch (Exception ex)
+        {
+            // 检测失败**不该影响任何事** —— 它只是个提醒（I3 的反面：
+            // 这一条不是「必须让用户看见」的那种事，它连录制都没参与）。
+            _logger.Log(LogLevel.Warn, "录制", $"重复单号检测没做成：{ex.Message}");
+        }
     }
 
     /// <summary>
