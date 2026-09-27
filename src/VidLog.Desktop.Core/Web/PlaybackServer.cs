@@ -242,8 +242,21 @@ public sealed class PlaybackServer : IAsyncDisposable
             {
                 context = await _listener.GetContextAsync().WaitAsync(cancellationToken);
             }
-            catch (Exception ex) when (ex is OperationCanceledException or HttpListenerException or ObjectDisposedException)
+            catch (Exception ex) when (ex is OperationCanceledException or HttpListenerException
+                or ObjectDisposedException or InvalidOperationException)
             {
+                // ⚠️ `InvalidOperationException`（"Please call the Start() method before
+                // calling this method"）是 2026-09-27 补进来的，它是一个**真竞态**：
+                //
+                // `StopAsync` 先取消令牌、再 `_listener.Stop()`，而挂在
+                // `GetContextAsync` 上的这一句在这两者之间**可能以这个异常结束**
+                // 而不是以取消结束。那条路原来会**逃出循环** ⇒ `_loopTask` 变成
+                // faulted ⇒ `StopAsync` 里 `await _loopTask` 把它抛给调用方。
+                // 表现是**关回放服务时报错**（实测：全套并行跑时 1/8 复现，
+                // 堆栈就停在 `BeginGetContext`）。
+                //
+                // 在「正在关闭」这个位置，这几种异常是**同一件事**：循环该退出了。
+                // 这个 try 块里只有 `GetContextAsync` 一句，所以 IOE 不可能来自别处。
                 break;
             }
 

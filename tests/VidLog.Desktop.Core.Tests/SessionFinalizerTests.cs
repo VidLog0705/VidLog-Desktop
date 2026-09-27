@@ -28,7 +28,11 @@ public class SessionFinalizerTests
 
         public void Dispose()
         {
-            try { Directory.Delete(Path, recursive: true); } catch (IOException) { }
+            // ⚠️ **宽着接**：Windows 在「文件正被另一个进程持有」时可能报
+            // `UnauthorizedAccessException` 而不是 `IOException`（2026-09-27 实测：会话还在
+            // 收尾时删含 `.ass` / `.mkv` 的临时目录）。清理失败不该让任何一条测试红。
+            try { Directory.Delete(Path, recursive: true); }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
         }
     }
 

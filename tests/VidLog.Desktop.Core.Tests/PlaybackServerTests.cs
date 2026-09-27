@@ -66,7 +66,11 @@ public class PlaybackServerTests
 
         public void Dispose()
         {
-            try { Directory.Delete(Path, recursive: true); } catch (IOException) { }
+            // ⚠️ **宽着接**：Windows 在「文件正被另一个进程持有」时可能报
+            // `UnauthorizedAccessException` 而不是 `IOException`（2026-09-27 实测：会话还在
+            // 收尾时删含 `.ass` / `.mkv` 的临时目录）。清理失败不该让任何一条测试红。
+            try { Directory.Delete(Path, recursive: true); }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
         }
     }
 
@@ -319,9 +323,9 @@ public class PlaybackServerTests
         {
             if (File.Exists(path))
             {
-                var lines = await File.ReadAllLinesAsync(path);
+                var lines = await TryReadAllLinesAsync(path);
 
-                if (lines.Length >= count && TryParseAll(lines, out var entries))
+                if (lines is not null && lines.Length >= count && TryParseAll(lines, out var entries))
                 {
                     return entries;
                 }
@@ -332,6 +336,51 @@ public class PlaybackServerTests
 
         Assert.Fail($"{path} 里始终没有出现 {count} 行可解析的日志（等到超时）");
         return [];
+    }
+
+    /// <summary>
+    /// 读日志文件 —— **允许写者继续写**。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// ⚠️ <b>不能图省事用 <c>File.ReadAllLinesAsync</c>：它的默认共享模式是
+    /// <see cref="FileShare.Read"/>，意思是「我读的时候<b>不许别人写</b>」</b> ——
+    /// 而写者（<c>FileLogger</c>）此刻正允许别人读（<c>FileShare.Read | FileShare.Delete</c>），
+    /// 两边一撞就是 <c>IOException</c>「文件正被另一个进程使用」。
+    /// </para>
+    /// <para>
+    /// 表现是这条用例**偶发红**，而红的原因与它要验的「每个请求留一条日志」
+    /// **毫无关系**（2026-09-27 抓到了现场：堆栈就停在这一行）。
+    /// 这一类「重跑就绿」最坏 —— 它让人开始无视红（§46 那句话）。
+    /// </para>
+    /// <para>
+    /// ⚠️ 诊断包导出读日志用的是**同一个口径**（<c>FileShare.ReadWrite</c>）
+    /// —— 照它抄，别另立一套。
+    /// </para>
+    /// </remarks>
+    /// <returns>读不到时返回 <see langword="null"/>（下一轮 20 毫秒后再试）。</returns>
+    private static async Task<string[]?> TryReadAllLinesAsync(string path)
+    {
+        try
+        {
+            using var stream = new FileStream(
+                path, FileMode.Open, FileAccess.Read,
+                FileShare.ReadWrite | FileShare.Delete);
+            using var reader = new StreamReader(stream);
+
+            var lines = new List<string>();
+            while (await reader.ReadLineAsync() is { } line)
+            {
+                lines.Add(line);
+            }
+
+            return [.. lines];
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            // 正被写着、或刚被删掉 —— 轮询本来就会再来一次。
+            return null;
+        }
     }
 
     private static bool TryParseAll(string[] lines, out List<JsonElement> entries)

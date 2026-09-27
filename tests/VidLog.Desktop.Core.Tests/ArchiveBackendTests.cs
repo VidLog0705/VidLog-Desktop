@@ -308,9 +308,21 @@ public class ArchiveBackendTests
 
         public void Dispose()
         {
-            if (Directory.Exists(Path))
+            if (!Directory.Exists(Path))
+            {
+                return;
+            }
+
+            // ⚠️ **宽着接**（与其它测试文件里的 TempDir 同一个口径）：
+            // Windows 在「文件正被另一个进程持有」时可能报
+            // `UnauthorizedAccessException` 而不是 `IOException`。
+            // 清理临时目录失败不该让测试红 —— 那不是被测行为。
+            try
             {
                 Directory.Delete(Path, recursive: true);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
             }
         }
     }

@@ -32,7 +32,10 @@ public class FfmpegIntegrationTests
             {
                 Directory.Delete(Path, recursive: true);
             }
-            catch (IOException)
+            // ⚠️ **宽着接**：Windows 在「文件正被另一个进程持有」时可能报
+            // `UnauthorizedAccessException` 而不是 `IOException`（实测：会话还在
+            // 收尾时删含 `.ass` / `.mkv` 的临时目录）。清理失败不该让测试红。
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
             {
             }
         }
