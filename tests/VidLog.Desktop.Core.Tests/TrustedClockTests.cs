@@ -86,19 +86,17 @@ public class TrustedClockTests
         Assert.Equal(anchor.AddSeconds(90), clock.Now);
     }
 
-    [Fact]
-    public void 认不出的时间字符串一律不当成时刻()
-    {
-        // 只用 RFC 1123 那一种。放宽成 DateTimeOffset.Parse 会把本机区域格式
-        // 卷进来，而这条路径要的是一个**外部**时刻。
-        Assert.True(HttpDateParser.TryParse("Tue, 15 Nov 1994 08:12:31 GMT", out var parsed));
-        Assert.Equal(new DateTimeOffset(1994, 11, 15, 8, 12, 31, TimeSpan.Zero), parsed);
-
-        Assert.False(HttpDateParser.TryParse(null, out _));
-        Assert.False(HttpDateParser.TryParse("", out _));
-        Assert.False(HttpDateParser.TryParse("2026-09-27 12:00:00", out _));
-        Assert.False(HttpDateParser.TryParse("昨天下午三点", out _));
-    }
+    // ⚠️ 这里原先有一条「认不出的时间字符串一律不当成时刻」，测的是
+    // `HttpDateParser.TryParse`（严格 RFC 1123、不放宽）。2026-09-27 **两者一起删了**：
+    // 那个解析器在生产里**零调用点** —— `HttpDateClockSource` 用的是框架解析好的
+    // `HttpResponseHeaders.Date`（内部就是按 RFC 1123 + invariant 文化解析的，
+    // 同样不会把本机区域格式卷进来）。
+    //
+    // ⚠️ 所以那条测试验的是一个**没人跑的实现** —— 它绿着，却覆盖不到
+    // 生产真正走的那条路。这是「测试绿在一个巧合上」的另一种脸：
+    // **测了不跑的东西**。删掉它之后覆盖情况反而是诚实的。
+    // 那两句推理（只用 RFC 1123、放宽会卷进本机格式）已经搬到
+    // `HttpDateClockSource.QueryAsync` 的注释里，不会再丢。
 
     // ─────────────────────────────────────────────
     // 跳变检测（规格 §3.6.3）

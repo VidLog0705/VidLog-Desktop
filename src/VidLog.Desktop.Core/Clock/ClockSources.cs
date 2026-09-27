@@ -80,6 +80,14 @@ public sealed class HttpDateClockSource : IClockSource
                 using var response = await _http.GetAsync(
                     url, HttpCompletionOption.ResponseHeadersRead, timeout.Token);
 
+                // ⚠️ **用框架解析好的 `Headers.Date`，不自己解析字符串**
+                // （2026-09-27 核过）：`HttpResponseHeaders.Date` 内部就是按
+                // RFC 1123 用 invariant 文化解析的，而且**不会**把本机区域格式
+                // 卷进来 —— 正是这条路径要的性质（要的是**外部**时刻，
+                // 不该受本机设置影响）。所以不必也不该再维护一个平行的解析器。
+                //
+                // ⚠️ 取不到就是**取不到**，不猜：这台机器上「开工前校准」是硬闸门
+                // （未校准不得开始录制），猜一个时刻比没有更糟 —— 它看起来是校准过的。
                 if (response.Headers.Date is { } date)
                 {
                     return date;
@@ -95,37 +103,5 @@ public sealed class HttpDateClockSource : IClockSource
 
         throw new InvalidOperationException(
             $"取不到公网时间（试过 {_urls.Count} 个地址）。最后一次失败：{last?.Message}");
-    }
-}
-
-/// <summary>把 `Date` 头那种字符串解析成时刻（给测试与别处一处用）。</summary>
-/// <remarks>
-/// 只用 `TryParseExact` 认 RFC 1123 那一种（`Date` 头的标准形态）——
-/// 放宽成 `DateTimeOffset.Parse` 会把本机区域格式卷进来，而这条路径
-/// 要的是一个**外部**时刻，不该受本机设置影响。
-/// </remarks>
-public static class HttpDateParser
-{
-    private static readonly string[] Formats =
-    [
-        "r",                                    // RFC 1123：Tue, 15 Nov 1994 08:12:31 GMT
-        "ddd, dd MMM yyyy HH:mm:ss 'GMT'",
-    ];
-
-    public static bool TryParse(string? value, out DateTimeOffset parsed)
-    {
-        parsed = default;
-
-        if (string.IsNullOrWhiteSpace(value))
-        {
-            return false;
-        }
-
-        return DateTimeOffset.TryParseExact(
-            value.Trim(),
-            Formats,
-            CultureInfo.InvariantCulture,
-            DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal,
-            out parsed);
     }
 }

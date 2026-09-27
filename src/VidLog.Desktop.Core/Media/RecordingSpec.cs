@@ -108,18 +108,3 @@ public sealed record RecordingSpec(VideoCodec Codec, VideoResolution Resolution)
         return [.. ordered.Where(seen.Add)];
     }
 }
-
-/// <summary>档位与枚举之间的换算。</summary>
-public static class RecordingSpecOptions
-{
-    /// <summary>认不出的档位一律回落到默认值。</summary>
-    /// <remarks>
-    /// 与设置层一贯的「越界回落默认值」同一条规矩（I4 的同一条精神）：
-    /// 一个被手改坏的配置不该让用户录不了像。
-    /// </remarks>
-    public static VideoCodec CodecOr(VideoCodec codec) =>
-        Enum.IsDefined(codec) ? codec : RecordingSpec.Default.Codec;
-
-    public static VideoResolution ResolutionOr(VideoResolution resolution) =>
-        Enum.IsDefined(resolution) ? resolution : RecordingSpec.Default.Resolution;
-}
