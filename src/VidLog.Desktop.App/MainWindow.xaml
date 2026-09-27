@@ -234,21 +234,46 @@
                 <!-- 归档层 = 本机磁盘时这块**不出现**（规格 §3.5.1）——
                      那时盘上这份是唯一副本，给了开关也只能是「改了没反应」。 -->
                 <StackPanel x:Name="RetentionPanel" Margin="0,16,0,0" Visibility="Collapsed">
-                    <TextBlock Text="已备份后的本地保留期（发货 / 退货 × 已备份 / 未备份 = 四个数）" FontWeight="SemiBold"/>
+                    <TextBlock Text="本地保留期（发货 / 退货 × 已备份 / 未备份 = 四个数）" FontWeight="SemiBold"/>
                     <TextBlock Margin="0,2,0,0" Foreground="#88666666" TextWrapping="Wrap"
                                Text="这份设置现在只是记下你的选择 —— 真正开删要等清理执行层接通（M6）。今天不会有任何文件被删。"/>
-                    <StackPanel Orientation="Horizontal" Margin="0,4,0,0">
-                        <TextBlock Text="发货" VerticalAlignment="Center" Width="40"/>
-                        <ComboBox x:Name="OutboundRetentionCombo" Width="120"
-                                  SelectionChanged="OnRetentionChanged"/>
-                        <TextBlock Text="退货" VerticalAlignment="Center" Width="40" Margin="20,0,0,0"/>
-                        <ComboBox x:Name="ReturnRetentionCombo" Width="120"
-                                  SelectionChanged="OnRetentionChanged"/>
-                    </StackPanel>
-                    <TextBlock Margin="0,4,0,0" Foreground="#88666666" TextWrapping="Wrap"
-                               Text="发货与退货各一份，改一份不动另一份。保留期从「归档成功那一刻」起算，不是从录完起算。"/>
+
+                    <Grid Margin="0,8,0,0" HorizontalAlignment="Left">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="72"/>
+                            <ColumnDefinition Width="150"/>
+                            <ColumnDefinition Width="150"/>
+                        </Grid.ColumnDefinitions>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/>
+                        </Grid.RowDefinitions>
+
+                        <TextBlock Grid.Row="0" Grid.Column="1" Text="发货" FontWeight="SemiBold"/>
+                        <TextBlock Grid.Row="0" Grid.Column="2" Text="退货" FontWeight="SemiBold"/>
+
+                        <TextBlock Grid.Row="1" Grid.Column="0" Text="已备份" VerticalAlignment="Center"/>
+                        <ComboBox x:Name="ArchivedOutboundCombo" Grid.Row="1" Grid.Column="1"
+                                  IsEditable="True" Margin="0,2,8,2" SelectionChanged="OnRetentionChanged"/>
+                        <ComboBox x:Name="ArchivedReturnCombo" Grid.Row="1" Grid.Column="2"
+                                  IsEditable="True" Margin="0,2,0,2" SelectionChanged="OnRetentionChanged"/>
+
+                        <TextBlock Grid.Row="2" Grid.Column="0" Text="未备份" VerticalAlignment="Center"/>
+                        <ComboBox x:Name="UnarchivedOutboundCombo" Grid.Row="2" Grid.Column="1"
+                                  IsEditable="True" Margin="0,2,8,2" SelectionChanged="OnRetentionChanged"/>
+                        <ComboBox x:Name="UnarchivedReturnCombo" Grid.Row="2" Grid.Column="2"
+                                  IsEditable="True" Margin="0,2,0,2" SelectionChanged="OnRetentionChanged"/>
+                    </Grid>
+
+                    <TextBlock Margin="0,6,0,0" Foreground="#88666666" TextWrapping="Wrap"
+                               Text="四个数互相独立，改一个不动另一个。以「已备份」为例：它从**归档成功那一刻**起算，不是从录完起算。"/>
                     <TextBlock Margin="0,4,0,0" Foreground="#88666666" TextWrapping="Wrap"
                                Text="⚠️「不保留」不是立刻删：最近 24 小时内录的一律不动（硬性豁免，关不掉），所以它实际是「归档后最快 24 小时清理」。"/>
+                    <TextBlock Margin="0,4,0,0" Foreground="#88666666" TextWrapping="Wrap"
+                               Text="⚠️「未备份」那一列**永不自动删除** —— 那是唯一副本，删了就永久没了。它到期的动作只有提醒（列表标红 + 催上传），起算点是**录完时刻**。"/>
+                    <TextBlock Margin="0,4,0,0" Foreground="#88666666" TextWrapping="Wrap"
+                               Text="档位可以手输天数（例如 45）。⚠️「已备份 = 不保留」而归档层还没接上时，清理由 §3.5.4 的回查把关：查不到或查不了都**不删**。"/>
                 </StackPanel>
                 <TextBlock x:Name="RetentionAbsentNote" Margin="0,16,0,0"
                            Foreground="#88666666" TextWrapping="Wrap"/>

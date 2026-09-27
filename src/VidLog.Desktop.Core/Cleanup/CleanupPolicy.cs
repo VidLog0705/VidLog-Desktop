@@ -91,46 +91,15 @@ public enum RetentionMode
     BySpace,
 }
 
-/// <summary>
-/// 按业务类型分开的保留期（规格 §3.5.2.1）。
-/// </summary>
-/// <remarks>
-/// 需求方 2026-09-23 原话：「已备份后的本地保留期用户可自行选择，用下拉式选择
-/// 不保留/3/5/7/10/15/30/，**发货和退货视频同样**」；追问后裁决
-/// **发货与退货各自一份，不共用** —— 退货件争议多、体积小，
-/// 实践上不会和发货用同一个天数。
-/// </remarks>
-public sealed record RetentionPolicies(RetentionPolicy Outbound, RetentionPolicy Return)
-{
-    /// <summary>两份都是「全部保留」—— 出厂默认（规格 §3.5.2 表格第一行）。</summary>
-    public static RetentionPolicies KeepAll { get; } = new(RetentionPolicy.KeepAll, RetentionPolicy.KeepAll);
-
-    /// <summary>这一条该用哪一份。</summary>
-    public RetentionPolicy For(BusinessType type) =>
-        type == BusinessType.Return ? Return : Outbound;
-
-    /// <summary>
-    /// 下拉里的选项，按界面上的先后（规格 §3.5.2.1）。
-    /// </summary>
-    /// <remarks>
-    /// ⚠️ **「不保留」是 <see cref="RetentionMode.ByDays"/> 配 0 天，不是「立刻删」。**
-    /// <see cref="CleanupPlanner.FreshWindow"/>（24 小时，规格 §3.5.3③）把它兜住了 ——
-    /// 那条豁免**硬性、用户不可关闭**，所以实际生效是「备份后最快 24 小时清」。
-    /// 界面**必须把这句话写出来**：用户选了「不保留」却看见东西还在，
-    /// 不说清楚他会以为坏了（踩坑 #13「改了没反应的开关」）。
-    /// </remarks>
-    public static IReadOnlyList<(string Label, RetentionPolicy Policy)> Choices { get; } =
-    [
-        ("全部保留", RetentionPolicy.KeepAll),
-        ("不保留", new RetentionPolicy(RetentionMode.ByDays, KeepDays: 0)),
-        ("3 天", new RetentionPolicy(RetentionMode.ByDays, KeepDays: 3)),
-        ("5 天", new RetentionPolicy(RetentionMode.ByDays, KeepDays: 5)),
-        ("7 天", new RetentionPolicy(RetentionMode.ByDays, KeepDays: 7)),
-        ("10 天", new RetentionPolicy(RetentionMode.ByDays, KeepDays: 10)),
-        ("15 天", new RetentionPolicy(RetentionMode.ByDays, KeepDays: 15)),
-        ("30 天", new RetentionPolicy(RetentionMode.ByDays, KeepDays: 30)),
-    ];
-}
+// ── 保留期：两个数 → 四个数（2026-09-27）──────────────────────────
+//
+// 原来这里有一个 `RetentionPolicies`（发货 / 退货各一份 `RetentionPolicy`）。
+// 规格 2026-09-24 把它扩成了**四个数**（发货 / 退货 × **已备份 / 未备份**，
+// 两列语义相反），所以它被 `RetentionSettings` 取代了 —— 见 `RetentionSettings.cs`。
+//
+// ⚠️ `RetentionPolicy` / `RetentionMode` **留着**：它们是 `Plan` 这个原语吃的
+// 「一份天数策略」（外加「按空间」那一档，它是全局的，与业务类型无关）。
+// 四档那一层负责把它们**选出来**。
 
 /// <summary>一条可清理的候选。</summary>
 public sealed record CleanupCandidate(RecordingEntry Entry, long SizeBytes, RelativePath Location, string Why);
@@ -142,12 +111,30 @@ public sealed record CleanupCandidate(RecordingEntry Entry, long SizeBytes, Rela
 /// </remarks>
 public sealed record ExemptedEntry(RecordingEntry Entry, string Why);
 
+/// <summary>
+/// 一条**该催上传**的录像（规格 §3.5.2.1 的「未备份」那一列）。
+/// </summary>
+/// <remarks>
+/// ⚠️ 它与 <see cref="ExemptedEntry"/> 不是一回事，所以要分开：
+/// 豁免说的是「它为什么**没被删**」（几乎每条录像都在豁免列表里），
+/// 而这一条说的是「**它该被催**」—— 界面上要标红、要计入「N 个未备份」。
+/// <para>
+/// <b>它永远不导致删除。</b>未备份的那些是**唯一副本**（I2），
+/// 这一列到期的唯一动作是提醒。
+/// </para>
+/// </remarks>
+public sealed record NudgedEntry(RecordingEntry Entry, string Why);
+
 /// <summary>一次清理的完整计划。</summary>
 public sealed record CleanupPlan(
     IReadOnlyList<CleanupCandidate> Candidates,
-    IReadOnlyList<ExemptedEntry> Exempted)
+    IReadOnlyList<ExemptedEntry> Exempted,
+    IReadOnlyList<NudgedEntry>? Nudges = null)
 {
     public long TotalBytes => Candidates.Sum(c => c.SizeBytes);
+
+    /// <summary>该催上传的那些（规格 §3.5.2.1 的未备份列）。</summary>
+    public IReadOnlyList<NudgedEntry> OverdueUnarchived => Nudges ?? [];
 }
 
 /// <summary>
@@ -336,12 +323,13 @@ public sealed class CleanupPlanner
         IReadOnlyList<RecordingEntry> entries,
         IReadOnlyDictionary<string, IReadOnlyDictionary<string, string>> labels,
         IReadOnlyDictionary<string, DateTimeOffset> archiveAnchors,
-        RetentionPolicies policies,
+        RetentionSettings settings,
         DateTimeOffset now,
         long? freeBytes = null)
     {
         var candidates = new List<CleanupCandidate>();
         var exempted = new List<ExemptedEntry>();
+        var nudges = new List<NudgedEntry>();
 
         foreach (var group in entries.GroupBy(e => BusinessTypeOf(e, labels)))
         {
@@ -353,13 +341,44 @@ public sealed class CleanupPlanner
                 continue;
             }
 
-            var plan = Plan([.. group], labels, archiveAnchors, policies.For(type), now, freeBytes);
+            // ── 未备份那一列（规格 §3.5.2.1）──────────────────────────
+            //
+            // ⚠️ **它永远不产生候选** —— 未备份的那些是唯一副本（I2）。
+            // 它到期的动作只有「催」：起算点是**录完时刻**（不是归档时刻，
+            // 那时还没归档），到期就往催上传列表里放一条。
+            var unarchived = settings.UnarchivedFor(type);
+
+            if (!unarchived.KeepsEverything)
+            {
+                foreach (var entry in group.Where(e => !archiveAnchors.ContainsKey(e.EvidenceId)))
+                {
+                    var since = now - entry.EndedAt;
+
+                    if (since >= TimeSpan.FromDays(unarchived.Days!.Value))
+                    {
+                        nudges.Add(new NudgedEntry(
+                            entry,
+                            unarchived.Days == 0
+                                ? "还没备份到归档层 —— 你选的是「不保留」，但这一份是唯一副本，"
+                                  + "系统只会催、不会删"
+                                : $"还没备份到归档层，已经录完 {since.TotalDays:0} 天了"
+                                  + $"（你设的是 {unarchived.Days} 天）"));
+                    }
+                }
+            }
+
+            // 已备份那一列走原来的原语：逐组算，顺手保证两份互不串。
+            var policy = settings.ArchivedFor(type).Days is { } days
+                ? new RetentionPolicy(RetentionMode.ByDays, days)
+                : RetentionPolicy.KeepAll;
+
+            var plan = Plan([.. group], labels, archiveAnchors, policy, now, freeBytes);
 
             candidates.AddRange(plan.Candidates);
             exempted.AddRange(plan.Exempted);
         }
 
-        return new CleanupPlan(candidates, exempted);
+        return new CleanupPlan(candidates, exempted, nudges);
     }
 
     /// <summary>

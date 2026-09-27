@@ -191,6 +191,16 @@ public class CleanupTests
     // 按业务类型分开的保留期（规格 §3.5.2.1）
     // ─────────────────────────────────────────────
 
+    /// <summary>四个数：发货/退货 × 已备份/未备份。不传的列是「全部保留」。</summary>
+    private static RetentionSettings Slots(
+        int archivedOutbound, int archivedReturn,
+        int? unarchivedOutbound = null, int? unarchivedReturn = null) =>
+        new(
+            RetentionSetting.FromConfig(archivedOutbound),
+            RetentionSetting.FromConfig(archivedReturn),
+            RetentionSetting.FromConfig(unarchivedOutbound),
+            RetentionSetting.FromConfig(unarchivedReturn));
+
     [Fact]
     public void 发货和退货各用自己那一份保留期()
     {
@@ -201,9 +211,7 @@ public class CleanupTests
             [Entry("out", Now.AddDays(-5)), Entry("ret", Now.AddDays(-5))],
             labels,
             ArchivedAt(Now.AddDays(-5), "out", "ret"),
-            new RetentionPolicies(
-                new RetentionPolicy(RetentionMode.ByDays, KeepDays: 3),
-                new RetentionPolicy(RetentionMode.ByDays, KeepDays: 30)),
+            Slots(archivedOutbound: 3, archivedReturn: 30),
             Now);
 
         // 同样录于 5 天前、同样 5 天前归档：发货那件超了 3 天，退货那件还在 30 天里。
@@ -220,9 +228,7 @@ public class CleanupTests
         // 发货调到「不保留」，退货仍是 30 天 —— 退货这条不该被牵着走。
         var plan = new CleanupPlanner().PlanPerBusinessType(
             [Entry("ret", Now.AddDays(-5))], labels, ArchivedAt(Now.AddDays(-5), "ret"),
-            new RetentionPolicies(
-                new RetentionPolicy(RetentionMode.ByDays, KeepDays: 0),
-                new RetentionPolicy(RetentionMode.ByDays, KeepDays: 30)),
+            Slots(archivedOutbound: 0, archivedReturn: 30),
             Now);
 
         Assert.Empty(plan.Candidates);
@@ -234,9 +240,7 @@ public class CleanupTests
         // 判不出它是发货还是退货 —— 猜错的代价是删掉证据，猜不出的代价只是占地方。
         var plan = new CleanupPlanner().PlanPerBusinessType(
             [Entry("e1", Now.AddDays(-365))], NoLabels(), Archived("e1"),
-            new RetentionPolicies(
-                new RetentionPolicy(RetentionMode.ByDays, KeepDays: 0),
-                new RetentionPolicy(RetentionMode.ByDays, KeepDays: 0)),
+            Slots(archivedOutbound: 0, archivedReturn: 0),
             Now);
 
         Assert.Empty(plan.Candidates);
@@ -248,9 +252,7 @@ public class CleanupTests
     {
         // 规格 §3.5.2.1：「不保留」= 0 天；但 §3.5.3③ 的 24 小时豁免硬性、
         // 用户不可关闭 —— 所以实际生效是 max(24h, 0) = 24 小时，不是「立刻删」。
-        var noKeep = new RetentionPolicies(
-            new RetentionPolicy(RetentionMode.ByDays, KeepDays: 0),
-            new RetentionPolicy(RetentionMode.ByDays, KeepDays: 0));
+        var noKeep = Slots(archivedOutbound: 0, archivedReturn: 0);
 
         var fresh = new CleanupPlanner().PlanPerBusinessType(
             [Entry("e1", Now.AddHours(-2))], Typed(("e1", BusinessType.Outbound)),
@@ -264,28 +266,127 @@ public class CleanupTests
     }
 
     [Fact]
-    public void 两份都是全部保留时谁都不清()
+    public void 四个数都是全部保留时谁都不清()
     {
         var plan = new CleanupPlanner().PlanPerBusinessType(
             [Entry("out", Now.AddDays(-365)), Entry("ret", Now.AddDays(-365))],
             Typed(("out", BusinessType.Outbound), ("ret", BusinessType.Return)),
             Archived("out", "ret"),
-            RetentionPolicies.KeepAll,
+            RetentionSettings.KeepAll,
             Now);
 
         Assert.Empty(plan.Candidates);
         Assert.Equal(2, plan.Exempted.Count);
     }
 
+    // ─────────────────────────────────────────────
+    // 未备份那一列：**只催、永不删**（规格 §3.5.2.1）
+    // ─────────────────────────────────────────────
+
     [Fact]
-    public void 下拉选项与需求方列举的一致()
+    public void 未备份那一列到期只催上传_绝不产生候选()
     {
-        // 需求方原话是「不保留/3/5/7/10/15/30/」；
-        // **「全部保留」是规格 §3.5.2 本来就规定的默认**，所以多这一项 ——
-        // 这个偏差要跟他确认（母仓 交接.md §5）。
+        // ⚠️ 这是这一节最要紧的一条：未备份的是**唯一副本**（I2），
+        // 那一列到期的唯一动作是提醒。写成「也删」就是允许系统销毁唯一一份。
+        var plan = new CleanupPlanner().PlanPerBusinessType(
+            [Entry("e1", Now.AddDays(-30))], Typed(("e1", BusinessType.Outbound)),
+            new Dictionary<string, DateTimeOffset>(),   // 没归档
+            Slots(archivedOutbound: 0, archivedReturn: 0, unarchivedOutbound: 7),
+            Now);
+
+        Assert.Empty(plan.Candidates);
+        var nudge = Assert.Single(plan.OverdueUnarchived);
+        Assert.Equal("e1", nudge.Entry.EvidenceId);
+        Assert.Contains("还没备份", nudge.Why);
+    }
+
+    [Fact]
+    public void 未备份那一列设成全部保留就不催()
+    {
+        // 规格原话：「全部保留 = **永不提醒**（不做任何操作，直到用户重新选择别的选项）」。
+        var plan = new CleanupPlanner().PlanPerBusinessType(
+            [Entry("e1", Now.AddDays(-3000))], Typed(("e1", BusinessType.Outbound)),
+            new Dictionary<string, DateTimeOffset>(),
+            Slots(archivedOutbound: 0, archivedReturn: 0),
+            Now);
+
+        Assert.Empty(plan.OverdueUnarchived);
+    }
+
+    [Fact]
+    public void 未备份那一列的起算点是录完时刻_不是归档时刻()
+    {
+        // 规格 §3.5.2.1 的表格：未备份列「起算点 = **录完时刻**」。
+        // 这条录像**根本没归档**，所以拿归档时刻去算根本无从算起 ——
+        // 这正是它必须用录完时刻的原因。
+        var plan = new CleanupPlanner().PlanPerBusinessType(
+            [Entry("fresh", Now.AddHours(-2)), Entry("old", Now.AddDays(-30))],
+            Typed(("fresh", BusinessType.Outbound), ("old", BusinessType.Outbound)),
+            new Dictionary<string, DateTimeOffset>(),
+            Slots(archivedOutbound: 0, archivedReturn: 0, unarchivedOutbound: 7),
+            Now);
+
+        var nudge = Assert.Single(plan.OverdueUnarchived);
+        Assert.Equal("old", nudge.Entry.EvidenceId);
+    }
+
+    [Fact]
+    public void 未备份那一列选不保留时措辞要点明它不会被删()
+    {
+        // 用户选了「不保留」却看见东西还在 —— 那句话必须当场解释清楚，
+        // 否则他会以为坏了（踩坑 #13），或者更糟：以为自己选了「马上删」而不敢选。
+        var plan = new CleanupPlanner().PlanPerBusinessType(
+            [Entry("e1", Now.AddDays(-1))], Typed(("e1", BusinessType.Outbound)),
+            new Dictionary<string, DateTimeOffset>(),
+            Slots(archivedOutbound: 0, archivedReturn: 0, unarchivedOutbound: 0),
+            Now);
+
+        var nudge = Assert.Single(plan.OverdueUnarchived);
+        Assert.Contains("唯一副本", nudge.Why);
+        Assert.Contains("不会删", nudge.Why);
+    }
+
+    [Fact]
+    public void 已备份的那些不受未备份那一列影响()
+    {
+        // 四个数互相独立：已备份那条走已备份的档位，未备份的才走另一列。
+        var plan = new CleanupPlanner().PlanPerBusinessType(
+            [Entry("archived", Now.AddDays(-30)), Entry("loose", Now.AddDays(-30))],
+            Typed(("archived", BusinessType.Outbound), ("loose", BusinessType.Outbound)),
+            Archived("archived"),
+            Slots(archivedOutbound: 7, archivedReturn: 7, unarchivedOutbound: 3),
+            Now);
+
+        var candidate = Assert.Single(plan.Candidates);
+        Assert.Equal("archived", candidate.Entry.EvidenceId);
+
+        var nudge = Assert.Single(plan.OverdueUnarchived);
+        Assert.Equal("loose", nudge.Entry.EvidenceId);
+    }
+
+    [Fact]
+    public void 下拉选项是规格那_9_项()
+    {
+        // 规格 §3.5.2.1：「不保留 / 3 / 5 / 7 / 10 / 15 / 30 / 自定义 / 全部保留」（9 项）。
+        // ⚠️ 「自定义」不是一个列表项，而是「手输天数」这个能力 —— 所以
+        // Standard 里是 8 个值，第 9 项由输入框兑现（见 `IsCustom`）。
         Assert.Equal(
-            new[] { "全部保留", "不保留", "3 天", "5 天", "7 天", "10 天", "15 天", "30 天" },
-            RetentionPolicies.Choices.Select(c => c.Label));
+            new[] { "不保留", "3 天", "5 天", "7 天", "10 天", "15 天", "30 天", "全部保留" },
+            RetentionSetting.Standard.Select(s => s.Label));
+
+        Assert.True(new RetentionSetting(45).IsCustom, "45 天不在那 8 档里 —— 它就是「自定义」");
+        Assert.False(RetentionSetting.KeepAll.IsCustom);
+    }
+
+    [Fact]
+    public void 非法天数一律回落到全部保留()
+    {
+        // 朝**少删**的那头落。负数尤其要拦：now.AddDays(-(-5)) 会把 cutoff 推到未来，
+        // 于是一律判超期 ⇒ 除了被豁免的全删。
+        Assert.Equal(RetentionSetting.KeepAll, RetentionSetting.FromConfig(null));
+        Assert.Equal(RetentionSetting.KeepAll, RetentionSetting.FromConfig(-1));
+        Assert.Equal(RetentionSetting.KeepAll, RetentionSetting.FromConfig(-999));
+        Assert.Equal(0, RetentionSetting.FromConfig(0).Days);
     }
 
     // ─────────────────────────────────────────────

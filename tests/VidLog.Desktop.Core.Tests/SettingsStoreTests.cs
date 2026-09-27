@@ -101,11 +101,12 @@ public class SettingsStoreTests
     // ─────────────────────────────────────────────
 
     [Fact]
-    public void 出厂默认是两份全部保留_且归档层是本机磁盘()
+    public void 出厂默认是四个数全是全部保留_且归档层是本机磁盘()
     {
         // 「装完就有个默认 30 天」是不能接受的 —— 清理必须是用户主动开的（§6.2）。
         Assert.Equal(ArchiveBackendKind.LocalDisk, AppSettings.Default.ArchiveBackend);
-        Assert.Equal(RetentionPolicies.KeepAll, AppSettings.Default.Retention);
+        Assert.Equal(RetentionSettings.KeepAll, AppSettings.Default.Retention);
+        Assert.False(AppSettings.Default.Retention.DeletesAnything);
     }
 
     [Fact]
@@ -157,44 +158,79 @@ public class SettingsStoreTests
     }
 
     [Fact]
-    public async Task 两份保留期分开存读_互不串()
+    public async Task 四个数分开存读_互不串()
     {
         using var dir = new TempDir();
         var path = dir.File("settings.json");
         var want = AppSettings.Default with
         {
             ArchiveBackend = ArchiveBackendKind.Nas,
-            Retention = new RetentionPolicies(
-                new RetentionPolicy(RetentionMode.ByDays, KeepDays: 7),
-                new RetentionPolicy(RetentionMode.ByDays, KeepDays: 30)),
+            ArchiveDirectory = @"\\nas\vidlog",
+            Retention = new RetentionSettings(
+                new RetentionSetting(7), new RetentionSetting(30),
+                new RetentionSetting(3), new RetentionSetting(45)),
         };
 
         await new SettingsStore(path).SaveAsync(want);
         var result = await new SettingsStore(path).LoadAsync();
 
         Assert.Empty(result.Warnings);
-        Assert.Equal(7, result.Settings.Retention.Outbound.KeepDays);
-        Assert.Equal(30, result.Settings.Retention.Return.KeepDays);
+
+        var r = result.Settings.Retention;
+        Assert.Equal(7, r.ArchivedOutbound.Days);
+        Assert.Equal(30, r.ArchivedReturn.Days);
+        Assert.Equal(3, r.UnarchivedOutbound.Days);
+        Assert.Equal(45, r.UnarchivedReturn.Days);   // 自定义天数也存得住
+        Assert.True(r.DeletesAnything);
     }
 
-    [Theory]
-    [InlineData(-5)]
-    [InlineData(999)]
-    public async Task 手改出来的越界保留天数整体回落(int days)
+    [Fact]
+    public async Task 老格式的两个数按已备份那一列读入_并说出来()
     {
-        // 负数天数不会报错，只会让 cutoff 落到未来 ⇒ 判什么都超期 ⇒ 全删。
-        // 正是「不会报错、只会让行为变得莫名其妙」那一类，必须拦。
+        // 2026-09-27 之前存的是 `RetentionPolicies`：{"Outbound":{"Mode":1,"KeepDays":7},…}。
+        // ⚠️ 不认它的话那两个数会被**静默丢掉**（反序列化跳过未知属性），
+        // 用户看到的是「我明明设过 7 天，怎么变回全部保留了」。
         using var dir = new TempDir();
         var path = dir.File("settings.json");
         await File.WriteAllTextAsync(path,
             """
-            {"ArchiveBackend":1,"Retention":{"Outbound":{"Mode":1,"KeepDays":DAYS},
-             "Return":{"Mode":1,"KeepDays":DAYS}}}
+            {"ArchiveBackend":1,"Retention":{"Outbound":{"Mode":1,"KeepDays":7},
+             "Return":{"Mode":1,"KeepDays":30}}}
+            """);
+
+        var result = await new SettingsStore(path).LoadAsync();
+
+        var r = result.Settings.Retention;
+        Assert.Equal(7, r.ArchivedOutbound.Days);
+        Assert.Equal(30, r.ArchivedReturn.Days);
+
+        // 新增的两列默认「全部保留」——**未备份那一列永不自动删**。
+        Assert.Equal(RetentionSetting.KeepAll, r.UnarchivedOutbound);
+        Assert.Equal(RetentionSetting.KeepAll, r.UnarchivedReturn);
+
+        Assert.Contains(result.Warnings, w => w.Contains("旧格式"));
+    }
+
+    [Theory]
+    [InlineData(-5)]
+    [InlineData(99999)]
+    public async Task 手改出来的越界保留天数整体回落(int days)
+    {
+        // 负数天数不会报错，只会让 cutoff 落到未来 ⇒ 判什么都超期 ⇒ 全删。
+        // 99999 天（≈273 年）是「手抖多打几个 9」——上限 3650 天是本仓标定的
+        // （规格 §3.5.2.1 说这类阈值由实现标定）。
+        using var dir = new TempDir();
+        var path = dir.File("settings.json");
+        await File.WriteAllTextAsync(path,
+            """
+            {"Retention":{"ArchivedOutbound":DAYS,"ArchivedReturn":DAYS}}
             """.Replace("DAYS", days.ToString()));
 
         var result = await new SettingsStore(path).LoadAsync();
 
-        Assert.Equal(AppSettings.Default, result.Settings);
+        // 一份坏掉的设置**整份**回落默认值 —— 这是既有的口径（`IsPlausible` 一票否决），
+        // 所以这里断言的是「四个数都回到了全部保留」。
+        Assert.Equal(RetentionSettings.KeepAll, result.Settings.Retention);
         Assert.NotEmpty(result.Warnings);
     }
 
@@ -237,22 +273,25 @@ public class SettingsStoreTests
     }
 
     [Fact]
-    public void 两份保留期的变更分开留痕()
+    public void 四个数的变更各留一行痕()
     {
-        // 合成一行的话，看日志的人分不清是哪一份动了。
+        // 合成一行的话，看日志的人分不清是哪一份动了；而这里**四个数各有一行**，
+        // 名字还是「已备份 / 未备份」（两列语义相反正是 §3.5.2.1 最要紧的一句话）。
         var before = AppSettings.Default;
         var after = before with
         {
-            Retention = new RetentionPolicies(
-                new RetentionPolicy(RetentionMode.ByDays, KeepDays: 7),
-                RetentionPolicy.KeepAll),
+            Retention = RetentionSettings.KeepAll with
+            {
+                ArchivedOutbound = new RetentionSetting(7),
+            },
         };
 
         var changes = SettingsStore.DescribeChanges(before, after);
 
         Assert.Single(changes);
-        Assert.Contains("Outbound", changes[0]);
-        Assert.DoesNotContain(changes, c => c.Contains("Return"));
+        Assert.Contains("发货.已备份", changes[0]);
+        Assert.DoesNotContain(changes, c => c.Contains("退货"));
+        Assert.DoesNotContain(changes, c => c.Contains("未备份"));
     }
 
     // ─────────────────────────────────────────────

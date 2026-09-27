@@ -122,8 +122,10 @@ public partial class MainWindow : Window
             ShowEffectiveSpec();
             SegmentBox.Text = _host.Settings.SegmentMinutes.ToString();
             PortBox.Text = _host.Settings.PlaybackPort.ToString();
-            SelectRetention(OutboundRetentionCombo, _host.Settings.Retention.Outbound);
-            SelectRetention(ReturnRetentionCombo, _host.Settings.Retention.Return);
+            SelectRetention(ArchivedOutboundCombo, _host.Settings.Retention.ArchivedOutbound);
+            SelectRetention(ArchivedReturnCombo, _host.Settings.Retention.ArchivedReturn);
+            SelectRetention(UnarchivedOutboundCombo, _host.Settings.Retention.UnarchivedOutbound);
+            SelectRetention(UnarchivedReturnCombo, _host.Settings.Retention.UnarchivedReturn);
         }
         finally
         {
@@ -210,27 +212,56 @@ public partial class MainWindow : Window
             _ => ArchiveTarget.Default,
         };
 
-    /// <summary>下拉里的项就是 <see cref="RetentionPolicies.Choices"/>，序号即索引。</summary>
-    private static void SelectRetention(ComboBox combo, RetentionPolicy policy)
+    /// <summary>
+    /// 下拉里的项就是 <see cref="RetentionSetting.Standard"/>（8 档）。
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ 第 9 项「自定义」**不是一个列表项，是一个手输的数** ——
+    /// 所以这几个下拉是 `IsEditable="True"` 的：用户直接敲「45」就行，
+    /// 不必再为「自定义」造一个输入弹窗（WPF 里没有现成的 `InputBox`）。
+    /// <para>
+    /// 存着的值不在那 8 档里（自定义过，或手改过设置文件）时，把它的
+    /// <see cref="RetentionSetting.Label"/>（形如「45 天」）填进文本框 ——
+    /// 这也是**看得见的**：用户能看到自己那个数还在。
+    /// </para>
+    /// </remarks>
+    private static void SelectRetention(ComboBox combo, RetentionSetting setting)
     {
         if (combo.Items.Count == 0)
         {
-            for (var i = 0; i < RetentionPolicies.Choices.Count; i++)
+            foreach (var option in RetentionSetting.Standard)
             {
-                combo.Items.Add(RetentionPolicies.Choices[i].Label);
+                combo.Items.Add(option.Label);
             }
         }
 
-        // 存着的值不在选项里（手改过设置文件）就落到第一项「全部保留」——
-        // 朝保守的那头落，不是朝第一项之外的东西落。
-        var index = RetentionPolicies.Choices.ToList().FindIndex(c => c.Policy == policy);
-        combo.SelectedIndex = index >= 0 ? index : 0;
+        combo.Text = setting.Label;
+        combo.SelectedIndex = RetentionSetting.Standard.ToList().IndexOf(setting);
     }
 
-    private static RetentionPolicy RetentionOf(ComboBox combo) =>
-        combo.SelectedIndex >= 0 && combo.SelectedIndex < RetentionPolicies.Choices.Count
-            ? RetentionPolicies.Choices[combo.SelectedIndex].Policy
-            : RetentionPolicy.KeepAll;
+    /// <summary>把下拉里的选择读回来。**认不出的写法一律回落「全部保留」**（朝少删的那头落）。</summary>
+    private static RetentionSetting RetentionOf(ComboBox combo)
+    {
+        // ⚠️ 可编辑下拉：用户敲的东西在 `Text` 里，不一定选中了某一项。
+        // 先按**选中项**认，认不出再看文本 —— 顺序反了的话，手输过一个数之后
+        // 再点列表里的项，读回来的会是旧文本。
+        if (combo.SelectedIndex >= 0
+            && combo.SelectedIndex < RetentionSetting.Standard.Count
+            && string.Equals(
+                combo.Text, RetentionSetting.Standard[combo.SelectedIndex].Label, StringComparison.Ordinal))
+        {
+            return RetentionSetting.Standard[combo.SelectedIndex];
+        }
+
+        var text = combo.Text?.Trim() ?? string.Empty;
+
+        if (text is "全部保留" or "") return RetentionSetting.KeepAll;
+        if (text == "不保留") return RetentionSetting.Immediate;
+
+        var digits = text.EndsWith('天') ? text[..^1].Trim() : text;
+
+        return int.TryParse(digits, out var days) ? RetentionSetting.FromConfig(days) : RetentionSetting.KeepAll;
+    }
 
     private static void SelectByTag(ComboBox combo, string tag)
     {
@@ -648,8 +679,9 @@ public partial class MainWindow : Window
             // 用户在 NAS 与挂载盘之间来回切时不必重填一遍。
             ArchiveDirectory = string.IsNullOrWhiteSpace(ArchivePathBox.Text)
                 ? null : ArchivePathBox.Text.Trim(),
-            Retention = new RetentionPolicies(
-                RetentionOf(OutboundRetentionCombo), RetentionOf(ReturnRetentionCombo)),
+            Retention = new RetentionSettings(
+                RetentionOf(ArchivedOutboundCombo), RetentionOf(ArchivedReturnCombo),
+                RetentionOf(UnarchivedOutboundCombo), RetentionOf(UnarchivedReturnCombo)),
         };
 
         try

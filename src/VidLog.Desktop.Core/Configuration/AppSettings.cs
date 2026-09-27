@@ -109,12 +109,19 @@ public sealed record AppSettings
     [JsonIgnore]
     public ArchiveTarget Archive => ArchiveTarget.FromConfig(ArchiveBackend, ArchiveDirectory);
 
-    /// <summary>归档成功后本地留多久，发货与退货各一份（规格 §3.5.2.1）。</summary>
+    /// <summary>
+    /// 保留期**四个数**：发货 / 退货 × 已备份 / 未备份（规格 §3.5.2.1）。
+    /// </summary>
     /// <remarks>
-    /// 默认两份都是<see cref="RetentionPolicies.KeepAll"/>：规格 §6.2「数据删除必须极度克制」，
+    /// 默认四个都是「全部保留」：规格 §6.2「数据删除必须极度克制」，
     /// 清理必须是用户**主动开启**的。
+    /// <para>
+    /// ⚠️ 老设置文件里这个键下是 <c>{"Outbound":{"Mode":1,"KeepDays":7},"Return":{…}}</c>
+    /// —— 那时它叫 <c>RetentionPolicies</c>。转换见
+    /// <see cref="RetentionSettingJsonConverter"/>（它认得老形状）。
+    /// </para>
     /// </remarks>
-    public RetentionPolicies Retention { get; init; } = RetentionPolicies.KeepAll;
+    public RetentionSettings Retention { get; init; } = RetentionSettings.KeepAll;
 
     public static AppSettings Default { get; } = new();
 
@@ -134,24 +141,30 @@ public sealed record AppSettings
         && s.Scanner.MinLength is >= 1 and <= 64
         && s.Scanner.MaxLength is >= 1 and <= 256
         && s.Scanner.MaxLength >= s.Scanner.MinLength
-        && Plausible(s.Retention.Outbound)
-        && Plausible(s.Retention.Return);
+        // 保留期：**天数 + 一个上限**。上限不写死在规格里（§3.5.2.1 明说
+        // 「这类阈值要真机标定」），本仓标定为 **10 年** —— 它远大于任何真实
+        // 工位的保留期，而小于「手改成 999999 天」这种明显是打错的值。
+        && PlausibleDays(s.Retention.ArchivedOutbound)
+        && PlausibleDays(s.Retention.ArchivedReturn)
+        && PlausibleDays(s.Retention.UnarchivedOutbound)
+        && PlausibleDays(s.Retention.UnarchivedReturn);
 
     /// <summary>
-    /// 一份保留期的参数自洽吗。
+    /// 一个保留期档位自洽吗。
     /// </summary>
     /// <remarks>
     /// 这里拦的是**手改设置文件**能造出来的坑：负数天数会让
     /// <c>now.AddDays(-(-5))</c> 变成「cutoff 在未来」，于是一律判超期 ⇒
     /// 除了被豁免的全删。这类值不会报错，只会把东西删光 —— 正是本方法存在的理由。
+    /// <para>
+    /// ⚠️ <b>上限 10 年，而且它是「实现标定」的，不是规格里写的</b> ——
+    /// 规格 §3.5.2.1 原话「上限不写死在这里……由实现标定并记进
+    /// <c>docs/实现决策.md</c>」。取 3650 的理由：它远大于任何真实工位的保留期，
+    /// 而小于「手抖多打几个 9」那种值。
+    /// </para>
     /// </remarks>
-    private static bool Plausible(RetentionPolicy p) => p.Mode switch
-    {
-        RetentionMode.KeepAll => true,
-        RetentionMode.ByDays => p.KeepDays is >= 0 and <= 365,
-        RetentionMode.BySpace => p.MinFreeBytes is > 0,
-        _ => false,
-    };
+    private static bool PlausibleDays(RetentionSetting setting) =>
+        setting.Days is null or (>= 0 and <= 3650);
 }
 
 /// <summary>设置读取的结果。</summary>
@@ -232,6 +245,19 @@ public sealed class SettingsStore
             parsed = parsed with { Mode = mode };
         }
 
+        // 保留期从两个数扩成四个数（规格 §3.5.2.1，2026-09-24）：
+        // 老的 `Outbound` / `Return` 说的是「已备份后的本地保留期」，语义没变，
+        // 所以搬进已备份那一列。不搬的话那两个数会被静默丢掉。
+        if (parsed.Retention.LegacyOutbound is not null || parsed.Retention.LegacyReturn is not null)
+        {
+            parsed = parsed with { Retention = parsed.Retention.WithLegacyApplied() };
+
+            warnings.Add(
+                "设置文件里的保留期是旧格式（发货 / 退货各一个数），"
+                + "已按「已备份保留时长」读入 —— 新增的「未备份」那一列默认是「全部保留」。"
+                + "（未备份的那一列**永不自动删**，它到期只提醒。）");
+        }
+
         return new SettingsLoadResult(parsed, warnings);
     }
 
@@ -305,10 +331,15 @@ public sealed class SettingsStore
         Compare(nameof(AppSettings.CameraDevice), previous.CameraDevice, next.CameraDevice);
         Compare(nameof(AppSettings.LogRetainDays), previous.LogRetainDays, next.LogRetainDays);
         Compare(nameof(AppSettings.ArchiveBackend), previous.ArchiveBackend, next.ArchiveBackend);
+        Compare(nameof(AppSettings.ArchiveDirectory), previous.ArchiveDirectory, next.ArchiveDirectory);
 
-        // 两份保留期分开记 —— 合成一行的话，看日志的人分不清是哪一份动了。
-        Compare($"{nameof(AppSettings.Retention)}.Outbound", previous.Retention.Outbound, next.Retention.Outbound);
-        Compare($"{nameof(AppSettings.Retention)}.Return", previous.Retention.Return, next.Retention.Return);
+        // 四个数**各记一行** —— 合成一行的话，看日志的人分不清是哪一份动了。
+        // 名字用「已备份 / 未备份」而不是属性名：日志是给人看的，
+        // 而这两列的语义相反正是这一节最要紧的一句话（§3.5.2.1）。
+        Compare("保留期.发货.已备份", previous.Retention.ArchivedOutbound, next.Retention.ArchivedOutbound);
+        Compare("保留期.退货.已备份", previous.Retention.ArchivedReturn, next.Retention.ArchivedReturn);
+        Compare("保留期.发货.未备份", previous.Retention.UnarchivedOutbound, next.Retention.UnarchivedOutbound);
+        Compare("保留期.退货.未备份", previous.Retention.UnarchivedReturn, next.Retention.UnarchivedReturn);
 
         return changes;
     }
