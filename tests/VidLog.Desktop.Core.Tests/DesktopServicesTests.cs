@@ -423,6 +423,56 @@ public class DesktopServicesTests
     }
 
     /// <summary>
+    /// 钉住「锁定在界面上真的有出路」（规格 §3.6.5）。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// 规格只有两行：「用户可给证据打标记、可锁定」+「**锁定后永不被自动清理**」。
+    /// ⚠️ 而这条一直是**只有读的那一半**：清理判定读 <see cref="LabelKeys.Locked"/>
+    /// （`CleanupTests` 覆盖得很全），而**没有任何地方写它** ——
+    /// 那条硬豁免**结构性地走不到**：用户没有任何办法把一条纠纷录像保住，
+    /// 保留期一到本机那份就被清了。
+    /// </para>
+    /// <para>
+    /// ⚠️ 为什么只能看源码文本：App 层没有测试工程（与上面几条同一个理由）。
+    /// 「清理会读这个标签」有测试守着，但**「有人能把它写下去」没有** ——
+    /// 缺的正是这一跳。
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public void 锁定在界面上真的有出路()
+    {
+        var root = RepoRoot();
+        var app = Path.Combine(root, "src", "VidLog.Desktop.App");
+
+        var xaml = File.ReadAllText(Path.Combine(app, "MainWindow.xaml"));
+        var window = File.ReadAllText(Path.Combine(app, "MainWindow.xaml.cs"));
+
+        // ① 那一列真的在，而且接着处理函数、把 evidenceId 带在按钮上。
+        Assert.Contains("Click=\"OnToggleLock\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("Tag=\"{Binding EvidenceId}\"", xaml, StringComparison.Ordinal);
+
+        // ② 处理函数真的**把标签写下去** —— 少了这一句，按钮就是个摆设。
+        Assert.Contains("Labels.SetAsync(", window, StringComparison.Ordinal);
+        Assert.Contains("LabelKeys.Locked", window, StringComparison.Ordinal);
+
+        // ③ 判据用的是**与清理判定同一个函数**。
+        // ⚠️ 在界面里另写一份（比如直接比 `== "true"`）会漏掉判据的第三条
+        // 「认不出来的值**当锁着**」，于是出现「界面显示没锁、清理却把它保留了」
+        // —— 那个状态用户没机会理解。
+        Assert.Contains("EvidenceLock.IsLocked(", window, StringComparison.Ordinal);
+
+        // ⚠️ **天花板（实测出来的，不是推测）**：③ 只能证明「界面里**有人**用那个
+        // 共享判据」，**挡不住「只在其中一处用了它、另一处自己解析」**。
+        // 做法是：把列表那一列与按钮动作**两处都**改成自己解析，③ 才红；
+        // 只改按钮那一处时它**照样绿**（2026-09-27 实测）。
+        //
+        // 而「两处判据不一致」恰恰是这个坑最现实的形态 —— 界面上那一格写着
+        // 「锁定」、点下去却是解锁。真要根治得让 App 层可测（见类注释里那条）；
+        // 在那之前这条绊线的价值是「别把这一跳整体摘掉」。
+    }
+
+    /// <summary>
     /// 钉住「错误扫描真的接上了」—— <c>AppHost</c> 必须把 <c>ScanErrorLog</c>
     /// 交给协调器。
     /// </summary>

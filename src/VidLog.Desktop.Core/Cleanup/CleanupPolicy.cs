@@ -519,7 +519,9 @@ public sealed class CleanupPlanner
     /// </remarks>
     private static bool IsLocked(
         RecordingEntry entry, IReadOnlyDictionary<string, IReadOnlyDictionary<string, string>> labels) =>
-        labels.TryGetValue(entry.EvidenceId, out var entryLabels)
-        && entryLabels.TryGetValue(LabelKeys.Locked, out var raw)
-        && (!bool.TryParse(raw, out var locked) || locked);
+        // ⚠️ 三条判据**只有一处实现**（`EvidenceLock.IsLocked`）——
+        // 检索界面上的锁定图标也调它。分成两份的话会出现
+        // 「界面显示没锁、清理却把它保留了」，而用户没机会理解那个状态。
+        EvidenceLock.IsLocked(
+            labels.TryGetValue(entry.EvidenceId, out var entryLabels) ? entryLabels : null);
 }

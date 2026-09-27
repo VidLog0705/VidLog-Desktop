@@ -819,6 +819,19 @@ public partial class MainWindow : Window
                     _ => "",
                 },
                 h.Entry.SessionId,
+                // 争议锁定（规格 §3.6.5：**锁定后永不被自动清理**）。
+                //
+                // ⚠️ 在这次之前这条硬豁免是**结构性走不到**的：清理判定读
+                // `LabelKeys.Locked`，而**没有任何地方写它**（唯一的标签写入点
+                // 是接收手机上传时带过来的标签）—— 电脑端用户锁不住任何一条，
+                // 保留期一到本机那份就被清了。
+                //
+                // ⚠️ 判据用 `EvidenceLock.IsLocked`（与清理判定**同一个函数**）：
+                // 在界面里另写一份会漏掉「认不出来的值当锁着」那一条，
+                // 于是出现「界面显示没锁、清理却把它保留了」。
+                LockLabel = EvidenceLock.IsLocked(h.Labels) ? "已锁定" : "锁定",
+                // 按钮要按这一条的 evidenceId 去写标签，所以得把它带在行上。
+                EvidenceId = h.Entry.EvidenceId,
                 Hit = h,
             }).ToList();
 
@@ -829,6 +842,56 @@ public partial class MainWindow : Window
         catch (Exception ex)
         {
             SearchStatus.Text = $"检索出错：{ex.Message}";
+        }
+    }
+
+    /// <summary>
+    /// 锁定 / 解锁一条录像（规格 §3.6.5）。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// ⚠️ 锁定是**硬豁免**（§3.5.3②）：锁上之后保留期到了也不会自动清理本机这份。
+    /// 用户拿它保住一条纠纷录像。
+    /// </para>
+    /// <para>
+    /// ⚠️ 值只写 <c>"true"</c> / <c>"false"</c>：判据
+    /// （<see cref="EvidenceLock.IsLocked"/>）对**认不出来的值当锁着**
+    /// —— 写 <c>'1'</c> 之类会让用户**解不开**，而界面上看不出为什么。
+    /// </para>
+    /// <para>
+    /// ⚠️ 解锁**不是删那一行**，是再追加一条 <c>false</c>
+    /// （标签表追加写、后者胜出）—— 母仓 §6.2：数据删除必须极度克制。
+    /// </para>
+    /// </remarks>
+    private async void OnToggleLock(object sender, RoutedEventArgs e)
+    {
+        if (sender is not Button { Tag: string evidenceId } || string.IsNullOrEmpty(evidenceId))
+        {
+            return;
+        }
+
+        try
+        {
+            // 当前锁没锁 —— **从标签读**（判据同一处），不是从按钮文字猜：
+            // 按钮文字可能是上一次检索时的旧值。
+            var labels = await _host.Services.Labels.GetForEvidenceAsync(evidenceId);
+            var locked = EvidenceLock.IsLocked(labels);
+
+            await _host.Services.Labels.SetAsync(
+                evidenceId, LabelKeys.Locked, locked ? "false" : "true");
+
+            // 重检索一遍，那一格（以及「已锁定 / 锁定」）才会跟着变。
+            await SearchAsync();
+
+            NoticesText.Text = locked
+                ? $"{DateTime.Now:HH:mm:ss}  {evidenceId} 已解锁，会照常按保留期清理。"
+                : $"{DateTime.Now:HH:mm:ss}  {evidenceId} 已锁定：保留期到了也不会自动清理。";
+        }
+        catch (Exception ex)
+        {
+            // I3：写不进去要说出来 —— 用户以为锁上了而其实没锁，
+            // 那条录像会在保留期到的时候被清掉。
+            NoticesText.Text = $"{DateTime.Now:HH:mm:ss}  锁定没能保存：{ex.Message}";
         }
     }
 

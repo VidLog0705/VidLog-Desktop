@@ -42,6 +42,48 @@ public static class LabelKeys
     public const string Locked = "locked";
 }
 
+/// <summary>
+/// 某一条证据锁着没有（规格 §3.6.5）。
+/// </summary>
+/// <remarks>
+/// <para>
+/// ⚠️ <b>判据只有这一处</b>：<see cref="Cleanup.CleanupPlanner"/> 的清理判定
+/// 与检索界面上的锁定图标**都调它**。分成两份的话会出现
+/// 「界面显示没锁、清理却把它保留了」—— 那个状态用户没机会理解。
+/// </para>
+/// <para>
+/// 三条判据（与手机端 <c>label_store.isEvidenceLocked</c> **同向**）：
+/// </para>
+/// <list type="number">
+/// <item><b>没打过这个标签 = 没锁</b>（绝大多数证据的常态）。
+/// ⚠️ 这一条必须单独判：少了它，「认不出来就当锁着」会把整个库永久锁死、
+/// 永远清不掉任何东西。</item>
+/// <item>打过了、值也认得出 ⇒ 按那个值。</item>
+/// <item>打过了但<b>认不出来</b>（<c>'1'</c> / <c>''</c> / 被人手改坏的值）
+/// ⇒ <b>当锁着</b>，朝<b>少删</b>的那头落。与
+/// <c>RetentionSetting.FromConfig</c> 解析失败回落「全部保留」同一条规矩：
+/// <b>把锁读丢了的代价是删掉用户锁上的证据</b>，而反过来只是少清一条、
+/// 占点地方（而且它在豁免列表里看得见）。</item>
+/// </list>
+/// <para>
+/// ⚠️ 所以<b>写入的值只能是 <c>"true"</c> / <c>"false"</c></b>：
+/// 写 <c>'1'</c> 会变成「永远锁着」—— 用户解不开，而界面上看不出为什么。
+/// </para>
+/// </remarks>
+public static class EvidenceLock
+{
+    public static bool IsLocked(IReadOnlyDictionary<string, string>? labelsForEvidence)
+    {
+        if (labelsForEvidence is null
+            || !labelsForEvidence.TryGetValue(LabelKeys.Locked, out var raw))
+        {
+            return false;
+        }
+
+        return !bool.TryParse(raw, out var locked) || locked;
+    }
+}
+
 /// <summary><see cref="BusinessType"/> 与标签值之间的换算。</summary>
 /// <remarks>
 /// 单独一个类，不放进 <see cref="LabelKeys"/> —— 那里有个同名的

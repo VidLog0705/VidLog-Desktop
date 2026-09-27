@@ -204,6 +204,19 @@
                         <DataGridTextColumn Header="时长" Binding="{Binding Duration}" Width="80"/>
                         <DataGridTextColumn Header="类型" Binding="{Binding Business}" Width="70"/>
                         <DataGridTextColumn Header="会话" Binding="{Binding SessionId}" Width="*"/>
+                        <!-- 争议锁定（规格 §3.6.5）。⚠️ 它是**硬豁免**（§3.5.3②）：
+                             锁上之后保留期到了也不会自动清理这一条。
+                             在本次之前这一列**不存在** —— 电脑端用户没有任何
+                             办法把一条纠纷录像保住。 -->
+                        <DataGridTemplateColumn Header="锁定" Width="96">
+                            <DataGridTemplateColumn.CellTemplate>
+                                <DataTemplate>
+                                    <Button Content="{Binding LockLabel}" Padding="10,2"
+                                            Margin="2,0" Click="OnToggleLock"
+                                            Tag="{Binding EvidenceId}"/>
+                                </DataTemplate>
+                            </DataGridTemplateColumn.CellTemplate>
+                        </DataGridTemplateColumn>
                     </DataGrid.Columns>
                 </DataGrid>
 
