@@ -121,6 +121,28 @@
                             <TextBlock x:Name="RecordingStatus" Margin="14,0,0,0"
                                        VerticalAlignment="Center" TextWrapping="Wrap"/>
                         </StackPanel>
+
+                        <!-- 时长兜底那次**询问**（规格 §3.3.4）。
+                             ⚠️ 默认藏着 —— 只有真到了档位时间才出现
+                             （Core 发 CoordinatorNoticeKind.DurationPrompt 时）。
+                             ⚠️ 措辞与手机端**逐字一致**（【停止】/【继续】）：
+                             两端对同一条规格的呈现不该长得不一样。
+                             ⚠️ 它**不打断录制**（规格明令「提示与按钮必须在录制不被中断的
+                             前提下出现」）—— 所以它只是页面里的一个条，
+                             不弹窗、不挡取景、也不改任何录制状态。 -->
+                        <Border x:Name="DurationPromptPanel" Margin="0,12,0,0" Padding="12,8"
+                                CornerRadius="4" Background="#FFFDF3DC"
+                                BorderBrush="#FFCC8A2E" BorderThickness="1"
+                                HorizontalAlignment="Left" Visibility="Collapsed">
+                            <StackPanel Orientation="Horizontal">
+                                <TextBlock VerticalAlignment="Center" FontWeight="SemiBold"
+                                           Text="录制时间即将超时，是否需要停止录制？"/>
+                                <Button x:Name="DurationStopButton" Content="停止" Padding="16,4"
+                                        Margin="16,0,0,0" Click="OnDurationStop"/>
+                                <Button x:Name="DurationContinueButton" Content="继续" Padding="16,4"
+                                        Margin="8,0,0,0" Click="OnDurationContinue"/>
+                            </StackPanel>
+                        </Border>
                     </StackPanel>
                 </Border>
 

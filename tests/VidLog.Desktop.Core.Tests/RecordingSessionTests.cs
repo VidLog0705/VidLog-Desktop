@@ -97,7 +97,8 @@ public class RecordingSessionTests
         var clock = new FakeClock();
 
         // 段 2 分钟、循环每次推进 1 分钟（见 AdvancingDelay）：
-        // 恰好滚 2 次，第 3 段进行到一半时撞上时长上限，循环自己停下来。
+        // 恰好滚 2 次，第 5 分钟撞上时长兜底 ⇒ **先问**（规格 §3.3.4，2026-09-27 起），
+        // 没人理 ⇒ 再过宽限期（默认 1 分钟 = 1 圈）才自动收尾 —— 所以第 6 圈停下。
         await using var session = Build(dir, capture, clock: clock, options: new RecordingSessionOptions(
             SegmentDuration: TimeSpan.FromMinutes(2),
             MaxDuration: TimeSpan.FromMinutes(5),
@@ -107,7 +108,8 @@ public class RecordingSessionTests
         await session.StartAsync(WaybillNumber.Parse("SF1"), "libx264");
         await session.RunAsync("libx264");
 
-        // 撞上限 → 自动收尾，循环必然退出（所以这条测试不会空转）。
+        // 撞上限 → **问** → 没人理 → 过宽限期自动收尾，循环必然退出
+        // （所以这条测试不会空转）。
         Assert.Equal(StopReason.DurationFallback, session.StoppedBecause);
 
         // 序号从 0 起、连续、不重 —— 收尾器按 Sequence 排序拼时间轴，
@@ -125,7 +127,8 @@ public class RecordingSessionTests
         var clock = new FakeClock();
 
         // 段 1 分钟、上限 2.5 分钟、每次推进 1 分钟：
-        // 第 2 分钟滚出第 2 段，第 3 分钟撞上限停下 ⇒ manifest 里恰好 2 段。
+        // 第 2 分钟滚出第 2 段；第 3 分钟撞上兜底 ⇒ **先问**（规格 §3.3.4），
+        // 没人理 ⇒ 再过宽限期（默认 1 分钟，1 圈）于第 4 分钟收尾。
         await using var session = Build(dir, capture, clock: clock, options: new RecordingSessionOptions(
             SegmentDuration: TimeSpan.FromMinutes(1),
             MaxDuration: TimeSpan.FromMinutes(2.5),
@@ -364,13 +367,239 @@ public class RecordingSessionTests
 
     private static readonly string Ffmpeg = FfmpegLocator.TryFind()!;
 
+    // ─────────────────────────────────────────────
+    // 时长兜底：到点**先问**（规格 §3.3.4）
+    // ─────────────────────────────────────────────
+    //
+    // ⚠️ 这一组是 2026-09-27 补的，因为原来电脑端把这条做成了**到点直接停** ——
+    // 而「它会把正常录制打断」正是 2026-09-21 那次需求变更要修掉的东西。
+    // 口径与手机端 `stop_controller.dart` 的 `_evaluateTimers` 逐条同形。
+
+    /// <summary>首问时刻到了、<b>但没停</b> —— 这是这一组最要紧的一条。</summary>
+    [Fact]
+    public async Task 时长兜底到点是先问_录制不中断()
+    {
+        using var dir = new TempDir();
+        var clock = new FakeClock();
+        var asked = 0;
+
+        await using var session = Build(dir, new FakeCapture(), clock: clock,
+            options: new RecordingSessionOptions(
+                SegmentDuration: TimeSpan.FromHours(1),
+                MaxDuration: TimeSpan.FromMinutes(4),      // 首问时刻
+                StopGracePeriod: TimeSpan.FromSeconds(1),
+                PollInterval: TimeSpan.FromMinutes(1),     // 每圈推进 1 分钟
+                // ⚠️ 宽限期必须**远大于**一圈：假时钟下循环是**瞬间**跑完几十圈的，
+                // 宽限期若与 PollInterval 同量级，循环会在测试来得及「答」之前
+                // 就自己跨过宽限期收掉了（第一版就是这么红的）。
+                PromptGrace: TimeSpan.FromHours(10)),
+            onPrompt: () => Interlocked.Increment(ref asked));
+
+        await session.StartAsync(WaybillNumber.Parse("SF1"), "libx264");
+
+        // ⚠️ 不能 await 它：问到用户之后循环**故意不退出**，await 会把测试挂死。
+        var loop = session.RunAsync("libx264");
+
+        await WaitUntilAsync(() => Volatile.Read(ref asked) > 0, "第一次询问");
+
+        Assert.Equal(1, Volatile.Read(ref asked));
+        Assert.True(session.IsAwaitingDurationAnswer, "到点应当**问**用户（语音 + 界面两键靠它）");
+
+        // ★ 最要紧的一句：问了不等于停。规格原话「提示与按钮必须在**录制不被中断**的前提下出现」。
+        //
+        // ⚠️ **判据是「时钟还在被推进」，不是 `Assert.False(loop.IsCompleted)`**。
+        // 后者**测不住**这件事：到点直接停的话，循环 `break` 之后还要跑收尾
+        // （remux / 校验 / 写索引，真文件 IO），而这一刻 `loop` 很可能**还没完成** ——
+        // 于是那条断言照样绿。**这是实测出来的**：把旧行为（问完就停）塞回去，
+        // 这条用例当时**没红**。
+        // 等时钟再走一段就不一样了：停了就没人推进它，`WaitUntilAsync` 必然抛。
+        var before = clock.Read();
+        await WaitUntilAsync(
+            () => clock.Read() > before + TimeSpan.FromMinutes(5),
+            "询问之后循环继续推进（停了就不会再推进）");
+
+        Assert.Equal(1, Volatile.Read(ref asked));   // 宽限期内不该重问
+
+        session.AnswerDurationPrompt(continueRecording: false);
+        await loop;
+    }
+
+    /// <summary>点【继续】⇒ 不停，隔「下一轮间隔」再问一次。</summary>
+    [Fact]
+    public async Task 时长兜底答继续_不停_隔一轮再问()
+    {
+        using var dir = new TempDir();
+        var clock = new FakeClock();
+        var asked = 0;
+
+        await using var session = Build(dir, new FakeCapture(), clock: clock,
+            options: new RecordingSessionOptions(
+                SegmentDuration: TimeSpan.FromHours(1),
+                MaxDuration: TimeSpan.FromMinutes(4),
+                StopGracePeriod: TimeSpan.FromSeconds(1),
+                PollInterval: TimeSpan.FromMinutes(1),
+                PromptRepeatEvery: TimeSpan.FromMinutes(2),   // 缩短，少跑几圈
+                // 宽限期远大于一圈 —— 见「先问不中断」那条的说明。
+                PromptGrace: TimeSpan.FromHours(10)),
+            onPrompt: () => Interlocked.Increment(ref asked));
+
+        await session.StartAsync(WaybillNumber.Parse("SF1"), "libx264");
+        var loop = session.RunAsync("libx264");
+
+        await WaitUntilAsync(() => Volatile.Read(ref asked) > 0, "第一次询问");
+
+        session.AnswerDurationPrompt(continueRecording: true);
+
+        Assert.False(session.IsAwaitingDurationAnswer, "答过了就不该还在问");
+        Assert.False(loop.IsCompleted, "点了【继续】之后录制必须继续");
+
+        // 隔 PromptRepeatEvery（2 分钟 = 2 圈）再问 —— 规格「再过 5 分钟再次询问（循环）」。
+        await WaitUntilAsync(() => Volatile.Read(ref asked) >= 2, "第二次询问");
+        Assert.Equal(2, Volatile.Read(ref asked));
+
+        session.AnswerDurationPrompt(continueRecording: false);
+        await loop;
+    }
+
+    /// <summary>点【停止】⇒ 立即收尾，理由仍是时长兜底。</summary>
+    [Fact]
+    public async Task 时长兜底答停止_立即收尾()
+    {
+        using var dir = new TempDir();
+        var clock = new FakeClock();
+        var asked = 0;
+
+        await using var session = Build(dir, new FakeCapture(), clock: clock,
+            options: new RecordingSessionOptions(
+                SegmentDuration: TimeSpan.FromHours(1),
+                MaxDuration: TimeSpan.FromMinutes(4),
+                StopGracePeriod: TimeSpan.FromSeconds(1),
+                PollInterval: TimeSpan.FromMinutes(1),
+                PromptGrace: TimeSpan.FromHours(10)),    // 远大于一圈，见上
+            onPrompt: () => Interlocked.Increment(ref asked));
+
+        await session.StartAsync(WaybillNumber.Parse("SF1"), "libx264");
+        var loop = session.RunAsync("libx264");
+
+        await WaitUntilAsync(() => Volatile.Read(ref asked) > 0, "第一次询问");
+
+        session.AnswerDurationPrompt(continueRecording: false);
+        await loop;   // 下一圈就收，所以这里等得到
+
+        Assert.Equal(StopReason.DurationFallback, session.StoppedBecause);
+    }
+
+    /// <summary>
+    /// 问了<b>没人理</b> ⇒ 过宽限期按兜底收尾（规格「1 分钟无操作 → 默认继续 → 自动停止」）。
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ 这条与「答【继续】」是<b>两个不同的结局</b>，规格明令区分：
+    /// 「『无操作』与『主动继续』必须区分：前者代表用户不在场（兜底生效），
+    /// 后者代表用户在场且明确要继续（不误停）」。
+    /// </remarks>
+    [Fact]
+    public async Task 时长兜底问了没人理_过宽限期自动收尾()
+    {
+        using var dir = new TempDir();
+        var clock = new FakeClock();
+        var asked = 0;
+
+        await using var session = Build(dir, new FakeCapture(), clock: clock,
+            options: new RecordingSessionOptions(
+                SegmentDuration: TimeSpan.FromHours(1),
+                MaxDuration: TimeSpan.FromMinutes(4),
+                StopGracePeriod: TimeSpan.FromSeconds(1),
+                PollInterval: TimeSpan.FromMinutes(1),
+                PromptGrace: TimeSpan.FromMinutes(2)),    // 2 圈
+            onPrompt: () => Interlocked.Increment(ref asked));
+
+        await session.StartAsync(WaybillNumber.Parse("SF1"), "libx264");
+
+        // 这里可以 await：没人答 ⇒ 宽限期一到循环自己收掉。
+        await session.RunAsync("libx264");
+
+        Assert.Equal(1, Volatile.Read(ref asked));
+        Assert.Equal(StopReason.DurationFallback, session.StoppedBecause);
+    }
+
+    /// <summary>档位设成「关闭」⇒ 从不问、也从不自动停。</summary>
+    [Fact]
+    public async Task 时长兜底关闭时_从不问也从不自动停()
+    {
+        using var dir = new TempDir();
+        var clock = new FakeClock();
+        var asked = 0;
+        using var cts = new CancellationTokenSource();
+
+        await using var session = Build(dir, new FakeCapture(), clock: clock,
+            options: new RecordingSessionOptions(
+                SegmentDuration: TimeSpan.FromHours(1),
+                MaxDuration: RecordingSessionOptions.NoFallback,   // 关闭
+                StopGracePeriod: TimeSpan.FromSeconds(1),
+                PollInterval: TimeSpan.FromMinutes(1)),
+            onPrompt: () => Interlocked.Increment(ref asked));
+
+        await session.StartAsync(WaybillNumber.Parse("SF1"), "libx264");
+        var loop = session.RunAsync("libx264", cts.Token);
+
+        // 跑够久 —— 若它真会问/真会停，这几圈之内必然发生。
+        await WaitUntilAsync(() => clock.Read() >= TimeSpan.FromMinutes(10), "循环跑过 10 圈");
+
+        Assert.Equal(0, Volatile.Read(ref asked));
+        Assert.False(loop.IsCompleted, "关闭档位下循环不该自己停");
+
+        await cts.CancelAsync();
+        await loop;
+    }
+
+    /// <summary>
+    /// 没在问的时候答它 ⇒ <b>什么都不做</b>（晚到一步的按钮不许改掉新那一段的计时）。
+    /// </summary>
+    /// <remarks>
+    /// 场景：用户正要按【继续】，同一刻扫了下一件 ⇒ 这一段作废、新段开始。
+    /// 那时把新段的兜底计时重置掉，会让新段**被问得晚得多**（或永远不问）。
+    /// </remarks>
+    [Fact]
+    public async Task 没在问的时候答它_什么都不做()
+    {
+        using var dir = new TempDir();
+        var clock = new FakeClock();
+        var asked = 0;
+        using var cts = new CancellationTokenSource();
+
+        await using var session = Build(dir, new FakeCapture(), clock: clock,
+            options: new RecordingSessionOptions(
+                SegmentDuration: TimeSpan.FromHours(1),
+                MaxDuration: TimeSpan.FromMinutes(4),
+                StopGracePeriod: TimeSpan.FromSeconds(1),
+                PollInterval: TimeSpan.FromMinutes(1),
+                PromptGrace: TimeSpan.FromHours(10)),    // 远大于一圈，见上
+            onPrompt: () => Interlocked.Increment(ref asked));
+
+        await session.StartAsync(WaybillNumber.Parse("SF1"), "libx264");
+        var loop = session.RunAsync("libx264", cts.Token);
+
+        // 一上来就答（此刻并没有在问）。
+        session.AnswerDurationPrompt(continueRecording: true);
+
+        Assert.False(session.IsAwaitingDurationAnswer);
+
+        // 首问照样按时来 —— 证明上面那一下没把计时改掉。
+        await WaitUntilAsync(() => Volatile.Read(ref asked) > 0, "第一次询问");
+        Assert.Equal(1, Volatile.Read(ref asked));
+
+        await cts.CancelAsync();
+        await loop;
+    }
+
     private static RecordingSession Build(
         TempDir dir,
         FakeCapture capture,
         FakeClock? clock = null,
         IProcessRunner? runner = null,
         RecordingIndexSpy? index = null,
-        RecordingSessionOptions? options = null)
+        RecordingSessionOptions? options = null,
+        Action? onPrompt = null)
     {
         // 方法组不能直接配合 ?. —— 显式判空，让类型明确是 Func<TimeSpan>?。
         Func<TimeSpan>? effectiveClock = clock is null ? null : clock.Read;
@@ -384,20 +613,65 @@ public class RecordingSessionTests
             "device-1",
             options ?? DefaultOptions,
             effectiveClock,
-            AdvancingDelay(clock));
+            AdvancingDelay(clock),
+            durationPrompted: onPrompt);
+    }
+
+    /// <summary>
+    /// 等到某个条件成立，然后**立刻**把执行权还给测试。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// 用来抓「循环跑过某一圈之后」的中间状态 —— 而<b>不能</b>
+    /// <c>await session.RunAsync(...)</c>：时长兜底问到用户之后循环
+    /// **故意不退出**（那正是这条的行为），await 它会把测试挂死。
+    /// </para>
+    /// <para>
+    /// ⚠️ <b>用 <c>Task.Yield</c> 而不是 <c>Task.Delay</c></b>：假时钟下循环跑一圈
+    /// 只需一次 <c>await</c>，而 <c>Delay(5)</c> 会让循环在这 5 毫秒里**跑几千圈** ——
+    /// 于是「询问之后、宽限到期之前」那个窗口**根本插不进去**：测试还没来得及答，
+    /// 循环已经自己跨过宽限期收尾了（实测就是这么红的）。
+    /// Yield 只让出一次执行权，窗口才是可控的。
+    /// </para>
+    /// <para>
+    /// 上限用**圈数**而不是墙钟时间 —— 判据是「循环有没有往前跑」，与真实耗时无关。
+    /// </para>
+    /// </remarks>
+    private static async Task WaitUntilAsync(Func<bool> condition, string what)
+    {
+        for (var i = 0; i < 100_000; i++)
+        {
+            if (condition())
+            {
+                return;
+            }
+
+            await Task.Yield();
+        }
+
+        throw new TimeoutException($"等不到：{what}");
     }
 
     /// <summary>
     /// 编排循环的等待：**不真等，但要把假时钟往前推**。
     /// </summary>
     /// <remarks>
+    /// <para>
     /// 只返回 <see cref="Task.CompletedTask"/> 是不够的 —— 时钟不动的话循环永远停在
     /// 同一时刻，变成空转（第一版就是这么把测试挂住的）。推进时钟才等价于「真的等了一会」。
+    /// </para>
+    /// <para>
+    /// ⚠️ <b>2026-09-27 补上 <see cref="CancellationToken.ThrowIfCancellationRequested"/>：
+    /// 真的 <c>Task.Delay</c> 在取消时**会抛</b>，而这个假实现原来把令牌整个忽略掉 ——
+    /// 于是「取消之后循环退出」这条路在测试里**永远走不到**，用取消收尾的用例会
+    /// `await` 到天荒地老（实测：挂到 600 秒超时）。
+    /// </para>
     /// </remarks>
     private static Func<TimeSpan, CancellationToken, Task> AdvancingDelay(FakeClock? clock) =>
-        (interval, _) =>
+        (interval, token) =>
         {
             clock?.Advance(interval);
+            token.ThrowIfCancellationRequested();
             return Task.CompletedTask;
         };
 

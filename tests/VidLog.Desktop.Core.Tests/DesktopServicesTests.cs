@@ -370,6 +370,55 @@ public class DesktopServicesTests
     }
 
     /// <summary>
+    /// 钉住「时长兜底的**询问**在界面上真的有出路」（规格 §3.3.4）。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// 规格原话：「**交互**：语音提示 + 屏幕按钮，不用扫码」。
+    /// 也就是说 Core 光会「问」不算做完 —— 屏幕上得**真有那两个按钮**、
+    /// 而且**真的把答案转回协调器**，否则用户看得见问题却答不了。
+    /// </para>
+    /// <para>
+    /// ⚠️ <b>为什么只能看源码文本</b>：App 层没有测试工程（与
+    /// <c>入网二维码在界面上真的有出路</c>、<c>组合根把日志器递给了三处边界</c>
+    /// 同一个理由）。这正是 §28 / §35.1 记的那类毛病 —— 零件齐了、没人接。
+    /// </para>
+    /// <para>
+    /// ⚠️ 天花板同另几条：只挡「删了 / 改了」，挡不住「改成一条不跑的路径」。
+    /// 还有一处文本挡不住的：④ 只能证明 <c>App</c> 里**有**那个 case 与那句
+    /// <c>Speak</c>，证明不了「Speak 就在那个 case 里面」。
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public void 时长兜底的询问在界面上真的有出路()
+    {
+        var root = RepoRoot();
+        var app = Path.Combine(root, "src", "VidLog.Desktop.App");
+
+        var xaml = File.ReadAllText(Path.Combine(app, "MainWindow.xaml"));
+        var window = File.ReadAllText(Path.Combine(app, "MainWindow.xaml.cs"));
+        var appCode = File.ReadAllText(Path.Combine(app, "App.xaml.cs"));
+
+        // ① 屏幕上那两个按钮真的在，而且接着处理函数。
+        Assert.Contains("x:Name=\"DurationStopButton\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("x:Name=\"DurationContinueButton\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("Click=\"OnDurationStop\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("Click=\"OnDurationContinue\"", xaml, StringComparison.Ordinal);
+
+        // ② 两个处理函数真的把答案**转回协调器** —— 少了这一句，按钮就是摆设。
+        Assert.Contains("AnswerDurationPrompt(continueRecording: false)", window, StringComparison.Ordinal);
+        Assert.Contains("AnswerDurationPrompt(continueRecording: true)", window, StringComparison.Ordinal);
+
+        // ③ 那条询问真的会点亮询问条（不发通知的话按钮永远藏着）。
+        Assert.Contains("CoordinatorNoticeKind.DurationPrompt", window, StringComparison.Ordinal);
+
+        // ④ 语音那一半 —— 规格要的是「语音提示」+ 按钮**两条**，
+        //    而这个窗口多半收在托盘里：只听得到声音，看不到按钮。
+        Assert.Contains("case CoordinatorNoticeKind.DurationPrompt:", appCode, StringComparison.Ordinal);
+        Assert.Contains("Speech.Speak(notice.Message)", appCode, StringComparison.Ordinal);
+    }
+
+    /// <summary>
     /// 钉住「错误扫描真的接上了」—— <c>AppHost</c> 必须把 <c>ScanErrorLog</c>
     /// 交给协调器。
     /// </summary>

@@ -119,6 +119,19 @@ public partial class App : System.Windows.Application
                 Platform.Speech.Speak(notice.Message);
                 break;
 
+            // ── 时长兜底那次**询问**（规格 §3.3.4）────────────────────────
+            //
+            // 规格原话：「语音提示 + 屏幕按钮」。所以这里与闲置提醒同一个道理：
+            // **语音必须出**（窗口多半收在托盘里，只有屏幕上的按钮等于没问），
+            // 而按钮在 `MainWindow` 那边（它才是管这个窗口的）。
+            //
+            // ⚠️ 这条**不是**提醒，是**问**——用户答【停止】或 1 分钟不理，录制就会停。
+            // 所以它比闲置提醒更要紧，不能只弹个气泡了事。
+            case CoordinatorNoticeKind.DurationPrompt:
+                _host?.Tray?.Notify("VidLog", notice.Message);
+                Platform.Speech.Speak(notice.Message);
+                break;
+
             case CoordinatorNoticeKind.FinalizeFailed or CoordinatorNoticeKind.WrongWaybill:
                 _host?.Tray?.Notify("VidLog", notice.Message);
                 break;

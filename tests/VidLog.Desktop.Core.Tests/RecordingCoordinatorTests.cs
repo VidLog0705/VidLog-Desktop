@@ -569,9 +569,14 @@ public class RecordingCoordinatorTests
     }
 
     [Fact]
-    public async Task 时长兜底到点会自动收尾并把状态接回来()
+    public async Task 时长兜底到点先问_答停止之后才收尾并把状态接回来()
     {
-        // 规格 §3.3.4：到点自动收尾。收尾是**循环自己**发起的，没人 await 得到 ——
+        // 规格 §3.3.4：到点**问**用户，不是直接停。
+        // ⚠️ 这条原来叫「到点会自动收尾」—— 2026-09-27 改掉了那个行为：
+        // 到点直接收尾会把**任何一段正常录制**在档位时间切断，
+        // 而「它会把正常录制打断」正是 2026-09-21 那次需求变更要修的东西。
+        //
+        // 同时保留原来那条目的：收尾是**循环自己**发起的，没人 await 得到 ——
         // 协调器不接住的话，CurrentWaybill 会一直指着那个已经收尾的会话：
         // 界面显示「录制中」，用户会一直等一个永远不会发生的停录。
         using var dir = new TempDir();
@@ -583,7 +588,16 @@ public class RecordingCoordinatorTests
         coordinator.Notice += notices.Add;
 
         await coordinator.SubmitAsync(A, PunchSource.KeyboardScanner);
-        await Task.Delay(700);
+        await Task.Delay(400);   // 越过兜底时机（150 ms），但远没到宽限期（默认 1 分钟）
+
+        // ① 到点了 —— **只是问**，录制必须还在继续。
+        Assert.NotNull(coordinator.CurrentWaybill);
+        Assert.Empty(index.Entries);
+        Assert.Contains(notices, n => n.Kind == CoordinatorNoticeKind.DurationPrompt);
+
+        // ② 用户答【停止】→ 这才收尾，而且协调器要把状态接回来。
+        coordinator.AnswerDurationPrompt(continueRecording: false);
+        await Task.Delay(400);
 
         Assert.Null(coordinator.CurrentWaybill);
 

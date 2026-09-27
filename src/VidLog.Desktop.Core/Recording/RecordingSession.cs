@@ -5,9 +5,19 @@ namespace VidLog.Desktop.Core.Recording;
 
 /// <summary>采集会话的可调参数。</summary>
 /// <param name="SegmentDuration">单段时长上限。到点就滚下一段，用户无感（规格 §3.1.1）。</param>
-/// <param name="MaxDuration">整场工作的时长兜底。到点自动收尾（规格 §3.3.4）。</param>
+/// <param name="MaxDuration">
+/// 时长兜底的**首次询问时机**（规格 §3.3.4）。⚠️ <b>不是「到点就停」</b> ——
+/// 到点是**问**，用户答了才停。见 <see cref="PromptGrace"/>。
+/// </param>
 /// <param name="StopGracePeriod">优雅停止的等待上限；超时升级为强杀。</param>
 /// <param name="PollInterval">编排循环的检查间隔。</param>
+/// <param name="PromptRepeatEvery">
+/// 用户点了【继续】之后，隔多久**再问一次**（规格 §3.3.4「进入下一轮」）。
+/// </param>
+/// <param name="PromptGrace">
+/// 问了之后多久没人理 ⇒ 视为**用户不在场** ⇒ 按兜底停止
+/// （规格 §3.3.4「1 分钟无操作 → 默认继续 → 到 5 分钟自动停止」）。
+/// </param>
 public sealed record RecordingSessionOptions(
     TimeSpan SegmentDuration,
     TimeSpan MaxDuration,
@@ -15,8 +25,19 @@ public sealed record RecordingSessionOptions(
     TimeSpan PollInterval,
     // 追加字段（规格 §3.1.7 的连带项：索引要记编码 / 分辨率）。
     // 可空 ⇒ 老调用点与老条目都不受影响。
-    Media.RecordingSpec? Spec = null)
+    Media.RecordingSpec? Spec = null,
+    // 追加字段（规格 §3.3.4 的询问-宽限-循环）。
+    // ⚠️ 默认值与手机端 `RecorderConfig` **逐字同值**（5 分钟 / 1 分钟）——
+    // 两端对这条的行为必须一样，见 `From` 的说明。
+    TimeSpan? PromptRepeatEvery = null,
+    TimeSpan? PromptGrace = null)
 {
+    /// <summary>点了【继续】之后隔多久再问（默认 5 分钟，与手机端同值）。</summary>
+    public TimeSpan PromptRepeat => PromptRepeatEvery ?? TimeSpan.FromMinutes(5);
+
+    /// <summary>问了之后多久没操作就算用户不在场（默认 1 分钟，与手机端同值）。</summary>
+    public TimeSpan Grace => PromptGrace ?? TimeSpan.FromMinutes(1);
+
     /// <summary>
     /// 默认值。
     /// </summary>
@@ -36,9 +57,14 @@ public sealed record RecordingSessionOptions(
     /// 「时长兜底」档位设成「关闭」时的取值。
     /// </summary>
     /// <remarks>
-    /// 用 <see cref="TimeSpan.MaxValue"/> 表示「永远比不到」，而不是把它改成可空：
-    /// 循环里只有一次 <c>Elapsed &gt;= MaxDuration</c> 的**比较**，没有任何算术 ——
-    /// 所以「比不到」正好就是「关闭」，不必为此加一条分支和一圈可空判断。
+    /// 用 <see cref="TimeSpan.MaxValue"/> 表示「永远比不到」。
+    /// <para>
+    /// ⚠️ <b>2026-09-27 起它只是「档位是关闭」的标记</b>，而不再靠「比不到」生效 ——
+    /// 时长兜底改成「到点先问」之后，循环里的判据变成了可空的
+    /// <c>_nextPromptAt</c>（<c>null</c> = 关闭），这个常量由
+    /// <c>RestartClock</c> 翻译成那个 <c>null</c>。
+    /// 保留它是因为 <see cref="From"/> 与设置层都拿它当「关闭」的值。
+    /// </para>
     /// </remarks>
     public static TimeSpan NoFallback { get; } = TimeSpan.MaxValue;
 
@@ -144,6 +170,35 @@ public sealed class RecordingSession : IAsyncDisposable
     private DateTimeOffset _startedAt;
     private CancellationTokenSource? _loopCancellation;
 
+    /// <summary>
+    /// 下一次**问**「要不要停」的时刻（规格 §3.3.4）。
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ <c>null</c> = 时长兜底档位是「关闭」—— 那就**不问也不停**
+    /// （与手机端 <c>_nextPromptAtMs</c> 同形）。原来这里靠
+    /// <see cref="NoFallback"/>（<c>TimeSpan.MaxValue</c>）「比不到」来实现关闭，
+    /// 改成可空之后「关闭」是一眼能看出来的，不必再推一遍算术。
+    /// </remarks>
+    private TimeSpan? _nextPromptAt;
+
+    /// <summary>已经**问出去**的时刻；<c>null</c> = 当前没在问。</summary>
+    /// <remarks>
+    /// ⚠️ 它与 <see cref="_nextPromptAt"/> 是**互斥**的两个状态：
+    /// 问了就把 <see cref="_nextPromptAt"/> 置空 —— 不置空的话每圈都会重问一遍。
+    /// </remarks>
+    private TimeSpan? _promptShownAt;
+
+    /// <summary>用户在询问里点了【停止】。下一圈就收尾。</summary>
+    /// <remarks>
+    /// 不在这里直接停：收尾要跳出循环、由 <see cref="RunAsync"/> 之后那段统一做。
+    /// 循环的检查间隔是 <see cref="RecordingSessionOptions.PollInterval"/>（500 ms），
+    /// 所以「点了之后 0.5 秒内收」，用户感觉不到延迟。
+    /// </remarks>
+    private bool _durationStopRequested;
+
+    /// <summary>该问了 —— 由协调器接到之后去发语音与界面两键。</summary>
+    private readonly Action? _durationPrompted;
+
     /// <param name="clock">
     /// 单调时钟读数（默认 <c>Stopwatch.GetElapsedTime</c>）。
     /// 测试传可控读数，就能不靠等待验证分段滚动与时长兜底。
@@ -165,7 +220,8 @@ public sealed class RecordingSession : IAsyncDisposable
         RecordingSessionOptions? options = null,
         Func<TimeSpan>? clock = null,
         Func<TimeSpan, CancellationToken, Task>? delay = null,
-        ITrustedClock? trustedClock = null)
+        ITrustedClock? trustedClock = null,
+        Action? durationPrompted = null)
     {
         _workspace = workspace;
         _capture = capture;
@@ -176,9 +232,66 @@ public sealed class RecordingSession : IAsyncDisposable
         _clock = clock ?? NewDefaultClock();
         _delay = delay ?? Task.Delay;
         _trustedClock = trustedClock;
+        _durationPrompted = durationPrompted;
 
         SourceDeviceId = sourceDeviceId;
         SessionId = NewSessionId();
+    }
+
+    /// <summary>
+    /// 现在是不是**在问**「要不要停」（规格 §3.3.4）。
+    /// </summary>
+    /// <remarks>界面拿它决定那两个按钮显不显示；测试拿它断言「真的问了」。</remarks>
+    public bool IsAwaitingDurationAnswer
+    {
+        get
+        {
+            lock (_gate)
+            {
+                return _promptShownAt is not null;
+            }
+        }
+    }
+
+    /// <summary>
+    /// 用户对时长兜底那次询问的回答（规格 §3.3.4）。
+    /// </summary>
+    /// <param name="continueRecording">
+    /// <see langword="true"/> = 点了【继续】（取消本轮上限，隔
+    /// <see cref="RecordingSessionOptions.PromptRepeat"/> 再问）；
+    /// <see langword="false"/> = 点了【停止】。
+    /// </param>
+    /// <remarks>
+    /// <para>
+    /// ⚠️ <b>没在问的时候调它什么都不做</b>：界面上的按钮可能因为
+    /// 「按下的同时用户正好扫了下一件」而晚到一步，而那时这一问已经作废了 ——
+    /// 此时把 <c>_nextPromptAt</c> 重置掉，会把**新那一段**的兜底计时也一起改掉。
+    /// </para>
+    /// <para>
+    /// ⚠️ 与手机端 `DurationPromptAnswered` 同一口径，**两端必须同向**：
+    /// 两端对这条的表现不一致时，用户会以为其中一个坏了。
+    /// </para>
+    /// </remarks>
+    public void AnswerDurationPrompt(bool continueRecording)
+    {
+        lock (_gate)
+        {
+            if (_promptShownAt is null)
+            {
+                return;
+            }
+
+            _promptShownAt = null;
+
+            if (continueRecording)
+            {
+                _nextPromptAt = Elapsed + _options.PromptRepeat;
+            }
+            else
+            {
+                _durationStopRequested = true;
+            }
+        }
     }
 
     /// <summary>本次会话的标识。落进索引，也是工作区目录名。</summary>
@@ -309,16 +422,51 @@ public sealed class RecordingSession : IAsyncDisposable
             {
                 await _delay(_options.PollInterval, _loopCancellation.Token);
 
+                // 用户在询问里点了【停止】—— 收（延迟 ≤ 一个检查间隔）。
+                if (_durationStopRequested)
+                {
+                    reason = StopReason.DurationFallback;
+                    break;
+                }
+
                 if (_diskGuard.Check(_workspace.SessionDirectory(SessionId)).ShouldFinalize)
                 {
                     reason = StopReason.StorageLow;
                     break;
                 }
 
-                if (Elapsed >= _options.MaxDuration)
+                // ── 时长兜底（规格 §3.3.4）────────────────────────────────
+                //
+                // ⚠️ **到点是「问」，不是「停」**（2026-09-27 修）。
+                // 原来这里写的是 `if (Elapsed >= MaxDuration) { reason = …; break; }` ——
+                // 于是**默认档下任何一段正常录制到 4 分钟就被切断**，
+                // 而 2026-09-21 那次需求变更的动机正是「它会把正常录制打断」。
+                // 现在的口径与手机端 `stop_controller.dart` 的 `_evaluateTimers` 逐条同形：
+                //
+                //   到点       → 问（语音 + 界面两键），**录制不中断**（规格明令）
+                //   答【继续】 → 隔 RepeatEvery 再问
+                //   答【停止】 → 立即收（上面那个 `_durationStopRequested`）
+                //   1 分钟没人理 → 视为用户不在场 → 按兜底收
+                //
+                // 「无操作」与「主动继续」必须区分（规格原话）：前者是兜底生效，
+                // 后者是用户在场且明确要继续 —— 所以宽限期内**什么都不做**，
+                // 而不是替用户点一下继续。
+                if (_promptShownAt is { } promptShownAt)
                 {
-                    reason = StopReason.DurationFallback;
-                    break;
+                    if (Elapsed - promptShownAt >= _options.Grace)
+                    {
+                        reason = StopReason.DurationFallback;
+                        break;
+                    }
+                }
+                else if (_nextPromptAt is { } promptAt && Elapsed >= promptAt)
+                {
+                    _promptShownAt = Elapsed;
+                    _nextPromptAt = null;
+
+                    // ⚠️ 通知是**回调**而不是事件：本类没有通知出口，
+                    // 塞一个进去会让它多一条依赖（它只该管「一段」）。
+                    _durationPrompted?.Invoke();
                 }
 
                 if (Elapsed - _segmentStartedAt >= _options.SegmentDuration)
@@ -619,14 +767,33 @@ public sealed class RecordingSession : IAsyncDisposable
     }
 
     /// <summary>
-    /// 把单调时钟的起点挪到「此刻」。
+    /// 把单调时钟的起点挪到「此刻」，**并重置时长兜底的计时**。
     /// </summary>
     /// <remarks>
+    /// <para>
     /// 默认时钟是从**会话构造**那一刻开始走的，而会话可能在开录前先建好
     /// （协调器就是这么用的）。不重置的话，开录后第一件事读到的就已经是几十毫秒，
     /// 打点偏移会带上一段不存在的录制时间 —— 回放定位会偏。
+    /// </para>
+    /// <para>
+    /// ⚠️ 兜底计时跟着一起重置，是因为两者共用同一个基准（<see cref="Elapsed"/>），
+    /// 而这一句**只在开录那一刻被调**（<see cref="StartAsync"/> 里那一处）——
+    /// 与手机端在 <c>startRecording</c> 里设 <c>_nextPromptAtMs</c> 同形。
+    /// 分开写两处的话，将来有人加一条「不经过开录就重置时钟」的路径，
+    /// 兜底的计时基准就会跟时钟走岔。
+    /// </para>
     /// </remarks>
-    private void RestartClock() => _clockOrigin = _clock();
+    private void RestartClock()
+    {
+        _clockOrigin = _clock();
+
+        // 时长兜底档位「关闭」⇒ 不问也不停（与手机端的 null 同形）。
+        _nextPromptAt = _options.MaxDuration == RecordingSessionOptions.NoFallback
+            ? null
+            : _options.MaxDuration;
+        _promptShownAt = null;
+        _durationStopRequested = false;
+    }
 
     public async ValueTask DisposeAsync()
     {

@@ -37,6 +37,19 @@ public enum CoordinatorNoticeKind
 
     /// <summary>收尾失败 —— 必须让用户看见（I3）。</summary>
     FinalizeFailed,
+
+    /// <summary>
+    /// 规格 §3.3.4：录制到档位时间了，**问**用户要不要停。
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ <b>它只是问 —— 录制不中断</b>（规格原话「提示与按钮必须在录制不被中断的
+    /// 前提下出现」）。界面收到它要：语音播一遍 + 显示【停止】【继续】两键。
+    /// <para>
+    /// ⚠️ 与 <see cref="Idle"/> 的区别：那条**只提醒、绝不改录制状态**，
+    /// 而这条**用户答了就会停**（答【停止】或 1 分钟没人理）。
+    /// </para>
+    /// </remarks>
+    DurationPrompt,
 }
 
 /// <summary>协调器的可调参数。</summary>
@@ -362,6 +375,26 @@ public sealed class RecordingCoordinator : IAsyncDisposable
     }
 
     /// <summary>
+    /// 用户对时长兜底那次询问的回答（规格 §3.3.4）。
+    /// </summary>
+    /// <param name="continueRecording">
+    /// <see langword="true"/> = 【继续】；<see langword="false"/> = 【停止】。
+    /// </param>
+    /// <remarks>
+    /// <para>
+    /// ⚠️ <b>没在问的时候调它什么都不做</b>（转发给会话那一层判断）：
+    /// 按钮可能晚到一步 —— 用户按下的同时正好扫了下一件，这一问就作废了。
+    /// </para>
+    /// <para>
+    /// ⚠️ 「停止」这条路<b>不在这里收尾</b>：会话自己会在下一圈把循环收掉，
+    /// 收尾仍然只走 <see cref="RecordingSession"/> 那一条路（I9：不许有旁路）。
+    /// 这一层只负责转发。
+    /// </para>
+    /// </remarks>
+    public void AnswerDurationPrompt(bool continueRecording) =>
+        _current?.AnswerDurationPrompt(continueRecording);
+
+    /// <summary>
     /// 【结束】。停掉在录的段并收尾，回到空闲。
     /// </summary>
     public async Task<FinalizeOutcome?> StopWorkAsync(CancellationToken cancellationToken = default)
@@ -482,7 +515,19 @@ public sealed class RecordingCoordinator : IAsyncDisposable
         var session = new RecordingSession(
             _workspace, _capture, _finalizer, _diskGuard,
             _options.DeviceName, _options.SourceDeviceId, SessionOptions,
-            trustedClock: _trustedClock);
+            trustedClock: _trustedClock,
+            // 时长兜底的询问（规格 §3.3.4）。
+            //
+            // ⚠️ 用**回调**而不是让协调器起一个定时器去轮询会话：这个仓已经因为
+            // 「档位关闭时还在白跑的定时器」把既有的 flake 放大过一次
+            // （见 `docs/实现决策.md` §39.4）—— 而测试里会造几十个协调器，
+            // 每个多一个每秒醒一次的定时器，代价不是省下来的那点 CPU。
+            // 回调是会话在**它自己的编排循环里**发现该问了才触发，零额外定时器，
+            // 而且与手机端「事件链上判定」同形。
+            durationPrompted: () => Raise(
+                CoordinatorNoticeKind.DurationPrompt,
+                waybill,
+                "录制时间即将超时，是否需要停止录制？"));
 
         await session.StartAsync(waybill, _options.Encoder, cancellationToken);
         _current = session;

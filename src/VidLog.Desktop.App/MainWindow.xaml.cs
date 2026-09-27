@@ -633,7 +633,57 @@ public partial class MainWindow : Window
         var lines = new[] { line }.Concat(existing.Split('\n').Take(19));
         NoticesText.Text = string.Join('\n', lines.Where(l => l.Length > 0));
 
+        // ── 时长兜底的询问（规格 §3.3.4）──────────────────────────────
+        //
+        // 语音那一半在 `App.OnNotice`（窗口多半收在托盘里，只听得到声音）；
+        // **按钮这一半在这里** —— 它得有人点。
+        //
+        // ⚠️ 停录/结束工作时要**收掉它**：那两个按钮答的是一次已经作废的询问，
+        // 留在屏幕上会让用户以为「还在等我决定」。
+        switch (notice.Kind)
+        {
+            case CoordinatorNoticeKind.DurationPrompt:
+                DurationPromptPanel.Visibility = Visibility.Visible;
+                break;
+
+            case CoordinatorNoticeKind.SegmentStopped
+                or CoordinatorNoticeKind.SegmentStarted
+                or CoordinatorNoticeKind.WorkStopped:
+                HideDurationPrompt();
+                break;
+
+            default:
+                break;
+        }
+
         UpdateRecordingStatus();
+    }
+
+    /// <summary>收起询问条（答完了、或者那一次询问已经作废）。</summary>
+    private void HideDurationPrompt() =>
+        DurationPromptPanel.Visibility = Visibility.Collapsed;
+
+    /// <summary>点【停止】—— 规格 §3.3.4：立即停。</summary>
+    /// <remarks>
+    /// ⚠️ **先收起条、再转发**：转发之后会话会在下一圈收尾，
+    /// 而收尾期间这一条已经没有任何意义了。
+    /// </remarks>
+    private void OnDurationStop(object sender, RoutedEventArgs e)
+    {
+        HideDurationPrompt();
+        _host.Coordinator.AnswerDurationPrompt(continueRecording: false);
+    }
+
+    /// <summary>点【继续】—— 规格 §3.3.4：取消本轮上限，隔一轮再问。</summary>
+    /// <remarks>
+    /// ⚠️ 它与「1 分钟没人理」**不是一回事**（规格明令区分）：
+    /// 点这个是**用户在场且明确要继续**，所以不会停；
+    /// 没人理才是「用户不在场」⇒ 兜底生效。
+    /// </remarks>
+    private void OnDurationContinue(object sender, RoutedEventArgs e)
+    {
+        HideDurationPrompt();
+        _host.Coordinator.AnswerDurationPrompt(continueRecording: true);
     }
 
     private void OnWaybillChanged(object sender, TextChangedEventArgs e) => RefreshStartButton();
