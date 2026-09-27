@@ -269,6 +269,12 @@ public sealed class DesktopServices : IAsyncDisposable
                     // 手机端「手动删除」要回查归档层（§3.5.6③）——
                     // 那一份在哪里由归档层配置说了算，不是写死的本机目录。
                     ArchiveBackend = archiveBackend,
+                    // 缩略图（规格 §3.4.3）。抽帧走本机 ffmpeg，**结果落盘缓存** ——
+                    // 规格明说不许每次进页面都重抽。
+                    Thumbnails = resolvedFfmpeg is null
+                        ? null
+                        : new ThumbnailCache(
+                            resolvedFfmpeg, layout.RootDirectory, runner, logger),
                 },
                 search,
                 index,

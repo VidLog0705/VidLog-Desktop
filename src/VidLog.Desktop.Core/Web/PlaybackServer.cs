@@ -60,6 +60,16 @@ public sealed record PlaybackServerOptions
     /// 那正是「归档层就是这台电脑」的情形，也是这条接口最常见的用法。
     /// </remarks>
     public IArchiveBackend? ArchiveBackend { get; init; }
+
+    /// <summary>
+    /// 缩略图缓存（规格 §3.4.3）。不传 = 页面不显示缩略图（老装配 / 测试）。
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ 抽帧要跑一次 ffmpeg（几百毫秒），所以**必须走缓存** ——
+    /// 每次刷新页面都重抽十几条会把机器拖住，而规格明确写了
+    /// 「不得每次进页面都重新抽帧」。
+    /// </remarks>
+    public Media.ThumbnailCache? Thumbnails { get; init; }
 }
 
 /// <summary>
@@ -280,6 +290,15 @@ public sealed class PlaybackServer : IAsyncDisposable
                 return;
             }
 
+            // 缩略图（规格 §3.4.3 的列表项之一）。**没有缩略图缓存时不提供** ——
+            // 那时页面显示占位方块，而不是一张假的图。
+            if (path.StartsWith("/api/thumbnail/", StringComparison.Ordinal)
+                && _options.Thumbnails is { } thumbnails)
+            {
+                await WriteThumbnailAsync(context, thumbnails, path["/api/thumbnail/".Length..]);
+                return;
+            }
+
             if (path.StartsWith("/api/v1/", StringComparison.Ordinal))
             {
                 await HandleV1Async(context, path);
@@ -468,6 +487,34 @@ public sealed class PlaybackServer : IAsyncDisposable
     /// 而两者都导致不删 —— 把「查不了」当成「不存在」，删掉的可能就是最后一份（I2）。
     /// </para>
     /// </remarks>
+    /// <summary>
+    /// 某一段的缩略图（规格 §3.4.3）。**没有就回 404** —— 页面显示占位方块。
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ 这里**不现抽**：抽帧要跑 ffmpeg（几百毫秒），而这是浏览器在渲染列表时
+    /// 挨个发的请求。抽帧发生在**用户上一次看过这一条**的时候（或者第一次点开时
+    /// 由另一条路补上），这里只负责把已经抽好的那张端出去。
+    /// </remarks>
+    private async Task WriteThumbnailAsync(
+        HttpListenerContext context, Media.ThumbnailCache thumbnails, string evidenceId)
+    {
+        var id = Uri.UnescapeDataString(evidenceId);
+        var path = thumbnails.PathFor(id);
+
+        if (!File.Exists(path))
+        {
+            context.Response.StatusCode = 404;
+            return;
+        }
+
+        // 缩略图很小，用不上 Range（原来的整段写文件那条路是给视频的）。
+        context.Response.ContentType = "image/jpeg";
+        context.Response.ContentLength64 = new FileInfo(path).Length;
+
+        await using var stream = File.OpenRead(path);
+        await stream.CopyToAsync(context.Response.OutputStream);
+    }
+
     private async Task<VerifyPayload> VerifyAsync(string location)
     {
         var backend = _options.ArchiveBackend
@@ -698,7 +745,12 @@ public sealed class PlaybackServer : IAsyncDisposable
             hit.Entry.Duration.TotalSeconds,
             hit.BusinessType?.ToString() ?? "unknown",
             // 规格 §3.1.7 的连带项：页面要如实告知「这条能不能在网页里播」。
-            hit.Entry.Codec));
+            hit.Entry.Codec,
+            // 规格 §3.4.3 的第 ⑦ 项（归档层这一份在哪儿）。
+            // ⚠️ 本机磁盘那一档**要明说「仅本机」**：那时盘上这份是唯一副本（§3.5.1）。
+            _options.ArchiveBackend is { Kind: ArchiveBackendKind.LocalDisk }
+                ? "仅本机"
+                : _options.ArchiveBackend?.Kind.ToString() ?? "仅本机"));
 
         await WriteJsonAsync(context, payload);
     }
@@ -1014,6 +1066,14 @@ public sealed class PlaybackServer : IAsyncDisposable
           showCodecNote(codec);
         }
 
+        // 发货 / 退货那两个字。服务端回的是枚举名（`Outbound` / `Return`），
+        // 而界面上要写中文 —— 这个映射**只在这里**，与手机端那两处同一个口径。
+        function businessLabel(type) {
+          if (type === 'Outbound') return '发货';
+          if (type === 'Return') return '退货';
+          return '未标注';
+        }
+
         // ⚠️ 规格 §3.1.7 的连带项：**浏览器对 H.265 的支持不一致**，
         // 所以网页**可能播不了 H.265 录的那条**。口径是「**如实告知**……**不得承诺
         // 做不到的事**，**不为此砍掉 H.265 选项**」—— 于是这里把话说出来，
@@ -1052,19 +1112,46 @@ public sealed class PlaybackServer : IAsyncDisposable
           for (const it of items) {
             const tr = document.createElement('tr');
             tr.className = 'hit';
-            tr.innerHTML = `<td></td><td></td><td></td><td></td>`;
-            tr.children[0].textContent = it.waybill;
-            tr.children[1].textContent = new Date(it.startedAt).toLocaleString();
-            tr.children[2].textContent = Math.round(it.durationSeconds) + ' 秒';
-            tr.children[3].textContent = it.businessType;
+            // 规格 §3.4.3 的七项：标签 / 缩略图+播放 / `单号.mp4` / 时间 / 时长 / 归档。
+            tr.innerHTML = `<td></td><td></td><td></td><td></td><td></td><td></td>`;
+
+            // ① 标签（发货 / 退货）
+            tr.children[0].textContent = businessLabel(it.businessType);
+
+            // ② 缩略图 + ③ 播放按钮（**同一格**：缩略图就是播放入口）
+            const thumbCell = tr.children[1];
+            const img = document.createElement('img');
+            img.className = 'thumb';
+            img.alt = '';
+            img.src = '/api/thumbnail/' + encodeURIComponent(it.evidenceId);
+            // ⚠️ 404（还没抽过帧）时**把那格清空**，而不是显示一个浏览器的破图图标 ——
+            // 破图图标看起来像「这一段坏了」，而其实只是还没生成缩略图。
+            img.onerror = () => { img.remove(); };
+            thumbCell.appendChild(img);
+
+            // ④ 列表里显示的名字：`单号.mp4`
+            //
+            // ⚠️ **这只是显示名**：磁盘上的文件名与归档路径一律不动
+            //（改了会波及索引、检索、归档回查，还要迁移已经录好的那些）。
+            tr.children[2].textContent = it.waybill ? (it.waybill + '.mp4') : '（无单号）';
+
+            // ⑤ 录制时间 ⑥ 时长
+            tr.children[3].textContent = new Date(it.startedAt).toLocaleString();
+            tr.children[4].textContent = Math.round(it.durationSeconds) + ' 秒';
+
+            // ⑦ 归档层这一份在哪儿 —— **本机磁盘那一档要明说「仅本机」**：
+            // 那时盘上这份是唯一副本（规格 §3.5.1），用户必须知道。
+            tr.children[5].textContent = it.archiveLabel;
+
             tr.onclick = () => openRecording(it.evidenceId, it.codec);
+            tr.title = '点这一行播放';
             rows.appendChild(tr);
           }
 
           if (items.length === 0) {
             const tr = document.createElement('tr');
             const td = document.createElement('td');
-            td.colSpan = 4;
+            td.colSpan = 6;
             td.className = 'muted';
             td.textContent = '没有匹配的录像';
             tr.appendChild(td);
@@ -1098,10 +1185,15 @@ public sealed class PlaybackServer : IAsyncDisposable
 /// **不为此砍掉 H.265 选项**」—— 于是页面按这个字段把话说出来，
 /// 而不是让用户对着一个转圈的播放器自己猜。
 /// </remarks>
+/// <param name="ArchiveLabel">
+/// 归档层这一份在哪儿（规格 §3.4.3 的第 ⑦ 项）。⚠️ 本机磁盘那一档是
+/// <c>仅本机</c> —— 那时盘上这份是**唯一副本**（§3.5.1），用户必须知道。
+/// </param>
 public sealed record PlaybackSearchItem(
     string EvidenceId,
     string Waybill,
     string StartedAt,
     double DurationSeconds,
     string BusinessType,
-    string? Codec);
+    string? Codec,
+    string ArchiveLabel = "仅本机");
