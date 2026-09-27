@@ -20,6 +20,7 @@ using SelectionChangedEventArgs = System.Windows.Controls.SelectionChangedEventA
 using TextChangedEventArgs = System.Windows.Controls.TextChangedEventArgs;
 using VidLog.Desktop.Core;
 using VidLog.Desktop.Core.Cleanup;
+using VidLog.Desktop.Core.Clock;
 using VidLog.Desktop.Core.Configuration;
 using VidLog.Desktop.Core.Diagnostics;
 using VidLog.Desktop.Core.Labels;
@@ -207,6 +208,7 @@ public partial class MainWindow : Window
         }
 
         ShowRetention();
+        ShowCalibration();
     }
 
     // ─────────────────────────────────────────────
@@ -270,6 +272,55 @@ public partial class MainWindow : Window
             $"⚠️ 最近一次发布到{relay.Label}没成功：{failure}\n"
             + "盘上这一份仍然是好的、也能检索 —— 但它现在**只有一份**，"
             + "在发上去之前别删它。修好之后下次收尾会自动再发。";
+    }
+
+    // ─────────────────────────────────────────────
+    // 时间校准（规格 §3.6.3 / §3.6.4）
+    // ─────────────────────────────────────────────
+
+    /// <summary>把当前校准状态显示出来。**要能一眼看出「现在录不录得了」**。</summary>
+    private void ShowCalibration()
+    {
+        var clock = _host.Services.TrustedClock;
+
+        if (clock.IsCalibrated)
+        {
+            var source = clock.State.Source == CalibrationSource.PublicTime ? "公网时间" : "归档回执";
+            var at = clock.State.CalibratedAtUtc?.ToLocalTime().ToString("yyyy-MM-dd HH:mm") ?? "—";
+
+            CalibrationNote.Text = $"✅ 已校准（来源：{source}，校准于 {at}）。可以录制。";
+            return;
+        }
+
+        CalibrationNote.Text = $"⛔ {clock.BlockedReason}";
+    }
+
+    /// <summary>点【重新校准】：取一次公网时间。</summary>
+    /// <remarks>
+    /// ⚠️ 失败时**留着「未校准」那个状态不动**（不猜一个时间）——
+    /// 猜出来的锚比没有锚更糟：它看起来是校准过的。
+    /// </remarks>
+    private async void OnCalibrate(object sender, RoutedEventArgs e)
+    {
+        CalibrateButton.IsEnabled = false;
+        CalibrationNote.Text = "正在取公网时间…";
+
+        try
+        {
+            var anchor = await _host.Services.ClockSource.QueryAsync();
+            await _host.Services.TrustedClock.CalibrateAsync(anchor, CalibrationSource.PublicTime);
+        }
+        catch (Exception ex)
+        {
+            CalibrationNote.Text = $"⛔ 取不到公网时间：{ex.Message}";
+            return;
+        }
+        finally
+        {
+            CalibrateButton.IsEnabled = true;
+        }
+
+        ShowCalibration();
     }
 
     /// <summary>界面上当前选中的归档层。</summary>

@@ -50,6 +50,15 @@ public sealed class DataLayout
     public string CleanupAuditPath => Path.Combine(RootDirectory, "cleanup-audit.jsonl");
 
     /// <summary>
+    /// 时间校准状态（规格 §3.6.4）。
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ **必须落盘**：规格原话「已校准状态**落盘持久化**，之后离线照常录制」——
+    /// 不落盘的话，一台交付之后从没联过网的机器重启一次就再也录不了。
+    /// </remarks>
+    public string CalibrationPath => Path.Combine(RootDirectory, "calibration.json");
+
+    /// <summary>
     /// 错误扫描记录（规格 §6.1「必须保存的事实」）。
     /// </summary>
     /// <remarks>

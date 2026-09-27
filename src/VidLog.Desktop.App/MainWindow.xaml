@@ -201,6 +201,22 @@
                 <TextBlock Text="单个分段的上限。到点自动滚下一段，用户无感。" Margin="0,2,0,0"
                            Foreground="#88666666" TextWrapping="Wrap"/>
 
+                <!-- 时间校准（规格 §3.6.4）。**未校准不能开始录制** —— 所以它
+                     必须摆在设置页里、说清三件事：为什么 / 怎么办 / 已有录像照常可用。 -->
+                <TextBlock Text="时间校准" FontWeight="SemiBold" Margin="0,16,0,0"/>
+                <StackPanel Orientation="Horizontal" Margin="0,4,0,0">
+                    <TextBlock x:Name="CalibrationNote" VerticalAlignment="Center"
+                               TextWrapping="Wrap" MaxWidth="520"/>
+                    <Button x:Name="CalibrateButton" Content="重新校准" Padding="12,4"
+                            Margin="12,0,0,0" Click="OnCalibrate"/>
+                </StackPanel>
+                <TextBlock Margin="0,2,0,0" Foreground="#88666666" TextWrapping="Wrap"
+                           Text="为什么要它：视频里的时间必须能追溯到本机之外的某个来源 —— 靠本机时钟的话，改一下系统时间就能伪造「更早的证据」。联一次网取到时间之后，即使以后一直断网也能照常录制（时间是拿「校准那一刻 + 之后走了多久」推出来的，与系统时钟无关）。"/>
+                <TextBlock Margin="0,2,0,0" Foreground="#88666666" TextWrapping="Wrap"
+                           Text="怎么办：点【重新校准】。取不到公网时间时，检查这台机器能不能上网（要能访问 https）。⚠️ 只有内网、从没联过公网的机器**开不了工** —— 这是需求方 2026-09-24 明确接受的代价。"/>
+                <TextBlock Margin="0,2,0,0" Foreground="#88666666" TextWrapping="Wrap"
+                           Text="⚠️ 未校准**只挡住新录**：已有的录像照常可以检索、回放、导出、交付 —— 与许可那条红线（不得锁住已有录像）是同一条道理。"/>
+
                 <TextBlock Text="回放服务端口" FontWeight="SemiBold" Margin="0,16,0,0"/>
                 <TextBox x:Name="PortBox" Width="120" Margin="0,4,0,0" HorizontalAlignment="Left"/>
                 <TextBlock Text="改了要重启才生效。" Margin="0,2,0,0"

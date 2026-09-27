@@ -1,4 +1,5 @@
 using VidLog.Desktop.Core.Cleanup;
+using VidLog.Desktop.Core.Clock;
 using VidLog.Desktop.Core.Diagnostics;
 using VidLog.Desktop.Core.Index;
 using VidLog.Desktop.Core.Labels;
@@ -120,6 +121,14 @@ public sealed class DesktopServices : IAsyncDisposable
     /// </remarks>
     public CleanupService Cleanup { get; private init; } = null!;
 
+    /// <summary>
+    /// 可信时钟（规格 §3.6.4）。录制的闸门与时间来源都在它身上。
+    /// </summary>
+    public TrustedClock TrustedClock { get; private init; } = null!;
+
+    /// <summary>公网时间源（`IClockSource`）。校准要用它取一次锚。</summary>
+    public IClockSource ClockSource { get; private init; } = new HttpDateClockSource();
+
     /// <summary>远端上传的接收方（M5）。</summary>
     public UploadReceiver Upload { get; }
 
@@ -169,7 +178,8 @@ public sealed class DesktopServices : IAsyncDisposable
         int? playbackPort = DefaultPlaybackPort,
         string? deviceName = null,
         IAppLogger? logger = null,
-        ArchiveTarget? archive = null)
+        ArchiveTarget? archive = null,
+        IClockSource? clockSource = null)
     {
         layout.EnsureCreated();
 
@@ -192,6 +202,14 @@ public sealed class DesktopServices : IAsyncDisposable
         var index = new JsonLinesRecordingIndex(layout.IndexPath);
         var punches = new JsonLinesPunchLog(layout.PunchLogPath);
         var labels = new JsonLinesLabelStore(layout.LabelStorePath);
+
+        // ── 可信时钟（规格 §3.6.4：未校准不得开始录制）──────────────────
+        //
+        // 装配在这里、**核对在启动流程里**（`StartAsync`）：核对要读文件、要判跳变，
+        // 而那件事的结果要变成一条用户可见的警告。
+        var calibration = new CalibrationStore(layout.CalibrationPath);
+        var trustedClock = new TrustedClock(
+            calibration.LoadAsync().GetAwaiter().GetResult(), calibration, logger: logger);
 
         // ── 归档层（规格 §3.4.6 的四种后端）────────────────────────────
         //
@@ -290,6 +308,8 @@ public sealed class DesktopServices : IAsyncDisposable
             ArchiveBackend = archiveBackend,
             ArchiveRelay = relay,
             Cleanup = cleanup,
+            TrustedClock = trustedClock,
+            ClockSource = clockSource ?? new HttpDateClockSource(),
         };
     }
 
@@ -306,6 +326,40 @@ public sealed class DesktopServices : IAsyncDisposable
     public async Task<StartupReport> StartAsync(CancellationToken cancellationToken = default)
     {
         var warnings = new List<string>(Warnings);
+
+        // ── 校时（规格 §3.6.3 / §3.6.4）──────────────────────────────
+        //
+        // 顺序在两件事**之前**：先核对「挂钟与上次退出时留下的记录自不自洽」，
+        // 再（需要时）取一次公网时间。
+        //
+        // ⚠️ 取不到公网时间**不是错误**：一台已经校准过的机器断网照样要用
+        // （规格 §3.6.4：已校准状态落盘持久化，之后离线照常录制）。
+        // 只有「从没校准过」或「检测到跳变」才是一条必须说出来的警告。
+        var jumped = await TrustedClock.CheckStartupAsync(cancellationToken);
+
+        if (jumped)
+        {
+            warnings.Add(
+                $"{TrustedClock.BlockedReason}"
+                + "已校准过的机器不会因为断网失去校准 —— 这一次要重新校准，是因为本机时间被改过。");
+        }
+
+        if (!TrustedClock.IsCalibrated)
+        {
+            try
+            {
+                var anchor = await ClockSource.QueryAsync(cancellationToken);
+                await TrustedClock.CalibrateAsync(anchor, CalibrationSource.PublicTime, cancellationToken);
+            }
+            catch (Exception ex)
+            {
+                // 取不到就保持「未校准」—— 而那是**会挡住录制**的状态，
+                // 所以必须让用户看见（I3：不存在静默失败）。
+                warnings.Add(
+                    $"取不到公网时间（{ex.Message}）。"
+                    + "这台电脑需要先联一次网校准，之后断网也能照常录制。");
+            }
+        }
 
         var orphanOutcomes = await OrphanRecovery.RecoverAsync(cancellationToken);
 

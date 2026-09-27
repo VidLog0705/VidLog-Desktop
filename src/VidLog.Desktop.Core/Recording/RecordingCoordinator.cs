@@ -1,3 +1,4 @@
+using VidLog.Desktop.Core.Clock;
 using VidLog.Desktop.Core.Diagnostics;
 using VidLog.Desktop.Core.Punches;
 
@@ -122,7 +123,8 @@ public sealed class RecordingCoordinator : IAsyncDisposable
         CoordinatorOptions options,
         ScanErrorLog? scanErrors = null,
         Func<TimeSpan>? clock = null,
-        Func<TimeSpan, CancellationToken, Task>? delay = null)
+        Func<TimeSpan, CancellationToken, Task>? delay = null,
+        ITrustedClock? trustedClock = null)
     {
         _clock = clock ?? NewDefaultClock();
         _delay = delay ?? Task.Delay;
@@ -135,7 +137,18 @@ public sealed class RecordingCoordinator : IAsyncDisposable
         _policy = policy;
         _options = options;
         _scanErrors = scanErrors;
+        _trustedClock = trustedClock;
     }
+
+    /// <summary>
+    /// 可信时钟（规格 §3.6.4）。<see langword="null"/> = 不设闸。
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ 不传的那些装配（大多是测试）**行为与从前完全一致** ——
+    /// 加闸不该顺带把几十条不相干的用例改成「必先校准」。
+    /// 生产路径由 `DesktopServices` 传真的那个。
+    /// </remarks>
+    private readonly ITrustedClock? _trustedClock;
 
     /// <summary>默认时钟：一个从构造时开始走的秒表。</summary>
     /// <remarks>
@@ -234,6 +247,20 @@ public sealed class RecordingCoordinator : IAsyncDisposable
     {
         if (IsWorking)
         {
+            return;
+        }
+
+        // ⚠️ **未校准不得开始录制**（规格 §3.6.4）。
+        //
+        // 这道闸在这里、以及 `RecordingSession.StartAsync` 里各有一道：
+        // 前者是为了**当场告诉用户**（不然他只会看到「点了没反应」），
+        // 后者是为了**绕不过去**（任何直接建会话的路径都被挡住）。
+        if (_trustedClock is { IsCalibrated: false } clock)
+        {
+            var reason = clock.BlockedReason ?? "这台电脑还没有过一次可信的时间校准。";
+
+            _logger.Log(LogLevel.Warn, "校时", $"拒绝开始工作：{reason}");
+            Raise(CoordinatorNoticeKind.FinalizeFailed, null, reason);
             return;
         }
 
@@ -384,6 +411,22 @@ public sealed class RecordingCoordinator : IAsyncDisposable
     private async Task StartSegmentAsync(
         WaybillNumber waybill, PunchSource source, CancellationToken cancellationToken)
     {
+        // ⚠️ **未校准不得开始录制**（规格 §3.6.4）—— 这道闸**也必须在这里**。
+        //
+        // 只挡 `StartWork()` 是不够的：这个方法是「**没按开始就扫码**」那条路的
+        // 落点（下面那一段就是为它写的），而扫码枪是硬件，它不等用户点按钮。
+        // 少这一道的话，绕开闸门只需要「直接扫一张面单」——
+        // 而规格对手机端明确要求「`startWorking()` **以及扫码开录那条路**」都有闸，
+        // 两端同一个道理。
+        if (_trustedClock is { IsCalibrated: false } clock)
+        {
+            var reason = clock.BlockedReason ?? "这台电脑还没有过一次可信的时间校准。";
+
+            _logger.Log(LogLevel.Warn, "校时", $"拒绝开录（{waybill.Value}）：{reason}");
+            Raise(CoordinatorNoticeKind.FinalizeFailed, waybill, reason);
+            return;
+        }
+
         // 扫码枪打进来时用户未必先点过【开始工作】（规格 §4.1 的状态机就是从
         // 「识别到单号」起算的）。这时也要把工作置为进行中 ——
         // 否则没有任何合法方式结束它：【结束】会因为「没在工作」直接返回，
@@ -406,7 +449,8 @@ public sealed class RecordingCoordinator : IAsyncDisposable
 
         var session = new RecordingSession(
             _workspace, _capture, _finalizer, _diskGuard,
-            _options.DeviceName, _options.SourceDeviceId, SessionOptions);
+            _options.DeviceName, _options.SourceDeviceId, SessionOptions,
+            trustedClock: _trustedClock);
 
         await session.StartAsync(waybill, _options.Encoder, cancellationToken);
         _current = session;

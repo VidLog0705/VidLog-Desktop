@@ -259,7 +259,11 @@ public sealed class AppHost : IAsyncDisposable
             new WorkModePolicy(settings.Mode, settings.IdleReminder, settings.IdleReminderMinutes),
             new CoordinatorOptions(device, Environment.MachineName, encoder ?? "libx264"),
             // 错误扫描（规格 §6.1「必须保存的事实」）。
-            new ScanErrorLog(layout.ScanErrorsPath))
+            new ScanErrorLog(layout.ScanErrorsPath),
+            // ⚠️ 可信时钟 —— **未校准不得开始录制**（规格 §3.6.4）。
+            // 传真的那个（不是 null）：`null` 是给测试留的「不设闸」，
+            // 而生产路径上一次都不该出现。
+            trustedClock: services.TrustedClock)
         {
             // 分段时长与时长兜底（规格 §3.1.1 / §3.3.4）。
             // 不填的话用的是硬编码默认（1 分钟 / 30 分钟）——

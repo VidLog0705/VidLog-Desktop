@@ -1,3 +1,4 @@
+using VidLog.Desktop.Core.Clock;
 using VidLog.Desktop.Core.Diagnostics;
 using VidLog.Desktop.Core.Index;
 using VidLog.Desktop.Core.Media;
@@ -17,6 +18,62 @@ public class RecordingCoordinatorTests
 {
     private static readonly WaybillNumber A = WaybillNumber.Parse("SF1234567890");
     private static readonly WaybillNumber B = WaybillNumber.Parse("SF9999999999");
+
+    /// <summary>一台校准过 / 没校准过的假时钟（规格 §3.6.4）。</summary>
+    private sealed class FakeTrustedClock(bool calibrated) : ITrustedClock
+    {
+        public bool IsCalibrated => calibrated;
+
+        public DateTimeOffset Now { get; } = new(2026, 9, 27, 4, 0, 0, TimeSpan.Zero);
+
+        public string? BlockedReason => calibrated ? null : "这台电脑还没有过一次可信的时间校准。";
+    }
+
+    // ─────────────────────────────────────────────
+    // 未校准不得开始录制（规格 §3.6.4）
+    // ─────────────────────────────────────────────
+
+    [Fact]
+    public async Task 未校准时不开始工作_而且当场说出来()
+    {
+        // ⚠️ 光是不开始是不够的：用户看到的是「点了没反应」。
+        // 所以这条同时验「没有开录」与「有没有话」。
+        using var dir = new TempDir();
+        var punches = new FakePunchLog();
+
+        await using var coordinator = Build(
+            dir, WorkMode.StopOnSameWaybill, punches,
+            trustedClock: new FakeTrustedClock(calibrated: false));
+
+        var notices = new List<CoordinatorNotice>();
+        coordinator.Notice += notices.Add;
+
+        coordinator.StartWork();
+
+        Assert.False(coordinator.IsWorking);
+        Assert.Contains(notices, n => n.Message.Contains("校准"));
+
+        // 而且真的录不进去 —— 扫到单号也不会开段。
+        await coordinator.SubmitAsync(A, PunchSource.KeyboardScanner);
+        Assert.Null(coordinator.CurrentSessionId);
+    }
+
+    [Fact]
+    public async Task 校准过就照常开录()
+    {
+        using var dir = new TempDir();
+        var punches = new FakePunchLog();
+
+        await using var coordinator = Build(
+            dir, WorkMode.StopOnSameWaybill, punches,
+            trustedClock: new FakeTrustedClock(calibrated: true));
+
+        coordinator.StartWork();
+        Assert.True(coordinator.IsWorking);
+
+        await coordinator.SubmitAsync(A, PunchSource.KeyboardScanner);
+        Assert.NotNull(coordinator.CurrentSessionId);
+    }
 
     // ─────────────────────────────────────────────
     // 开录与打点
@@ -551,7 +608,8 @@ public class RecordingCoordinatorTests
         ScanErrorLog? scanErrors = null,
         WorkModePolicy? policy = null,
         Func<TimeSpan>? clock = null,
-        Func<TimeSpan, CancellationToken, Task>? delay = null)
+        Func<TimeSpan, CancellationToken, Task>? delay = null,
+        ITrustedClock? trustedClock = null)
     {
         var ffmpeg = FfmpegLocator.TryFind() ?? "ffmpeg";
         var effectiveRunner = runner ?? new SucceedingRunner();
@@ -571,7 +629,8 @@ public class RecordingCoordinatorTests
             new CoordinatorOptions("Lenovo EasyCamera", "device-1", "libx264"),
             scanErrors,
             clock,
-            delay)
+            delay,
+            trustedClock)
         {
             SessionOptions = session ?? RecordingSessionOptions.Default,
         };

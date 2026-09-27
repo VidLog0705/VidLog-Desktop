@@ -1,3 +1,5 @@
+using VidLog.Desktop.Core.Clock;
+
 namespace VidLog.Desktop.Core.Recording;
 
 /// <summary>采集会话的可调参数。</summary>
@@ -98,6 +100,9 @@ public sealed class RecordingSession : IAsyncDisposable
     private readonly RecordingSessionOptions _options;
     private readonly Func<TimeSpan> _clock;
 
+    /// <summary>可信时钟；<see langword="null"/> = 不设闸（见构造函数的说明）。</summary>
+    private readonly ITrustedClock? _trustedClock;
+
     /// <summary>「开录那一刻」的时钟读数。<see cref="Elapsed"/> 是相对它的差值。</summary>
     /// <remarks>
     /// 不用「重新绑定 _clock」那种写法：那样第二次读会把已经减过的值再减一遍。
@@ -140,6 +145,12 @@ public sealed class RecordingSession : IAsyncDisposable
     /// 测试传可控读数，就能不靠等待验证分段滚动与时长兜底。
     /// </param>
     /// <param name="delay">等待。测试传「立即返回」即可把编排循环推快。</param>
+    /// <param name="trustedClock">
+    /// 可信时钟（规格 §3.6.4：**未校准不得开始录制**）。
+    /// <b>不传 = 不设闸</b> —— 那些直接把本类 new 出来的测试（以及电脑端内部
+    /// 用来验证分段的用例）不该被时间校准牵连；生产路径由
+    /// <see cref="RecordingCoordinator"/> 传真的那个。
+    /// </param>
     public RecordingSession(
         RecordingWorkspace workspace,
         ICameraCapture capture,
@@ -149,7 +160,8 @@ public sealed class RecordingSession : IAsyncDisposable
         string sourceDeviceId,
         RecordingSessionOptions? options = null,
         Func<TimeSpan>? clock = null,
-        Func<TimeSpan, CancellationToken, Task>? delay = null)
+        Func<TimeSpan, CancellationToken, Task>? delay = null,
+        ITrustedClock? trustedClock = null)
     {
         _workspace = workspace;
         _capture = capture;
@@ -159,6 +171,7 @@ public sealed class RecordingSession : IAsyncDisposable
         _options = options ?? RecordingSessionOptions.Default;
         _clock = clock ?? NewDefaultClock();
         _delay = delay ?? Task.Delay;
+        _trustedClock = trustedClock;
 
         SourceDeviceId = sourceDeviceId;
         SessionId = NewSessionId();
@@ -238,10 +251,24 @@ public sealed class RecordingSession : IAsyncDisposable
             throw new InvalidOperationException($"会话已经在 {State} 状态，不能重复开录。");
         }
 
+        // ⚠️ **未校准不得开始录制**（规格 §3.6.4，2026-09-24 的需求变更）。
+        //
+        // 这道闸在**两个地方**都有：协调器的 `StartWork()` 与这里。
+        // 只在前者的话，任何绕过协调器直接建会话的路径都能录 ——
+        // 而「绕过去」这件事在这类不可逆的保证上不该靠自觉。
+        if (_trustedClock is { IsCalibrated: false } clock)
+        {
+            throw new InvalidOperationException(
+                $"{clock.BlockedReason}（规格 §3.6.4：未校准不得开始录制）");
+        }
+
         // 单调时钟的起点挪到开录这一刻 —— 会话可能在开录前先建好（协调器就是）。
         RestartClock();
 
-        _startedAt = DateTimeOffset.UtcNow;
+        // ⚠️ 起录时刻取**可信时钟**，不是墙钟（规格 §3.6.3：「水印与时长都不得
+        // 取自墙钟 —— 用户改系统时间**不得**改变视频里的时间」）。
+        // 没接可信时钟时（测试路径）才退回墙钟。
+        _startedAt = _trustedClock?.Now ?? DateTimeOffset.UtcNow;
         _manifest = new SessionManifest(
             SessionId, waybill.Value, SourceDeviceId, _startedAt.ToString("O"), []);
 
