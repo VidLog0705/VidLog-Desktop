@@ -38,14 +38,49 @@ public class LicenseIndependenceTests
 {
     /// <summary>这几条路的源码里**不许出现许可**（L8）。</summary>
     /// <remarks>
-    /// 挑的是「用户要拿回自己数据」必走的几条：检索、回放服务、导出、清理判定、
-    /// 索引与标签的读写。
+    /// <para>
+    /// <b>名单的口径</b>：L8 原文点名的是三件事 ——「历史录像必须仍可**查看**、
+    /// **检索**、**导出**」。所以名单 = 这三件事各自要走的整条路，
+    /// <b>入口和它调用的每一层都要在</b>（只钉中间层的话，门禁加在入口上照样绕过去了）。
+    /// 清理链是**宁宽勿窄**一并纳进来的：它不在这三件事里，但它决定数据**还在不在**，
+    /// 与「用户的数据是他的」同一件事。
+    /// </para>
+    /// <para>
+    /// ⚠️ <b>2026-09-27 补了四个</b>（许可真的接上之后重盘了一遍这条线，
+    /// 原来是 8 个、现在是 12 个）：
+    /// </para>
+    /// <list type="bullet">
+    /// <item><c>Media/ThumbnailCache.cs</c> —— 回放页列表里那格图</item>
+    /// <item><c>Playback/RecordingTimeline.cs</c> —— 时间轴</item>
+    /// <item><c>Playback/PunchNavigation.cs</c> —— 按打点跳转</item>
+    /// <item><c>Cleanup/CleanupService.cs</c> —— 清理这条链的**入口**
+    /// （<c>CleanupPolicy</c> / <c>CleanupExecutor</c> 早在名单里，入口反而不在，
+    /// 那正是个洞）</item>
+    /// </list>
+    /// <para>
+    /// 前三个是**用户看得见的「查看已有录像」** —— 门禁加在它们身上，表现是
+    /// 「录像还在、但翻不动、图是空的、点打点没反应」，而那正是 L8 要挡的「锁住」。
+    /// </para>
+    /// <para>
+    /// ⚠️ <b>刻意不在名单里的</b>（别以为是漏了）：
+    /// <c>Recording/RecordingCoordinator.cs</c> —— 它**就是要看许可的**
+    /// （未激活不得开始新的录制，L5）；
+    /// <c>License/*</c> —— 许可本身的实现。
+    /// </para>
+    /// <para>
+    /// ⚠️ 天花板照旧（与类注释里那条相同）：文本只挡得住**这个文件里**的写法，
+    /// 挡不住「绕个弯调」（经过一个不叫 License 的中间层）。
+    /// </para>
     /// </remarks>
     private static readonly string[] MustNotMentionLicense =
     [
         "Search/RecordingSearch.cs",
         "Web/PlaybackServer.cs",
+        "Playback/RecordingTimeline.cs",
+        "Playback/PunchNavigation.cs",
+        "Media/ThumbnailCache.cs",
         "Export/EvidenceExporter.cs",
+        "Cleanup/CleanupService.cs",
         "Cleanup/CleanupPolicy.cs",
         "Cleanup/CleanupExecutor.cs",
         "Index/RecordingIndex.cs",
@@ -56,7 +91,11 @@ public class LicenseIndependenceTests
     [Theory]
     [InlineData("Search/RecordingSearch.cs")]
     [InlineData("Web/PlaybackServer.cs")]
+    [InlineData("Playback/RecordingTimeline.cs")]
+    [InlineData("Playback/PunchNavigation.cs")]
+    [InlineData("Media/ThumbnailCache.cs")]
     [InlineData("Export/EvidenceExporter.cs")]
+    [InlineData("Cleanup/CleanupService.cs")]
     [InlineData("Cleanup/CleanupPolicy.cs")]
     [InlineData("Cleanup/CleanupExecutor.cs")]
     [InlineData("Index/RecordingIndex.cs")]
