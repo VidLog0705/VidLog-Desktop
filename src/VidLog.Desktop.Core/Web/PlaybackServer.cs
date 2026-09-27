@@ -465,6 +465,16 @@ public sealed class PlaybackServer : IAsyncDisposable
                 });
                 return;
 
+            case "/api/v1/enroll/rename":
+                // 改名（规格 §3.4.5 ③）—— **要凭据**，所以它在上面那道闸之后。
+                //
+                // ⚠️ `deviceId` 用的是**凭据反查**出来的那个（上面那个局部量），
+                // 不是报文里自称的：报文里根本没有 deviceId（见
+                // `RenameRequestPayload` 的说明）。信自称的话，任何一台已入网
+                // 设备都能改**别人**的名字。
+                await GuardAsync(context, () => HandleRenameAsync(context, deviceId, credential));
+                return;
+
             case "/api/v1/archive/verify":
                 await GuardAsync(context, async () =>
                 {
@@ -601,6 +611,59 @@ public sealed class PlaybackServer : IAsyncDisposable
             default:
                 // 屏幕上的码换了、或者已经超时 —— 手机该重新扫一次。
                 await WriteErrorAsync(context, 410, UploadErrors.NoPendingRequest, result.Detail);
+                return;
+        }
+    }
+
+    /// <summary>
+    /// 改名（规格 §3.4.5 ③）。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// 与 <see cref="HandleEnrollRequestAsync"/> **同形**：手机轮询它，
+    /// 一次调用既报上新名字、也问批没批（三个状态都可能回来）。
+    /// </para>
+    /// <para>
+    /// ⚠️ 「还没批 / 被拒了」回 **200 + status**，不是 4xx —— 理由与入网那条一字不差：
+    /// 那不是「请求坏了」，是「人还没做决定 / 人做了个决定」。
+    /// </para>
+    /// </remarks>
+    private async Task HandleRenameAsync(
+        HttpListenerContext context, string deviceId, string credential)
+    {
+        var request = await ReadJsonAsync<RenameRequestPayload>(context);
+
+        if (request is null)
+        {
+            await WriteErrorAsync(context, 400, UploadErrors.BadRequest, "请求体为空");
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(request.DeviceName))
+        {
+            await WriteErrorAsync(context, 400, UploadErrors.BadRequest, "deviceName 不得为空");
+            return;
+        }
+
+        var result = await _devices.RequestRenameAsync(deviceId, request.DeviceName, credential);
+
+        switch (result.Status)
+        {
+            case EnrollStatus.Pending:
+                await WriteJsonAsync(context, new EnrollPendingPayload(EnrollPendingPayload.Pending));
+                return;
+
+            case EnrollStatus.Approved:
+                await WriteJsonAsync(context, new EnrollPendingPayload(EnrollPendingPayload.Approved));
+                return;
+
+            case EnrollStatus.Rejected:
+                await WriteJsonAsync(context, new EnrollPendingPayload(EnrollPendingPayload.Rejected));
+                return;
+
+            default:
+                // 凭据无效 —— 手机端照 `bad_token` 那条提示去重新配对。
+                await WriteErrorAsync(context, 403, UploadErrors.BadToken, result.Detail);
                 return;
         }
     }

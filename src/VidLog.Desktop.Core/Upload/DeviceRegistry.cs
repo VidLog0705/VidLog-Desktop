@@ -61,6 +61,33 @@ public sealed record PendingEnrollment(
     DateTimeOffset RequestedAt,
     EnrollDecision Decision = EnrollDecision.Pending);
 
+/// <summary>
+/// 一条等待人工批准的**改名**请求（规格 §3.4.5 ③）。
+/// </summary>
+/// <remarks>
+/// <para>
+/// 需求方 2026-09-24 原话：「……用户编写确认后，电脑端显示手机端的名字，
+/// 并且以后该手机端连接电脑端都是这个名字，<b>如需要再次更改，需要电脑端同意才能更改</b>。」
+/// </para>
+/// <para>
+/// ⚠️ <b>刻意不复用 <see cref="PendingEnrollment"/> 那个集合</b>：入网的待批准
+/// 是绑在**屏幕上那张二维码**的生命周期上的（换一张码就把它们全清掉），
+/// 而改名**没有二维码** —— 它靠的是设备自己的凭据。混在一起的话，
+/// 「用户又点了一次【连接电脑/手机】」会把一条正在等的改名请求**一起清掉**，
+/// 而手机上还在轮询，看不出为什么。
+/// </para>
+/// <para>
+/// ⚠️ 弹窗那一层**复用同一套通道**（规格原话「走同一套弹窗通道」）——
+/// 界面上它和入网请求长得一样，只是文案不同。
+/// </para>
+/// </remarks>
+/// <param name="Decision">用户在电脑端弹窗上的处置（与入网共用同一个枚举）。</param>
+public sealed record PendingRename(
+    string DeviceId,
+    string DeviceName,
+    DateTimeOffset RequestedAt,
+    EnrollDecision Decision = EnrollDecision.Pending);
+
 /// <summary>入网的结果。</summary>
 public enum EnrollStatus
 {
@@ -133,6 +160,9 @@ public sealed class DeviceRegistry
 
     /// <summary>屏幕上那张二维码对应的会话；没开时为 null。</summary>
     private EnrollSession? _session;
+
+    /// <summary>等人工批准的改名请求（规格 §3.4.5 ③）。**与入网那批分开**，见 <see cref="PendingRename"/>。</summary>
+    private readonly Dictionary<string, PendingRename> _renamePending = new(StringComparer.Ordinal);
 
     /// <param name="seatLimit">
     /// 这个激活码允许接入几台手机端（`docs/04-许可设计.md` §5.1）。
@@ -393,6 +423,131 @@ public sealed class DeviceRegistry
         });
 
         return new ClaimResult(EnrollStatus.Approved, credential, null);
+    }
+
+    /// <summary>
+    /// 手机端请求改名（规格 §3.4.5 ③：「如需要再次更改，需要电脑端同意才能更改」）。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// ⚠️ <b>用**凭据**证明身份</b>，不是用令牌 —— 改名发生在入网**之后**，
+    /// 那时手机手上只有凭据。与 <c>upload/*</c> 那几条同一个信任模型
+    /// （「身份从凭据来」，见 <see cref="FindByCredentialAsync"/> 的说明）。
+    /// </para>
+    /// <para>
+    /// ⚠️ 同一台设备反复调（手机要轮询）时<b>不重置已有的决定</b> ——
+    /// 与 <see cref="RequestAsync"/> 那条同一个理由：重置了就是「点了同意，
+    /// 手机还在等」。但**名字可以刷新**（用户可能又改了一次，以最后一次为准）。
+    /// </para>
+    /// </remarks>
+    public async Task<ClaimResult> RequestRenameAsync(
+        string deviceId,
+        string newName,
+        string? credential,
+        CancellationToken cancellationToken = default)
+    {
+        var device = await FindByCredentialAsync(credential ?? string.Empty, cancellationToken);
+
+        if (device is null || !string.Equals(device.DeviceId, deviceId, StringComparison.Ordinal))
+        {
+            // ⚠️ 凭据对不上 ⇒ 这台设备没入过网、或凭据已作废。
+            // 回 `BadToken` 那个码：手机端照它「重新配对」。
+            return new ClaimResult(EnrollStatus.BadToken, null, "凭据无效，改名前要重新配对");
+        }
+
+        await _gate.WaitAsync(cancellationToken);
+        try
+        {
+            var existing = _renamePending.TryGetValue(deviceId, out var previous) ? previous : null;
+
+            _renamePending[deviceId] = new PendingRename(
+                deviceId,
+                // ⚠️ 入口就量尺（与入网那条路同一个函数）—— 规格 §3.4.3 ②
+                // 「从**任何路径**写进来的名字都得是同一把尺子」。
+                DeviceNameRules.Clamp(newName),
+                existing?.RequestedAt ?? _now(),
+                existing?.Decision ?? EnrollDecision.Pending);
+
+            return new ClaimResult(
+                _renamePending[deviceId].Decision switch
+                {
+                    EnrollDecision.Approved => EnrollStatus.Approved,
+                    EnrollDecision.Rejected => EnrollStatus.Rejected,
+                    _ => EnrollStatus.Pending,
+                },
+                null,
+                null);
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
+    /// <summary>当前待批准 / 已处置的改名请求（界面要列出来）。</summary>
+    public async Task<IReadOnlyList<PendingRename>> PendingRenamesAsync(
+        CancellationToken cancellationToken = default)
+    {
+        await _gate.WaitAsync(cancellationToken);
+        try
+        {
+            return _renamePending.Values.OrderBy(r => r.RequestedAt).ToList();
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
+    /// <summary>
+    /// 用户在电脑端弹窗上点了同意 / 拒绝（改名）。
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ 批准时**用同一个凭据**追加一条新名字的记录 —— **不重新签发凭据**：
+    /// 改名不是重新入网，换凭据会让那台手机下一次上传撞 401，
+    /// 而它以为自己只是改了个名字（表现是「改完名字就传不上来了」）。
+    /// </remarks>
+    public async Task<bool> DecideRenameAsync(
+        string deviceId,
+        bool approved,
+        CancellationToken cancellationToken = default)
+    {
+        PendingRename pending;
+
+        await _gate.WaitAsync(cancellationToken);
+        try
+        {
+            if (!_renamePending.TryGetValue(deviceId, out var found))
+            {
+                return false;
+            }
+
+            pending = found with
+            {
+                Decision = approved ? EnrollDecision.Approved : EnrollDecision.Rejected,
+            };
+
+            _renamePending[deviceId] = pending;
+        }
+        finally
+        {
+            _gate.Release();
+        }
+
+        if (approved && await FindAsync(deviceId, cancellationToken) is { } device)
+        {
+            // 追加一条同凭据、新名字 —— `LatestAsync` 取最后一条，名字就此生效。
+            await AppendAsync(device with { DeviceName = pending.DeviceName }, cancellationToken);
+        }
+
+        _logger.Log(LogLevel.Info, "入网", approved ? "同意了一次改名" : "拒绝了一次改名",
+            new Dictionary<string, object?>
+            {
+                ["deviceId"] = deviceId,
+                ["设备名"] = pending.DeviceName,
+            });
+
+        return true;
     }
 
     /// <summary>

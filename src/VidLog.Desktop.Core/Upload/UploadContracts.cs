@@ -203,5 +203,25 @@ public sealed record EnrollPendingPayload(string Status)
 /// <summary>凭令牌换凭据（§2.3）。</summary>
 public sealed record EnrollClaimPayload(string DeviceId, string? Token);
 
+/// <summary>
+/// 改名请求（规格 §3.4.5 ③）。
+/// </summary>
+/// <remarks>
+/// <para>
+/// 需求方 2026-09-24 原话：「……并且以后该手机端连接电脑端都是这个名字，
+/// <b>如需要再次更改，需要电脑端同意才能更改</b>。」
+/// </para>
+/// <para>
+/// ⚠️ <b>报文里**没有 `deviceId`**</b> —— 它取自**凭据反查**出来的那台设备
+/// （`Authorization: Bearer`，与 `upload/*` 同一套）。
+/// 让客户端自称 deviceId 的话，任何一台已入网设备都能改**别人**的名字。
+/// 这与 `UploadReceiver` 那条「身份从凭据来」是同一条规矩。
+/// </para>
+/// <para>
+/// ⚠️ 手机**轮询**这个接口（与 `enroll/request` 同形）：报上新名字，顺便问批没批。
+/// </para>
+/// </remarks>
+public sealed record RenameRequestPayload(string DeviceName);
+
 /// <param name="Credential">base64url 的 32 字节。**只在这一次返回**，丢了要重新走一遍入网（不得降级为免凭据）。</param>
 public sealed record EnrollCredentialPayload(string Credential);

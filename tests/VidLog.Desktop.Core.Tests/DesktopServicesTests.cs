@@ -473,6 +473,42 @@ public class DesktopServicesTests
     }
 
     /// <summary>
+    /// 钉住「改名请求在界面上真的有出路」（规格 §3.4.5 ③）。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// 需求方 2026-09-24 原话：「……如需要再次更改，**需要电脑端同意才能更改**。」
+    /// ⇒ 「同意」这个动作**只发生在界面上**：没有人弹那个窗，这条就等于没做
+    /// —— 而手机在另一头一直等（它有等待上限，到点就放弃了）。
+    /// </para>
+    /// <para>
+    /// ⚠️ App 层没有测试工程，所以这里只能看源码文本（与上面几条同一个理由）。
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public void 改名请求在界面上真的有出路()
+    {
+        var root = RepoRoot();
+        var app = Path.Combine(root, "src", "VidLog.Desktop.App");
+
+        var window = File.ReadAllText(Path.Combine(app, "MainWindow.xaml.cs"));
+
+        // ① 有人**取**待批准的改名请求，而且会**决定**它。
+        Assert.Contains("PendingRenamesAsync()", window, StringComparison.Ordinal);
+        Assert.Contains("DecideRenameAsync(", window, StringComparison.Ordinal);
+
+        // ② 那个轮询**真的起了** —— 少了 `Start()`，弹窗逻辑写得再对也永远不跑
+        //    （而它在测试里完全看不出来：窗关着就永远收不到请求）。
+        Assert.Contains("_renameWatch.Start()", window, StringComparison.Ordinal);
+
+        // ③ 路由真的注册了（Core 那边）。
+        var server = File.ReadAllText(Path.Combine(
+            root, "src", "VidLog.Desktop.Core", "Web", "PlaybackServer.cs"));
+
+        Assert.Contains("\"/api/v1/enroll/rename\"", server, StringComparison.Ordinal);
+    }
+
+    /// <summary>
     /// 钉住「错误扫描真的接上了」—— <c>AppHost</c> 必须把 <c>ScanErrorLog</c>
     /// 交给协调器。
     /// </summary>

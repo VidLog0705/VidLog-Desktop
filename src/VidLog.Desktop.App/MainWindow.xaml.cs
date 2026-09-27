@@ -25,6 +25,7 @@ using VidLog.Desktop.Core.Configuration;
 using VidLog.Desktop.Core.Diagnostics;
 using VidLog.Desktop.Core.Labels;
 using VidLog.Desktop.Core.Media;
+using VidLog.Desktop.Core.Upload;
 using VidLog.Desktop.Core.Punches;
 using VidLog.Desktop.Core.Recording;
 using VidLog.Desktop.Core.Scanning;
@@ -54,11 +55,80 @@ public partial class MainWindow : Window
         _ticker = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(500) };
         _ticker.Tick += (_, _) => UpdateRecordingStatus();
 
+        // 待批准的改名请求（规格 §3.4.5 ③）。
+        //
+        // ⚠️ 它**不能挂在 `EnrollWindow` 上**：那个窗的轮询是以「屏幕上那张二维码」
+        // 为生命周期的（码一换/一过期，它下面的请求就一起作废）。而**改名没有二维码**
+        // —— 它靠设备自己的凭据，随时可能来，窗多半还关着。
+        // 所以由主窗自己看，用**同一套人工批准交互**（弹窗问同意/拒绝）。
+        _renameWatch = new DispatcherTimer { Interval = TimeSpan.FromSeconds(2) };
+        _renameWatch.Tick += async (_, _) => await AskPendingRenameAsync();
+
+        // ⚠️ 与 `_ticker` **不同**：那个是录制时按需启停的，而这个**一直跑** ——
+        // 改名请求不挑时候（手机那端用户想改就改），窗关着就收不到。
+        // 2 秒一次、每次只读一个内存字典（`PendingRenamesAsync`），代价可忽略。
+        _renameWatch.Start();
+
         Loaded += OnLoaded;
-        Closed += (_, _) => _ticker.Stop();
+        Closed += (_, _) =>
+        {
+            _ticker.Stop();
+            _renameWatch.Stop();
+        };
 
         _host.Notice += OnNotice;
         _host.Scanned += OnScanned;
+    }
+
+    /// <summary>待批准的改名请求轮询（规格 §3.4.5 ③）。</summary>
+    private readonly DispatcherTimer _renameWatch;
+
+    /// <summary>已经**问过**的那些设备 —— 同一个设备只弹一次。</summary>
+    /// <remarks>
+    /// ⚠️ 与 `EnrollWindow._asked` 同一个理由：手机是轮询的，同一条请求会被反复看到；
+    /// 不记的话用户会被同一个弹窗反复打断。
+    /// </remarks>
+    private readonly HashSet<string> _askedRenames = new(StringComparer.Ordinal);
+
+    /// <summary>
+    /// 有人要改名 ⇒ 弹一次（同意 / 拒绝）。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// 规格 §3.4.5 ③：「……如需要再次更改，**需要电脑端同意才能更改**」，
+    /// 且这句话属于「走同一套弹窗通道」那一组 —— 所以交互与入网批准同形。
+    /// </para>
+    /// <para>
+    /// ⚠️ 拒绝也要**留着那条请求**（与入网那条同一个理由）：手机在轮询，
+    /// 清掉的话它下一轮拿到的是「没有这条请求」，而用户明明刚被拒。
+    /// </para>
+    /// </remarks>
+    private async Task AskPendingRenameAsync()
+    {
+        var registry = _host.Services.Devices;
+
+        var waiting = (await registry.PendingRenamesAsync())
+            .Where(r => r.Decision == EnrollDecision.Pending)
+            .FirstOrDefault(r => !_askedRenames.Contains(r.DeviceId));
+
+        if (waiting is null)
+        {
+            return;
+        }
+
+        _askedRenames.Add(waiting.DeviceId);
+
+        var answer = MessageBox.Show(
+            this,
+            $"「{waiting.DeviceName}」\n\n"
+            + "这台手机想把机位名改成上面这个。同意吗？\n"
+            + "（机位名是电脑端用来区分设备的，改了之后这里显示的一直是新名字。）",
+            "改名请求",
+            MessageBoxButton.YesNo,
+            MessageBoxImage.Question);
+
+        await registry.DecideRenameAsync(
+            waiting.DeviceId, approved: answer == MessageBoxResult.Yes);
     }
 
     private async void OnLoaded(object sender, RoutedEventArgs e)
