@@ -578,6 +578,13 @@ public sealed class PlaybackServer : IAsyncDisposable
                 await WriteErrorAsync(context, 403, UploadErrors.BadToken, result.Detail);
                 return;
 
+            case EnrollStatus.SeatLimitExceeded:
+                // 机位满了。**不是「请求坏了」**：这台手机本身没问题，
+                // 是电脑端手上的激活码不够。403 + 自己的码，手机那边照着
+                // `seat_limit` 说「去电脑端激活或升级」，而不是「再试一次」。
+                await WriteErrorAsync(context, 403, UploadErrors.SeatLimit, result.Detail);
+                return;
+
             default:
                 // 屏幕上的码换了、或者已经超时 —— 手机该重新扫一次。
                 await WriteErrorAsync(context, 410, UploadErrors.NoPendingRequest, result.Detail);
@@ -617,6 +624,13 @@ public sealed class PlaybackServer : IAsyncDisposable
 
             case EnrollStatus.BadToken:
                 await WriteErrorAsync(context, 403, UploadErrors.BadToken, result.Detail);
+                return;
+
+            case EnrollStatus.SeatLimitExceeded:
+                // 留着这条分支**不是**「以防万一」：`EnrollStatus` 是共享的枚举，
+                // 掉了分支就会落到下面的 default，把它当 410「重新扫一次码」回给手机
+                // —— 那会让用户对着同一个码反复扫，而问题根本不在这张码上。
+                await WriteErrorAsync(context, 403, UploadErrors.SeatLimit, result.Detail);
                 return;
 
             default:

@@ -41,6 +41,15 @@ public static class UploadErrors
 
     /// <summary>没有待批准的入网请求：没发起过、已过期、或凭据已经被领走过（§2.3）。</summary>
     public const string NoPendingRequest = "no_pending_request";
+
+    /// <summary>
+    /// 机位满了，这台手机接不进来（`docs/04-许可设计.md` §5.1）。
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ <b>不可重试</b>，但也**不该让用户以为录不了了**：手机上那条提示要说的是
+    /// 「去电脑端激活或升级」，而不是「连接失败」。已经在录的手机不受影响（L5）。
+    /// </remarks>
+    public const string SeatLimit = "seat_limit";
 }
 
 /// <summary>分片清单查询（`docs/05-上传接口形状.md` §2.4）。</summary>

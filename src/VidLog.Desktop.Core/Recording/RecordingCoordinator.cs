@@ -124,7 +124,8 @@ public sealed class RecordingCoordinator : IAsyncDisposable
         ScanErrorLog? scanErrors = null,
         Func<TimeSpan>? clock = null,
         Func<TimeSpan, CancellationToken, Task>? delay = null,
-        ITrustedClock? trustedClock = null)
+        ITrustedClock? trustedClock = null,
+        License.LicenseService? license = null)
     {
         _clock = clock ?? NewDefaultClock();
         _delay = delay ?? Task.Delay;
@@ -138,7 +139,21 @@ public sealed class RecordingCoordinator : IAsyncDisposable
         _options = options;
         _scanErrors = scanErrors;
         _trustedClock = trustedClock;
+        _license = license;
     }
+
+    /// <summary>
+    /// 许可（`docs/04-许可设计.md`）。<see langword="null"/> = 不设闸（测试与不关心它的装配）。
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ <b>L5：未激活 / 校验失败 → 不能录制</b>（本机与远程都不行）。
+    /// ⚠️ <b>L8：它只挡住**新录**</b> —— 已有录像的检索、回放、导出、交付一条都不看它。
+    /// </remarks>
+    private readonly License.LicenseService? _license;
+
+    /// <summary>现在允不允许开始新的录制（许可那一半）。</summary>
+    private string? LicenseBlockedReason =>
+        _license is null || _license.Status.Activated ? null : _license.Status.FailureReason;
 
     /// <summary>
     /// 可信时钟（规格 §3.6.4）。<see langword="null"/> = 不设闸。
@@ -261,6 +276,15 @@ public sealed class RecordingCoordinator : IAsyncDisposable
 
             _logger.Log(LogLevel.Warn, "校时", $"拒绝开始工作：{reason}");
             Raise(CoordinatorNoticeKind.FinalizeFailed, null, reason);
+            return;
+        }
+
+        // ⚠️ **未激活不得录制**（`docs/04-许可设计.md` L5）。
+        // 与上面那道校时闸同一个形状：**当场把原因说出来**，而不是「点了没反应」。
+        if (LicenseBlockedReason is { } licenseReason)
+        {
+            _logger.Log(LogLevel.Warn, "许可", $"拒绝开始工作：{licenseReason}");
+            Raise(CoordinatorNoticeKind.FinalizeFailed, null, licenseReason);
             return;
         }
 
@@ -424,6 +448,14 @@ public sealed class RecordingCoordinator : IAsyncDisposable
 
             _logger.Log(LogLevel.Warn, "校时", $"拒绝开录（{waybill.Value}）：{reason}");
             Raise(CoordinatorNoticeKind.FinalizeFailed, waybill, reason);
+            return;
+        }
+
+        // 许可那道闸**也要在这里**（与校时同一个理由：扫码开录是另一条路）。
+        if (LicenseBlockedReason is { } licenseReason)
+        {
+            _logger.Log(LogLevel.Warn, "许可", $"拒绝开录（{waybill.Value}）：{licenseReason}");
+            Raise(CoordinatorNoticeKind.FinalizeFailed, waybill, licenseReason);
             return;
         }
 

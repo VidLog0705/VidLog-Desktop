@@ -209,6 +209,146 @@ public partial class MainWindow : Window
 
         ShowRetention();
         ShowCalibration();
+        ShowLicense();
+    }
+
+    // ─────────────────────────────────────────────
+    // 许可（规格 §3.9 / `docs/04-许可设计.md`）
+    // ─────────────────────────────────────────────
+
+    /// <summary>
+    /// 把机器码与激活状态显示出来。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// ⚠️ <b>机器码一直显示，激活不激活都显示</b>：它是用户唯一需要抄给提供方的东西，
+    /// 而那件事发生在**他还没激活的时候**。藏在「激活之后」的界面里等于没有。
+    /// </para>
+    /// <para>
+    /// ⚠️ 降级（某一段 WMI 读不到）也**必须显示出来**：全零段的机器码没有任何区分度，
+    /// 同型号的机器会互相匹配 —— 用户拿它去签发，签出来的码在别人的机器上也能用。
+    /// 这是要让他看见、并且去查为什么读不到的。
+    /// </para>
+    /// </remarks>
+    private void ShowLicense()
+    {
+        var license = _host.Services.License;
+
+        if (license is null)
+        {
+            // 公钥没配（部署时漏了环境变量）。**这不是用户的激活码有问题** ——
+            // 说准，否则他会一直去找卖家换码，而换了也没用。
+            MachineCodeBox.Text = string.Empty;
+            ActivationBox.IsEnabled = false;
+            ActivateButton.IsEnabled = false;
+            LicenseNote.Text =
+                "⛔ 本机软件没配好许可公钥（部署时漏了），激活会一律失败。"
+                + "这是**安装的问题**，不是你激活码的问题 —— 请联系提供方重新安装。"
+                + "⚠️ 这只影响**新的录制与新的手机接入**，已有的录像照常可查可导出。";
+            return;
+        }
+
+        var status = license.Status;
+        MachineCodeBox.Text = status.MachineCode;
+
+        var degraded = status.Degraded
+            ? "⚠️ 这台机器的部分硬件标识读不到（机器码里有全零段），"
+              + "同型号的机器可能算出一样的码 —— 请先查清为什么读不到（常见是 WMI 被禁用了）。"
+            : string.Empty;
+
+        LicenseNote.Text = status.Activated
+            ? $"✅ 已激活：允许接入 {status.Slots} 台手机端。{degraded}"
+            : $"⛔ {status.FailureReason}允许接入 0 台手机端。{degraded}";
+
+        ActivationBox.IsEnabled = true;
+        ActivateButton.IsEnabled = true;
+    }
+
+    /// <summary>点【复制】：把机器码放进剪贴板。</summary>
+    /// <remarks>
+    /// 包一层 try：剪贴板是**跨进程共享**的资源，另一个程序正占着它时
+    /// <c>SetText</c> 会抛 <c>COMException</c>。为了这个崩掉整个界面不值得，
+    /// 但也不能装作复制成功了 —— 所以失败时明说「请手动选中复制」，
+    /// 而框里的字本身就是可选的。
+    /// </remarks>
+    private void OnCopyMachineCode(object sender, RoutedEventArgs e)
+    {
+        var code = MachineCodeBox.Text;
+
+        if (string.IsNullOrWhiteSpace(code))
+        {
+            return;
+        }
+
+        try
+        {
+            // 必须限定：本程序同时引了 WinForms（托盘图标），
+            // 那边的 Clipboard 与 WPF 的撞名，不限定就编译不过。
+            System.Windows.Clipboard.SetText(code);
+            LicenseNote.Text = "机器码已复制。把它发给提供方换取激活码。";
+        }
+        catch (Exception ex)
+        {
+            LicenseNote.Text = $"复制不了（{ex.Message}）—— 请手动选中上面那串机器码复制。";
+        }
+    }
+
+    /// <summary>点【激活】：校验用户粘进来的码，过了就落盘。</summary>
+    /// <remarks>
+    /// ⚠️ 校验失败时**不动已经激活的状态**（一次手滑不该把已激活的机器锁掉）——
+    /// 那件事在 <c>LicenseService.ActivateAsync</c> 里，这里只负责把结果说出来。
+    /// <para>
+    /// ⚠️ 激活之后**要重启才生效**吗：不用。本次运行里 <c>LicenseService.Status</c>
+    /// 会被更新，而录制闸门读的是它 —— 所以激活之后立刻就能开工。
+    /// 反过来（运行中失效）才要重启，那是 L7 的「运行期冻结」。
+    /// </para>
+    /// </remarks>
+    private async void OnActivate(object sender, RoutedEventArgs e)
+    {
+        var license = _host.Services.License;
+
+        if (license is null)
+        {
+            return;
+        }
+
+        var code = ActivationBox.Text;
+
+        if (string.IsNullOrWhiteSpace(code))
+        {
+            LicenseNote.Text = "先把你从提供方那里拿到的激活码粘进上面的框。";
+            return;
+        }
+
+        ActivateButton.IsEnabled = false;
+
+        try
+        {
+            var status = await license.ActivateAsync(code);
+
+            if (status.Activated)
+            {
+                ActivationBox.Clear();
+            }
+            else
+            {
+                // 把那句原因原样说出来 —— 它已经区分了「码不对」「不是本机的」
+                // 「版本要升级」「本机没配好公钥」四种，这里不该再改写一遍。
+                LicenseNote.Text = $"⛔ {status.FailureReason}";
+                return;
+            }
+        }
+        catch (Exception ex)
+        {
+            LicenseNote.Text = $"⛔ 激活没能完成：{ex.Message}";
+            return;
+        }
+        finally
+        {
+            ActivateButton.IsEnabled = true;
+        }
+
+        ShowLicense();
     }
 
     // ─────────────────────────────────────────────

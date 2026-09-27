@@ -153,7 +153,7 @@ public sealed class EvidenceExporter
 
             return ExportResult.Ok(targetPath);
         }
-        catch (IOException ex) when (File.Exists(targetPath))
+        catch (IOException) when (File.Exists(targetPath))
         {
             return ExportResult.Failed($"那个位置已经有一个同名文件了：{targetPath}（没有覆盖它）");
         }

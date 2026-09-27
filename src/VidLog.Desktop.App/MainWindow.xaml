@@ -221,6 +221,40 @@
                 <TextBlock Margin="0,2,0,0" Foreground="#88666666" TextWrapping="Wrap"
                            Text="⚠️ 未校准**只挡住新录**：已有的录像照常可以检索、回放、导出、交付 —— 与许可那条红线（不得锁住已有录像）是同一条道理。"/>
 
+                <!-- 许可（规格 §3.9 / `docs/04-许可设计.md`）。**只限机位** ——
+                     未激活只挡住「开始新的录制」与「新的手机接进来」，
+                     已有的录像一条都不锁（L8）。界面上必须说清这一点，
+                     否则用户会以为「没激活 = 我的录像都没了」。 -->
+                <TextBlock Text="许可（机位）" FontWeight="SemiBold" Margin="0,16,0,0"/>
+                <TextBlock x:Name="LicenseNote" Margin="0,4,0,0" TextWrapping="Wrap"/>
+
+                <TextBlock Text="本机机器码（抄给提供方，用来签发这台机器的激活码）"
+                           Margin="0,8,0,0" Foreground="#88666666"/>
+                <StackPanel Orientation="Horizontal" Margin="0,4,0,0">
+                    <TextBox x:Name="MachineCodeBox" Width="330" IsReadOnly="True"
+                             FontFamily="Consolas" VerticalAlignment="Center"/>
+                    <Button x:Name="CopyMachineCodeButton" Content="复制" Padding="12,4"
+                            Margin="8,0,0,0" Click="OnCopyMachineCode"/>
+                </StackPanel>
+
+                <TextBlock Text="激活码（提供方签发的那一串，整段粘进来就行）"
+                           Margin="0,10,0,0" Foreground="#88666666"/>
+                <StackPanel Orientation="Horizontal" Margin="0,4,0,0">
+                    <TextBox x:Name="ActivationBox" Width="330" FontFamily="Consolas"
+                             VerticalAlignment="Center"/>
+                    <Button x:Name="ActivateButton" Content="激活" Padding="12,4"
+                            Margin="8,0,0,0" Click="OnActivate"/>
+                </StackPanel>
+
+                <TextBlock Margin="0,4,0,0" Foreground="#88666666" TextWrapping="Wrap"
+                           Text="为什么要它：机位 = 允许接入的手机端台数（今天是「手机台数」，加上第二路相机时那一路也算一台）。没有服务端，所以是本机算出一串机器码 → 你给提供方 → 他签发一个激活码 → 在这里粘回来。"/>
+                <TextBlock Margin="0,2,0,0" Foreground="#88666666" TextWrapping="Wrap"
+                           Text="怎么办：把上面那串机器码抄给提供方，拿到激活码之后粘进下面的框、点【激活】。⚠️ 换主板或刷过 BIOS 之后机器码会变，需要重新签发。"/>
+                <TextBlock Margin="0,2,0,0" Foreground="#88666666" TextWrapping="Wrap"
+                           Text="⚠️ 未激活**只挡住新的录制和新的手机接入**：已有的录像照常可以检索、回放、导出、交付 —— 「用户的数据是他的，不是人质」。已经接进来的手机也照样上传，不会被打断。"/>
+                <TextBlock Margin="0,2,0,0" Foreground="#88666666" TextWrapping="Wrap"
+                           Text="⚠️ 校验**只在启动时做一次**：录到一半改了什么，也要重启之后才生效 —— 那是为了不把正在录的那一段掐掉。"/>
+
                 <TextBlock Text="回放服务端口" FontWeight="SemiBold" Margin="0,16,0,0"/>
                 <TextBox x:Name="PortBox" Width="120" Margin="0,4,0,0" HorizontalAlignment="Left"/>
                 <TextBlock Text="改了要重启才生效。" Margin="0,2,0,0"
@@ -256,7 +290,7 @@
                 <StackPanel x:Name="RetentionPanel" Margin="0,16,0,0" Visibility="Collapsed">
                     <TextBlock Text="本地保留期（发货 / 退货 × 已备份 / 未备份 = 四个数）" FontWeight="SemiBold"/>
                     <TextBlock Margin="0,2,0,0" Foreground="#88666666" TextWrapping="Wrap"
-                               Text="这份设置现在只是记下你的选择 —— 真正开删要等清理执行层接通（M6）。今天不会有任何文件被删。"/>
+                               Text="⚠️ 这会**真的删**：每次启动算一遍到期该清的，**先弹窗告诉你多少条、多少容量，你点了同意才动手**（禁止静默清理）。删的只是本机上这一份 —— 归档层上那份不动。"/>
 
                     <Grid Margin="0,8,0,0" HorizontalAlignment="Left">
                         <Grid.ColumnDefinitions>

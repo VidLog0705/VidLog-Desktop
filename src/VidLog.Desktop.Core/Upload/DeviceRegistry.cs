@@ -3,6 +3,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using VidLog.Desktop.Core.Diagnostics;
+using VidLog.Desktop.Core.License;
 
 namespace VidLog.Desktop.Core.Upload;
 
@@ -77,6 +78,15 @@ public enum EnrollStatus
 
     /// <summary>没有这条待批准的请求（没发起过、屏幕上的码已经换了、或凭据已经被领走过）。</summary>
     NoPendingRequest,
+
+    /// <summary>
+    /// 机位满了，这台手机接不进来（`docs/04-许可设计.md` §5.1）。
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ <b>只挡「新的接入」</b>：已经在录的手机照常上传，电脑端自己的录制与
+    /// 检索回放更是一条都不看它（L5 / L8）。
+    /// </remarks>
+    SeatLimitExceeded,
 }
 
 /// <param name="Credential">仅 <see cref="EnrollStatus.Approved"/> 时非空。</param>
@@ -117,17 +127,32 @@ public sealed class DeviceRegistry
     private readonly string _path;
     private readonly Func<DateTimeOffset> _now;
     private readonly IAppLogger _logger;
+    private readonly Func<int>? _seatLimit;
     private readonly SemaphoreSlim _gate = new(1, 1);
     private readonly Dictionary<string, PendingEnrollment> _pending = new(StringComparer.Ordinal);
 
     /// <summary>屏幕上那张二维码对应的会话；没开时为 null。</summary>
     private EnrollSession? _session;
 
-    public DeviceRegistry(string path, Func<DateTimeOffset>? now = null, IAppLogger? logger = null)
+    /// <param name="seatLimit">
+    /// 这个激活码允许接入几台手机端（`docs/04-许可设计.md` §5.1）。
+    /// <b>传 <see langword="null"/> 表示不限</b> —— 只有测试会那么传；
+    /// 生产路径在 <c>DesktopServices</c> 里接的就是许可的档位，**未激活时是 0**。
+    /// <para>
+    /// ⚠️ 它是**函数**而不是一个数：许可状态要等启动校验跑完才落地，
+    /// 而登记簿在装配那一刻就建好了。
+    /// </para>
+    /// </param>
+    public DeviceRegistry(
+        string path,
+        Func<DateTimeOffset>? now = null,
+        IAppLogger? logger = null,
+        Func<int>? seatLimit = null)
     {
         _path = path;
         _now = now ?? (() => DateTimeOffset.UtcNow);
         _logger = logger ?? NullLogger.Instance;
+        _seatLimit = seatLimit;
     }
 
     /// <summary>
@@ -226,6 +251,13 @@ public sealed class DeviceRegistry
             if (!FixedTimeEquals(session.Token, token ?? string.Empty))
             {
                 return new ClaimResult(EnrollStatus.BadToken, null, "这个令牌不对（不是屏幕上那张码里的，或者已经过期）");
+            }
+
+            // 机位满了就**不记这条请求**：记了的话它会出现在电脑端的弹窗上，
+            // 用户点同意，然后手机才被告知接不进来 —— 让用户白点一次。
+            if (await SeatBlockedAsync(deviceId, cancellationToken) is { } blocked)
+            {
+                return blocked;
             }
 
             var existing = _pending.TryGetValue(deviceId, out var previous) ? previous : null;
@@ -357,6 +389,70 @@ public sealed class DeviceRegistry
         });
 
         return new ClaimResult(EnrollStatus.Approved, credential, null);
+    }
+
+    /// <summary>
+    /// 这台设备还能不能占一个机位；占不到就返回那条要回给手机的处置。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// ⚠️ <b>已经入网过的设备一律放行</b>：它占的是**已有的**那个机位，
+    /// 重新扫一次码只是换一份凭据（见 <see cref="LatestAsync"/>），不是新接一台手机。
+    /// 不放行的话，「机位满了之后手机丢了要重配」会变成死局 ——
+    /// 而用户手里那个激活码明明是够的。
+    /// </para>
+    /// <para>
+    /// ⚠️ <b>只在 <see cref="RequestAsync"/> 那一处查</b>，签发凭据的
+    /// <see cref="ClaimAsync"/> 那边**不重复查**。这不是漏了一道，而是那道查不到东西：
+    /// 一张码只服务一次入网（领走凭据时 <c>_session</c> 就被置空），
+    /// 所以「批准与领取之间被插队」这个口子根本不存在 —— 同一张码下第二台设备
+    /// 去领的时候拿到的是「没有待批准的请求」，压根走不到签发那一步。
+    /// </para>
+    /// <para>
+    /// 更要紧的是：查不到的防线**写不出会红的测试**，而这个仓的规矩是
+    /// 每一条防线都得有一条能证明它拦得住东西的测试（见 <c>docs/实现决策.md</c>）。
+    /// 将来真要让一张码服务多台设备，**那时**必须把这道查搬到 <see cref="ClaimAsync"/> 去
+    /// —— 搬的理由是那句「一张码只服务一次」不再成立了。
+    /// </para>
+    /// <para>
+    /// <b>未激活</b>（机位数 0）与「档位用满」走的是同一句话：对这台手机来说，
+    /// 事情是一样的 —— 没有一个空机位给它。原因在电脑端界面上说（那里能说清是没激活还是满了）。
+    /// </para>
+    /// </remarks>
+    private async Task<ClaimResult?> SeatBlockedAsync(string deviceId, CancellationToken cancellationToken)
+    {
+        if (_seatLimit is null)
+        {
+            return null;
+        }
+
+        var enrolled = await LatestAsync(cancellationToken);
+
+        if (enrolled.Any(d => string.Equals(d.DeviceId, deviceId, StringComparison.Ordinal)))
+        {
+            return null;
+        }
+
+        var limit = _seatLimit();
+
+        // 这台接进去之后占几个 —— 拿**接进去之后**的数比，而不是拿现在的数。
+        if (SeatUsage.For(enrolled.Count + 1, SeatUsage.Cameras) <= limit)
+        {
+            return null;
+        }
+
+        _logger.Log(LogLevel.Warn, "入网", "机位已满，挡下了一台设备",
+            new Dictionary<string, object?>
+            {
+                ["机位"] = limit,
+                ["已接入"] = enrolled.Count,
+            });
+
+        return new ClaimResult(
+            EnrollStatus.SeatLimitExceeded,
+            null,
+            $"电脑端没有空余机位了（这个激活码允许 {limit} 台手机端接入，已经接了 {enrolled.Count} 台）。"
+            + "要在电脑端的【许可】里激活或升级，或者联系提供方。");
     }
 
     /// <summary>屏幕上那张码还活着吗；过期就顺手收掉。</summary>

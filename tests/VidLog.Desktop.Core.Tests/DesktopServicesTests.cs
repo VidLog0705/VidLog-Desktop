@@ -351,8 +351,17 @@ public class DesktopServicesTests
         Assert.Contains("layout.ArchiveRoot,\n            logger,\n            relay);", code.Replace("\r\n", "\n"),
             StringComparison.Ordinal);
 
-        // ③ 入网决策（安全事件）
-        Assert.Contains("new DeviceRegistry(layout.DevicesPath, logger: logger)", code, StringComparison.Ordinal);
+        // ③ 入网决策（安全事件）+ **机位闸门**（`04-许可设计.md` §5.1）。
+        //
+        // ⚠️ 2026-09-27 起这处多了一根线：`seatLimit`。少了它的表现**完全看不见** ——
+        // 手机端照样接得进来，只是**不限台数**了，而那正是许可唯一管的事。
+        // 所以这里连着 `seatLimit:` 一起钉住（摘掉它、或者改回只传 logger，
+        // 块对不上就红）。
+        Assert.Contains(
+            "new DeviceRegistry(\n            layout.DevicesPath,\n            logger: logger,\n"
+            + "            seatLimit: () => license?.Status.Slots ?? 0)",
+            code.Replace("\r\n", "\n"),
+            StringComparison.Ordinal);
 
         // ④ 另一个发布点：接收远端上传之后也要发一份到归档层。
         // 少这一处的话，「电脑端自己录的」会发到 NAS，而**手机传上来的**不会 ——

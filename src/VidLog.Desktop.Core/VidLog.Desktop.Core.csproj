@@ -12,6 +12,7 @@
       ImageSharp / SkiaSharp / System.Drawing 那些重的绑定包。
       ffmpeg 的 rawvideo gray 输出正好是紧凑的 w×h 亮度，stride == width。
     -->
+    <PackageReference Include="System.Management" Version="10.0.12" />
     <PackageReference Include="ZXing.Net" Version="0.16.10" />
   </ItemGroup>
 

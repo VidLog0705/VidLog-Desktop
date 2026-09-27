@@ -263,7 +263,10 @@ public sealed class AppHost : IAsyncDisposable
             // ⚠️ 可信时钟 —— **未校准不得开始录制**（规格 §3.6.4）。
             // 传真的那个（不是 null）：`null` 是给测试留的「不设闸」，
             // 而生产路径上一次都不该出现。
-            trustedClock: services.TrustedClock)
+            trustedClock: services.TrustedClock,
+            // ⚠️ 许可 —— **未激活不得录制**（`04-许可设计.md` L5）。
+            // 同样传真的那个；它**只挡新录**，已有录像照常（L8）。
+            license: services.License)
         {
             // 分段时长与时长兜底（规格 §3.1.1 / §3.3.4）。
             // 不填的话用的是硬编码默认（1 分钟 / 30 分钟）——

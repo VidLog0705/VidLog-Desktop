@@ -2,6 +2,7 @@ using VidLog.Desktop.Core.Cleanup;
 using VidLog.Desktop.Core.Clock;
 using VidLog.Desktop.Core.Diagnostics;
 using VidLog.Desktop.Core.Index;
+using VidLog.Desktop.Core.License;
 using VidLog.Desktop.Core.Labels;
 using VidLog.Desktop.Core.Media;
 using VidLog.Desktop.Core.Playback;
@@ -137,6 +138,15 @@ public sealed class DesktopServices : IAsyncDisposable
     /// </remarks>
     public Export.EvidenceExporter Exporter { get; private init; } = null!;
 
+    /// <summary>
+    /// 许可（`docs/04-许可设计.md`）。为 <see langword="null"/> 表示**软件没配好公钥**。
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ <b>L8 红线：它只回答「能不能开始新的录制」</b> ——
+    /// 检索、回放、导出、交付、清理**一条都不看它**。
+    /// </remarks>
+    public License.LicenseService? License { get; private init; }
+
     /// <summary>远端上传的接收方（M5）。</summary>
     public UploadReceiver Upload { get; }
 
@@ -211,6 +221,32 @@ public sealed class DesktopServices : IAsyncDisposable
         var punches = new JsonLinesPunchLog(layout.PunchLogPath);
         var labels = new JsonLinesLabelStore(layout.LabelStorePath);
 
+        // ── 许可（`docs/04-许可设计.md`）────────────────────────────────
+        //
+        // ⚠️ **校验只在启动时做一次**（L7），运行期间冻结 ——
+        // 录到一半许可过期了，不该把这一段掐掉。
+        //
+        // ⚠️ 公钥从环境变量注入（`VIDLOG_LICENSE_PUBKEY`）：本仓**不含任何密钥**，
+        // 连公钥也在构建/部署时给（L1/L2 的边界画得更紧一点，代价是多一步配置）。
+        // 没配的话激活一律失败，而失败原因是「这台电脑里的软件没配好」。
+        var licenseVerifier = LicenseVerifier.FromEmbeddedKey(
+            Environment.GetEnvironmentVariable("VIDLOG_LICENSE_PUBKEY") ?? string.Empty);
+
+        var license = licenseVerifier is null
+            ? null
+            : new LicenseService(
+                licenseVerifier,
+                new EntitlementStore(layout.LicensePath),
+                MachineIdentity.From(new WmiMachineIdentifiers(logger)),
+                logger);
+
+        if (license is null)
+        {
+            warnings.Add(
+                "许可没有配置好（缺少内置公钥），激活会失败。"
+                + "这是**软件安装的问题**，不是你激活码的问题。");
+        }
+
         // ── 可信时钟（规格 §3.6.4：未校准不得开始录制）──────────────────
         //
         // 装配在这里、**核对在启动流程里**（`StartAsync`）：核对要读文件、要判跳变，
@@ -252,7 +288,17 @@ public sealed class DesktopServices : IAsyncDisposable
         var punchNavigation = new PunchNavigation(index, punches);
 
         var resolvedDeviceName = deviceName ?? Environment.MachineName;
-        var devices = new DeviceRegistry(layout.DevicesPath, logger: logger);
+        // ⚠️ 机位闸门接在**入网**这条路上（`docs/04-许可设计.md` §5.1 点名的落点）——
+        // 它只拒绝**新的**手机接进来。已经在录的手机、以及电脑端自己的录制与
+        // 检索回放，一条都不看许可（L5 / L8）。
+        //
+        // 许可没配好时 `license` 是 null ⇒ 机位数取 0 ⇒ 一台都接不进来。
+        // 那是**刻意的**：这个档位的全部意义就是「允许接几台手机」，
+        // 没有激活就没有机位；而上面那条警告已经把「软件没配好」说给用户了。
+        var devices = new DeviceRegistry(
+            layout.DevicesPath,
+            logger: logger,
+            seatLimit: () => license?.Status.Slots ?? 0);
         var upload = new UploadReceiver(
             layout,
             index,
@@ -295,6 +341,8 @@ public sealed class DesktopServices : IAsyncDisposable
 
         // 清理链路（规格 §3.5.4 / §3.5.5）—— **第一个生产调用点**。
         // 装配在这里，触发在 App 层（启动时算一次、给用户看过才动手）。
+        var effectiveLogger = logger ?? NullLogger.Instance;
+
         var cleanup = new CleanupService(
             index,
             labels,
@@ -303,8 +351,8 @@ public sealed class DesktopServices : IAsyncDisposable
                 archiveBackend,
                 layout.ArchiveRoot,
                 new CleanupAuditLog(layout.CleanupAuditPath),
-                logger),
-            logger);
+                effectiveLogger),
+            effectiveLogger);
 
         return new DesktopServices(
             layout, index, punches, labels, finalizer, orphanRecovery,
@@ -325,6 +373,7 @@ public sealed class DesktopServices : IAsyncDisposable
             TrustedClock = trustedClock,
             ClockSource = clockSource ?? new HttpDateClockSource(),
             Exporter = new Export.EvidenceExporter(layout.ArchiveRoot, logger),
+            License = license,
         };
     }
 
@@ -350,6 +399,22 @@ public sealed class DesktopServices : IAsyncDisposable
         // ⚠️ 取不到公网时间**不是错误**：一台已经校准过的机器断网照样要用
         // （规格 §3.6.4：已校准状态落盘持久化，之后离线照常录制）。
         // 只有「从没校准过」或「检测到跳变」才是一条必须说出来的警告。
+        // 许可：**只在启动时校验一次**（L7）。
+        if (License is not null)
+        {
+            var licenseStatus = await License.CheckAtStartupAsync(cancellationToken);
+
+            if (!licenseStatus.Activated)
+            {
+                // L5：未激活 / 校验失败 **必须明确告知原因并提供重新激活入口**，
+                // 不得静默失败 —— 而它挡的是**新录**，已有录像照常（L8）。
+                warnings.Add(
+                    $"{licenseStatus.FailureReason}未激活时**不能开始新的录制**；"
+                    + "已有的录像照常可以检索、回放、导出、交付。"
+                    + $"本机机器码：{licenseStatus.MachineCode}");
+            }
+        }
+
         var jumped = await TrustedClock.CheckStartupAsync(cancellationToken);
 
         if (jumped)

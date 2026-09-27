@@ -59,6 +59,15 @@ public sealed class DataLayout
     public string CalibrationPath => Path.Combine(RootDirectory, "calibration.json");
 
     /// <summary>
+    /// 激活记录（`docs/04-许可设计.md` §4.4）。
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ 它与录像记录**同一个根、但独立文件** —— 而且**删掉它不会锁住已有录像**：
+    /// 许可只挡住**新录**（L8），检索、回放、导出、交付一条都不看它。
+    /// </remarks>
+    public string LicensePath => Path.Combine(RootDirectory, "license.json");
+
+    /// <summary>
     /// 错误扫描记录（规格 §6.1「必须保存的事实」）。
     /// </summary>
     /// <remarks>
