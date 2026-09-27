@@ -431,8 +431,45 @@ public sealed class CleanupPlanner
 
     /// <summary>每秒字节数（偏大估）。</summary>
     /// <remarks>
+    /// <para>
+    /// ⚠️ <b>与手机端同一张表</b>：手机端那份在 `RecordingSpec.bytesPerSecondOf`
+    /// （`lib/recording/recording_spec.dart`）。两端对不上的话，「将腾出多少」
+    /// 会给出两个不同的数 —— 而用户会以为其中一个在骗他。<b>改一处必须改两处。</b>
+    /// </para>
+    /// <para>
+    /// ⚠️⚠️ <b>但这张表是照**电脑端**标定的，对手机端偏小约 2 倍</b>（2026-09-27 查清）。
+    /// 两端录出来的东西**码率本来就不一样**：
+    /// </para>
+    /// <list type="bullet">
+    /// <item><b>电脑端</b>：ffmpeg 命令行里**一个码率参数都没有**
+    /// （见 <c>FfmpegCameraCapture.BuildArguments</c>）⇒ 编码器默认的 CRF，
+    /// 码率随画面走、没有上界。</item>
+    /// <item><b>手机端</b>：**显式设了码率**（8 Mbps @720P 按像素等比放大，
+    /// H.265 打六折），Android 走 <c>KEY_BIT_RATE</c>、iOS 走
+    /// <c>AVVideoAverageBitRateKey</c> —— 都是**硬目标**。</item>
+    /// </list>
+    /// <para>
+    /// 照手机端那个公式算，1080P H.264 的目标是 <b>18 Mbps</b>（表里按 1100 KB/s
+    /// ≈ 8.8 Mbps 估）、4K H.264 是 <b>72 Mbps</b>（表里 32 Mbps）——
+    /// 每一格都偏小 1.8~2.25 倍。
+    /// </para>
+    /// <para>
+    /// <b>偏小为什么危险</b>：<see cref="CleanupPolicy.Plan"/> 的「按空间清理」是
+    /// <c>freed += size</c> 攒到够为止 —— 以为每条更小，就得**删更多条**才凑够，
+    /// 而删的是**不可逆的证据**。（偏大那一头才是安全方向：少删。）
+    /// </para>
+    /// <para>
+    /// ⚠️ <b>今天为什么先不改数值</b>：手机端那个 18 Mbps 是**算出来的**、
+    /// 电脑端 CRF 下的真实码率**从没实测过**（本机没有摄像头，那两条集成测试是跳过的）。
+    /// 拿一组纸面推导去换掉另一组纸面推导，只是把「已知偏小」变成「未知」。
+    /// <b>接上「按空间清理」那一档之前，必须先用两端真录的文件实测标定</b> ——
+    /// 那一档今天在界面上没有入口（保留期四个数只有「不保留 / N 天 / 全部保留」），
+    /// 所以目前这条偏小只影响预告数字。
+    /// </para>
+    /// <para>
     /// 认不出的规格一律走 <see cref="Media.RecordingSpec.Default"/> 那一格 ——
     /// 与设置层「越界回落默认值」同一条规矩。
+    /// </para>
     /// </remarks>
     private static double BytesPerSecond(string? codec, string? resolution)
     {
@@ -444,7 +481,8 @@ public sealed class CleanupPlanner
             ? parsedResolution
             : Media.RecordingSpec.Default.Resolution;
 
-        // 单位 KB/s。
+        // 单位 KB/s。⚠️ 这几个数是照**电脑端**（CRF，真实码率低）标定的 ——
+        // 手机端是固定码率、比这些大，见方法注释里那段说明。
         var kilobytesPerSecond = (kind, size) switch
         {
             (Media.VideoCodec.H265, Media.VideoResolution.Uhd4K) => 2500,
