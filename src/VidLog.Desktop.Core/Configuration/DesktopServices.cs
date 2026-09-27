@@ -111,6 +111,15 @@ public sealed class DesktopServices : IAsyncDisposable
     /// </remarks>
     public ArchiveRelay? ArchiveRelay { get; private init; }
 
+    /// <summary>
+    /// 清理链路（规格 §3.5.4 / §3.5.5）。
+    /// </summary>
+    /// <remarks>
+    /// 用法是**两步**：<see cref="CleanupService.PreviewAsync"/> 算给用户看，
+    /// 确认之后才 <see cref="CleanupService.RunAsync"/>。
+    /// </remarks>
+    public CleanupService Cleanup { get; private init; } = null!;
+
     /// <summary>远端上传的接收方（M5）。</summary>
     public UploadReceiver Upload { get; }
 
@@ -239,6 +248,9 @@ public sealed class DesktopServices : IAsyncDisposable
                     Prefix = $"http://+:{playbackPort.Value}/",
                     FallbackPrefix = $"http://localhost:{playbackPort.Value}/",
                     ArchiveRoot = layout.ArchiveRoot,
+                    // 手机端「手动删除」要回查归档层（§3.5.6③）——
+                    // 那一份在哪里由归档层配置说了算，不是写死的本机目录。
+                    ArchiveBackend = archiveBackend,
                 },
                 search,
                 index,
@@ -248,6 +260,19 @@ public sealed class DesktopServices : IAsyncDisposable
                 resolvedDeviceName,
                 logger);
         }
+
+        // 清理链路（规格 §3.5.4 / §3.5.5）—— **第一个生产调用点**。
+        // 装配在这里，触发在 App 层（启动时算一次、给用户看过才动手）。
+        var cleanup = new CleanupService(
+            index,
+            labels,
+            new ReceiptStore(layout.ReceiptsPath),
+            new CleanupExecutor(
+                archiveBackend,
+                layout.ArchiveRoot,
+                new CleanupAuditLog(layout.CleanupAuditPath),
+                logger),
+            logger);
 
         return new DesktopServices(
             layout, index, punches, labels, finalizer, orphanRecovery,
@@ -264,6 +289,7 @@ public sealed class DesktopServices : IAsyncDisposable
             ArchiveTarget = target,
             ArchiveBackend = archiveBackend,
             ArchiveRelay = relay,
+            Cleanup = cleanup,
         };
     }
 

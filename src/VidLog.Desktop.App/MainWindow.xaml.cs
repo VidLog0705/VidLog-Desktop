@@ -88,6 +88,80 @@ public partial class MainWindow : Window
             NoticesText.Text =
                 $"{DateTime.Now:HH:mm:ss}  上次有 {recovered} 段录像没走完收尾，已自动收好并入库。";
         }
+
+        // 保留期到了的那些（规格 §3.5.5）。**排在最后**：它是唯一会删东西的一步，
+        // 应该发生在「上次的录像收好了」之后 —— 否则刚收进来的那段可能正好在
+        // 清理计划里（它确实会被 24 小时豁免挡住，但顺序反了会让人以为是它被删的）。
+        await RunStartupCleanupAsync();
+    }
+
+    /// <summary>
+    /// 启动时算一次清理计划，**给用户看过才动手**（规格 §3.5.5）。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// 规格原话：「**禁止静默清理**」「清理前必须给出预告（将删除多少条、多少容量）」。
+    /// 所以这里不是「启动就自动删」——那样用户永远不知道自己丢了什么，
+    /// 而且**丢的是不可逆的证据**。
+    /// </para>
+    /// <para>
+    /// ⚠️ 归档层是本机磁盘时<b>连问都不问</b>（规格 §3.5.1：那时盘上那份是唯一副本）。
+    /// 判据取自 <see cref="CleanupService.CanCleanup"/>，与执行层那道闸是同一份 ——
+    /// 界面上不问、执行层也会拒，两道都在。
+    /// </para>
+    /// </remarks>
+    private async Task RunStartupCleanupAsync()
+    {
+        var cleanup = _host.Services.Cleanup;
+
+        if (!cleanup.CanCleanup)
+        {
+            return;
+        }
+
+        try
+        {
+            var plan = await cleanup.PreviewAsync(_host.Settings.Retention, DateTimeOffset.Now);
+
+            if (plan.Candidates.Count == 0)
+            {
+                // **没有候选就不打扰** —— 每次开机弹一个「没什么要清的」是噪音，
+                // 而噪音会把真正该看的那一次淹掉。
+                return;
+            }
+
+            var megabytes = plan.TotalBytes / 1024 / 1024;
+            var answer = MessageBox.Show(
+                this,
+                $"保留期到了的录像有 {plan.Candidates.Count} 条，约 {megabytes} MB。\n\n"
+                + "要现在清理吗？\n"
+                + "· 清理前会逐条回查归档层，**查不到或查不了的那条不会删**；\n"
+                + "· 删掉的是本机上这一份，归档层上的那份不动；\n"
+                + "· 已锁定与最近 24 小时内录的一条都不会动。",
+                "清理本地副本",
+                MessageBoxButton.YesNo,
+                MessageBoxImage.Warning,
+                // 默认是「否」——不可逆的动作不该让回车键替用户点头。
+                MessageBoxResult.No);
+
+            if (answer != MessageBoxResult.Yes)
+            {
+                NoticesText.Text = $"{DateTime.Now:HH:mm:ss}  这次没清理（{plan.Candidates.Count} 条仍在盘上）。";
+                return;
+            }
+
+            var report = await cleanup.RunAsync(plan);
+
+            NoticesText.Text =
+                $"{DateTime.Now:HH:mm:ss}  清理完成：删了 {report.Deleted.Count} 条"
+                + $"（约 {report.FreedBytes / 1024 / 1024} MB），"
+                + $"回查没通过、因此保留的有 {report.Refused.Count} 条（明细见清理流水）。";
+        }
+        catch (Exception ex)
+        {
+            // 清理失败不该拦住启动（I4 的同一条精神）—— 但要说出来。
+            NoticesText.Text = $"{DateTime.Now:HH:mm:ss}  清理没能进行：{ex.Message}";
+        }
     }
 
     private void ShowWarnings()

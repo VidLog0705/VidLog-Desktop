@@ -73,6 +73,12 @@ public class PlaybackServerTests
         public required byte[] MediaBytes { get; init; }
         public required string EvidenceId { get; init; }
 
+        /// <summary>已入网那台设备的凭据（`/api/v1/*` 要它）。</summary>
+        public required string Credential { get; init; }
+
+        /// <summary>归档层里那条录像的相对路径。</summary>
+        public required string Location { get; init; }
+
         public async ValueTask DisposeAsync()
         {
             Client.Dispose();
@@ -149,6 +155,14 @@ public class PlaybackServerTests
         var baseUrl = $"http://localhost:{port}/";
 
         var layout = new DataLayout(dir.Path);
+        var devices = new DeviceRegistry(layout.DevicesPath);
+
+        // 走一遍完整入网，拿一张真凭据 —— `/api/v1/*` 一律要它，
+        // 而「凭据从哪儿来」这件事本身就是那条接口的一半。
+        var session = await devices.OpenSessionAsync();
+        await devices.RequestAsync("device-1", "测试手机", session.Token);
+        await devices.DecideAsync("device-1", approved: true);
+        var credential = (await devices.ClaimAsync("device-1", session.Token)).Credential!;
 
         var server = new PlaybackServer(
             new PlaybackServerOptions { Prefix = baseUrl, ArchiveRoot = archiveRoot },
@@ -162,7 +176,7 @@ public class PlaybackServerTests
                 labels,
                 new DecodeVerifier("ffmpeg", new AlwaysOkRunner()),
                 DeviceName),
-            new DeviceRegistry(layout.DevicesPath),
+            devices,
             DeviceName,
             logger);
 
@@ -175,7 +189,99 @@ public class PlaybackServerTests
             BaseUrl = baseUrl,
             MediaBytes = mediaBytes,
             EvidenceId = evidenceId,
+            Credential = credential,
+            Location = relative,
         };
+    }
+
+    // ─────────────────────────────────────────────
+    // 回查归档层（规格 §3.5.4；手机端「手动删除」的前置闸 §3.5.6③）
+    // ─────────────────────────────────────────────
+
+    private static HttpRequestMessage VerifyRequest(string credential, string location)
+    {
+        var request = new HttpRequestMessage(HttpMethod.Post, "/api/v1/archive/verify")
+        {
+            Content = new StringContent(
+                JsonSerializer.Serialize(new { location }),
+                System.Text.Encoding.UTF8,
+                "application/json"),
+        };
+
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", credential);
+        return request;
+    }
+
+    [Fact]
+    public async Task 回查归档层_那一份还在()
+    {
+        using var dir = new TempDir();
+        await using var fixture = await StartAsync(dir);
+
+        var response = await fixture.Client.SendAsync(
+            VerifyRequest(fixture.Credential, fixture.Location));
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        var payload = JsonSerializer.Deserialize<JsonElement>(await response.Content.ReadAsStringAsync());
+
+        Assert.True(payload.GetProperty("exists").GetBoolean());
+        Assert.False(payload.GetProperty("couldNotVerify").GetBoolean());
+    }
+
+    [Fact]
+    public async Task 回查归档层_那一份不在了_而且与查不了分得开()
+    {
+        // 规格 §3.5.6③：**回查查不到（或查不了）⇒ 不许删**。
+        // 这两者对用户是两句话，所以答复里必须是两个字段。
+        using var dir = new TempDir();
+        await using var fixture = await StartAsync(dir);
+
+        var response = await fixture.Client.SendAsync(
+            VerifyRequest(fixture.Credential, "2026/09/16/SF1000000001/根本没有这一条.mp4"));
+
+        var payload = JsonSerializer.Deserialize<JsonElement>(await response.Content.ReadAsStringAsync());
+
+        Assert.False(payload.GetProperty("exists").GetBoolean());
+        Assert.False(payload.GetProperty("couldNotVerify").GetBoolean(),
+            "目录摸得到、文件不在 —— 这才叫「不存在」");
+    }
+
+    [Fact]
+    public async Task 回查归档层_没有凭据就拒()
+    {
+        using var dir = new TempDir();
+        await using var fixture = await StartAsync(dir);
+
+        var request = new HttpRequestMessage(HttpMethod.Post, "/api/v1/archive/verify")
+        {
+            Content = new StringContent("""{"location":"a.mp4"}"""),
+        };
+
+        var response = await fixture.Client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task 回查归档层_路径越级一律拒()
+    {
+        // ⚠️ 这条接口是**远端**调的，所以 `RelativePath` 那道校验在这里就是安全边界：
+        // 放过去的话，手机端就能问「C:\Windows\...」在不在。
+        using var dir = new TempDir();
+        await using var fixture = await StartAsync(dir);
+
+        foreach (var bad in new[] { @"C:\Windows\notepad.exe", @"\\nas\share\x.mp4", "../../secret.mp4" })
+        {
+            var response = await fixture.Client.SendAsync(
+                VerifyRequest(fixture.Credential, bad));
+
+            var payload = JsonSerializer.Deserialize<JsonElement>(await response.Content.ReadAsStringAsync());
+
+            Assert.False(payload.GetProperty("exists").GetBoolean());
+            Assert.True(payload.GetProperty("couldNotVerify").GetBoolean(),
+                $"「{bad}」这种路径必须在**回查之前**就被拒掉");
+        }
     }
 
     // ─────────────────────────────────────────────

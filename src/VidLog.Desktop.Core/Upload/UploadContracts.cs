@@ -63,6 +63,26 @@ public sealed record ProbeResponse(long ChunkSize, int ChunkCount, IReadOnlyList
 /// <param name="Sha256">接收方算出来的分片哈希，64 位小写十六进制。发送方拿它确认这一片没在途中坏掉。</param>
 public sealed record ChunkAccepted(int Index, string Sha256);
 
+/// <summary>
+/// 回查归档层（规格 §3.5.4；手机端「手动删除」的前置闸，§3.5.6③）。
+/// </summary>
+/// <param name="Location">
+/// **归档层里的相对路径**（就是索引里存的那个）。
+/// ⚠️ 接收方会用 `RelativePath.Parse` 校验它 —— 这条接口是远端调的，
+/// 绝对路径、UNC、`..` 越级都在那里被拒。
+/// </param>
+public sealed record VerifyRequest(string Location);
+
+/// <summary>回查的结果。</summary>
+/// <param name="Exists">归档层上还有这一份。</param>
+/// <param name="CouldNotVerify">
+/// **查不了**（网络断了、盘符掉了、路径不合规）。
+/// ⚠️ 它与「不存在」分开报，但**两者都导致不删** —— 把「查不了」当成「不存在」，
+/// 删掉的可能就是最后一份（I2）。
+/// </param>
+/// <param name="Reason">给人看的原因；「那一份不在了」时为空。</param>
+public sealed record VerifyPayload(bool Exists, bool CouldNotVerify, string? Reason);
+
 /// <summary>完成提交（`docs/05-上传接口形状.md` §2.6）。</summary>
 /// <param name="Sequence">
 /// 分段序号。⚠️ **必须在报文里**：归档文件名是 <c>……/&lt;会话&gt;_&lt;序号&gt;.mp4</c>，

@@ -1,6 +1,7 @@
 using System.Net;
 using System.Text;
 using System.Text.Json;
+using VidLog.Desktop.Core.Cleanup;
 using VidLog.Desktop.Core.Diagnostics;
 using VidLog.Desktop.Core.Index;
 using VidLog.Desktop.Core.Labels;
@@ -50,6 +51,15 @@ public sealed record PlaybackServerOptions
 
     /// <summary>归档根目录 —— 索引里的相对路径相对它解析。</summary>
     public string ArchiveRoot { get; init; } = string.Empty;
+
+    /// <summary>
+    /// 归档层的回查实现（规格 §3.5.4）。**手机端「手动删除」要它**（§3.5.6③）。
+    /// </summary>
+    /// <remarks>
+    /// 不传 = 用本机目录那一个（<see cref="ArchiveBackendKind.LocalDisk"/>）——
+    /// 那正是「归档层就是这台电脑」的情形，也是这条接口最常见的用法。
+    /// </remarks>
+    public IArchiveBackend? ArchiveBackend { get; init; }
 }
 
 /// <summary>
@@ -419,6 +429,20 @@ public sealed class PlaybackServer : IAsyncDisposable
                     await WriteJsonAsync(context, await _upload.CommitAsync(request, deviceId, credential));
                 });
                 return;
+
+            case "/api/v1/archive/verify":
+                await GuardAsync(context, async () =>
+                {
+                    var request = await ReadJsonAsync<VerifyRequest>(context);
+                    if (request is null || string.IsNullOrWhiteSpace(request.Location))
+                    {
+                        await WriteErrorAsync(context, 400, UploadErrors.BadRequest, "缺少 location");
+                        return;
+                    }
+
+                    await WriteJsonAsync(context, await VerifyAsync(request.Location));
+                });
+                return;
         }
 
         if (path.StartsWith("/api/v1/upload/chunk/", StringComparison.Ordinal))
@@ -428,6 +452,42 @@ public sealed class PlaybackServer : IAsyncDisposable
         }
 
         await WriteErrorAsync(context, 404, UploadErrors.NotFound, $"电脑端不认识这个路径：{path}");
+    }
+
+    /// <summary>
+    /// 回查归档层：这一份还在不在（规格 §3.5.4）。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// 手机端**手动删除**的前置闸就是它（§3.5.6③）：用户点删除 → 手机端问电脑端
+    /// 「你那份还在吗」→ **查不到或查不了都绝不删**。
+    /// </para>
+    /// <para>
+    /// ⚠️ <b>「查不了」必须与「不存在」分开报。</b>
+    /// 对用户是两句话（「归档层上那份被删了」vs「现在问不到」），
+    /// 而两者都导致不删 —— 把「查不了」当成「不存在」，删掉的可能就是最后一份（I2）。
+    /// </para>
+    /// </remarks>
+    private async Task<VerifyPayload> VerifyAsync(string location)
+    {
+        var backend = _options.ArchiveBackend
+            ?? new DirectoryArchiveBackend(_options.ArchiveRoot, ArchiveBackendKind.LocalDisk);
+
+        RelativePath relative;
+        try
+        {
+            // ⚠️ `RelativePath.Parse` 会拒绝绝对路径、UNC 与 `..` 越级 ——
+            // 这条接口是**远端**调的，那个校验在这里就是安全边界。
+            relative = RelativePath.Parse(location);
+        }
+        catch (Exception ex)
+        {
+            return new VerifyPayload(false, true, $"这个路径不合规：{ex.Message}");
+        }
+
+        var result = await backend.VerifyAsync(relative);
+
+        return new VerifyPayload(result.Exists, result.CouldNotVerify, result.FailureReason);
     }
 
     private async Task HandleEnrollRequestAsync(HttpListenerContext context)

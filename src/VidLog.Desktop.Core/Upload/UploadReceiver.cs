@@ -681,6 +681,56 @@ public sealed class ReceiptStore
         return found;
     }
 
+    /// <summary>
+    /// 一次读全表：<c>evidenceId</c> → **归档成功时刻**（回执里的 <c>timeAnchor</c>）。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// 清理判定要的就是这张表（规格 §3.5.2.1 的起算点）。此前它**故意没有**：
+    /// 「在本类有生产调用点之前，那会是一段没人调用、也没法验证的代码」——
+    /// 那个理由写在 <c>CleanupPlanner</c> 的注释里，而现在执行层接通了，
+    /// 调用点来了。
+    /// </para>
+    /// <para>
+    /// ⚠️ 同一条证据有**多行回执**时**后者胜出** —— 与 <c>ArchiveStore.loadAll</c>、
+    /// 标签表一致（都是追加写、都靠后者覆盖）。这里不会出现「两个不同的时间锚」：
+    /// 重复 commit 走的是「原样再给一份」（§2.6），所以后写的那一行内容是一样的。
+    /// </para>
+    /// </remarks>
+    public async Task<IReadOnlyDictionary<string, DateTimeOffset>> LoadAnchorMapAsync(
+        CancellationToken cancellationToken = default)
+    {
+        var anchors = new Dictionary<string, DateTimeOffset>(StringComparer.Ordinal);
+
+        if (!File.Exists(_path))
+        {
+            return anchors;
+        }
+
+        foreach (var line in await File.ReadAllLinesAsync(_path, cancellationToken))
+        {
+            if (string.IsNullOrWhiteSpace(line))
+            {
+                continue;
+            }
+
+            try
+            {
+                var receipt = JsonSerializer.Deserialize<ReceiptPayload>(line, SerializerOptions);
+                if (receipt is not null && !string.IsNullOrEmpty(receipt.EvidenceId))
+                {
+                    anchors[receipt.EvidenceId] = receipt.TimeAnchor;
+                }
+            }
+            catch (JsonException)
+            {
+                // 坏行跳过 —— 与索引、打点、标签同一条规矩。
+            }
+        }
+
+        return anchors;
+    }
+
     public async Task AppendAsync(ReceiptPayload receipt, CancellationToken cancellationToken = default)
     {
         var line = JsonSerializer.Serialize(receipt, SerializerOptions);
