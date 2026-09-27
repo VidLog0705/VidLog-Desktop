@@ -14,7 +14,13 @@ namespace VidLog.Desktop.Core.Tests;
 /// 规格 §3.1.1 的「重启后自动收尾孤儿」是发生在**启动时**的行为。
 /// 装配逻辑要是写在 WPF 窗口的构造函数里，这段就永远测不到 ——
 /// 所以它被抽在 <see cref="DesktopServices.StartAsync"/>。
+/// <para>
+/// ⚠️ 它也会起回放服务（真的 <c>HttpListener</c>），所以与回放那些测试
+/// **同一个集合** —— 串行跑，免得两边挑到同一个端口（见
+/// <see cref="HttpListenerCollection"/>）。
+/// </para>
 /// </remarks>
+[Collection(HttpListenerCollection.Name)]
 public class DesktopServicesTests
 {
     private sealed class TempDir : IDisposable

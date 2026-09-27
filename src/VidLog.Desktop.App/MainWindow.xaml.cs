@@ -665,6 +665,83 @@ public partial class MainWindow : Window
         OpenInShell(path);
     }
 
+    /// <summary>
+    /// 把选中的那一条**原样**交到用户选的位置（规格 §3.7）。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// 规格原话：「改掉分享连接，只分享视频本身无损完整视频」；电脑端导出到
+    /// **用户自选路径**，而且**不能是电脑端存放录像的那个路径**。
+    /// </para>
+    /// <para>
+    /// ⚠️ <b>不转码、不压缩、不裁剪、也不打码</b>（§3.7.1 / §3.6.6）——
+    /// 所以这一条路就是「另存为」。导出的成品里面单上的收件人信息**会原样跟出去**，
+    /// 那是需求方权衡后的选择，界面**不许**暗示做过隐私处理。
+    /// </para>
+    /// </remarks>
+    private async void OnExportResult(object sender, RoutedEventArgs e)
+    {
+        var hit = SelectedHit();
+        if (hit is null)
+        {
+            SearchStatus.Text = "先在列表里选一条，再点【导出原视频】。";
+            return;
+        }
+
+        var dialog = new Microsoft.Win32.SaveFileDialog
+        {
+            Title = "导出原视频（不转码、不压缩）",
+            // 默认文件名就是规格里那个显示名：`快递单号.mp4`。
+            FileName = $"{hit.Entry.Waybill.Value}.mp4",
+            Filter = "视频文件|*.mp4|所有文件|*.*",
+            OverwritePrompt = true,
+        };
+
+        if (dialog.ShowDialog(this) != true)
+        {
+            return;
+        }
+
+        var result = await _host.Services.Exporter.ExportAsync(hit.Entry, dialog.FileName);
+
+        if (!result.Exported)
+        {
+            // I3：导出失败必须说出来 —— 用户以为交付了，而对方什么都没收到。
+            MessageBox.Show(
+                result.FailureReason ?? "导出失败。",
+                "导出原视频", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        SearchStatus.Text = $"已导出到：{result.TargetPath}";
+
+        // 顺手把它所在的文件夹打开 —— 「交付」这个动作的下一步通常就是把文件发出去，
+        // 而用户不必自己去文件管理器里找。
+        RevealInExplorer(result.TargetPath!);
+    }
+
+    /// <summary>选中那一行的 <c>RecordingHit</c>；没选返回 null。</summary>
+    private RecordingHit? SelectedHit() =>
+        ResultsGrid.SelectedItem?.GetType().GetProperty("Hit")?.GetValue(ResultsGrid.SelectedItem)
+            as RecordingHit;
+
+    /// <summary>在资源管理器里选中这个文件（不是打开它）。</summary>
+    private void RevealInExplorer(string path)
+    {
+        try
+        {
+            Process.Start(new ProcessStartInfo("explorer.exe", $"/select,\"{path}\"")
+            {
+                UseShellExecute = true,
+            });
+        }
+        catch (Exception ex)
+        {
+            // 打不开文件夹不是交付失败 —— 文件已经在用户选的位置上了。
+            SearchStatus.Text = $"已导出到：{path}（打开文件夹失败：{ex.Message}）";
+        }
+    }
+
     private void OnOpenPlayback(object sender, RoutedEventArgs e)
     {
         if (_host.Services.Server?.BaseUrl is { Length: > 0 })

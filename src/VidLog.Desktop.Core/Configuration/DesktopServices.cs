@@ -129,6 +129,14 @@ public sealed class DesktopServices : IAsyncDisposable
     /// <summary>公网时间源（`IClockSource`）。校准要用它取一次锚。</summary>
     public IClockSource ClockSource { get; private init; } = new HttpDateClockSource();
 
+    /// <summary>
+    /// 导出/交付原视频（规格 §3.7）。
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ 它**不写索引、不写标签、不进检索** —— 导出件不是录像（I7 改写后的落点）。
+    /// </remarks>
+    public Export.EvidenceExporter Exporter { get; private init; } = null!;
+
     /// <summary>远端上传的接收方（M5）。</summary>
     public UploadReceiver Upload { get; }
 
@@ -316,6 +324,7 @@ public sealed class DesktopServices : IAsyncDisposable
             Cleanup = cleanup,
             TrustedClock = trustedClock,
             ClockSource = clockSource ?? new HttpDateClockSource(),
+            Exporter = new Export.EvidenceExporter(layout.ArchiveRoot, logger),
         };
     }
 

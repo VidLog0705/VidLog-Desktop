@@ -77,16 +77,19 @@ public sealed record PlaybackServerOptions
 /// </summary>
 /// <remarks>
 /// <para>
-/// ⚠️ **这不是规格 §3.7 的「可分享的证据链接」，两者不要混为一谈。**
+/// ⚠️ **这不是交付渠道**（规格 §3.7，2026-09-24 改版之后）。
+/// 「分享」现在是**把原视频交到用户手上**（不转码、不压缩、不裁剪），
+/// **不再有链接、不再有链接页、也不做自证图**。
 /// </para>
 /// <list type="bullet">
 /// <item>本服务是给**操作者自己**在内网看回放用的，直接读本机归档目录。</item>
-/// <item>§3.7 的证据链接是发给**外部**（客户、平台、法庭）的，
-/// 必须由服务端签发并指向**归档层**（不变量 I7：分享链接永不指向本地副本）。</item>
+/// <item>要交给别人 → 用【导出原视频】（`EvidenceExporter`）：导出到用户自选的位置，
+/// 然后把**那个文件**发出去。</item>
 /// </list>
 /// <para>
-/// 所以本服务的 URL **不得**被当作证据链接对外发送 —— 本地副本会被生命周期清理
-/// （规格 §3.5），发出去就是一条迟早失效的链接。
+/// 所以本服务的 URL **不得**被当成「一条能发给客户的链接」——
+/// 它指向的是**本机那份副本**，而那份会被生命周期清理（规格 §3.5），
+/// 发出去就是一条迟早失效的地址。
 /// </para>
 /// <para>
 /// 本服务同样**不依赖许可状态**：许可设计 §5 要求历史录像始终可查看、检索、回放。
@@ -1007,7 +1010,9 @@ public sealed class PlaybackServer : IAsyncDisposable
           <button type="submit">查询</button>
         </form>
         <table>
-          <thead><tr><th>单号</th><th>录制时间</th><th>时长</th><th>类型</th></tr></thead>
+          <thead><tr>
+            <th>类型</th><th>画面</th><th>录像</th><th>录制时间</th><th>时长</th><th>归档</th>
+          </tr></thead>
           <tbody id="rows"></tbody>
         </table>
         <div id="punches"></div>
@@ -1015,8 +1020,9 @@ public sealed class PlaybackServer : IAsyncDisposable
         <!-- 录制规格的如实告知（规格 §3.1.7 的连带项）。默认藏着，点开一条 H.265 的才出现。 -->
         <div id="codecNote" class="note" style="display:none"></div>
         <p class="note">
-          本页仅供内网回放。它不是证据分享链接 —— 分享链接指向归档层，
-          而这里的视频来自本机本地副本，本地副本可能已被生命周期清理。
+          本页仅供内网回放。**它不是交付渠道** —— 要交给别人请用电脑端上的
+          【导出原视频】（导出的是原件本身，不转码、不压缩），然后把那个文件发出去。
+          这一页的视频来自本机副本，而本机副本可能已被生命周期清理。
         </p>
         <script>
         const rows = document.getElementById('rows');

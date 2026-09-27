@@ -135,7 +135,7 @@ public sealed record LabelPayload(
 /// <param name="TimeAnchor">
 /// 接收方时间，构成外部时间锚（规格 §3.6.4）。手机端保留期的**起算点**就是它。
 /// </param>
-/// <param name="Location">归档层内的相对路径。规格 §3.7.1 要求分享链接指向归档层，先回给发送方，将来签发链接时不用再问一次。</param>
+/// <param name="Location">归档层内的相对路径。回给发送方，好让它知道那一份落在哪儿。</param>
 public sealed record ReceiptPayload(
     string EvidenceId,
     string ContentHash,

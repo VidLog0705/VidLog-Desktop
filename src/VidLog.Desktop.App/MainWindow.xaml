@@ -166,6 +166,10 @@
                             Margin="8,0,0,0" IsEnabled="False" Click="OnOpenPlayback"/>
                     <Button x:Name="OpenDataFolderButton" Content="数据目录" Padding="16,4"
                             Margin="8,0,0,0" IsEnabled="False" Click="OnOpenDataFolder"/>
+                    <!-- 交付原视频（规格 §3.7）：**不转码、不压缩、不裁剪、不打码**。
+                         选了列表里的一条之后点它。 -->
+                    <Button x:Name="ExportButton" Content="导出原视频" Padding="16,4"
+                            Margin="8,0,0,0" Click="OnExportResult"/>
                 </StackPanel>
 
                 <DataGrid x:Name="ResultsGrid" Grid.Row="1" Margin="0,12,0,0"

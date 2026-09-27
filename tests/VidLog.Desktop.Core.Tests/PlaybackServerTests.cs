@@ -22,7 +22,12 @@ namespace VidLog.Desktop.Core.Tests;
 /// 起真 <see cref="HttpListener"/> 打真 HTTP 请求 —— 路由、Range、JSON 这些
 /// 只有真跑一遍才知道对不对，mock 掉就什么都没验。
 /// 绑 localhost 不需要 urlacl，所以这些测试在 CI 上也能跑。
+/// <para>
+/// ⚠️ 它属于 <see cref="HttpListenerCollection"/>：这一族**串行**跑，
+/// 为的是把「两个测试挑到同一个端口」那个竞态从根上拿掉（见那个文件的说明）。
+/// </para>
 /// </remarks>
+[Collection(HttpListenerCollection.Name)]
 public class PlaybackServerTests
 {
     private const string DeviceName = "测试主机";
@@ -419,16 +424,18 @@ public class PlaybackServerTests
     }
 
     [Fact]
-    public async Task 页面写明这不是证据分享链接()
+    public async Task 页面写明它不是交付渠道_并指向导出那条路()
     {
-        // I7 的边界：本服务直接读本地副本，而本地副本可能已被生命周期清理。
-        // 页面必须讲清楚，避免有人把它当分享链接发出去。
+        // 规格 §3.7 改版之后**不再有链接**（分享 = 交付原视频）。
+        // 而这一页看起来很像一条「能发出去的地址」—— 所以必须讲清楚它**不是**，
+        // 并且**告诉用户该走哪儿**（只说「不能这么用」而不给出路，等于把人留在原地）。
         using var dir = new TempDir();
         await using var fixture = await StartAsync(dir);
 
         var html = await (await fixture.Client.GetAsync("/")).Content.ReadAsStringAsync();
 
-        Assert.Contains("不是证据分享链接", html);
+        Assert.Contains("不是交付渠道", html);
+        Assert.Contains("导出原视频", html);
     }
 
     // ─────────────────────────────────────────────
