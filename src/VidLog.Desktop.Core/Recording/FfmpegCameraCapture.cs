@@ -70,7 +70,14 @@ public sealed class FfmpegCameraCapture : ICameraCapture
             RedirectStandardInput = true,
         };
 
-        foreach (var argument in BuildArguments(device, outputPath, encoder, _spec))
+        // 水印字幕（规格 §3.6.2）：**按约定**从输出路径推同一个名字。
+        // 文件不在时 ffmpeg 会报错起不来 —— 所以只在它真的存在时才带上，
+        // 让「没有水印」比「录不起来」先发生（会话那边写失败也是这个口径）。
+        var watermark = AssWatermark.PathFor(outputPath);
+        var hasWatermark = File.Exists(watermark);
+
+        foreach (var argument in BuildArguments(
+            device, outputPath, encoder, _spec, hasWatermark ? watermark : null))
         {
             startInfo.ArgumentList.Add(argument);
         }
@@ -132,8 +139,17 @@ public sealed class FfmpegCameraCapture : ICameraCapture
     /// <param name="spec">
     /// 录制规格（规格 §3.1.7）。为 <see langword="null"/> 时不带尺寸与帧率 —— 见那个字段的说明。
     /// </param>
+    /// <param name="watermarkAssPath">
+    /// 水印字幕文件的路径（规格 §3.6.2）。为 <see langword="null"/> 时不烧水印
+    /// （那些不关心它的调用点与测试）。
+    /// <para>
+    /// ⚠️ <b>必须在采集这一次就烧进去</b>：收尾是 <c>-c copy</c> 的 remux，
+    /// 那一步加不了滤镜（加了就得重编码，违反「不转码」）。
+    /// </para>
+    /// </param>
     public static IReadOnlyList<string> BuildArguments(
-        string device, string outputPath, string encoder, RecordingSpec? spec = null)
+        string device, string outputPath, string encoder, RecordingSpec? spec = null,
+        string? watermarkAssPath = null)
     {
         var arguments = new List<string>
         {
@@ -156,9 +172,18 @@ public sealed class FfmpegCameraCapture : ICameraCapture
                 System.Globalization.CultureInfo.InvariantCulture));
         }
 
+        arguments.AddRange(["-i", $"video={device}"]);
+
+        if (!string.IsNullOrWhiteSpace(watermarkAssPath))
+        {
+            // ⚠️ 滤镜是**输出选项**（放在 `-i` 之后、输出路径之前）。
+            // 写成输入选项的话 ffmpeg 会把它当成对输入的处理，行为完全不同。
+            arguments.Add("-vf");
+            arguments.Add($"ass={AssWatermark.EscapeFilterPath(watermarkAssPath)}");
+        }
+
         arguments.AddRange(
         [
-            "-i", $"video={device}",
             "-c:v", encoder,
             // 摄像头出的是 yuyv422，H.264 要 4:2:0。让 ffmpeg 显式转，
             // 而不是指望编码器自己接受 —— libx264 接受不了 yuyv422 会直接失败。

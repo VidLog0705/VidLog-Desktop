@@ -1,4 +1,5 @@
 using VidLog.Desktop.Core.Clock;
+using VidLog.Desktop.Core.Media;
 
 namespace VidLog.Desktop.Core.Recording;
 
@@ -102,6 +103,9 @@ public sealed class RecordingSession : IAsyncDisposable
 
     /// <summary>可信时钟；<see langword="null"/> = 不设闸（见构造函数的说明）。</summary>
     private readonly ITrustedClock? _trustedClock;
+
+    /// <summary>这一段的单号 —— 水印第二行要用它（规格 §3.6.2）。</summary>
+    private string _waybill = string.Empty;
 
     /// <summary>「开录那一刻」的时钟读数。<see cref="Elapsed"/> 是相对它的差值。</summary>
     /// <remarks>
@@ -269,6 +273,9 @@ public sealed class RecordingSession : IAsyncDisposable
         // 取自墙钟 —— 用户改系统时间**不得**改变视频里的时间」）。
         // 没接可信时钟时（测试路径）才退回墙钟。
         _startedAt = _trustedClock?.Now ?? DateTimeOffset.UtcNow;
+
+        // 水印第二行要它（规格 §3.6.2：一段只用一个单号）。
+        _waybill = waybill.Value;
         _manifest = new SessionManifest(
             SessionId, waybill.Value, SourceDeviceId, _startedAt.ToString("O"), []);
 
@@ -443,11 +450,51 @@ public sealed class RecordingSession : IAsyncDisposable
         // 换段时段的计时归零。
         _segmentStartedAt = Elapsed;
 
+        WriteWatermark(outputPath);
+
         _currentProcess = await _capture.StartAsync(
             _deviceName, outputPath, encoder, cancellationToken);
 
         // 一次交换把两个值一起发布 —— 见 _openSegment 的说明。
         Interlocked.Exchange(ref _openSegment, new OpenSegment(fileName, sequence));
+    }
+
+    /// <summary>
+    /// 给这一段写一份水印字幕（规格 §3.6.2）。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// ⚠️ <b>起算点是**可信时钟**</b>，不是墙钟（§3.6.3：水印的时间不得取自墙钟）。
+    /// 没接可信时钟时（测试路径）退回墙钟 —— 与起录时刻同一个口径。
+    /// </para>
+    /// <para>
+    /// ⚠️ <b>写失败不是错误</b>：字幕文件写不出来（磁盘满、目录没了）时，
+    /// <b>采集照旧要起来</b> —— 那一段录像没有水印是遗憾，录不出来是事故。
+    /// 所以这里吞掉异常，只记一条。
+    /// </para>
+    /// <para>
+    /// 覆盖时长取「单段时长 + 2 分钟余量」：段会按时长滚动，但最后一段可能超出
+    /// 一点（滚动要等关键帧）。**少了余量就会出现「最后几秒没有水印」**——
+    /// 而那种「部分缺失」比全都没有更难被发现。
+    /// </para>
+    /// </remarks>
+    private void WriteWatermark(string segmentPath)
+    {
+        try
+        {
+            var start = _trustedClock?.Now ?? DateTimeOffset.UtcNow;
+            var coverage = _options.SegmentDuration + TimeSpan.FromMinutes(2);
+
+            var (width, height) = _options.Spec?.Size ?? (1280, 720);
+
+            File.WriteAllText(
+                AssWatermark.PathFor(segmentPath),
+                AssWatermark.Build(start, _waybill, coverage, width, height));
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            LastProblem = $"这一段没有水印（字幕文件写不出来：{ex.Message}）";
+        }
     }
 
     /// <summary>
@@ -518,9 +565,17 @@ public sealed class RecordingSession : IAsyncDisposable
         var endedAt = Elapsed;
         await ReleaseCaptureAsync(cancellationToken);
 
+        var segmentPath = Path.Combine(_workspace.SessionDirectory(SessionId), fileName);
+
+        // 水印字幕**用完就删**：它是这一段的临时素材，不是产物。
+        // 留着的话它会跟着会话目录进归档（而归档里多一个 .ass 是垃圾），
+        // 也会让「盘上占了多少」那个数字虚高一点。
+        // 顺序在 `ReleaseCaptureAsync` **之后**：ffmpeg 还拿着它的话删不掉。
+        TryDeleteWatermark(segmentPath);
+
         var segment = new SegmentProduct(
             sequence,
-            Path.Combine(_workspace.SessionDirectory(SessionId), fileName),
+            segmentPath,
             _startedAt + startedAt,
             _startedAt + endedAt);
 
@@ -547,6 +602,19 @@ public sealed class RecordingSession : IAsyncDisposable
         if (_manifest is not null)
         {
             await _workspace.WriteManifestAsync(_manifest, cancellationToken);
+        }
+    }
+
+    /// <summary>删掉水印字幕。删不掉只是留个垃圾，不影响任何判定。</summary>
+    private static void TryDeleteWatermark(string segmentPath)
+    {
+        try
+        {
+            File.Delete(AssWatermark.PathFor(segmentPath));
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            // 删不掉不是错误：它是临时素材，不是产物。
         }
     }
 
