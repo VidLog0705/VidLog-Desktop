@@ -116,4 +116,9 @@ jobs:
         with:
           name: dotnet-test-results
           path: '**/TestResults/**/*.trx'
+          # ⚠️ 显式给个保留期（2026-09-27 加）。不给的话按仓库默认（90 天），
+          # 而这份 trx 只在**这次跑挂掉时**才有用 —— 2026-09-27 那天
+          # GitHub 的 artifact 配额被手机端的 APK 吃光，两端 CI 都红在
+          # 「产物传不上去」，看起来像代码坏了。留 7 天足够回头看一次。
+          retention-days: 7
           if-no-files-found: ignore
