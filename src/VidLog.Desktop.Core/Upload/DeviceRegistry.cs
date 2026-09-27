@@ -265,7 +265,11 @@ public sealed class DeviceRegistry
 
             _pending[deviceId] = new PendingEnrollment(
                 deviceId,
-                deviceName,
+                // ⚠️ **入口就截**（规格 §3.4.3 ②：上限属于「机位名」这个字段，
+                // 不只属于手机端那个输入框）。
+                // 不截的话，电脑端的待批准弹窗与设备表里会显示一个超长的名字，
+                // 而批准之后落盘的那份是截过的 —— 用户看到的两处不一样。
+                DeviceNameRules.Clamp(deviceName),
                 existing?.RequestedAt ?? _now(),
                 decision);
 
@@ -596,7 +600,15 @@ public sealed class DeviceRegistry
                     // 就已经发出去的那些**（`NewCredential` 那处只覆盖新签发的）。
                     Sanitizer.RegisterSecret(credential);
 
-                    result.Add(new EnrolledDevice(id, dto.DeviceName ?? string.Empty, credential, dto.ApprovedAt));
+                    result.Add(new EnrolledDevice(
+                        id,
+                        // ⚠️ **读盘这一处也要量**（与前两处同一个函数）——
+                        // 它挡的是**这次改动之前就写进去的**那些：
+                        // 手改过的登记簿、旧版本存下的长名字。
+                        // 只量写入端的话，那些老数据会一路显示到界面上（撑破布局）。
+                        DeviceNameRules.Clamp(dto.DeviceName ?? string.Empty),
+                        credential,
+                        dto.ApprovedAt));
                 }
             }
             catch (JsonException)
@@ -623,7 +635,11 @@ public sealed class DeviceRegistry
             var line = JsonSerializer.Serialize(
                 new EnrolledDeviceDto(
                     device.DeviceId,
-                    device.DeviceName,
+                    // ⚠️ **落盘这一处也要截**（与 `RequestAsync` 那处**同一个函数**，
+                    // 不是第二份实现）—— 规格 §3.4.3 ② 点名「从**任何路径**写进来的
+                    // 名字都得是同一把尺子」：手改过的配置文件、旧版本存下的长名字、
+                    // 以及将来新加的任何入口，都要在这里被同一把尺子量过。
+                    DeviceNameRules.Clamp(device.DeviceName),
                     device.Credential,
                     device.ApprovedAt),
                 DiskOptions);
