@@ -1,5 +1,7 @@
 using System.Reflection;
+using VidLog.Desktop.Core.Cleanup;
 using VidLog.Desktop.Core.Labels;
+using VidLog.Desktop.Core.Media;
 using VidLog.Desktop.Core.Playback;
 using VidLog.Desktop.Core.Punches;
 using VidLog.Desktop.Core.Search;
@@ -198,7 +200,29 @@ public class LicenseIndependenceTests
         return directory?.FullName ?? throw new InvalidOperationException("找不到仓库根目录");
     }
 
-    /// <summary>M3 的检索与回放全部对外类型。</summary>
+    /// <summary>L8 保护的那条路上的对外类型（检索 / 回放 / 导出 / 清理）。</summary>
+    /// <remarks>
+    /// <para>
+    /// 这条与文本那条是**同一道防线的两面**，针对的是两种不同的注入方式：
+    /// </para>
+    /// <list type="bullet">
+    /// <item><b>反射这条</b>：挡「成员**签名**里出现许可类型」——
+    /// 也就是<b>依赖注入</b>那种写法（构造参数里塞一个 <c>LicenseService</c>）。
+    /// 那是这种事最可能的形态。</item>
+    /// <item><b>文本那条</b>：挡「方法**体**里的调用」—— 反射看不见方法体，
+    /// 而「顺手加一句 if」正是最常见的写法。</item>
+    /// </list>
+    /// <para>
+    /// ⚠️ <b>2026-09-27 补了三个</b>：<c>ThumbnailCache</c>、
+    /// <c>PunchNavigation</c>、<c>CleanupService</c>。
+    /// 理由与文本那条同一个（见 <see cref="MustNotMentionLicense"/> 的说明）——
+    /// 尤其 <c>CleanupService</c>：它的**构造参数**正是最可能被注入许可的地方。
+    /// </para>
+    /// <para>
+    /// 原来这里的名字是「M3 的检索与回放全部对外类型」—— M3 是里程碑编号，
+    /// 而这条防线的边界是**规格里的 L8**，不是哪个里程碑，所以改了名字。
+    /// </para>
+    /// </remarks>
     public static TheoryData<Type> M3Types => new()
     {
         typeof(RecordingSearch),
@@ -212,6 +236,10 @@ public class LicenseIndependenceTests
         typeof(TimelinePosition),
         typeof(JsonLinesLabelStore),
         typeof(JsonLinesPunchLog),
+        // 2026-09-27 补：回放页那两块的对外类型 + 清理链的入口。
+        typeof(ThumbnailCache),
+        typeof(PunchNavigation),
+        typeof(CleanupService),
     };
 
     [Theory]
