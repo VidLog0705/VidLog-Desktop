@@ -224,14 +224,12 @@
                         </StackPanel>
 
                         <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
-                            <!-- ⚠️ 两个禁用的按钮**不是没做完**：它们的窗口要等
-                                 批次 6（打包数据深度分析）与批次 7（实时多画面，
-                                 卡在手机端的实时推流上）。悬停能看见原因。 -->
+                            <!-- ⚠️ 「实时多画面」还禁用着**不是没做完**：它要等手机端
+                                 先有实时推流（规格自己写着「需重做传输层」）。
+                                 悬停能看见原因。 -->
                             <Button x:Name="DataButton" Content="数据"
                                     Style="{StaticResource SecondaryButton}"
-                                    Padding="14,6" IsEnabled="False"
-                                    ToolTipService.ShowOnDisabled="True"
-                                    ToolTip="打包数据深度分析还没做（要先把按天/按类型的聚合算出来）。"/>
+                                    Padding="14,6" Click="OnOpenData"/>
                             <Button x:Name="OpenSearchButton" Content="回放"
                                     Style="{StaticResource SecondaryButton}"
                                     Padding="14,6" Margin="8,0,0,0" Click="OnOpenSearch"/>

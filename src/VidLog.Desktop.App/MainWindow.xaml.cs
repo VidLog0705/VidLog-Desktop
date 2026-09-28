@@ -409,8 +409,8 @@ public partial class MainWindow : Window
             // ⚠️ 读不到的位置**必须说出来**：不说的话那个字节数是**静默偏小**的，
             // 而用户会拿它判断「盘还够用」。
             OvLibraryText.Text = footprint.UnreadableCount == 0
-                ? $"{FormatBytes(footprint.TotalBytes)} · {footprint.FileCount} 个文件"
-                : $"{FormatBytes(footprint.TotalBytes)} · {footprint.FileCount} 个文件"
+                ? $"{Display.Bytes(footprint.TotalBytes)} · {footprint.FileCount} 个文件"
+                : $"{Display.Bytes(footprint.TotalBytes)} · {footprint.FileCount} 个文件"
                   + $"（另有 {footprint.UnreadableCount} 处读不到，实际只会更多）";
 
             OvUpdatedText.Text = $"统计于 {DateTime.Now:HH:mm:ss}";
@@ -495,15 +495,6 @@ public partial class MainWindow : Window
         }
     }
 
-    /// <summary>把字节数写成人看的大小。</summary>
-    private static string FormatBytes(long bytes) => bytes switch
-    {
-        >= 1024L * 1024 * 1024 => $"{bytes / 1024.0 / 1024 / 1024:0.##} GB",
-        >= 1024 * 1024 => $"{bytes / 1024.0 / 1024:0.#} MB",
-        >= 1024 => $"{bytes / 1024.0:0.#} KB",
-        _ => $"{bytes} B",
-    };
-
     /// <summary>数据目录所在盘的可用空间。</summary>
     /// <remarks>
     /// ⚠️ 读不到时**不许渲染成一个数字**。<see cref="DriveSpaceProbe"/> 是**抛**的
@@ -514,7 +505,7 @@ public partial class MainWindow : Window
     {
         try
         {
-            return $"可用 {FormatBytes(new DriveSpaceProbe().GetFreeBytes(path))}";
+            return $"可用 {Display.Bytes(new DriveSpaceProbe().GetFreeBytes(path))}";
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException)
         {
@@ -772,6 +763,17 @@ public partial class MainWindow : Window
     /// </remarks>
     private void OnOpenSearch(object sender, RoutedEventArgs e) =>
         new SearchWindow(_host) { Owner = this }.ShowDialog();
+
+    /// <summary>
+    /// 【数据】—— 模态弹出 <see cref="DataWindow"/>。
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ 模态：它是**只读**的，本来不必模态，但开着它的时候底下的主窗是活的 ——
+    /// 那边一开录，「今日 N 件」这类数就变了，而这个窗里的数不会跟着动。
+    /// 一块屏幕上摆着两份对不上的数，比多按一次【数据】麻烦得多。
+    /// </remarks>
+    private void OnOpenData(object sender, RoutedEventArgs e) =>
+        new DataWindow(_host) { Owner = this }.ShowDialog();
 
     /// <summary>
     /// 【连接电脑 / 手机】—— 弹出二维码（规格 §3.4.5）。
