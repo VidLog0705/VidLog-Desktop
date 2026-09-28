@@ -75,6 +75,16 @@ public sealed class AppHost : IAsyncDisposable
     /// <summary>开录时用的编码器名（探测挑出来的那个）。</summary>
     public string EncoderName { get; private set; } = "libx264";
 
+    /// <summary>
+    /// 本次运行真正在用的摄像头设备名；空串表示没找到。
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ <b>它是「启动时定下来的那个」，不是用户在设置里刚选的那个</b> ——
+    /// 摄像头改了要重启才生效（界面上就是这么写的）。拆窗之后主窗口不再有
+    /// 摄像头下拉，它要靠这一个属性回答「现在到底有没有摄像头」。
+    /// </remarks>
+    public string DeviceName { get; private set; } = string.Empty;
+
     public TrayIcon? Tray { get; private set; }
 
     /// <summary>关窗口时问一句的钩子 —— 由窗口提供（它知道怎么弹对话框）。</summary>
@@ -313,6 +323,7 @@ public sealed class AppHost : IAsyncDisposable
             EffectiveSpec = selection.Spec,
             SpecFallbackReason = selection.Reason,
             EncoderName = encoder ?? "libx264",
+            DeviceName = device,
         };
 
         // 清理也留痕（AGENTS.md §6「关键操作必须留痕」）——

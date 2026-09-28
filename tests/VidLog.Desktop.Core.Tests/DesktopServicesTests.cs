@@ -445,8 +445,11 @@ public class DesktopServicesTests
         var root = RepoRoot();
         var app = Path.Combine(root, "src", "VidLog.Desktop.App");
 
-        var xaml = File.ReadAllText(Path.Combine(app, "MainWindow.xaml"));
-        var window = File.ReadAllText(Path.Combine(app, "MainWindow.xaml.cs"));
+        // ⚠️ 2026-09-28：检索与回放拆成了独立的 `SearchWindow`（主窗照设计图
+        // 改成「录制台」）。这一整页连同锁定按钮搬到了那个窗里 ——
+        // **断言原文一字未改，只是读的文件换了**。
+        var xaml = File.ReadAllText(Path.Combine(app, "SearchWindow.xaml"));
+        var window = File.ReadAllText(Path.Combine(app, "SearchWindow.xaml.cs"));
 
         // ① 那一列真的在，而且接着处理函数、把 evidenceId 带在按钮上。
         Assert.Contains("Click=\"OnToggleLock\"", xaml, StringComparison.Ordinal);

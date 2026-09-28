@@ -1,0 +1,535 @@
+<Window x:Class="VidLog.Desktop.App.SettingsWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        xmlns:local="clr-namespace:VidLog.Desktop.App"
+        mc:Ignorable="d"
+        Title="设置" Height="700" Width="900" MinWidth="780" MinHeight="560"
+        FontFamily="{StaticResource UiFont}"
+        Background="{StaticResource Surface}"
+        WindowStartupLocation="CenterOwner"
+        Closing="OnClosing">
+    <!--
+        ════════════════════════════════════════════════════════════════
+        设置窗口（2026-09-28 从 MainWindow 拆出来）
+
+        ⚠️ 为什么拆：需求方的设计图里「设置」是一个**带标题栏的独立窗口**
+        （左导航 7 节 + 底部确定/应用/取消），不是主窗口里的一页。
+        裁决是「严格照图」，所以主窗那边不再有设置页。
+
+        ⚠️ 导航**只列真做了的节**。设计图上还有「百度网盘上传」与
+        「扩展与联动」两节 —— 它们分别要批次 5 与批次 8 才有内容，
+        现在列出来就是**点进去什么都没有的空壳**（踩坑 #13：
+        绝不渲染一个没有任何作用的开关）。做完一节加一节。
+
+        ⚠️ 保存方式照图改成**显式保存**（确定 / 应用 / 取消）——
+        此前是「改一个下拉就立刻存盘」。这是有意的行为变更。
+
+        ⚠️ 守卫测试按文本盯着 `new EnrollWindow(`，它现在落在
+        本文件的 code-behind 里（`DesktopServicesTests` 那一处断言原文未改）。
+        ════════════════════════════════════════════════════════════════
+    -->
+    <Grid>
+        <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="180"/>
+            <ColumnDefinition Width="*"/>
+        </Grid.ColumnDefinitions>
+
+        <!-- ══ 左导航 ══════════════════════════════════════════════════
+             ⚠️ 底色是 slate-50（`SidebarBackground`），而**选中项是白的** ——
+             这是从设计图里量出来的，不是「浅蓝底」。见 Theme.xaml 的说明。 -->
+        <Border Grid.Column="0" Background="{StaticResource SidebarBackground}">
+            <Grid>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="*"/>
+                </Grid.RowDefinitions>
+
+                <TextBlock Grid.Row="0" Text="设置" Margin="20,22,20,18"
+                           FontSize="15" FontWeight="SemiBold"
+                           Foreground="{StaticResource TextPrimary}"/>
+
+                <StackPanel Grid.Row="1">
+                    <RadioButton x:Name="NavDevice" Style="{StaticResource NavItem}"
+                                 GroupName="SettingsNav" Tag="Device" IsChecked="True"
+                                 Content="设备与外观" Checked="OnSectionChanged"/>
+                    <RadioButton x:Name="NavStorage" Style="{StaticResource NavItem}"
+                                 GroupName="SettingsNav" Tag="Storage"
+                                 Content="存储与备份" Checked="OnSectionChanged"/>
+                    <RadioButton x:Name="NavNetwork" Style="{StaticResource NavItem}"
+                                 GroupName="SettingsNav" Tag="Network"
+                                 Content="局域网与网页" Checked="OnSectionChanged"/>
+                    <RadioButton x:Name="NavAdvanced" Style="{StaticResource NavItem}"
+                                 GroupName="SettingsNav" Tag="Advanced"
+                                 Content="高级设置" Checked="OnSectionChanged"/>
+                    <RadioButton x:Name="NavAbout" Style="{StaticResource NavItem}"
+                                 GroupName="SettingsNav" Tag="About"
+                                 Content="关于" Checked="OnSectionChanged"/>
+                </StackPanel>
+            </Grid>
+        </Border>
+
+        <!-- ══ 右侧：内容 + 底部按钮条 ═══════════════════════════════ -->
+        <Grid Grid.Column="1">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="*"/>
+                <RowDefinition Height="Auto"/>
+            </Grid.RowDefinitions>
+
+            <ScrollViewer Grid.Row="0" VerticalScrollBarVisibility="Auto"
+                          Padding="28,24,28,16">
+                <Grid>
+
+                    <!-- ────────────────────────────────────────────────
+                         ① 设备与外观
+                         ──────────────────────────────────────────────── -->
+                    <StackPanel x:Name="DeviceSection">
+                        <TextBlock Style="{StaticResource SectionTitle}" Text="摄像头"/>
+                        <TextBlock Style="{StaticResource Caption}" Margin="0,0,0,8"
+                                   Text="录制用哪一路画面。换了要重启才生效。"/>
+                        <StackPanel Orientation="Horizontal">
+                            <ComboBox x:Name="CameraCombo" Width="300" IsEnabled="False"/>
+                            <TextBlock x:Name="CameraHint" Margin="10,0,0,0"
+                                       VerticalAlignment="Center"
+                                       Foreground="{StaticResource TextSecondary}" Text=""/>
+                        </StackPanel>
+
+                        <Separator Margin="0,18,0,16"/>
+
+                        <TextBlock Style="{StaticResource SectionTitle}" Text="工作模式"/>
+                        <TextBlock Style="{StaticResource Caption}" Margin="0,0,0,8"
+                                   Text="连续扫：换件即换段。同码停：复扫同一张单号就停 —— 它不会因为扫到别的面单就自动换段，也不会一路录到把盘写满。"/>
+                        <ComboBox x:Name="ModeCombo" Width="260" HorizontalAlignment="Left"
+                                  SelectionChanged="OnModeChanged">
+                            <ComboBoxItem Tag="Continuous">连续扫（换件即换段）</ComboBoxItem>
+                            <ComboBoxItem Tag="StopOnSameWaybill">同码停（复扫同号停）</ComboBoxItem>
+                        </ComboBox>
+
+                        <StackPanel Orientation="Horizontal" Margin="0,14,0,0">
+                            <StackPanel>
+                                <TextBlock Style="{StaticResource SectionTitle}" Text="闲置提醒"/>
+                                <TextBlock Style="{StaticResource Caption}" Margin="0,0,0,8"
+                                           Text="连续 N 分钟没有任何扫码或打点就出声提醒。"/>
+                                <StackPanel Orientation="Horizontal">
+                                    <ComboBox x:Name="IdleCombo" Width="110"
+                                              SelectionChanged="OnIdleReminderChanged">
+                                        <ComboBoxItem Tag="Off">关闭</ComboBoxItem>
+                                        <ComboBoxItem Tag="Two">2 分钟</ComboBoxItem>
+                                        <ComboBoxItem Tag="Three">3 分钟</ComboBoxItem>
+                                        <ComboBoxItem Tag="Four">4 分钟</ComboBoxItem>
+                                        <ComboBoxItem Tag="Five">5 分钟</ComboBoxItem>
+                                        <ComboBoxItem Tag="Custom">自定义</ComboBoxItem>
+                                    </ComboBox>
+                                    <TextBox x:Name="IdleMinutesBox" Width="46" Margin="6,0,0,0"
+                                             VerticalContentAlignment="Center"
+                                             LostFocus="OnIdleMinutesChanged"/>
+                                    <TextBlock Text="分钟" VerticalAlignment="Center" Margin="4,0,0,0"
+                                               Foreground="{StaticResource TextPrimary}"/>
+                                </StackPanel>
+                            </StackPanel>
+
+                            <StackPanel Margin="32,0,0,0">
+                                <TextBlock Style="{StaticResource SectionTitle}" Text="时长兜底"/>
+                                <TextBlock Style="{StaticResource Caption}" Margin="0,0,0,8"
+                                           Text="到点弹一条询问，不替你停。"/>
+                                <ComboBox x:Name="DurationCombo" Width="110"
+                                          SelectionChanged="OnDurationChanged">
+                                    <ComboBoxItem Tag="Off">关闭</ComboBoxItem>
+                                    <ComboBoxItem Tag="Four">4 分钟</ComboBoxItem>
+                                    <ComboBoxItem Tag="Five">5 分钟</ComboBoxItem>
+                                    <ComboBoxItem Tag="Six">6 分钟</ComboBoxItem>
+                                </ComboBox>
+                            </StackPanel>
+                        </StackPanel>
+
+                        <TextBlock Style="{StaticResource Caption}" Margin="0,10,0,0"
+                                   Text="闲置提醒只看「有没有扫码或打点」，不看画面；到点只出声提醒，不会替你停录 —— 真正会停的是时长兜底。"/>
+
+                        <Separator Margin="0,18,0,16"/>
+
+                        <TextBlock Style="{StaticResource SectionTitle}" Text="录制规格"/>
+                        <TextBlock Style="{StaticResource Caption}" Margin="0,0,0,8"
+                                   Text="帧率固定 30，不提供选择。改了下次开段生效。"/>
+
+                        <!-- ⚠️ 编码与分辨率**必须横排单选，不许换成下拉** ——
+                             规格 §3.1.7 点名「横排（**不用下拉**）」，两端都是。 -->
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock Text="编码" Style="{StaticResource FieldLabel}"/>
+                            <RadioButton x:Name="CodecH264" GroupName="Codec" Tag="H264"
+                                         Content="H.264（兼容优先）" VerticalAlignment="Center"
+                                         Checked="OnRecordingSpecChanged"/>
+                            <RadioButton x:Name="CodecH265" GroupName="Codec" Tag="H265"
+                                         Content="H.265（更省空间）" VerticalAlignment="Center"
+                                         Margin="14,0,0,0" Checked="OnRecordingSpecChanged"/>
+                        </StackPanel>
+
+                        <StackPanel Orientation="Horizontal" Margin="0,6,0,0">
+                            <TextBlock Text="分辨率" Style="{StaticResource FieldLabel}"/>
+                            <RadioButton x:Name="Res4K" GroupName="Resolution" Tag="Uhd4K"
+                                         Content="4K" VerticalAlignment="Center"
+                                         Checked="OnRecordingSpecChanged"/>
+                            <RadioButton x:Name="Res1080" GroupName="Resolution" Tag="P1080"
+                                         Content="1080P" VerticalAlignment="Center"
+                                         Margin="14,0,0,0" Checked="OnRecordingSpecChanged"/>
+                            <RadioButton x:Name="Res720" GroupName="Resolution" Tag="P720"
+                                         Content="720P" VerticalAlignment="Center"
+                                         Margin="14,0,0,0" Checked="OnRecordingSpecChanged"/>
+                        </StackPanel>
+
+                        <!-- ⚠️ 规格：「**回落必须可见**……不得静默回落」——
+                             这一行就是那个落点，**不折进「?」里**。 -->
+                        <TextBlock x:Name="EffectiveSpecText" Margin="76,6,0,0"
+                                   TextWrapping="Wrap"
+                                   Foreground="{StaticResource TextSecondary}" Text=""/>
+
+                        <Separator Margin="0,18,0,16"/>
+
+                        <TextBlock Style="{StaticResource SectionTitle}" Text="连接电脑 / 手机"/>
+                        <StackPanel Orientation="Horizontal">
+                            <local:HelpTip VerticalAlignment="Center"
+                                           Text="点开弹出一张二维码，手机端扫它来申请连接。申请到了由你决定同意还是拒绝 —— 没有这一步，手机换不到凭据，录像传不上来。"/>
+                            <TextBlock Style="{StaticResource Caption}" Margin="6,0,0,0"
+                                       VerticalAlignment="Center"
+                                       Text="手机要接进来，得先在这里发一张二维码。"/>
+                        </StackPanel>
+                        <Button x:Name="EnrollButton" Content="连接电脑/手机"
+                                Style="{StaticResource SecondaryButton}"
+                                Margin="0,10,0,0" HorizontalAlignment="Left"
+                                Click="OnEnroll"/>
+                    </StackPanel>
+
+                    <!-- ────────────────────────────────────────────────
+                         ② 存储与备份
+                         ⚠️ 这一节现在是**存量设置搬过来的样子**：设计图上它还有
+                         磁盘配额进度条、多磁盘列表、按时间/按空间清理两个入口
+                         —— 那些要批次 2.4 的 Core 能力（多磁盘 + 预留空间）才画得出来。
+                         ──────────────────────────────────────────────── -->
+                    <StackPanel x:Name="StorageSection" Visibility="Collapsed">
+                        <TextBlock Style="{StaticResource SectionTitle}" Text="回放与归档"/>
+
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock Text="归档层" Style="{StaticResource FieldLabel}" Width="130"/>
+                            <ComboBox x:Name="ArchiveCombo" Width="200"
+                                      SelectionChanged="OnArchiveChanged">
+                                <ComboBoxItem Tag="LocalDisk">本机磁盘</ComboBoxItem>
+                                <ComboBoxItem Tag="Nas">NAS</ComboBoxItem>
+                                <ComboBoxItem Tag="MountedDrive">挂载网络驱动器</ComboBoxItem>
+                                <ComboBoxItem Tag="Cloud">百度网盘</ComboBoxItem>
+                            </ComboBox>
+                            <local:HelpTip Margin="8,0,0,0"
+                                           Text="录像备份到哪儿去了。只有在别处还有一份时，清掉盘上这份才是安全的。"/>
+                        </StackPanel>
+                        <TextBlock x:Name="ArchiveReachNote" Style="{StaticResource Caption}"
+                                   Margin="130,6,0,0"/>
+
+                        <!-- 目录型的路径（NAS / 挂载盘）。这两档**共用一份实现**（规格 §3.4.6），
+                             所以界面上也是同一个输入框 —— 再拆一个只会让两条路慢慢走岔。 -->
+                        <StackPanel x:Name="ArchivePathPanel" Margin="0,10,0,0"
+                                    Visibility="Collapsed">
+                            <TextBlock Text="归档目录" Style="{StaticResource FieldLabel}"
+                                       Width="130" HorizontalAlignment="Left"/>
+                            <TextBox x:Name="ArchivePathBox" Width="360" Margin="130,4,0,0"
+                                     HorizontalAlignment="Left"/>
+                            <TextBlock Style="{StaticResource Caption}" Margin="130,4,0,0"
+                                       Text="填一个可读写的目录，例如 \\nas\vidlog 或 Z:\vidlog。网络那一层（登录、凭据）由你在系统里挂好，我们只当成一个目录用。"/>
+                            <StackPanel Orientation="Horizontal" Margin="130,4,0,0">
+                                <local:HelpTip
+                                    Text="⚠️ 这个路径只是「去哪儿找归档层」，不进索引 —— 换台机器挂到别的盘符，录像照样查得到。"/>
+                                <TextBlock Style="{StaticResource Caption}" Margin="6,0,0,0"
+                                           Text="换台机器挂到别的盘符会怎样"/>
+                            </StackPanel>
+                        </StackPanel>
+
+                        <!-- 归档层 = 本机磁盘时这块**不出现**（规格 §3.5.1）——
+                             那时盘上这份是唯一副本，给了开关也只能是「改了没反应」。 -->
+                        <Border x:Name="RetentionPanel" Margin="0,20,0,0"
+                                Visibility="Collapsed">
+                            <StackPanel>
+                                <TextBlock Style="{StaticResource SectionTitle}"
+                                           Text="本地保留期（发货 / 退货 × 已备份 / 未备份 = 四个数）"/>
+
+                                <Grid HorizontalAlignment="Left">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="80"/>
+                                        <ColumnDefinition Width="150"/>
+                                        <ColumnDefinition Width="150"/>
+                                    </Grid.ColumnDefinitions>
+                                    <Grid.RowDefinitions>
+                                        <RowDefinition Height="Auto"/>
+                                        <RowDefinition Height="Auto"/>
+                                        <RowDefinition Height="Auto"/>
+                                    </Grid.RowDefinitions>
+
+                                    <TextBlock Grid.Row="0" Grid.Column="1" Text="发货"
+                                               FontWeight="SemiBold"
+                                               Foreground="{StaticResource TextPrimary}"/>
+                                    <TextBlock Grid.Row="0" Grid.Column="2" Text="退货"
+                                               FontWeight="SemiBold"
+                                               Foreground="{StaticResource TextPrimary}"/>
+
+                                    <TextBlock Grid.Row="1" Grid.Column="0" Text="已备份"
+                                               VerticalAlignment="Center"
+                                               Foreground="{StaticResource TextPrimary}"/>
+                                    <ComboBox x:Name="ArchivedOutboundCombo" Grid.Row="1" Grid.Column="1"
+                                              IsEditable="True" Margin="0,2,8,2"
+                                              SelectionChanged="OnRetentionChanged"/>
+                                    <ComboBox x:Name="ArchivedReturnCombo" Grid.Row="1" Grid.Column="2"
+                                              IsEditable="True" Margin="0,2,0,2"
+                                              SelectionChanged="OnRetentionChanged"/>
+
+                                    <TextBlock Grid.Row="2" Grid.Column="0" Text="未备份"
+                                               VerticalAlignment="Center"
+                                               Foreground="{StaticResource TextPrimary}"/>
+                                    <ComboBox x:Name="UnarchivedOutboundCombo" Grid.Row="2" Grid.Column="1"
+                                              IsEditable="True" Margin="0,2,8,2"
+                                              SelectionChanged="OnRetentionChanged"/>
+                                    <ComboBox x:Name="UnarchivedReturnCombo" Grid.Row="2" Grid.Column="2"
+                                              IsEditable="True" Margin="0,2,0,2"
+                                              SelectionChanged="OnRetentionChanged"/>
+                                </Grid>
+
+                                <StackPanel Orientation="Horizontal" Margin="0,10,0,0">
+                                    <local:HelpTip
+                                        Text="四个数互相独立，改一个不动另一个。以「已备份」为例：它从归档成功那一刻起算，不是从录完起算。档位可以手输天数（例如 45）。"/>
+                                    <TextBlock Style="{StaticResource Caption}" Margin="6,0,0,0"
+                                               Text="四个数怎么互相影响、档位能不能手输"/>
+                                </StackPanel>
+
+                                <!-- ⚠️ 下面四条**不折进「?」** —— 规格 §3.5 明令
+                                     「禁止静默清理」并把它当成红线，藏起来等于把红线藏起来。 -->
+                                <TextBlock Style="{StaticResource Caption}" Margin="0,8,0,0"
+                                           Text="⚠️ 这会真的删：每次启动算一遍到期该清的，先弹窗告诉你多少条、多少容量，你点了同意才动手（禁止静默清理）。删的只是本机上这一份 —— 归档层上那份不动。"/>
+                                <TextBlock Style="{StaticResource Caption}" Margin="0,4,0,0"
+                                           Text="⚠️「不保留」不是立刻删：最近 24 小时内录的一律不动（硬性豁免，关不掉），所以它实际是「归档后最快 24 小时清理」。"/>
+                                <TextBlock Style="{StaticResource Caption}" Margin="0,4,0,0"
+                                           Text="⚠️「未备份」那一列永不自动删除 —— 那是唯一副本，删了就永久没了。它到期的动作只有提醒（列表标红 + 催上传），起算点是录完时刻。"/>
+                                <TextBlock Style="{StaticResource Caption}" Margin="0,4,0,0"
+                                           Text="⚠️「已备份 = 不保留」而归档层还没接上时，清理由 §3.5.4 的回查把关：查不到或查不了都不删。"/>
+                            </StackPanel>
+                        </Border>
+                        <TextBlock x:Name="RetentionAbsentNote" Style="{StaticResource Caption}"
+                                   Margin="0,10,0,0"/>
+
+                        <!-- 归档层那一份没发上去（规格 §3.4.6）。**必须说出来**：
+                             它意味着盘上这份只有一份，而用户可能以为自己已经双份了。 -->
+                        <TextBlock x:Name="ArchiveRelayNote" Style="{StaticResource Caption}"
+                                   Foreground="{StaticResource Warning}" Margin="0,10,0,0"
+                                   Visibility="Collapsed"/>
+                    </StackPanel>
+
+                    <!-- ────────────────────────────────────────────────
+                         ③ 局域网与网页
+                         ──────────────────────────────────────────────── -->
+                    <StackPanel x:Name="NetworkSection" Visibility="Collapsed">
+                        <TextBlock Style="{StaticResource SectionTitle}" Text="回放服务端口"/>
+
+                        <StackPanel Orientation="Horizontal">
+                            <TextBox x:Name="PortBox" Width="120"/>
+                            <TextBlock Style="{StaticResource Caption}" Margin="10,0,0,0"
+                                       VerticalAlignment="Center" Text="改了要重启才生效。"/>
+                        </StackPanel>
+
+                        <TextBlock x:Name="ServerUrlText" Style="{StaticResource Caption}"
+                                   Margin="0,10,0,0" Text=""/>
+                        <TextBlock Style="{StaticResource Caption}" Margin="0,10,0,0"
+                                   Text="手机与别的电脑在同一个局域网里，用上面这个地址就能打开回放页检索、播放。⚠️ 找不到录像时它不会伪造一个空结果 —— 服务没起来时这一行会直说「未启动」。"/>
+                    </StackPanel>
+
+                    <!-- ────────────────────────────────────────────────
+                         ④ 高级设置
+                         ──────────────────────────────────────────────── -->
+                    <StackPanel x:Name="AdvancedSection" Visibility="Collapsed">
+                        <TextBlock Style="{StaticResource SectionTitle}" Text="分段与重复检测"/>
+
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock Text="分段时长（分钟）"
+                                       Style="{StaticResource FieldLabel}" Width="130"/>
+                            <TextBox x:Name="SegmentBox" Width="120"/>
+                        </StackPanel>
+                        <TextBlock Style="{StaticResource Caption}" Margin="130,4,0,0"
+                                   Text="单个分段的上限。到点自动滚下一段，用户无感。"/>
+
+                        <!-- 重复单号检测（规格 §3.2.5：「N 可配置」）——
+                             必须给得出「关掉」这个值，否则它在连续扫的工位上就是噪声。 -->
+                        <StackPanel Orientation="Horizontal" Margin="0,14,0,0">
+                            <TextBlock Text="重复单号检测（天）"
+                                       Style="{StaticResource FieldLabel}" Width="130"/>
+                            <TextBox x:Name="DuplicateDaysBox" Width="120"/>
+                        </StackPanel>
+                        <TextBlock Style="{StaticResource Caption}" Margin="130,4,0,0"
+                                   Text="⚠️ 只提醒、不挡开录 —— 录制照常开始。填 0 关掉。"/>
+                        <StackPanel Orientation="Horizontal" Margin="130,4,0,0">
+                            <local:HelpTip
+                                Text="扫到的单号若在这么多天内录过，会提醒你（气泡 + 语音）。它只提醒、不挡开录 —— 录制照常开始，你事后核对是不是重复录件或单号扫错了。"/>
+                            <TextBlock Style="{StaticResource Caption}" Margin="6,0,0,0"
+                                       Text="什么时候会提醒、提醒成什么样"/>
+                        </StackPanel>
+
+                        <Separator Margin="0,18,0,16"/>
+
+                        <!-- 时间校准（规格 §3.6.4）。**未校准不能开始录制** ——
+                             所以它必须说清三件事：为什么 / 怎么办 / 已有录像照常可用。 -->
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock Style="{StaticResource SectionTitle}"
+                                       Text="时间校准" Margin="0"/>
+                            <local:HelpTip Margin="6,0,0,0"
+                                           Text="为什么要它：视频里的时间必须能追溯到本机之外的某个来源 —— 靠本机时钟的话，改一下系统时间就能伪造「更早的证据」。联一次网取到时间之后，即使以后一直断网也能照常录制（时间是拿「校准那一刻 + 之后走了多久」推出来的，与系统时钟无关）。&#x0a;&#x0a;怎么办：点【重新校准】。取不到公网时间时，检查这台机器能不能上网（要能访问 https）。⚠️ 只有内网、从没联过公网的机器开不了工 —— 这是需求方 2026-09-24 明确接受的代价。"/>
+                        </StackPanel>
+                        <StackPanel Orientation="Horizontal" Margin="0,10,0,0">
+                            <TextBlock x:Name="CalibrationNote" VerticalAlignment="Center"
+                                       TextWrapping="Wrap" MaxWidth="480"
+                                       Foreground="{StaticResource TextPrimary}"/>
+                            <Button x:Name="CalibrateButton" Content="重新校准"
+                                    Style="{StaticResource SecondaryButton}"
+                                    Margin="12,0,0,0" Click="OnCalibrate"/>
+                        </StackPanel>
+                        <!-- ⚠️ 这一条**不折进「?」**：它说的是「没校准也不会怎样」，
+                             不写出来用户会以为录像全废了。 -->
+                        <TextBlock Style="{StaticResource Caption}" Margin="0,8,0,0"
+                                   Text="⚠️ 未校准只挡住新录：已有的录像照常可以检索、回放、导出、交付 —— 与许可那条红线（不得锁住已有录像）是同一条道理。"/>
+
+                        <Separator Margin="0,18,0,16"/>
+
+                        <!-- 许可（规格 §3.9 / `docs/04-许可设计.md`）。**只限机位** ——
+                             未激活只挡住「开始新的录制」与「新的手机接进来」，
+                             已有的录像一条都不锁（L8）。 -->
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock Style="{StaticResource SectionTitle}"
+                                       Text="许可（机位）" Margin="0"/>
+                            <local:HelpTip Margin="6,0,0,0"
+                                           Text="为什么要它：机位 = 允许接入的手机端台数（今天是「手机台数」，加上第二路相机时那一路也算一台）。没有服务端，所以是本机算出一串机器码 → 你给提供方 → 他签发一个激活码 → 在这里粘回来。&#x0a;&#x0a;怎么办：把下面那串机器码抄给提供方，拿到激活码之后粘进下面的框、点【激活】。⚠️ 换主板或刷过 BIOS 之后机器码会变，需要重新签发。&#x0a;&#x0a;⚠️ 校验只在启动时做一次：录到一半改了什么，也要重启之后才生效 —— 那是为了不把正在录的那一段掐掉。"/>
+                        </StackPanel>
+
+                        <TextBlock x:Name="LicenseNote" Style="{StaticResource Body}"
+                                   Margin="0,10,0,0"/>
+
+                        <TextBlock Text="本机机器码（抄给提供方，用来签发这台机器的激活码）"
+                                   Style="{StaticResource Caption}" Margin="0,12,0,0"/>
+                        <StackPanel Orientation="Horizontal" Margin="0,4,0,0">
+                            <TextBox x:Name="MachineCodeBox" Width="330" IsReadOnly="True"
+                                     FontFamily="{StaticResource MonoFont}"
+                                     VerticalAlignment="Center"/>
+                            <Button x:Name="CopyMachineCodeButton" Content="复制"
+                                    Style="{StaticResource SecondaryButton}"
+                                    Padding="12,5" Margin="8,0,0,0"
+                                    Click="OnCopyMachineCode"/>
+                        </StackPanel>
+
+                        <TextBlock Text="激活码（提供方签发的那一串，整段粘进来就行）"
+                                   Style="{StaticResource Caption}" Margin="0,10,0,0"/>
+                        <StackPanel Orientation="Horizontal" Margin="0,4,0,0">
+                            <TextBox x:Name="ActivationBox" Width="330"
+                                     FontFamily="{StaticResource MonoFont}"
+                                     VerticalAlignment="Center"/>
+                            <Button x:Name="ActivateButton" Content="激活"
+                                    Style="{StaticResource PrimaryButtonStrong}"
+                                    Padding="16,5" Margin="8,0,0,0"
+                                    Click="OnActivate"/>
+                        </StackPanel>
+
+                        <!-- ⚠️ 这一条**不折进「?」**：它是 L8 那条红线在界面上的落点
+                             （「用户的数据是他的，不是人质」），必须直接看得见。 -->
+                        <TextBlock Style="{StaticResource Caption}" Margin="0,10,0,0"
+                                   Text="⚠️ 未激活只挡住新的录制和新的手机接入：已有的录像照常可以检索、回放、导出、交付。已经接进来的手机也照样上传，不会被打断。"/>
+                    </StackPanel>
+
+                    <!-- ────────────────────────────────────────────────
+                         ⑤ 关于
+                         ⚠️ 这里只放**真读得出来**的东西（规格 §13.1）。
+                         ──────────────────────────────────────────────── -->
+                    <StackPanel x:Name="AboutSection" Visibility="Collapsed">
+                        <TextBlock Style="{StaticResource SectionTitle}" Text="本机"/>
+
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="96"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="Auto"/>
+                            </Grid.RowDefinitions>
+
+                            <TextBlock Grid.Row="0" Grid.Column="0" Style="{StaticResource Caption}"
+                                       Text="版本" VerticalAlignment="Center"/>
+                            <TextBlock Grid.Row="0" Grid.Column="1" x:Name="AboutVersionText"
+                                       Style="{StaticResource Body}" Text="…"/>
+
+                            <TextBlock Grid.Row="1" Grid.Column="0" Style="{StaticResource Caption}"
+                                       Margin="0,6,0,0" Text="录制规格" VerticalAlignment="Center"/>
+                            <TextBlock Grid.Row="1" Grid.Column="1" x:Name="AboutSpecText"
+                                       Style="{StaticResource Body}" Margin="0,6,0,0" Text="…"/>
+
+                            <TextBlock Grid.Row="2" Grid.Column="0" Style="{StaticResource Caption}"
+                                       Margin="0,6,0,0" Text="回放服务" VerticalAlignment="Center"/>
+                            <TextBlock Grid.Row="2" Grid.Column="1" x:Name="AboutServerText"
+                                       Style="{StaticResource Body}" Margin="0,6,0,0" Text="…"/>
+
+                            <TextBlock Grid.Row="3" Grid.Column="0" Style="{StaticResource Caption}"
+                                       Margin="0,6,0,0" Text="归档层" VerticalAlignment="Center"/>
+                            <TextBlock Grid.Row="3" Grid.Column="1" x:Name="AboutArchiveText"
+                                       Style="{StaticResource Body}" Margin="0,6,0,0" Text="…"/>
+
+                            <TextBlock Grid.Row="4" Grid.Column="0" Style="{StaticResource Caption}"
+                                       Margin="0,6,0,0" Text="数据目录" VerticalAlignment="Center"/>
+                            <TextBlock Grid.Row="4" Grid.Column="1" x:Name="AboutDataDirText"
+                                       Style="{StaticResource Body}" Margin="0,6,0,0"
+                                       TextWrapping="Wrap" Text="…"/>
+                        </Grid>
+
+                        <Button x:Name="OpenDataFolderButton" Content="打开数据目录"
+                                Style="{StaticResource SecondaryButton}"
+                                Margin="0,12,0,0" HorizontalAlignment="Left"
+                                Click="OnOpenDataFolder"/>
+
+                        <Separator Margin="0,18,0,16"/>
+
+                        <TextBlock Style="{StaticResource SectionTitle}" Text="诊断包"/>
+                        <TextBlock Style="{StaticResource Caption}" Margin="0,0,0,8"
+                                   Text="把日志、设置与环境信息打成一个 zip，不含任何视频。"/>
+                        <Button x:Name="ExportDiagnosticsButton" Content="导出诊断包"
+                                Style="{StaticResource SecondaryButton}"
+                                HorizontalAlignment="Left"
+                                Click="OnExportDiagnostics"/>
+
+                        <!-- 启动时的问题（`AppHost.Warnings`）。**必须看得见** ——
+                             它们在启动那一刻就发生了，而用户多半没盯着屏幕。 -->
+                        <TextBlock Text="启动时需要注意" Style="{StaticResource SectionTitle}"
+                                   Margin="0,20,0,8"
+                                   x:Name="WarningsHeader" Visibility="Collapsed"/>
+                        <ListBox x:Name="WarningsList" MaxHeight="180"
+                                 HorizontalContentAlignment="Stretch"
+                                 Visibility="Collapsed"/>
+                    </StackPanel>
+                </Grid>
+            </ScrollViewer>
+
+            <!-- ══ 底部：状态 + 确定 / 应用 / 取消 ════════════════════ -->
+            <Border Grid.Row="1" Background="{StaticResource Surface}"
+                    BorderBrush="{StaticResource CardBorder}" BorderThickness="0,1,0,0"
+                    Padding="28,14">
+                <Grid>
+                    <TextBlock x:Name="SettingsStatus" VerticalAlignment="Center"
+                               TextWrapping="Wrap" MaxWidth="480"
+                               HorizontalAlignment="Left"
+                               Foreground="{StaticResource TextSecondary}"/>
+                    <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                        <Button x:Name="OkButton" Content="确定"
+                                Style="{StaticResource PrimaryButtonStrong}"
+                                MinWidth="88" Click="OnOk"/>
+                        <Button x:Name="ApplyButton" Content="应用"
+                                Style="{StaticResource SecondaryButton}"
+                                MinWidth="88" Margin="8,0,0,0" Click="OnApply"/>
+                        <Button x:Name="CancelButton" Content="取消"
+                                Style="{StaticResource SecondaryButton}"
+                                MinWidth="88" Margin="8,0,0,0" Click="OnCancel"/>
+                    </StackPanel>
+                </Grid>
+            </Border>
+        </Grid>
+    </Grid>
+</Window>

@@ -3,42 +3,93 @@
 
     <!--
         ════════════════════════════════════════════════════════════════
-        电脑端设计语言（SaaS 版式，2026-09-28）
+        电脑端设计语言（照需求方自绘界面图，2026-09-28）
 
-        ⚠️ 色值直接沿用需求方自己那个布局画板的调色板
-        （`H:\LayoutBoard\Model.cs:166-173`）—— 这样界面与他画草图时
-        用的是同一套颜色，不会出现「画的是一套、做出来是另一套」。
+        ⚠️ 这套色值**不是估的**，是从需求方那 32 张设计图里**逐像素量**出来的
+        （`System.Drawing` 采样指定矩形取众数，只统计有色像素）。
+        整套是 **Tailwind** 色板，量到的原值见 `docs/实现决策.md` §60。
+        上一版那套 Material 蓝（`#1E88E5`，取自 `H:\LayoutBoard\Model.cs`）
+        与更早那版 SaaS 外观**整表作废**。
 
-        ⚠️ 洁净室（`AGENTS.md` §0）：这一套是**按需求方口述的四条**
-        （左侧竖导航 / 新增概览 / 中性灰底 + 蓝点缀 / 收进「?」）
-        加上通用版式惯例推出来的，**没有参照任何第三方产品的界面**。
+        ⚠️ **两套蓝并存是需求方的裁决**（2026-09-28，原话「严格照图」）：
+        主窗口用 `Accent` = blue-500 `#3B82F6`，设置窗口的主按钮用
+        `AccentStrong` = blue-600 `#2563EB`。图上就是这样，**不要为了
+        「统一」把它合并成一个** —— 已问过，答案是照图。
+
+        ⚠️ 洁净室（`AGENTS.md` §0）：这批图是需求方自绘/自有的界面，
+        2026-09-28 已**书面豁免**「不得参照第三方产品界面」这一条，
+        豁免范围**只限界面外观**（留档见 `docs/实现决策.md` §59）。
+        代码、密钥做法、架构**没有被豁免**。
 
         ⚠️ 有意不做的：`ComboBox` / `TextBox` / `DataGrid` / `DatePicker`
         都**不重写 `ControlTemplate`**。重写这四个是几百行，而且极易踩出
         「下拉打不开」「日期选不了」这类**只有跑起来才看得见**的毛病。
-        它们保持 Windows 原生长相 —— 这是取舍，不是没做完。
-        （`NavItem` 与两个按钮重写了模板：前者本来就只是个
+        它们保持 Windows 原生长相，只用普通 Setter 逼近配色 ——
+        这是取舍，不是没做完。
+        （`NavItem` 与几个按钮重写了模板：前者本来就只是个
         Border + ContentPresenter；后者是界面上最显眼的控件，
         套默认 chrome 的话蓝色底会跟系统渐变打架。）
+
+        ⚠️ 字号（20/14/13/12）是**相对关系**保留原来的，没有绝对标定 ——
+        截图 DPI 未知，量不出 pt。做具体窗口时对着图微调。
         ════════════════════════════════════════════════════════════════
     -->
 
-    <!-- ── 颜色 ──────────────────────────────────────────────────── -->
-    <Color x:Key="PageBackgroundColor">#FFF5F5F5</Color>
-    <SolidColorBrush x:Key="PageBackground" Color="#FFF5F5F5"/>
+    <!-- ── 颜色（Tailwind，全部量自设计图） ──────────────────────── -->
+
+    <!-- 页面底：gray-100。主窗 / 向导 / 多画面，图上占 15–91%。 -->
+    <Color x:Key="PageBackgroundColor">#FFF3F4F6</Color>
+    <SolidColorBrush x:Key="PageBackground" Color="#FFF3F4F6"/>
+
+    <!-- ⚠️ 设置窗左侧导航区**不是**页面底色的灰，是 slate-50 —— 图上量出来的。
+         「选中项右边空底 = FFFFFF / 未选中项空底 = F8FAFC」这条对比
+         决定了选中态长什么样：**选中的那块是白的、浮在浅灰侧栏上**，
+         不是「浅蓝底 + 蓝字」。 -->
+    <SolidColorBrush x:Key="SidebarBackground" Color="#FFF8FAFC"/>
+
     <SolidColorBrush x:Key="Surface" Color="#FFFFFFFF"/>
-    <SolidColorBrush x:Key="SurfaceMuted" Color="#FFFAFAFA"/>
-    <SolidColorBrush x:Key="CardBorder" Color="#FFE0E0E0"/>
-    <SolidColorBrush x:Key="TextPrimary" Color="#FF212121"/>
-    <SolidColorBrush x:Key="TextSecondary" Color="#FF616161"/>
-    <SolidColorBrush x:Key="TextDisabled" Color="#FF9E9E9E"/>
-    <SolidColorBrush x:Key="Accent" Color="#FF1E88E5"/>
-    <SolidColorBrush x:Key="AccentHover" Color="#FF1976D2"/>
-    <SolidColorBrush x:Key="AccentWeak" Color="#FFE3F2FD"/>
-    <SolidColorBrush x:Key="Success" Color="#FF43A047"/>
-    <SolidColorBrush x:Key="Warning" Color="#FFFB8C00"/>
-    <SolidColorBrush x:Key="WarningSurface" Color="#FFFFF8E1"/>
-    <SolidColorBrush x:Key="Danger" Color="#FFE53935"/>
+
+    <!-- 次级区块：slate-50。向导内容卡、只读输入框。 -->
+    <SolidColorBrush x:Key="SurfaceMuted" Color="#FFF8FAFC"/>
+
+    <!-- 底部统计条：slate-100（`_35` 底栏）。比页面底浅一档，压在页面上。 -->
+    <SolidColorBrush x:Key="SurfaceAlt" Color="#FFF1F5F9"/>
+
+    <!-- 1px 描边：slate-200。卡片、面板。 -->
+    <SolidColorBrush x:Key="CardBorder" Color="#FFE2E8F0"/>
+
+    <!-- 输入框与次级按钮的描边：slate-300。比卡片边深一档。 -->
+    <SolidColorBrush x:Key="BorderStrong" Color="#FFCBD5E1"/>
+
+    <!-- 正文 slate-800；深色面板上的标题用 slate-900（见 VideoBackground）。 -->
+    <SolidColorBrush x:Key="TextPrimary" Color="#FF1E293B"/>
+    <SolidColorBrush x:Key="TextSecondary" Color="#FF64748B"/>
+    <SolidColorBrush x:Key="TextDisabled" Color="#FF94A3B8"/>
+
+    <!-- 主窗口主按钮、选中导航、单选点：blue-500。 -->
+    <SolidColorBrush x:Key="Accent" Color="#FF3B82F6"/>
+    <!-- 设置窗主按钮（确定 / 下一步）：blue-600。 -->
+    <SolidColorBrush x:Key="AccentStrong" Color="#FF2563EB"/>
+    <!-- 选中卡片底：blue-100。 -->
+    <SolidColorBrush x:Key="AccentWeak" Color="#FFDBEAFE"/>
+    <!-- 主按钮禁用态：blue-500 兑白，图上 `_31` 的「下一步」。 -->
+    <SolidColorBrush x:Key="AccentDisabled" Color="#FF8EB5F6"/>
+
+    <!-- 「开始录制」按钮：emerald-500。 -->
+    <SolidColorBrush x:Key="Success" Color="#FF10B981"/>
+
+    <SolidColorBrush x:Key="Warning" Color="#FFF59E0B"/>
+    <SolidColorBrush x:Key="WarningSurface" Color="#FFFFFBEB"/>
+
+    <!--
+        ⚠️ 这一档在 32 张设计图里**没有出现过**（没找到任何红字/红底）。
+        取 Tailwind red-500，与整套色板同源 —— 不是从图上量的，
+        写在这里是为了不让下一个人以为它是量出来的。
+    -->
+    <SolidColorBrush x:Key="Danger" Color="#FFEF4444"/>
+
+    <!-- 预览区深底：slate-900。`_35` 的录制预览就是它。 -->
+    <SolidColorBrush x:Key="VideoBackground" Color="#FF0F172A"/>
 
     <!--
         字体只用**系统自带**的，不引任何字体/图片素材文件 ——
@@ -116,7 +167,7 @@
         <Setter Property="Background" Value="{StaticResource Surface}"/>
         <Setter Property="BorderBrush" Value="{StaticResource CardBorder}"/>
         <Setter Property="BorderThickness" Value="1"/>
-        <Setter Property="CornerRadius" Value="6"/>
+        <Setter Property="CornerRadius" Value="8"/>
         <Setter Property="Padding" Value="16"/>
         <Setter Property="Margin" Value="0,0,0,12"/>
     </Style>
@@ -125,36 +176,54 @@
     <!--
         重写模板的理由：默认 Button 的 chrome 是系统渐变 + 系统边框，
         自定 Background 之后蓝色底会和它打架（悬停/按下时尤其明显）。
-        这两个模板只做「圆角 + 底色 + 悬停/按下/禁用三态」，不碰内容呈现。
+
+        ⚠️ 悬停/按下**不用写死的色值**，而是在底色上叠一层半透明黑：
+        图上 32 张全是静态截图，**没有任何一张量得到悬停态** ——
+        与其猜 Tailwind 的 hover 步进，不如用一条对任何底色都成立的规律。
+        好处是同一个模板同时服务 `Accent` 与 `AccentStrong` 两套蓝
+        （否则得为设置窗那份颜色再抄一遍三十行模板）。
     -->
     <Style x:Key="PrimaryButton" TargetType="Button">
         <Setter Property="FontFamily" Value="{StaticResource UiFont}"/>
         <Setter Property="FontSize" Value="13"/>
         <Setter Property="Foreground" Value="White"/>
         <Setter Property="Background" Value="{StaticResource Accent}"/>
-        <Setter Property="Padding" Value="18,7"/>
+        <Setter Property="Padding" Value="18,8"/>
         <Setter Property="Cursor" Value="Hand"/>
         <Setter Property="Template">
             <Setter.Value>
                 <ControlTemplate TargetType="Button">
-                    <Border x:Name="Bd" Background="{TemplateBinding Background}"
-                            CornerRadius="4" Padding="{TemplateBinding Padding}">
-                        <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                    <Border Background="{TemplateBinding Background}"
+                            CornerRadius="6" SnapsToDevicePixels="True">
+                        <Grid>
+                            <Border x:Name="Overlay" Background="Transparent" CornerRadius="6"/>
+                            <ContentPresenter Margin="{TemplateBinding Padding}"
+                                              HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                        </Grid>
                     </Border>
                     <ControlTemplate.Triggers>
                         <Trigger Property="IsMouseOver" Value="True">
-                            <Setter TargetName="Bd" Property="Background"
-                                    Value="{StaticResource AccentHover}"/>
+                            <Setter TargetName="Overlay" Property="Background" Value="#1F000000"/>
+                        </Trigger>
+                        <Trigger Property="IsPressed" Value="True">
+                            <Setter TargetName="Overlay" Property="Background" Value="#33000000"/>
                         </Trigger>
                         <Trigger Property="IsEnabled" Value="False">
-                            <Setter TargetName="Bd" Property="Background"
-                                    Value="{StaticResource TextDisabled}"/>
+                            <Setter Property="Background" Value="{StaticResource AccentDisabled}"/>
                             <Setter Property="Foreground" Value="White"/>
+                            <Setter Property="Cursor" Value="Arrow"/>
                         </Trigger>
                     </ControlTemplate.Triggers>
                 </ControlTemplate>
             </Setter.Value>
         </Setter>
+    </Style>
+
+    <!--
+        设置窗专用：同一个模板，只把底色换成 blue-600（裁决「两套蓝并存」）。
+    -->
+    <Style x:Key="PrimaryButtonStrong" TargetType="Button" BasedOn="{StaticResource PrimaryButton}">
+        <Setter Property="Background" Value="{StaticResource AccentStrong}"/>
     </Style>
 
     <Style x:Key="SecondaryButton" TargetType="Button">
@@ -162,27 +231,32 @@
         <Setter Property="FontSize" Value="13"/>
         <Setter Property="Foreground" Value="{StaticResource TextPrimary}"/>
         <Setter Property="Background" Value="{StaticResource Surface}"/>
-        <Setter Property="Padding" Value="18,7"/>
+        <Setter Property="Padding" Value="18,8"/>
         <Setter Property="Cursor" Value="Hand"/>
         <Setter Property="Template">
             <Setter.Value>
                 <ControlTemplate TargetType="Button">
-                    <Border x:Name="Bd" Background="{TemplateBinding Background}"
-                            BorderBrush="{StaticResource CardBorder}" BorderThickness="1"
-                            CornerRadius="4" Padding="{TemplateBinding Padding}">
-                        <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                    <Border Background="{TemplateBinding Background}"
+                            BorderBrush="{StaticResource BorderStrong}" BorderThickness="1"
+                            CornerRadius="6" SnapsToDevicePixels="True">
+                        <Grid>
+                            <Border x:Name="Overlay" Background="Transparent" CornerRadius="6"/>
+                            <ContentPresenter Margin="{TemplateBinding Padding}"
+                                              HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                        </Grid>
                     </Border>
                     <ControlTemplate.Triggers>
                         <Trigger Property="IsMouseOver" Value="True">
-                            <Setter TargetName="Bd" Property="Background"
-                                    Value="{StaticResource AccentWeak}"/>
-                            <Setter TargetName="Bd" Property="BorderBrush"
-                                    Value="{StaticResource Accent}"/>
+                            <Setter TargetName="Overlay" Property="Background" Value="#0F000000"/>
+                            <Setter Property="Background" Value="{StaticResource SurfaceMuted}"/>
+                        </Trigger>
+                        <Trigger Property="IsPressed" Value="True">
+                            <Setter TargetName="Overlay" Property="Background" Value="#1F000000"/>
                         </Trigger>
                         <Trigger Property="IsEnabled" Value="False">
                             <Setter Property="Foreground" Value="{StaticResource TextDisabled}"/>
-                            <Setter TargetName="Bd" Property="Background"
-                                    Value="{StaticResource SurfaceMuted}"/>
+                            <Setter Property="Background" Value="{StaticResource SurfaceMuted}"/>
+                            <Setter Property="Cursor" Value="Arrow"/>
                         </Trigger>
                     </ControlTemplate.Triggers>
                 </ControlTemplate>
@@ -190,45 +264,47 @@
         </Setter>
     </Style>
 
-    <!-- ── 左侧导航项 ────────────────────────────────────────────── -->
+    <!--
+        危险操作（删除录像这类）。与主按钮同构，只换红底。
+        ⚠️ 红色本身是从 Tailwind 取的同源色（图上没有红），见上面 `Danger` 的说明。
+    -->
+    <Style x:Key="DangerButton" TargetType="Button" BasedOn="{StaticResource PrimaryButton}">
+        <Setter Property="Background" Value="{StaticResource Danger}"/>
+    </Style>
+
+    <!-- ── 左侧导航项（设置窗） ──────────────────────────────────── -->
     <!--
         用 RadioButton 而不是 Button/ToggleButton：**互斥是白送的**
         （同一个 GroupName 自动单选），不用自己维护「当前选中谁」。
-        选中态 = 浅蓝底 + 蓝色文字 + 左侧一条蓝色指示条。
+
+        选中态照图：**白底 + 蓝字**，浮在 `SidebarBackground`（slate-50）的侧栏上。
+        ⚠️ 图上量到的是「选中 = 纯白 / 未选中 = slate-50」，**不是**浅蓝底 ——
+        这一点与上一版 SaaS 外观相反，别照旧印象改回去。
     -->
     <Style x:Key="NavItem" TargetType="RadioButton">
         <Setter Property="FontFamily" Value="{StaticResource UiFont}"/>
-        <Setter Property="FontSize" Value="14"/>
-        <Setter Property="Foreground" Value="{StaticResource TextPrimary}"/>
+        <Setter Property="FontSize" Value="13"/>
+        <Setter Property="Foreground" Value="{StaticResource TextSecondary}"/>
         <Setter Property="Cursor" Value="Hand"/>
         <Setter Property="Margin" Value="8,2"/>
         <Setter Property="Template">
             <Setter.Value>
                 <ControlTemplate TargetType="RadioButton">
-                    <Border x:Name="Bd" Background="Transparent" CornerRadius="4"
-                            Padding="12,9">
-                        <Grid>
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="3"/>
-                                <ColumnDefinition Width="*"/>
-                            </Grid.ColumnDefinitions>
-                            <!-- 左侧指示条：默认透明，选中才上蓝色 -->
-                            <Border x:Name="Bar" Grid.Column="0" Width="3" Height="16"
-                                    CornerRadius="2" Background="Transparent"
-                                    HorizontalAlignment="Left" Margin="-8,0,0,0"/>
-                            <ContentPresenter Grid.Column="1" VerticalAlignment="Center"/>
-                        </Grid>
+                    <Border x:Name="Bd" Background="Transparent"
+                            BorderBrush="Transparent" BorderThickness="1"
+                            CornerRadius="6" Padding="12,9" SnapsToDevicePixels="True">
+                        <ContentPresenter VerticalAlignment="Center"/>
                     </Border>
                     <ControlTemplate.Triggers>
                         <Trigger Property="IsMouseOver" Value="True">
                             <Setter TargetName="Bd" Property="Background"
-                                    Value="{StaticResource SurfaceMuted}"/>
+                                    Value="{StaticResource SurfaceAlt}"/>
                         </Trigger>
                         <Trigger Property="IsChecked" Value="True">
                             <Setter TargetName="Bd" Property="Background"
-                                    Value="{StaticResource AccentWeak}"/>
-                            <Setter TargetName="Bar" Property="Background"
-                                    Value="{StaticResource Accent}"/>
+                                    Value="{StaticResource Surface}"/>
+                            <Setter TargetName="Bd" Property="BorderBrush"
+                                    Value="{StaticResource CardBorder}"/>
                             <Setter Property="Foreground" Value="{StaticResource Accent}"/>
                             <Setter Property="FontWeight" Value="SemiBold"/>
                         </Trigger>
@@ -236,6 +312,50 @@
                 </ControlTemplate>
             </Setter.Value>
         </Setter>
+    </Style>
+
+    <!-- ── 开关（ToggleButton） ──────────────────────────────────── -->
+    <!--
+        照图：胶囊轨道 + 白色圆点，开 = 蓝底、关 = 灰底。
+        用 ToggleButton 而不是 CheckBox：绑定的就是个 bool，不用处理 null。
+    -->
+    <Style x:Key="ToggleSwitch" TargetType="ToggleButton">
+        <Setter Property="Cursor" Value="Hand"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="ToggleButton">
+                    <Border x:Name="Track" Width="40" Height="22" CornerRadius="11"
+                            Background="{StaticResource BorderStrong}" SnapsToDevicePixels="True">
+                        <Ellipse x:Name="Knob" Width="16" Height="16" Fill="White"
+                                 HorizontalAlignment="Left" Margin="3,0,0,0"/>
+                    </Border>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsChecked" Value="True">
+                            <Setter TargetName="Track" Property="Background"
+                                    Value="{StaticResource Accent}"/>
+                            <Setter TargetName="Knob" Property="HorizontalAlignment" Value="Right"/>
+                            <Setter TargetName="Knob" Property="Margin" Value="0,0,3,0"/>
+                        </Trigger>
+                        <Trigger Property="IsEnabled" Value="False">
+                            <Setter Property="Opacity" Value="0.5"/>
+                            <Setter Property="Cursor" Value="Arrow"/>
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <!-- ── 小标签 ────────────────────────────────────────────────── -->
+    <!--
+        状态小标签（「已备份」「待上传」「未配置」这类）。用法：
+        `<Border Style="{StaticResource TagPill}"><TextBlock Text="已备份"/></Border>`
+        —— 底色/字色由调用处设，因为图上有五六种颜色，写死在这里还不如不写。
+    -->
+    <Style x:Key="TagPill" TargetType="Border">
+        <Setter Property="CornerRadius" Value="4"/>
+        <Setter Property="Padding" Value="7,2"/>
+        <Setter Property="VerticalAlignment" Value="Center"/>
     </Style>
 
 </ResourceDictionary>

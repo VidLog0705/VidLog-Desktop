@@ -1,50 +1,64 @@
 using System.ComponentModel;
-using System.Diagnostics;
 using System.IO;
 using System.Windows;
 using System.Windows.Threading;
 
 // 本工程同时开了 UseWPF 与 UseWindowsForms（后者只为托盘图标），
-// ImplicitUsings 会把两边的命名空间都带进来，于是 ComboBox / KeyEventArgs
-// 这类同名类型变成「不明确」。这里用**别名钉死成 WPF 的那套** ——
-// 这个文件里的控件全是 WPF 的，WinForms 一个都不该出现。
-using ComboBox = System.Windows.Controls.ComboBox;
-using ComboBoxItem = System.Windows.Controls.ComboBoxItem;
-using Key = System.Windows.Input.Key;
-using KeyEventArgs = System.Windows.Input.KeyEventArgs;
+// ImplicitUsings 会把两边的命名空间都带进来，于是 MessageBox / Brush 这类
+// 同名类型变成「不明确」。这里用**别名钉死成 WPF 的那套** ——
+// 这个文件里的控件与画笔全是 WPF 的，WinForms 一个都不该出现。
+using Brush = System.Windows.Media.Brush;
 using MessageBox = System.Windows.MessageBox;
 using MessageBoxImage = System.Windows.MessageBoxImage;
 using MessageBoxResult = System.Windows.MessageBoxResult;
-using RadioButton = System.Windows.Controls.RadioButton;
-using SelectionChangedEventArgs = System.Windows.Controls.SelectionChangedEventArgs;
 using TextChangedEventArgs = System.Windows.Controls.TextChangedEventArgs;
+using VidLog.Desktop.App.Platform;
 using VidLog.Desktop.Core;
-using VidLog.Desktop.Core.Cleanup;
-using VidLog.Desktop.Core.Clock;
-using VidLog.Desktop.Core.Configuration;
-using VidLog.Desktop.Core.Diagnostics;
-using VidLog.Desktop.Core.Labels;
-using VidLog.Desktop.Core.Media;
-using VidLog.Desktop.Core.Upload;
 using VidLog.Desktop.Core.Punches;
 using VidLog.Desktop.Core.Recording;
 using VidLog.Desktop.Core.Scanning;
 using VidLog.Desktop.Core.Search;
+using VidLog.Desktop.Core.Upload;
 
 namespace VidLog.Desktop.App;
 
 /// <summary>
-/// 主窗口 —— 纯视图。
+/// 主窗口（「录制台」）—— 纯视图。
 /// </summary>
 /// <remarks>
+/// <para>
 /// 装配与生命周期都在 <see cref="AppHost"/> 里：规格 §3.2.1 要求后台仍能收码，
 /// 而那要求钩子与录制协调器活得比窗口长。这里只做呈现与把操作转成 Core 调用。
+/// </para>
+/// <para>
+/// ⚠️ <b>2026-09-28 大拆</b>：原先这一个窗口里塞了四个页（概览 / 工作 / 检索 / 设置），
+/// 靠左竖导航切 <c>Visibility</c>。照需求方的设计图改成了「录制台」，于是——
+/// <list type="bullet">
+///   <item>设置 → 独立窗 <see cref="SettingsWindow"/></item>
+///   <item>检索与回放 → 独立窗 <see cref="SearchWindow"/></item>
+///   <item>概览 → 收进本窗右侧的「本机录制动态」面板（需求方 2026-09-28 裁决）</item>
+/// </list>
+/// <b>拆窗会动近九十个控件的落点，而这件事没有任何测试挡得住</b>
+/// （App 层是 <c>net9.0-windows</c>，<c>Core.Tests</c> 是 <c>net9.0</c>，引用不了）
+/// —— 搬错一个就是启动即崩。所以这一批**一次只搬一个窗口、搬完跑一次**。
+/// </para>
 /// </remarks>
 public partial class MainWindow : Window
 {
     private readonly AppHost _host;
     private readonly DispatcherTimer _ticker;
-    private bool _suppressSettingsEvents;
+
+    /// <summary>
+    /// 预览区右上角那个「可信时钟」的刷新。
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ 它**自己一个 timer、一直跑**，不搭 <see cref="_ticker"/> 的车：
+    /// 那个是录制时按需启停的，而屏幕上的时间不该在空闲时停住 ——
+    /// 一个停在 18:19:15 不动的水印，用户会以为程序卡死了。
+    /// （本来也不该拿它当表用，但**它是这台机器上唯一说了真话的时间**，
+    /// 用户对着它核对快递单上的手写时间，这是设计图里它存在的理由。）
+    /// </remarks>
+    private readonly DispatcherTimer _clockTicker;
 
     public MainWindow(AppHost host)
     {
@@ -54,6 +68,9 @@ public partial class MainWindow : Window
         // 界面上「已录 / 已存」只能靠定时刷新 —— 协调器不推送进度，Elapsed 是拉取式的。
         _ticker = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(500) };
         _ticker.Tick += (_, _) => UpdateRecordingStatus();
+
+        _clockTicker = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
+        _clockTicker.Tick += (_, _) => UpdatePreviewClock();
 
         // 待批准的改名请求（规格 §3.4.5 ③）。
         //
@@ -73,6 +90,7 @@ public partial class MainWindow : Window
         Closed += (_, _) =>
         {
             _ticker.Stop();
+            _clockTicker.Stop();
             _renameWatch.Stop();
         };
 
@@ -131,28 +149,33 @@ public partial class MainWindow : Window
             waiting.DeviceId, approved: answer == MessageBoxResult.Yes);
     }
 
+    // ─────────────────────────────────────────────
+    // 启动
+    // ─────────────────────────────────────────────
+
     private async void OnLoaded(object sender, RoutedEventArgs e)
     {
-        ShowWarnings();
-
-        SearchButton.IsEnabled = true;
-        OpenDataFolderButton.IsEnabled = true;
-
         // 装钩子 —— 装不上要给用户看见（I3），不能让他一直奇怪扫码枪怎么没反应。
         _host.StartKeyboardHook();
 
-        LoadSettingsIntoUi();
-        await LoadCamerasAsync();
+        ShowStatusSummaries();
 
-        // 回放服务起没起来，在启动报告里。
-        OpenPlaybackButton.IsEnabled = _host.Services.Server?.BaseUrl is { Length: > 0 };
-        StatusText.Text = _host.Services.Server?.BaseUrl is { Length: > 0 }
-            ? $"服务已就绪。回放地址：{_host.Services.Server.BaseUrl}"
+        // 单号框**一直可用**：手动输入单号这件事与摄像头在不在一点关系都没有。
+        // （拆窗之前它是跟着摄像头枚举一起解禁的 —— 那是个耦合，顺手拆掉。）
+        WaybillBox.IsEnabled = true;
+        RefreshStartButton();
+
+        UpdatePreviewClock();
+        UpdatePreviewHint();
+        _clockTicker.Start();
+
+        StatusText.Text = _host.Services.Server?.BaseUrl is { Length: > 0 } url
+            ? $"服务已就绪。回放地址：{url}"
             : "服务已就绪。回放服务未启动。";
 
         // 上次没走完的录像收回来没有（规格 §3.1.1）。**必须说出来** ——
         // 「悄悄收好了」和「其实什么都没收」在界面上长得一模一样，用户无从分辨。
-        // 收尾失败的会由 StartupReport.Warnings 走上面的「需要注意」区，不在这里重复。
+        // 收尾失败的会由 StartupReport.Warnings 走「需要注意」那一块，不在这里重复。
         var recovered = _host.Startup.RecoveredCount;
         if (recovered > 0)
         {
@@ -165,13 +188,84 @@ public partial class MainWindow : Window
         // 清理计划里（它确实会被 24 小时豁免挡住，但顺序反了会让人以为是它被删的）。
         await RunStartupCleanupAsync();
 
-        // ⚠️ 侧栏那一行不会自己初始化：`OnNavChanged` 在构造期间被挡回去了
-        // （那时面板字段还都是 null），而 ticker 只在录制时才跑。
         UpdateRecordingStatus();
 
-        // 默认页是「概览」，它的数要算一次。**排在清理之后** ——
+        // 「本机录制动态」的数要算一次。**排在清理之后** ——
         // 否则刚清完的那批还挂在「待清理」上。
         await RefreshOverviewAsync();
+    }
+
+    /// <summary>
+    /// 右边那一栏顶部那两行状态（校准 / 许可）。
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ 走 <see cref="StatusSummaries"/> 而**不在这里另写一份**：设置窗也要显示
+    /// 同样两句话，各写一份迟早出现「主窗说已校准、设置窗说没校准」——
+    /// 那种自相矛盾比哪一边说错都更让人不敢信这个界面。
+    /// </remarks>
+    private void ShowStatusSummaries()
+    {
+        NavClockText.Text = StatusSummaries.Calibration(_host);
+        NavLicenseText.Text = StatusSummaries.License(_host);
+    }
+
+    /// <summary>
+    /// 预览区右上角那个时间水印。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// ⚠️ 它读的是 <b>可信时钟</b>（<c>TrustedClock</c>），不是系统墙钟 ——
+    /// 与录像里烧进去的那个时间同源。用户拿它核对快递单上的手写时间，
+    /// 所以两者**必须是一个时间**。
+    /// </para>
+    /// <para>
+    /// ⚠️ <b>未校准时不许显示一个时间</b>：那时 <c>Now</c> 会静默回落到墙钟，
+    /// 而一个看起来正常、实际上不可信的时间比空着坏得多 ——
+    /// 用户会拿它去做判断。未校准就如实说未校准（规格 §3.6.4 的同一精神）。
+    /// </para>
+    /// </remarks>
+    private void UpdatePreviewClock()
+    {
+        var clock = _host.Services.TrustedClock;
+
+        if (!clock.IsCalibrated)
+        {
+            PreviewClockText.Text = "时间未校准";
+            PreviewClockText.Foreground = (Brush)FindResource("Warning");
+            return;
+        }
+
+        var now = clock.Now.ToLocalTime();
+
+        PreviewClockText.Text =
+            $"UTC{(now.Offset < TimeSpan.Zero ? "-" : "+")}{Math.Abs(now.Offset.Hours):00}: "
+            + now.ToString("yyyy/MM/dd HH:mm:ss");
+    }
+
+    /// <summary>
+    /// 预览区中央那行说明。
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ **必须说清楚为什么没有画面**。设计图上那儿是一路真画面，而这一版不是 ——
+    /// 一个纯黑的框与「相机坏了」「程序卡住了」「就这样设计的」三种情况长得一模一样。
+    /// </remarks>
+    private void UpdatePreviewHint()
+    {
+        if (_host.Services.FfmpegPath is null)
+        {
+            PreviewHintText.Text = "本机没有 FFmpeg，无法采集，也没有画面。";
+            return;
+        }
+
+        if (_host.DeviceName.Length == 0)
+        {
+            PreviewHintText.Text = "没有找到摄像头，所以这里没有画面。到【设置 → 设备与外观】里看看。";
+            return;
+        }
+
+        PreviewHintText.Text =
+            "取景画面还没接上：相机是独占设备，录制中要再取一路画面得先真机验一次。"
+            + "录制本身不受影响。";
     }
 
     /// <summary>
@@ -185,8 +279,8 @@ public partial class MainWindow : Window
     /// </para>
     /// <para>
     /// ⚠️ 归档层是本机磁盘时<b>连问都不问</b>（规格 §3.5.1：那时盘上那份是唯一副本）。
-    /// 判据取自 <see cref="CleanupService.CanCleanup"/>，与执行层那道闸是同一份 ——
-    /// 界面上不问、执行层也会拒，两道都在。
+    /// 判据取自 <see cref="VidLog.Desktop.Core.Cleanup.CleanupService.CanCleanup"/>，
+    /// 与执行层那道闸是同一份 —— 界面上不问、执行层也会拒，两道都在。
     /// </para>
     /// </remarks>
     private async Task RunStartupCleanupAsync()
@@ -243,93 +337,29 @@ public partial class MainWindow : Window
         }
     }
 
-    private void ShowWarnings()
-    {
-        if (_host.Warnings.Count == 0)
-        {
-            return;
-        }
-
-        WarningsHeader.Visibility = Visibility.Visible;
-        WarningsList.Visibility = Visibility.Visible;
-
-        foreach (var warning in _host.Warnings)
-        {
-            WarningsList.Items.Add(warning);
-        }
-    }
-
     // ─────────────────────────────────────────────
-    // 导航与概览（SaaS 版式，2026-09-28）
+    // 「本机录制动态」（原「概览」页，2026-09-28 收进右侧面板）
     // ─────────────────────────────────────────────
 
-    /// <summary>「概览」正在重算 —— 连点【刷新】不该叠起来。</summary>
+    /// <summary>正在重算 —— 连点【刷新】不该叠起来。</summary>
     private bool _overviewBusy;
-
-    /// <summary>
-    /// 换了左边那一列 —— 切四个面板的 <see cref="UIElement.Visibility"/>。
-    /// </summary>
-    /// <remarks>
-    /// <para>
-    /// ⚠️ 这里**没有 MVVM**：本仓至今零 ViewModel、零 <c>ICommand</c>，
-    /// 为一个导航引一整套 MVVM 是这一批最不该做的事。
-    /// 互斥也不用自己维护 —— 四个导航项是同一个 <c>GroupName</c> 的
-    /// <see cref="RadioButton"/>，选中谁由 WPF 保证。
-    /// </para>
-    /// <para>
-    /// ⚠️ <b>这件事没有任何测试挡着</b>：App 层的 TFM 是 <c>net9.0-windows</c>，
-    /// 而 <c>Core.Tests</c> 是 <c>net9.0</c>、引用不了它。
-    /// 所以「点了导航真的换页」只能靠人跑一遍看 —— 别以为它是被守着的。
-    /// </para>
-    /// </remarks>
-    private async void OnNavChanged(object sender, RoutedEventArgs e)
-    {
-        // ⚠️ 构造期间就会触发：`NavOverview` 上写着 `IsChecked="True"`，
-        // 而 `Checked` 在 `InitializeComponent` 解析到那一行时就发了 ——
-        // 那时下面这些面板**还一个都没建出来**（XAML 是按文档顺序建的，
-        // 而 `x:Name` 的字段也是边解析边赋的）。不挡就是 NullReferenceException。
-        if (WorkPanel is null || OverviewPanel is null || PageTitleText is null)
-        {
-            return;
-        }
-
-        var target = (sender as RadioButton)?.Tag as string;
-
-        OverviewPanel.Visibility = target == "Overview" ? Visibility.Visible : Visibility.Collapsed;
-        WorkPanel.Visibility = target == "Work" ? Visibility.Visible : Visibility.Collapsed;
-        SearchPanel.Visibility = target == "Search" ? Visibility.Visible : Visibility.Collapsed;
-        SettingsPanel.Visibility = target == "Settings" ? Visibility.Visible : Visibility.Collapsed;
-
-        PageTitleText.Text = target switch
-        {
-            "Work" => "工作",
-            "Search" => "检索与回放",
-            "Settings" => "设置",
-            _ => "概览",
-        };
-
-        if (target == "Overview")
-        {
-            await RefreshOverviewAsync();
-        }
-    }
 
     private async void OnRefreshOverview(object sender, RoutedEventArgs e) =>
         await RefreshOverviewAsync();
 
     /// <summary>
-    /// 重算「概览」页。
+    /// 重算右侧那一栏。
     /// </summary>
     /// <remarks>
     /// <para>
-    /// ⚠️ <b>这一页只放盘上真能算出来的东西</b>（规格 §13.1）。这里**没有**
+    /// ⚠️ <b>只放盘上真能算出来的东西</b>（规格 §13.1）。这里**没有**
     /// 「待上传 N 条」「在线手机 N 台」「归档层现在通不通」这类卡片 ——
     /// 桌面端今天没有上传队列、没有设备心跳、没有 per-录像的归档状态字段。
     /// 算不出来的数编一个上去比空着坏得多：用户会拿它去做判断（删不删盘上的东西）。
     /// </para>
     /// <para>
     /// ⚠️ 它**不挂那 500ms 的 ticker**：下面 <c>LoadAllAsync</c> 是全量读索引文件，
-    /// 半秒一次会把界面拖死。只在进页面时与点【刷新】时算。
+    /// 半秒一次会把界面拖死。只在进窗口时与点【刷新】时算。
     /// </para>
     /// </remarks>
     private async Task RefreshOverviewAsync()
@@ -346,7 +376,7 @@ public partial class MainWindow : Window
         {
             var root = _host.Services.Layout.ArchiveRoot;
 
-            // ── ① 今天 ────────────────────────────────────────────────
+            // ── ① 今天（底部统计条 + 右栏）──────────────────────────────
             var today = DateTime.Today;
             var from = new DateTimeOffset(today, DateTimeOffset.Now.Offset);
             var to = new DateTimeOffset(today.AddDays(1), DateTimeOffset.Now.Offset);
@@ -357,6 +387,13 @@ public partial class MainWindow : Window
                 new RecordingQuery { From = from, To = to, Limit = int.MaxValue });
 
             var known = hits.Aggregate(TimeSpan.Zero, (sum, hit) => sum + hit.Entry.Duration);
+            var average = hits.Count == 0
+                ? TimeSpan.Zero
+                : TimeSpan.FromTicks(known.Ticks / hits.Count);
+
+            TodayCountText.Text = $"今日 {hits.Count} 件";
+            TodayAverageText.Text = $"平均 {(int)average.TotalSeconds} 秒";
+            TodayTotalText.Text = $"总耗时 {(int)known.TotalSeconds} 秒";
 
             OvTodayText.Text =
                 $"{hits.Count} 段 · 已知时长合计 {(int)known.TotalHours} 小时 {known.Minutes} 分";
@@ -379,13 +416,14 @@ public partial class MainWindow : Window
             OvUpdatedText.Text = $"统计于 {DateTime.Now:HH:mm:ss}";
 
             // ── ② 状态 ────────────────────────────────────────────────
+            //
+            // ⚠️ 读的是 `AppHost.DeviceName`（**启动时**定下来的那个），
+            // 不是设置里用户刚选的那个 —— 摄像头改了要重启才生效。
             OvCameraText.Text = _host.Services.FfmpegPath is null
                 ? "没有 FFmpeg，无法采集"
-                : CameraCombo.SelectedItem as string ?? "没有找到摄像头";
-
-            // 与设置页、左侧栏读的是**同一个方法** —— 三处不可能说法不一。
-            OvClockText.Text = CalibrationSummary();
-            OvLicenseText.Text = LicenseSummary();
+                : _host.DeviceName is { Length: > 0 } device
+                    ? device
+                    : "没有找到摄像头";
 
             var server = _host.Services.Server;
             OvServerText.Text = server?.BaseUrl is { Length: > 0 } url
@@ -431,10 +469,14 @@ public partial class MainWindow : Window
                 ? string.Empty
                 : $"{overdue} 条未备份的已过保留期（不会被自动删，只是提醒上传）";
 
+            // ⚠️ 启动时的警告**全列出来**，不只第一条。
+            // 原先主窗有一块专门的「需要注意」清单（拆窗时删掉了，明细现在在设置窗里），
+            // 这里若只写第一条，用户就得去设置窗才知道后面还说了什么 ——
+            // 而警告里有「没有摄像头，无法录制」这种**必须当场知道**的。
             OvWarningsText.Text = _host.Warnings.Count == 0
                 ? string.Empty
-                : $"⚠️ 启动时有 {_host.Warnings.Count} 处需要注意：{_host.Warnings[0]}"
-                  + "（明细见「设置」页）";
+                : "⚠️ 启动时有需要注意的地方：\n"
+                  + string.Join('\n', _host.Warnings.Select(w => $"· {w}"));
 
             OvTodoCard.Visibility = cleanupLine.Length > 0 || overdue > 0 || _host.Warnings.Count > 0
                 ? Visibility.Visible
@@ -480,460 +522,8 @@ public partial class MainWindow : Window
         }
     }
 
-    private void LoadSettingsIntoUi()
-    {
-        _suppressSettingsEvents = true;
-        try
-        {
-            SelectByTag(ModeCombo, _host.Settings.Mode.ToString());
-            SelectByTag(IdleCombo, _host.Settings.IdleReminder.ToString());
-            IdleMinutesBox.Text = _host.Settings.IdleReminderMinutes.ToString();
-            SelectByTag(DurationCombo, _host.Settings.DurationFallback.ToString());
-            SelectByTag(ArchiveCombo, _host.Settings.ArchiveBackend.ToString());
-            ArchivePathBox.Text = _host.Settings.ArchiveDirectory ?? string.Empty;
-            SelectRadio(CodecButtons, _host.Settings.Codec.ToString());
-            SelectRadio(ResolutionButtons, _host.Settings.Resolution.ToString());
-            ShowEffectiveSpec();
-            SegmentBox.Text = _host.Settings.SegmentMinutes.ToString();
-            DuplicateDaysBox.Text = _host.Settings.DuplicateCheckDays.ToString();
-            PortBox.Text = _host.Settings.PlaybackPort.ToString();
-            SelectRetention(ArchivedOutboundCombo, _host.Settings.Retention.ArchivedOutbound);
-            SelectRetention(ArchivedReturnCombo, _host.Settings.Retention.ArchivedReturn);
-            SelectRetention(UnarchivedOutboundCombo, _host.Settings.Retention.UnarchivedOutbound);
-            SelectRetention(UnarchivedReturnCombo, _host.Settings.Retention.UnarchivedReturn);
-        }
-        finally
-        {
-            _suppressSettingsEvents = false;
-        }
-
-        ShowRetention();
-        ShowCalibration();
-        ShowLicense();
-    }
-
     // ─────────────────────────────────────────────
-    // 许可（规格 §3.9 / `docs/04-许可设计.md`）
-    // ─────────────────────────────────────────────
-
-    /// <summary>
-    /// 把机器码与激活状态显示出来。
-    /// </summary>
-    /// <remarks>
-    /// <para>
-    /// ⚠️ <b>机器码一直显示，激活不激活都显示</b>：它是用户唯一需要抄给提供方的东西，
-    /// 而那件事发生在**他还没激活的时候**。藏在「激活之后」的界面里等于没有。
-    /// </para>
-    /// <para>
-    /// ⚠️ 降级（某一段 WMI 读不到）也**必须显示出来**：全零段的机器码没有任何区分度，
-    /// 同型号的机器会互相匹配 —— 用户拿它去签发，签出来的码在别人的机器上也能用。
-    /// 这是要让他看见、并且去查为什么读不到的。
-    /// </para>
-    /// </remarks>
-    /// <summary>
-    /// 许可状态的一句话（左侧栏与概览页用）。
-    /// </summary>
-    /// <remarks>
-    /// ⚠️ <b>「本机软件没配好公钥」与「没激活」是两回事</b>，必须分开说 ——
-    /// 混成一句话，用户会拿着机器码一直去找提供方换码，而换了也没用。
-    /// </remarks>
-    private string LicenseSummary()
-    {
-        var license = _host.Services.License;
-
-        if (license is null)
-        {
-            return "⛔ 本机软件没配好许可公钥（部署时漏了）";
-        }
-
-        var status = license.Status;
-
-        return status.Activated
-            ? $"✅ 已激活：允许接入 {status.Slots} 台手机端。"
-            : $"⛔ {status.FailureReason}允许接入 0 台手机端。";
-    }
-
-    private void ShowLicense()
-    {
-        var license = _host.Services.License;
-
-        if (license is null)
-        {
-            // 公钥没配（部署时漏了环境变量）。**这不是用户的激活码有问题** ——
-            // 说准，否则他会一直去找卖家换码，而换了也没用。
-            MachineCodeBox.Text = string.Empty;
-            ActivationBox.IsEnabled = false;
-            ActivateButton.IsEnabled = false;
-            NavLicenseText.Text = LicenseSummary();
-            LicenseNote.Text =
-                "⛔ 本机软件没配好许可公钥（部署时漏了），激活会一律失败。"
-                + "这是安装的问题，不是你激活码的问题 —— 请联系提供方重新安装。"
-                + "⚠️ 这只影响新的录制与新的手机接入，已有的录像照常可查可导出。";
-            return;
-        }
-
-        var status = license.Status;
-        MachineCodeBox.Text = status.MachineCode;
-
-        // 左侧栏那一行用短的（长的那段留在本页）。
-        NavLicenseText.Text = LicenseSummary();
-
-        var degraded = status.Degraded
-            ? "⚠️ 这台机器的部分硬件标识读不到（机器码里有全零段），"
-              + "同型号的机器可能算出一样的码 —— 请先查清为什么读不到（常见是 WMI 被禁用了）。"
-            : string.Empty;
-
-        LicenseNote.Text = status.Activated
-            ? $"✅ 已激活：允许接入 {status.Slots} 台手机端。{degraded}"
-            : $"⛔ {status.FailureReason}允许接入 0 台手机端。{degraded}";
-
-        ActivationBox.IsEnabled = true;
-        ActivateButton.IsEnabled = true;
-    }
-
-    /// <summary>点【复制】：把机器码放进剪贴板。</summary>
-    /// <remarks>
-    /// 包一层 try：剪贴板是**跨进程共享**的资源，另一个程序正占着它时
-    /// <c>SetText</c> 会抛 <c>COMException</c>。为了这个崩掉整个界面不值得，
-    /// 但也不能装作复制成功了 —— 所以失败时明说「请手动选中复制」，
-    /// 而框里的字本身就是可选的。
-    /// </remarks>
-    private void OnCopyMachineCode(object sender, RoutedEventArgs e)
-    {
-        var code = MachineCodeBox.Text;
-
-        if (string.IsNullOrWhiteSpace(code))
-        {
-            return;
-        }
-
-        try
-        {
-            // 必须限定：本程序同时引了 WinForms（托盘图标），
-            // 那边的 Clipboard 与 WPF 的撞名，不限定就编译不过。
-            System.Windows.Clipboard.SetText(code);
-            LicenseNote.Text = "机器码已复制。把它发给提供方换取激活码。";
-        }
-        catch (Exception ex)
-        {
-            LicenseNote.Text = $"复制不了（{ex.Message}）—— 请手动选中上面那串机器码复制。";
-        }
-    }
-
-    /// <summary>点【激活】：校验用户粘进来的码，过了就落盘。</summary>
-    /// <remarks>
-    /// ⚠️ 校验失败时**不动已经激活的状态**（一次手滑不该把已激活的机器锁掉）——
-    /// 那件事在 <c>LicenseService.ActivateAsync</c> 里，这里只负责把结果说出来。
-    /// <para>
-    /// ⚠️ 激活之后**要重启才生效**吗：不用。本次运行里 <c>LicenseService.Status</c>
-    /// 会被更新，而录制闸门读的是它 —— 所以激活之后立刻就能开工。
-    /// 反过来（运行中失效）才要重启，那是 L7 的「运行期冻结」。
-    /// </para>
-    /// </remarks>
-    private async void OnActivate(object sender, RoutedEventArgs e)
-    {
-        var license = _host.Services.License;
-
-        if (license is null)
-        {
-            return;
-        }
-
-        var code = ActivationBox.Text;
-
-        if (string.IsNullOrWhiteSpace(code))
-        {
-            LicenseNote.Text = "先把你从提供方那里拿到的激活码粘进上面的框。";
-            return;
-        }
-
-        ActivateButton.IsEnabled = false;
-
-        try
-        {
-            var status = await license.ActivateAsync(code);
-
-            if (status.Activated)
-            {
-                ActivationBox.Clear();
-            }
-            else
-            {
-                // 把那句原因原样说出来 —— 它已经区分了「码不对」「不是本机的」
-                // 「版本要升级」「本机没配好公钥」四种，这里不该再改写一遍。
-                LicenseNote.Text = $"⛔ {status.FailureReason}";
-                return;
-            }
-        }
-        catch (Exception ex)
-        {
-            LicenseNote.Text = $"⛔ 激活没能完成：{ex.Message}";
-            return;
-        }
-        finally
-        {
-            ActivateButton.IsEnabled = true;
-        }
-
-        ShowLicense();
-    }
-
-    // ─────────────────────────────────────────────
-    // 保留期（规格 §3.5.1 / §3.5.2.1）
-    // ─────────────────────────────────────────────
-
-    /// <summary>
-    /// 归档层是本地时，保留期这块**根本不出现**。
-    /// </summary>
-    /// <remarks>
-    /// 规格 §3.5.1：那时盘上这份是唯一副本，不允许开启清理。
-    /// 与其给一个改了也不生效的下拉（踩坑 #13），不如不显示，并说明为什么 ——
-    /// 留白会让人以为没做，说清楚才是「不提供」。
-    /// </remarks>
-    private void ShowRetention()
-    {
-        var target = SelectedArchiveTarget();
-
-        RetentionPanel.Visibility =
-            target.AllowsCleanup ? Visibility.Visible : Visibility.Collapsed;
-        RetentionAbsentNote.Visibility =
-            target.AllowsCleanup ? Visibility.Collapsed : Visibility.Visible;
-        RetentionAbsentNote.Text =
-            "归档层是本机磁盘 —— 盘上这份就是唯一副本，所以不提供保留期设置。"
-            + "改成 NAS、挂载网络驱动器或百度网盘之后，这里才会出现。";
-
-        // 目录型（NAS / 挂载盘）才要那个路径框。⚠️ 这两档**共用一份实现**
-        // （规格 §3.4.6），所以界面上也是同一个框。
-        ArchivePathPanel.Visibility =
-            target.IsDirectoryType ? Visibility.Visible : Visibility.Collapsed;
-
-        // 「能不能跨网」要如实说（规格 §2.3：**不得承诺做不到的事**）。
-        ArchiveReachNote.Text = target.Reachability;
-
-        ShowArchiveRelayFailure();
-    }
-
-    /// <summary>
-    /// 「归档层那一份没发上去」——**必须说出来**。
-    /// </summary>
-    /// <remarks>
-    /// 后果很具体：盘上这份现在**只有一份**。用户若以为已经双份了，
-    /// 就可能手动删掉唯一的那一份（那正是 I2 要防的事）。
-    /// <para>
-    /// 归档层就是本机磁盘时没有 relay —— 那一档下「发上去」是空操作，
-    /// 本来就不存在这个失败。
-    /// </para>
-    /// </remarks>
-    private void ShowArchiveRelayFailure()
-    {
-        var relay = _host.Services.ArchiveRelay;
-
-        if (relay?.LastFailure is not { Length: > 0 } failure)
-        {
-            ArchiveRelayNote.Visibility = Visibility.Collapsed;
-            return;
-        }
-
-        ArchiveRelayNote.Visibility = Visibility.Visible;
-        ArchiveRelayNote.Text =
-            $"⚠️ 最近一次发布到{relay.Label}没成功：{failure}\n"
-            + "盘上这一份仍然是好的、也能检索 —— 但它现在只有一份，"
-            + "在发上去之前别删它。修好之后下次收尾会自动再发。";
-    }
-
-    // ─────────────────────────────────────────────
-    // 时间校准（规格 §3.6.3 / §3.6.4）
-    // ─────────────────────────────────────────────
-
-    /// <summary>
-    /// 校准状态的一句话。
-    /// </summary>
-    /// <remarks>
-    /// ⚠️ 抽出来是因为它要在**三个地方**显示：设置页、左侧栏、概览页。
-    /// 各写一份的话迟早会出现「侧栏说已校准、设置页说没校准」——
-    /// 而这种自相矛盾比哪一边说错都更让人不敢信这个界面。
-    /// </remarks>
-    private string CalibrationSummary()
-    {
-        var clock = _host.Services.TrustedClock;
-
-        if (!clock.IsCalibrated)
-        {
-            return $"⛔ {clock.BlockedReason}";
-        }
-
-        var source = clock.State.Source == CalibrationSource.PublicTime ? "公网时间" : "归档回执";
-        var at = clock.State.CalibratedAtUtc?.ToLocalTime().ToString("yyyy-MM-dd HH:mm") ?? "—";
-
-        return $"✅ 已校准（来源：{source}，校准于 {at}）。可以录制。";
-    }
-
-    /// <summary>把当前校准状态显示出来。**要能一眼看出「现在录不录得了」**。</summary>
-    private void ShowCalibration()
-    {
-        var summary = CalibrationSummary();
-
-        CalibrationNote.Text = summary;
-        NavClockText.Text = summary;
-    }
-
-    /// <summary>点【重新校准】：取一次公网时间。</summary>
-    /// <remarks>
-    /// ⚠️ 失败时**留着「未校准」那个状态不动**（不猜一个时间）——
-    /// 猜出来的锚比没有锚更糟：它看起来是校准过的。
-    /// </remarks>
-    private async void OnCalibrate(object sender, RoutedEventArgs e)
-    {
-        CalibrateButton.IsEnabled = false;
-        CalibrationNote.Text = "正在取公网时间…";
-
-        try
-        {
-            var anchor = await _host.Services.ClockSource.QueryAsync();
-            await _host.Services.TrustedClock.CalibrateAsync(anchor, CalibrationSource.PublicTime);
-        }
-        catch (Exception ex)
-        {
-            CalibrationNote.Text = $"⛔ 取不到公网时间：{ex.Message}";
-            return;
-        }
-        finally
-        {
-            CalibrateButton.IsEnabled = true;
-        }
-
-        ShowCalibration();
-    }
-
-    /// <summary>界面上当前选中的归档层。</summary>
-    /// <remarks>
-    /// 认不出的 Tag 一律回落到本机磁盘 —— 与
-    /// <see cref="ArchiveTarget.FromConfig"/> 同一个方向（朝**少删**的那头落）。
-    /// </remarks>
-    private ArchiveTarget SelectedArchiveTarget() =>
-        TagOf(ArchiveCombo) switch
-        {
-            "Nas" => new ArchiveTarget(ArchiveBackendKind.Nas, ArchivePathBox.Text),
-            "MountedDrive" => new ArchiveTarget(ArchiveBackendKind.MountedDrive, ArchivePathBox.Text),
-            "Cloud" => new ArchiveTarget(ArchiveBackendKind.Cloud),
-            _ => ArchiveTarget.Default,
-        };
-
-    /// <summary>
-    /// 下拉里的项就是 <see cref="RetentionSetting.Standard"/>（8 档）。
-    /// </summary>
-    /// <remarks>
-    /// ⚠️ 第 9 项「自定义」**不是一个列表项，是一个手输的数** ——
-    /// 所以这几个下拉是 `IsEditable="True"` 的：用户直接敲「45」就行，
-    /// 不必再为「自定义」造一个输入弹窗（WPF 里没有现成的 `InputBox`）。
-    /// <para>
-    /// 存着的值不在那 8 档里（自定义过，或手改过设置文件）时，把它的
-    /// <see cref="RetentionSetting.Label"/>（形如「45 天」）填进文本框 ——
-    /// 这也是**看得见的**：用户能看到自己那个数还在。
-    /// </para>
-    /// </remarks>
-    private static void SelectRetention(ComboBox combo, RetentionSetting setting)
-    {
-        if (combo.Items.Count == 0)
-        {
-            foreach (var option in RetentionSetting.Standard)
-            {
-                combo.Items.Add(option.Label);
-            }
-        }
-
-        combo.Text = setting.Label;
-        combo.SelectedIndex = RetentionSetting.Standard.ToList().IndexOf(setting);
-    }
-
-    /// <summary>把下拉里的选择读回来。**认不出的写法一律回落「全部保留」**（朝少删的那头落）。</summary>
-    private static RetentionSetting RetentionOf(ComboBox combo)
-    {
-        // ⚠️ 可编辑下拉：用户敲的东西在 `Text` 里，不一定选中了某一项。
-        // 先按**选中项**认，认不出再看文本 —— 顺序反了的话，手输过一个数之后
-        // 再点列表里的项，读回来的会是旧文本。
-        if (combo.SelectedIndex >= 0
-            && combo.SelectedIndex < RetentionSetting.Standard.Count
-            && string.Equals(
-                combo.Text, RetentionSetting.Standard[combo.SelectedIndex].Label, StringComparison.Ordinal))
-        {
-            return RetentionSetting.Standard[combo.SelectedIndex];
-        }
-
-        var text = combo.Text?.Trim() ?? string.Empty;
-
-        if (text is "全部保留" or "") return RetentionSetting.KeepAll;
-        if (text == "不保留") return RetentionSetting.Immediate;
-
-        var digits = text.EndsWith('天') ? text[..^1].Trim() : text;
-
-        return int.TryParse(digits, out var days) ? RetentionSetting.FromConfig(days) : RetentionSetting.KeepAll;
-    }
-
-    private static void SelectByTag(ComboBox combo, string tag)
-    {
-        foreach (var item in combo.Items.OfType<ComboBoxItem>())
-        {
-            if (string.Equals(item.Tag as string, tag, StringComparison.Ordinal))
-            {
-                combo.SelectedItem = item;
-                return;
-            }
-        }
-    }
-
-    private static string? TagOf(ComboBox combo) => (combo.SelectedItem as ComboBoxItem)?.Tag as string;
-
-    /// <summary>把一组横排的单选按 <c>Tag</c> 选中一个。</summary>
-    /// <remarks>
-    /// 与 <see cref="SelectByTag"/> 同一件事，只是单选按钮不是 <c>Items</c> 集合 ——
-    /// 而这几个选项**必须是横排的**（规格 §3.1.7：「横排（**不用下拉**）」）。
-    /// </remarks>
-    private static void SelectRadio(IEnumerable<RadioButton> group, string tag)
-    {
-        foreach (var button in group)
-        {
-            button.IsChecked = string.Equals(button.Tag as string, tag, StringComparison.Ordinal);
-        }
-    }
-
-    /// <summary>横排单选里被选中的那个的 <c>Tag</c>。</summary>
-    private static string? TagOf(IEnumerable<RadioButton> group) =>
-        group.FirstOrDefault(b => b.IsChecked == true)?.Tag as string;
-
-    private async Task LoadCamerasAsync()
-    {
-        if (_host.Services.FfmpegPath is null)
-        {
-            CameraHint.Text = "没有 FFmpeg，无法采集";
-            return;
-        }
-
-        var devices = await CameraDevices.ListAsync(_host.Services.FfmpegPath);
-
-        if (devices.Count == 0)
-        {
-            // 「没有摄像头」是正常的运行环境，不是错误 —— 说清楚就行。
-            CameraHint.Text = "没有找到摄像头";
-            return;
-        }
-
-        foreach (var device in devices)
-        {
-            CameraCombo.Items.Add(device);
-        }
-
-        var remembered = _host.Settings.CameraDevice;
-        CameraCombo.SelectedIndex =
-            remembered is not null && devices.Contains(remembered) ? devices.ToList().IndexOf(remembered) : 0;
-
-        CameraCombo.IsEnabled = true;
-        WaybillBox.IsEnabled = true;
-        RefreshStartButton();
-    }
-
-    // ─────────────────────────────────────────────
-    // 工作
+    // 录制
     // ─────────────────────────────────────────────
 
     /// <summary>
@@ -945,6 +535,9 @@ public partial class MainWindow : Window
     /// </remarks>
     public void RestartTicker()
     {
+        _clockTicker.Start();
+        UpdatePreviewClock();
+
         if (_host.Coordinator.CurrentWaybill is not null)
         {
             _ticker.Start();
@@ -1030,16 +623,47 @@ public partial class MainWindow : Window
 
     private void OnWaybillChanged(object sender, TextChangedEventArgs e) => RefreshStartButton();
 
-    private void RefreshStartButton()
+    /// <summary>点那个 ✕：把单号清掉，重新扫一遍。</summary>
+    private void OnClearWaybill(object sender, RoutedEventArgs e)
     {
-        var hasCamera = CameraCombo.SelectedItem is not null;
-        var hasWaybill = WaybillNumber.TryParse(WaybillBox.Text, out _, out _);
-
-        StartWorkButton.IsEnabled = hasCamera && hasWaybill && _host.Coordinator.CurrentWaybill is null;
+        WaybillBox.Clear();
+        WaybillBox.Focus();
     }
 
-    private async void OnStartWork(object sender, RoutedEventArgs e)
+    /// <summary>
+    /// 顶栏那个按钮的两种形态。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// ⚠️ <b>一个按钮兼两态（开始 / 停止）是照图来的</b>：设计图上顶栏只有
+    /// 一个绿色「开始录制」，没有单独的停止按钮。空闲时绿底「开始录制」，
+    /// 录制中红底「停止录制」—— 「现在到底在录没在录」从颜色上一眼就看得出，
+    /// 那是这一版比原来两个按钮更好的地方。
+    /// </para>
+    /// <para>
+    /// ⚠️ 摄像头取 <see cref="AppHost.DeviceName"/>（启动时定的那个）——
+    /// 拆窗之后主窗没有摄像头下拉了，它只能靠这一个属性回答「现在有没有摄像头」。
+    /// </para>
+    /// </remarks>
+    private void RefreshStartButton()
     {
+        var recording = _host.Coordinator.CurrentWaybill is not null;
+        var hasCamera = _host.DeviceName.Length > 0;
+        var hasWaybill = WaybillNumber.TryParse(WaybillBox.Text, out _, out _);
+
+        StartWorkLabel.Text = recording ? "停止录制" : "开始录制";
+        StartWorkButton.Background = (Brush)FindResource(recording ? "Danger" : "Success");
+        StartWorkButton.IsEnabled = recording || hasCamera && hasWaybill;
+    }
+
+    private async void OnStartOrStopWork(object sender, RoutedEventArgs e)
+    {
+        if (_host.Coordinator.CurrentWaybill is not null)
+        {
+            await StopWorkAsync();
+            return;
+        }
+
         if (!WaybillNumber.TryParse(WaybillBox.Text, out var waybill, out var error))
         {
             RecordingStatus.Text = $"单号不能用：{error}";
@@ -1053,7 +677,6 @@ public partial class MainWindow : Window
             _host.Coordinator.StartWork();
             await _host.Coordinator.SubmitAsync(waybill!, PunchSource.ManualEntry);
 
-            StopWorkButton.IsEnabled = true;
             _ticker.Start();
             UpdateRecordingStatus();
         }
@@ -1065,9 +688,9 @@ public partial class MainWindow : Window
         }
     }
 
-    private async void OnStopWork(object sender, RoutedEventArgs e)
+    private async Task StopWorkAsync()
     {
-        StopWorkButton.IsEnabled = false;
+        StartWorkButton.IsEnabled = false;
 
         try
         {
@@ -1088,7 +711,7 @@ public partial class MainWindow : Window
         {
             RefreshStartButton();
 
-            // 结束时 ticker 停了 ⇒ 侧栏那一行不会自己回到「空闲」。
+            // 结束时 ticker 停了 ⇒ 状态那一行不会自己回到「空闲」。
             UpdateRecordingStatus();
         }
     }
@@ -1097,12 +720,14 @@ public partial class MainWindow : Window
     {
         var waybill = _host.Coordinator.CurrentWaybill;
 
-        // 左侧栏那一行**任何一页都要对**，所以在两个分支里都刷 ——
-        // 原来那个「没有单号就 return」会把上一轮的单号留在侧栏上。
+        // ⚠️ 「开始 / 停止」那个按钮的形态也要跟着走 —— ticker 只在这时跑，
+        // 而录制的开始与结束都可能由**扫码枪**触发（那时没有点击事件可挂）。
+        RefreshStartButton();
+
         NavRecordingText.Text = waybill is null ? "空闲" : $"录制中 · {waybill.Value}";
         NavRecordingText.Foreground = waybill is null
-            ? (System.Windows.Media.Brush)FindResource("TextSecondary")
-            : (System.Windows.Media.Brush)FindResource("Success");
+            ? (Brush)FindResource("TextSecondary")
+            : (Brush)FindResource("Success");
 
         if (waybill is null)
         {
@@ -1113,413 +738,43 @@ public partial class MainWindow : Window
         var clock = $"{(int)elapsed.TotalHours:00}:{elapsed.Minutes:00}:{elapsed.Seconds:00}";
 
         RecordingStatus.Text = $"录制中 {clock} · {waybill.Value}";
-        StopWorkButton.IsEnabled = true;
     }
 
     // ─────────────────────────────────────────────
-    // 检索与回放
+    // 打开另外两个窗口
     // ─────────────────────────────────────────────
 
-    private async void OnSearch(object sender, RoutedEventArgs e) => await SearchAsync();
-
-    private async void OnSearchKeyDown(object sender, KeyEventArgs e)
-    {
-        if (e.Key == Key.Enter)
-        {
-            await SearchAsync();
-        }
-    }
-
-    private async Task SearchAsync()
-    {
-        var from = FromDate.SelectedDate;
-        var to = ToDate.SelectedDate;
-
-        var query = new RecordingQuery
-        {
-            WaybillText = string.IsNullOrWhiteSpace(SearchBox.Text) ? null : SearchBox.Text.Trim(),
-            MatchMode = TagOf(MatchCombo) switch
-            {
-                "Prefix" => WaybillMatchMode.Prefix,
-                "Fuzzy" => WaybillMatchMode.Contains,
-                _ => WaybillMatchMode.Exact,
-            },
-            // 结束那一天要**整日包含**，所以右边界取次日零点（半开区间）。
-            From = from is null ? null : new DateTimeOffset(from.Value.Date, DateTimeOffset.Now.Offset),
-            To = to is null ? null : new DateTimeOffset(to.Value.Date.AddDays(1), DateTimeOffset.Now.Offset),
-            BusinessType = TagOf(BusinessCombo) switch
-            {
-                "Outbound" => BusinessType.Outbound,
-                "Return" => BusinessType.Return,
-                _ => null,
-            },
-        };
-
-        SearchStatus.Text = "正在检索…";
-
-        try
-        {
-            var hits = await _host.Services.Search.SearchAsync(query);
-
-            ResultsGrid.ItemsSource = hits.Select(h => new
-            {
-                StartedAt = h.Entry.StartedAt.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss"),
-                Waybill = h.Entry.Waybill.Value,
-                Duration = $"{(int)h.Entry.Duration.TotalMinutes}:{h.Entry.Duration.Seconds:00}",
-                Business = h.BusinessType switch
-                {
-                    BusinessType.Outbound => "发货",
-                    BusinessType.Return => "退货",
-                    _ => "",
-                },
-                h.Entry.SessionId,
-                // 争议锁定（规格 §3.6.5：**锁定后永不被自动清理**）。
-                //
-                // ⚠️ 在这次之前这条硬豁免是**结构性走不到**的：清理判定读
-                // `LabelKeys.Locked`，而**没有任何地方写它**（唯一的标签写入点
-                // 是接收手机上传时带过来的标签）—— 电脑端用户锁不住任何一条，
-                // 保留期一到本机那份就被清了。
-                //
-                // ⚠️ 判据用 `EvidenceLock.IsLocked`（与清理判定**同一个函数**）：
-                // 在界面里另写一份会漏掉「认不出来的值当锁着」那一条，
-                // 于是出现「界面显示没锁、清理却把它保留了」。
-                LockLabel = EvidenceLock.IsLocked(h.Labels) ? "已锁定" : "锁定",
-                // 按钮要按这一条的 evidenceId 去写标签，所以得把它带在行上。
-                EvidenceId = h.Entry.EvidenceId,
-                Hit = h,
-            }).ToList();
-
-            SearchStatus.Text = hits.Count == 0
-                ? "没有匹配的录像。"
-                : $"找到 {hits.Count} 条。选中一条可播放。";
-        }
-        catch (Exception ex)
-        {
-            SearchStatus.Text = $"检索出错：{ex.Message}";
-        }
-    }
-
     /// <summary>
-    /// 锁定 / 解锁一条录像（规格 §3.6.5）。
+    /// 【设置】—— 模态弹出 <see cref="SettingsWindow"/>。
     /// </summary>
     /// <remarks>
-    /// <para>
-    /// ⚠️ 锁定是**硬豁免**（§3.5.3②）：锁上之后保留期到了也不会自动清理本机这份。
-    /// 用户拿它保住一条纠纷录像。
-    /// </para>
-    /// <para>
-    /// ⚠️ 值只写 <c>"true"</c> / <c>"false"</c>：判据
-    /// （<see cref="EvidenceLock.IsLocked"/>）对**认不出来的值当锁着**
-    /// —— 写 <c>'1'</c> 之类会让用户**解不开**，而界面上看不出为什么。
-    /// </para>
-    /// <para>
-    /// ⚠️ 解锁**不是删那一行**，是再追加一条 <c>false</c>
-    /// （标签表追加写、后者胜出）—— 母仓 §6.2：数据删除必须极度克制。
-    /// </para>
+    /// ⚠️ 模态：设置里能改归档层与保留期，而这两样决定**清理会不会删东西**
+    /// （规格 §3.5.1）。开着设置窗的同时让主窗还能开录，会出现
+    /// 「用户以为已经改成 NAS 了、其实还没保存」的窗口期。
+    /// 一次只有一个设置窗，这个窗口期就不存在。
     /// </remarks>
-    private async void OnToggleLock(object sender, RoutedEventArgs e)
+    private void OnOpenSettings(object sender, RoutedEventArgs e)
     {
-        if (sender is not Button { Tag: string evidenceId } || string.IsNullOrEmpty(evidenceId))
-        {
-            return;
-        }
+        new SettingsWindow(_host) { Owner = this }.ShowDialog();
 
-        try
-        {
-            // 当前锁没锁 —— **从标签读**（判据同一处），不是从按钮文字猜：
-            // 按钮文字可能是上一次检索时的旧值。
-            var labels = await _host.Services.Labels.GetForEvidenceAsync(evidenceId);
-            var locked = EvidenceLock.IsLocked(labels);
-
-            await _host.Services.Labels.SetAsync(
-                evidenceId, LabelKeys.Locked, locked ? "false" : "true");
-
-            // 重检索一遍，那一格（以及「已锁定 / 锁定」）才会跟着变。
-            await SearchAsync();
-
-            NoticesText.Text = locked
-                ? $"{DateTime.Now:HH:mm:ss}  {evidenceId} 已解锁，会照常按保留期清理。"
-                : $"{DateTime.Now:HH:mm:ss}  {evidenceId} 已锁定：保留期到了也不会自动清理。";
-        }
-        catch (Exception ex)
-        {
-            // I3：写不进去要说出来 —— 用户以为锁上了而其实没锁，
-            // 那条录像会在保留期到的时候被清掉。
-            NoticesText.Text = $"{DateTime.Now:HH:mm:ss}  锁定没能保存：{ex.Message}";
-        }
-    }
-
-    private void OnResultSelected(object sender, SelectionChangedEventArgs e)
-    {
-        if (ResultsGrid.SelectedItem is null)
-        {
-            return;
-        }
-
-        // 播放交给系统默认播放器 —— 本地文件、离线可用（I10），
-        // 而且不引入任何播放器依赖。界面内播放留到需要时再做。
-        var hit = ResultsGrid.SelectedItem.GetType().GetProperty("Hit")?.GetValue(ResultsGrid.SelectedItem);
-        if (hit is not RecordingHit recording)
-        {
-            return;
-        }
-
-        var path = Path.Combine(_host.Services.Layout.ArchiveRoot, recording.Entry.Location.Value);
-        SearchStatus.Text = File.Exists(path)
-            ? $"双击可直接播放：{path}"
-            : $"成品不在盘上：{path}";
-
-        OpenInShell(path);
+        // 设置里可能改了许可状态那一类东西（激活），回来刷新一下。
+        ShowStatusSummaries();
+        UpdatePreviewHint();
     }
 
     /// <summary>
-    /// 把选中的那一条**原样**交到用户选的位置（规格 §3.7）。
+    /// 【回放】—— 模态弹出 <see cref="SearchWindow"/>。
     /// </summary>
     /// <remarks>
-    /// <para>
-    /// 规格原话：「改掉分享连接，只分享视频本身无损完整视频」；电脑端导出到
-    /// **用户自选路径**，而且**不能是电脑端存放录像的那个路径**。
-    /// </para>
-    /// <para>
-    /// ⚠️ <b>不转码、不压缩、不裁剪、也不打码</b>（§3.7.1 / §3.6.6）——
-    /// 所以这一条路就是「另存为」。导出的成品里面单上的收件人信息**会原样跟出去**，
-    /// 那是需求方权衡后的选择，界面**不许**暗示做过隐私处理。
-    /// </para>
+    /// ⚠️ 模态是为了**不给同一条录像开两个 <c>MediaElement</c>**：
+    /// 两个窗口同时播同一个文件会各占一个句柄，而这个文件可能正处在
+    /// 保留期清理的当口。一次一个，简单且够用。
     /// </remarks>
-    private async void OnExportResult(object sender, RoutedEventArgs e)
-    {
-        var hit = SelectedHit();
-        if (hit is null)
-        {
-            SearchStatus.Text = "先在列表里选一条，再点【导出原视频】。";
-            return;
-        }
-
-        var dialog = new Microsoft.Win32.SaveFileDialog
-        {
-            Title = "导出原视频（不转码、不压缩）",
-            // 默认文件名就是规格里那个显示名：`快递单号.mp4`。
-            FileName = $"{hit.Entry.Waybill.Value}.mp4",
-            Filter = "视频文件|*.mp4|所有文件|*.*",
-            OverwritePrompt = true,
-        };
-
-        if (dialog.ShowDialog(this) != true)
-        {
-            return;
-        }
-
-        var result = await _host.Services.Exporter.ExportAsync(hit.Entry, dialog.FileName);
-
-        if (!result.Exported)
-        {
-            // I3：导出失败必须说出来 —— 用户以为交付了，而对方什么都没收到。
-            MessageBox.Show(
-                result.FailureReason ?? "导出失败。",
-                "导出原视频", MessageBoxButton.OK, MessageBoxImage.Warning);
-            return;
-        }
-
-        SearchStatus.Text = $"已导出到：{result.TargetPath}";
-
-        // 顺手把它所在的文件夹打开 —— 「交付」这个动作的下一步通常就是把文件发出去，
-        // 而用户不必自己去文件管理器里找。
-        RevealInExplorer(result.TargetPath!);
-    }
-
-    /// <summary>选中那一行的 <c>RecordingHit</c>；没选返回 null。</summary>
-    private RecordingHit? SelectedHit() =>
-        ResultsGrid.SelectedItem?.GetType().GetProperty("Hit")?.GetValue(ResultsGrid.SelectedItem)
-            as RecordingHit;
-
-    /// <summary>在资源管理器里选中这个文件（不是打开它）。</summary>
-    private void RevealInExplorer(string path)
-    {
-        try
-        {
-            Process.Start(new ProcessStartInfo("explorer.exe", $"/select,\"{path}\"")
-            {
-                UseShellExecute = true,
-            });
-        }
-        catch (Exception ex)
-        {
-            // 打不开文件夹不是交付失败 —— 文件已经在用户选的位置上了。
-            SearchStatus.Text = $"已导出到：{path}（打开文件夹失败：{ex.Message}）";
-        }
-    }
-
-    private void OnOpenPlayback(object sender, RoutedEventArgs e)
-    {
-        if (_host.Services.Server?.BaseUrl is { Length: > 0 })
-        {
-            OpenInShell(_host.Services.Server.BaseUrl);
-        }
-    }
-
-    private void OnOpenDataFolder(object sender, RoutedEventArgs e) =>
-        OpenInShell(_host.Services.Layout.RootDirectory);
-
-    private static void OpenInShell(string target)
-    {
-        if (string.IsNullOrWhiteSpace(target) || !File.Exists(target) && !target.StartsWith("http", StringComparison.Ordinal))
-        {
-            return;
-        }
-
-        try
-        {
-            Process.Start(new ProcessStartInfo(target) { UseShellExecute = true });
-        }
-        catch (Exception ex)
-        {
-            MessageBox.Show($"打不开：{ex.Message}", "VidLog", MessageBoxButton.OK, MessageBoxImage.Warning);
-        }
-    }
-
-    // ─────────────────────────────────────────────
-    // 设置
-    // ─────────────────────────────────────────────
-
-    private async void OnModeChanged(object sender, SelectionChangedEventArgs e) => await SaveUiSettingsAsync();
-
-    private async void OnIdleReminderChanged(object sender, SelectionChangedEventArgs e) =>
-        await SaveUiSettingsAsync();
-
-    /// <summary>编码 / 分辨率那一组横排单选。</summary>
-    private RadioButton[] CodecButtons => [CodecH264, CodecH265];
-
-    private RadioButton[] ResolutionButtons => [Res4K, Res1080, Res720];
-
-    private async void OnRecordingSpecChanged(object sender, RoutedEventArgs e) =>
-        await SaveUiSettingsAsync();
+    private void OnOpenSearch(object sender, RoutedEventArgs e) =>
+        new SearchWindow(_host) { Owner = this }.ShowDialog();
 
     /// <summary>
-    /// 显示**实际会用**的录制规格（规格 §3.1.7：「**回落必须可见**……**不得静默回落**」）。
-    /// </summary>
-    /// <remarks>
-    /// 取值来自启动时那次**真开相机**的探测（<c>AppHost.EffectiveSpec</c>）。
-    /// 与用户选的不一样时把原因也说出来 —— 只说「实际是 H.264」而不说为什么，
-    /// 用户会以为自己选错了。
-    /// </remarks>
-    private void ShowEffectiveSpec()
-    {
-        var effective = _host.EffectiveSpec;
-        var wanted = new RecordingSpec(_host.Settings.Codec, _host.Settings.Resolution);
-
-        EffectiveSpecText.Text = effective == wanted
-            ? $"这台电脑按 {effective.Label} 录制。"
-            : $"⚠️ 你选的是 {wanted.Label}，但这台电脑跑不通 —— 实际按 {effective.Label} 录制。"
-              + (string.IsNullOrWhiteSpace(_host.SpecFallbackReason)
-                  ? string.Empty
-                  : $"原因：{_host.SpecFallbackReason}");
-
-        EffectiveSpecText.Foreground = effective == wanted
-            ? System.Windows.Media.Brushes.Gray
-            : System.Windows.Media.Brushes.OrangeRed;
-    }
-
-    /// <summary>自定义分钟数那一格失焦就存（不必等用户去按保存）。</summary>
-    private async void OnIdleMinutesChanged(object sender, RoutedEventArgs e) =>
-        await SaveUiSettingsAsync();
-
-    private async void OnDurationChanged(object sender, SelectionChangedEventArgs e) => await SaveUiSettingsAsync();
-
-    private async void OnArchiveChanged(object sender, SelectionChangedEventArgs e)
-    {
-        ShowRetention();
-        await SaveUiSettingsAsync();
-    }
-
-    private async void OnRetentionChanged(object sender, SelectionChangedEventArgs e) => await SaveUiSettingsAsync();
-
-    private async void OnSaveSettings(object sender, RoutedEventArgs e) => await SaveUiSettingsAsync();
-
-    /// <summary>
-    /// 把界面上的设置存下来。
-    /// </summary>
-    /// <remarks>
-    /// 越界的输入**不静默吞掉** —— 说清楚、并且不保存，而不是存进去一个
-    /// 之后会让人莫名其妙的值。
-    /// </remarks>
-    private async Task SaveUiSettingsAsync()
-    {
-        if (_suppressSettingsEvents)
-        {
-            return;
-        }
-
-        if (!int.TryParse(SegmentBox.Text, out var segment) || segment is < 1 or > 10)
-        {
-            SettingsStatus.Text = "分段时长要在 1~10 分钟之间，本次未保存。";
-            return;
-        }
-
-        if (!int.TryParse(PortBox.Text, out var port) || port is < 1024 or > 65535)
-        {
-            SettingsStatus.Text = "端口要在 1024~65535 之间，本次未保存。";
-            return;
-        }
-
-        // 重复单号检测的天数（规格 §3.2.5「N 可配置」）。**0 = 关闭。**
-        // ⚠️ 界面上写清「0 = 关闭」，而这里也接受 0 —— 否则那句话就是空话。
-        if (!int.TryParse(DuplicateDaysBox.Text, out var duplicateDays)
-            || duplicateDays is < 0 or > 365)
-        {
-            SettingsStatus.Text = "重复单号检测要填 0~365 天（0 = 关闭），本次未保存。";
-            return;
-        }
-
-        // 自定义分钟数：只在选了「自定义」时才管它，否则保持原值
-        // （用户先填了 7 分钟又改回 3 分钟，那 7 不该丢 —— 下次切回自定义还要用）。
-        var idleMinutes = int.TryParse(IdleMinutesBox.Text, out var parsedMinutes)
-            ? Math.Clamp(parsedMinutes, WorkModeOptions.MinIdleMinutes, WorkModeOptions.MaxIdleMinutes)
-            : _host.Settings.IdleReminderMinutes;
-
-        var next = _host.Settings with
-        {
-            Mode = Enum.TryParse<WorkMode>(TagOf(ModeCombo), out var mode) ? mode : _host.Settings.Mode,
-            Codec = Enum.TryParse<VideoCodec>(TagOf(CodecButtons), out var codec)
-                ? codec : _host.Settings.Codec,
-            Resolution = Enum.TryParse<VideoResolution>(TagOf(ResolutionButtons), out var resolution)
-                ? resolution : _host.Settings.Resolution,
-            IdleReminder = Enum.TryParse<IdleReminderOption>(TagOf(IdleCombo), out var idle)
-                ? idle : _host.Settings.IdleReminder,
-            IdleReminderMinutes = idleMinutes,
-            DurationFallback = Enum.TryParse<DurationFallbackOption>(TagOf(DurationCombo), out var d)
-                ? d : _host.Settings.DurationFallback,
-            SegmentMinutes = segment,
-            DuplicateCheckDays = duplicateDays,
-            PlaybackPort = port,
-            CameraDevice = CameraCombo.SelectedItem as string,
-            ArchiveBackend = Enum.TryParse<ArchiveBackendKind>(TagOf(ArchiveCombo), out var backend)
-                ? backend : _host.Settings.ArchiveBackend,
-            // 目录型那两档的根。别的档位下这个框是藏着的，但值仍然记着 ——
-            // 用户在 NAS 与挂载盘之间来回切时不必重填一遍。
-            ArchiveDirectory = string.IsNullOrWhiteSpace(ArchivePathBox.Text)
-                ? null : ArchivePathBox.Text.Trim(),
-            Retention = new RetentionSettings(
-                RetentionOf(ArchivedOutboundCombo), RetentionOf(ArchivedReturnCombo),
-                RetentionOf(UnarchivedOutboundCombo), RetentionOf(UnarchivedReturnCombo)),
-        };
-
-        try
-        {
-            await _host.SaveSettingsAsync(next);
-            // 逐项说清楚，别笼统写「下次生效」——
-            // 笼统的话就有一半是假的，而用户没法知道是哪一半。
-            SettingsStatus.Text =
-                "已保存。工作模式立即生效；时长兜底与分段时长下次开段生效；"
-                + "摄像头与端口要重启。";
-        }
-        catch (Exception ex)
-        {
-            SettingsStatus.Text = $"保存失败：{ex.Message}";
-        }
-    }
-
-    /// <summary>
-    /// 【连接电脑/手机】—— 弹出二维码（规格 §3.4.5）。
+    /// 【连接电脑 / 手机】—— 弹出二维码（规格 §3.4.5）。
     /// </summary>
     /// <remarks>
     /// 模态：一次只有一个。否则用户可以开出两份二维码，而
@@ -1528,46 +783,6 @@ public partial class MainWindow : Window
     /// </remarks>
     private void OnEnroll(object sender, RoutedEventArgs e) =>
         new EnrollWindow(_host) { Owner = this }.ShowDialog();
-
-    private async void OnExportDiagnostics(object sender, RoutedEventArgs e)
-    {
-        try
-        {
-            var package = new DiagnosticsPackage(new DiagnosticsSources(
-                _host.Services.Layout,
-                _host.Settings,
-                _host.Warnings,
-                _ => Task.FromResult<IReadOnlyList<string>>(BuildEnvironmentLines())));
-
-            var path = await package.ExportAsync(_host.Services.Layout.RootDirectory);
-
-            SettingsStatus.Text = $"诊断包已导出：{path}";
-            OpenInShell(_host.Services.Layout.RootDirectory);
-        }
-        catch (Exception ex)
-        {
-            SettingsStatus.Text = $"导出失败：{ex.Message}";
-        }
-    }
-
-    private IReadOnlyList<string> BuildEnvironmentLines()
-    {
-        var lines = new List<string>
-        {
-            $"OS: {Environment.OSVersion}",
-            $".NET: {Environment.Version}",
-            $"机器名: {Environment.MachineName}",
-            $"回放服务: {(_host.Services.Server?.BaseUrl is { Length: > 0 } ? _host.Services.Server.BaseUrl : "未启动")}",
-        };
-
-        if (_host.Services.FfmpegPath is { } ffmpeg)
-        {
-            lines.Add($"FFmpeg: {ffmpeg}");
-        }
-
-        lines.AddRange(_host.Warnings.Select(w => $"警告: {w}"));
-        return lines;
-    }
 
     // ─────────────────────────────────────────────
     // 关闭
@@ -1586,6 +801,7 @@ public partial class MainWindow : Window
         e.Cancel = true;
 
         _ticker.Stop();
+        _clockTicker.Stop();
         Hide();
 
         _host.Tray?.Notify("VidLog 还在后台", "扫码枪照常可用。要退出请右键托盘图标。");

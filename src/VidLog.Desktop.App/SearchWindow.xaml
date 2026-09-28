@@ -1,0 +1,216 @@
+<Window x:Class="VidLog.Desktop.App.SearchWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        mc:Ignorable="d"
+        Title="历史录像检索与回放" Height="720" Width="1080" MinWidth="900" MinHeight="600"
+        FontFamily="{StaticResource UiFont}"
+        Background="{StaticResource PageBackground}"
+        WindowStartupLocation="CenterOwner">
+    <!--
+        ════════════════════════════════════════════════════════════════
+        检索与回放窗口（2026-09-28 从 MainWindow 拆出来）
+
+        ⚠️ 布局照需求方的设计图：**左筛选栏 + 右播放区 + 底部播放条**。
+        左边那一栏自上而下是「日期范围 / 单号 / 结果列表 / 共 N 条 / 翻页」。
+
+        ⚠️ 图上没有、但**本仓必须有**的三样（不摆出来就是功能丢失）：
+          · **匹配方式**（精确 / 前缀 / 模糊）—— 规格 §3.8 要求三种。
+          · **类型**（发货 / 退货）—— 规格 §3.2 的两条业务线。
+          · **每行的争议锁定按钮** —— 规格 §3.6.5 的硬豁免，这是电脑端
+            用户保住一条纠纷录像的**唯一入口**，丢了它就等于那条录像
+            保留期一到必被清掉。
+        它们都塞进了左边那一栏，因为图上那一栏本来就是筛选区。
+
+        ⚠️ **没有任何许可门控**（`04-许可设计.md` L8）：未激活照样检索、
+        照样回放、照样导出。拆窗时最容易顺手加一句「未激活先激活」，别加。
+
+        ⚠️ 底下那两个 `Click="OnToggleLock"` / `Tag="{Binding EvidenceId}"`
+        被守卫测试**按文本**盯着（`DesktopServicesTests`）—— 拆窗时它们
+        从 `MainWindow.xaml` 挪到了这里，测试跟着改读本文件，**断言原文一字不改**。
+        ════════════════════════════════════════════════════════════════
+    -->
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <Grid Grid.Row="0" Margin="16,16,16,0">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="330"/>
+                <ColumnDefinition Width="*"/>
+            </Grid.ColumnDefinitions>
+
+            <!-- ══ 左：筛选 + 结果 ═══════════════════════════════════════ -->
+            <Border Grid.Column="0" Style="{StaticResource Card}" Margin="0,0,12,16"
+                    Padding="16">
+                <Grid>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="*"/>
+                        <RowDefinition Height="Auto"/>
+                    </Grid.RowDefinitions>
+
+                    <StackPanel Grid.Row="0">
+                        <TextBlock Style="{StaticResource Body}" Text="录像日期范围："
+                                   Margin="0,0,0,6"/>
+                        <StackPanel Orientation="Horizontal">
+                            <DatePicker x:Name="FromDate" Width="132"/>
+                            <TextBlock Text="至" VerticalAlignment="Center" Margin="6,0"
+                                       Foreground="{StaticResource TextSecondary}"/>
+                            <DatePicker x:Name="ToDate" Width="132"/>
+                        </StackPanel>
+
+                        <TextBlock Style="{StaticResource Body}" Text="单号搜索："
+                                   Margin="0,14,0,6"/>
+                        <TextBox x:Name="SearchBox" KeyDown="OnSearchKeyDown"/>
+
+                        <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
+                            <ComboBox x:Name="MatchCombo" Width="96" SelectedIndex="0">
+                                <ComboBoxItem Tag="Exact">精确</ComboBoxItem>
+                                <ComboBoxItem Tag="Prefix">前缀</ComboBoxItem>
+                                <ComboBoxItem Tag="Fuzzy">模糊</ComboBoxItem>
+                            </ComboBox>
+                            <ComboBox x:Name="BusinessCombo" Width="96" Margin="8,0,0,0"
+                                      SelectedIndex="0">
+                                <ComboBoxItem Tag="">全部类型</ComboBoxItem>
+                                <ComboBoxItem Tag="Outbound">发货</ComboBoxItem>
+                                <ComboBoxItem Tag="Return">退货</ComboBoxItem>
+                            </ComboBox>
+                            <Button x:Name="SearchButton" Content="检索"
+                                    Style="{StaticResource PrimaryButton}"
+                                    Padding="16,5" Margin="8,0,0,0" IsEnabled="False"
+                                    Click="OnSearch"/>
+                        </StackPanel>
+
+                        <TextBlock Style="{StaticResource Caption}" Margin="0,6,0,0"
+                                   Text="单号框里按回车也能检索。日期结束那天是整日包含的。"/>
+                    </StackPanel>
+
+                    <!-- 结果列表。⚠️ 左边栏窄，所以是「一行一条」的列表而不是表格。 -->
+                    <Border Grid.Row="1" Margin="0,12,0,0"
+                            BorderBrush="{StaticResource CardBorder}" BorderThickness="1"
+                            CornerRadius="6">
+                        <ListBox x:Name="ResultsList" BorderThickness="0"
+                                 Background="Transparent"
+                                 HorizontalContentAlignment="Stretch"
+                                 ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                                 SelectionChanged="OnResultSelected">
+                            <ListBox.ItemTemplate>
+                                <DataTemplate>
+                                    <Grid Margin="2,4">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*"/>
+                                            <ColumnDefinition Width="Auto"/>
+                                        </Grid.ColumnDefinitions>
+
+                                        <StackPanel Grid.Column="0">
+                                            <TextBlock Text="{Binding Waybill}"
+                                                       FontWeight="SemiBold"
+                                                       Foreground="{StaticResource TextPrimary}"/>
+                                            <TextBlock Text="{Binding Subtitle}"
+                                                       Style="{StaticResource Caption}"
+                                                       Margin="0,2,0,0"/>
+                                            <!-- 重复单号 / 成品不在盘上这类，说明白 -->
+                                            <TextBlock Text="{Binding Note}"
+                                                       Style="{StaticResource Caption}"
+                                                       Margin="0,2,0,0"
+                                                       Foreground="{StaticResource Warning}"
+                                                       Visibility="{Binding NoteVisibility}"/>
+                                        </StackPanel>
+
+                                        <!-- 争议锁定（规格 §3.6.5）。⚠️ 它是**硬豁免**（§3.5.3②）：
+                                             锁上之后保留期到了也不会自动清理这一条。 -->
+                                        <Button Grid.Column="1" Content="{Binding LockLabel}"
+                                                Padding="8,2" Margin="6,0,0,0"
+                                                VerticalAlignment="Top"
+                                                Style="{StaticResource SecondaryButton}"
+                                                Click="OnToggleLock"
+                                                Tag="{Binding EvidenceId}"/>
+                                    </Grid>
+                                </DataTemplate>
+                            </ListBox.ItemTemplate>
+                        </ListBox>
+                    </Border>
+
+                    <StackPanel Grid.Row="2" Margin="0,12,0,0">
+                        <Button x:Name="ExportButton" Content="导出原视频（不转码）"
+                                Style="{StaticResource SecondaryButton}"
+                                HorizontalAlignment="Stretch" IsEnabled="False"
+                                Click="OnExportResult"/>
+                        <TextBlock Style="{StaticResource Caption}" Margin="0,6,0,0"
+                                   Text="选中一条之后可以导出 —— 原样另存，不转码、不压缩、不裁剪、不打码。"/>
+
+                        <Grid Margin="0,10,0,0">
+                            <TextBlock x:Name="CountText" VerticalAlignment="Center"
+                                       HorizontalAlignment="Left"
+                                       Foreground="{StaticResource TextSecondary}"
+                                       Text="共 0 条"/>
+                            <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                                <Button x:Name="PrevPageButton" Content="上一页"
+                                        Style="{StaticResource SecondaryButton}"
+                                        Padding="12,4" IsEnabled="False" Click="OnPrevPage"/>
+                                <Button x:Name="NextPageButton" Content="下一页"
+                                        Style="{StaticResource SecondaryButton}"
+                                        Padding="12,4" Margin="6,0,0,0" IsEnabled="False"
+                                        Click="OnNextPage"/>
+                            </StackPanel>
+                        </Grid>
+                    </StackPanel>
+                </Grid>
+            </Border>
+
+            <!-- ══ 右：播放区 ═══════════════════════════════════════════ -->
+            <Border Grid.Column="1" Style="{StaticResource Card}"
+                    Margin="0,0,0,16" Padding="0"
+                    Background="{StaticResource VideoBackground}">
+                <Grid>
+                    <!-- ⚠️ MediaElement 是 WPF 自带的，**不引任何第三方播放器**（I10：离线可用）。
+                         能不能解出画面取决于系统解码器 —— 播不了时下面那行会说为什么。 -->
+                    <MediaElement x:Name="Player" Stretch="Uniform"
+                                  LoadedBehavior="Manual" UnloadedBehavior="Manual"
+                                  MediaOpened="OnMediaOpened" MediaFailed="OnMediaFailed"/>
+
+                    <!-- 没选录像时的提示（照图：一个播放图标 + 一行字） -->
+                    <StackPanel x:Name="PlayerPlaceholder"
+                                HorizontalAlignment="Center" VerticalAlignment="Center">
+                        <Path Data="M 0,0 L 26,15 L 0,30 Z" Fill="{StaticResource TextDisabled}"
+                              HorizontalAlignment="Center"/>
+                        <TextBlock x:Name="PlayerHintText" Text="请选择录像开始播放"
+                                   Margin="0,14,0,0" HorizontalAlignment="Center"
+                                   Foreground="{StaticResource TextDisabled}"/>
+                    </StackPanel>
+                </Grid>
+            </Border>
+        </Grid>
+
+        <!-- ══ 底部播放条 ══════════════════════════════════════════════ -->
+        <Border Grid.Row="1" Background="{StaticResource VideoBackground}"
+                Padding="16,10">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+
+                <Button x:Name="PlayButton" Grid.Column="0" Content="播放"
+                        Style="{StaticResource PrimaryButton}"
+                        MinWidth="88" IsEnabled="False" Click="OnPlayPause"/>
+
+                <Slider x:Name="PositionSlider" Grid.Column="1" Margin="16,0"
+                        VerticalAlignment="Center"
+                        Minimum="0" Maximum="1" Value="0"
+                        IsEnabled="False"
+                        Thumb.DragStarted="OnSeekStarted"
+                        Thumb.DragCompleted="OnSeekCompleted"/>
+
+                <TextBlock x:Name="TimeText" Grid.Column="2" VerticalAlignment="Center"
+                           FontFamily="{StaticResource MonoFont}"
+                           Foreground="White" Text="00:00:00 / 00:00:00"/>
+            </Grid>
+        </Border>
+    </Grid>
+</Window>
