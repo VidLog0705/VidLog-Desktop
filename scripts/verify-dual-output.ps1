@@ -42,6 +42,13 @@ param(
     # dshow 时的设备名（`ffmpeg -list_devices true -f dshow -i dummy` 里那个）
     [string]$Device = '',
 
+    # ⚠️ 录制那一路的采集分辨率。**必须是你那台相机真支持的**，否则
+    # dshow 直接打不开（报 `Could not set video options`），两个场景全废。
+    # 用这个看它支持什么：
+    #   ffmpeg -list_options true -f dshow -i video="<设备名>"
+    # 默认仍是 1280x720（脚本原来的写死值），但**相机不支持时要显式传小一档**。
+    [string]$VideoSize = '1280x720',
+
     [int]$Seconds = 10,
 
     # 识码端多久读一帧。1 = 每秒一帧（现在那个识码进程就是低频的）
@@ -82,7 +89,17 @@ function New-Args {
     } else {
         if (-not $Device) { throw '-Source dshow 时要给 -Device' }
         # dshow 本来就是实时的 —— 不需要（也不能）加 `-re`。
-        @('-f', 'dshow', '-framerate', '30', '-video_size', '1280x720', '-i', "video=$Device")
+        #
+        # ⚠️⚠️ **`-video_size` 不能写死**。原来写的是 1280x720，而那是**假设**
+        # 每台相机都能出 720p —— 本机那台只有 160x120 / 320x240 / **640x480** 三档
+        # （只有 yuyv422）。拿一个它不支持的分辨率去开，dshow 报
+        # `Could not set video options` + `Error opening input: I/O error`，
+        # **两个场景全废**，而表上看像「相机打不开」。
+        #
+        # 2026-09-28 真机实测踩到，所以改成由 `-VideoSize` 传（默认仍是 1280x720，
+        # 保持原意）。**跑之前先看相机支持什么**：
+        #   ffmpeg -list_options true -f dshow -i video="<设备名>"
+        @('-f', 'dshow', '-framerate', '30', '-video_size', $VideoSize, '-i', "video=$Device")
     }
 
     return @(
@@ -111,15 +128,35 @@ function New-Args {
 function Invoke-Scenario {
     param(
         [string]$Name,
+        # ⚠️ **落盘用的文件名必须是 ASCII**，不能直接用 $Name（它是中文的）。
+        # 下面那行是 `$psi.Arguments = (...) -join ' '` —— 那是**拼字符串**，
+        # 既不引号也不转义，中文会被打坏成 U+FFFD 再交给 ffmpeg。
+        #
+        # 实测症状（2026-09-28，真机 dshow）：ffmpeg 报
+        # `Error opening input: Illegal byte sequence`、以 -5 (EIO) 退出、
+        # 0.10 秒就结束、**两个场景全废** —— 而表上看像「相机打不开」。
+        # 显示名（$Name）保持中文不动，只把落盘名分开。
+        [string]$FileStem = 'scenario',
         # $true = 及时读管道（模拟识码）；$false = 不读（对照）
         [bool]$Drain,
         [int]$TimeoutSeconds = 90
     )
 
-    $mkv = Join-Path $work "$Name.mkv"
+    $mkv = Join-Path $work "$FileStem.mkv"
     $psi = New-Object System.Diagnostics.ProcessStartInfo
     $psi.FileName = $Ffmpeg
-    $psi.Arguments = (New-Args -Output $mkv) -join ' '
+
+    # ⚠️⚠️ **用 ArgumentList，不要用 `.Arguments` 拼字符串**。
+    #
+    # 原来写的是 `$psi.Arguments = (New-Args ...) -join ' '` —— 那**不引号、
+    # 不转义**。而设备名里有空格（`video=Lenovo EasyCamera`），于是参数被
+    # 切成两截：ffmpeg 拿到 `-i video=Lenovo` 与一个游离的 `EasyCamera`，
+    # **打不开输入、不产出文件**，表上却像是「相机打不开」。
+    # 实测症状：A/B 都是退出码 -5、0 字节，接着解码那步报「文件不存在」。
+    #
+    # `ArgumentList` 由 .NET 负责引号与转义 —— 生产代码 `FfmpegCameraCapture`
+    # 一直是这么用的，这条验证脚本当初漏了。
+    foreach ($a in (New-Args -Output $mkv)) { $psi.ArgumentList.Add($a) }
     $psi.RedirectStandardOutput = $true
     $psi.RedirectStandardError = $true
     $psi.UseShellExecute = $false
@@ -197,8 +234,9 @@ function Invoke-Scenario {
 }
 
 $results = @()
-$results += Invoke-Scenario -Name 'A-及时读' -Drain $true
-$results += Invoke-Scenario -Name 'B-不读' -Drain $false
+# 显示名用中文（给人看），FileStem 用 ASCII（给 ffmpeg 看）—— 见 Invoke-Scenario 里的说明。
+$results += Invoke-Scenario -Name 'A-及时读' -FileStem 'A-timely' -Drain $true
+$results += Invoke-Scenario -Name 'B-不读' -FileStem 'B-noread' -Drain $false
 
 Write-Host ''
 $results | Format-Table -AutoSize -Wrap
