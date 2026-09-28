@@ -244,7 +244,7 @@ public sealed class DesktopServices : IAsyncDisposable
         {
             warnings.Add(
                 "许可没有配置好（缺少内置公钥），激活会失败。"
-                + "这是**软件安装的问题**，不是你激活码的问题。");
+                + "这是软件安装的问题，不是你激活码的问题。");
         }
 
         // ── 可信时钟（规格 §3.6.4：未校准不得开始录制）──────────────────
@@ -270,7 +270,7 @@ public sealed class DesktopServices : IAsyncDisposable
         {
             // I3：归档层配错了**必须让用户看见**。看不见的后果很具体：
             // 他以为录像已经双份了，于是手动删掉本机上唯一的那一份。
-            warnings.Add($"归档层没配好：{problem}本机这份仍然是好的，但它现在**只有一份**。");
+            warnings.Add($"归档层没配好：{problem}本机这份仍然是好的，但它现在只有一份。");
         }
 
         var finalizer = new SessionFinalizer(
@@ -409,7 +409,7 @@ public sealed class DesktopServices : IAsyncDisposable
                 // L5：未激活 / 校验失败 **必须明确告知原因并提供重新激活入口**，
                 // 不得静默失败 —— 而它挡的是**新录**，已有录像照常（L8）。
                 warnings.Add(
-                    $"{licenseStatus.FailureReason}未激活时**不能开始新的录制**；"
+                    $"{licenseStatus.FailureReason}未激活时不能开始新的录制；"
                     + "已有的录像照常可以检索、回放、导出、交付。"
                     + $"本机机器码：{licenseStatus.MachineCode}");
             }

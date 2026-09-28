@@ -2,7 +2,15 @@
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="连接电脑 / 手机" Height="640" Width="470"
+        FontFamily="{StaticResource UiFont}"
+        Background="{StaticResource PageBackground}"
         WindowStartupLocation="CenterOwner">
+    <!--
+        ⚠️ 这个窗**只换了配色与间距**（2026-09-28，跟着主窗的 SaaS 版式走）。
+        版式与逻辑一个字没动 —— 尤其是下面那张二维码的
+        `RenderOptions.BitmapScalingMode="NearestNeighbor"`：
+        插值会把模块边缘糊成灰边，糊掉的码在屏幕上**看着完全正常、就是扫不出来**。
+    -->
     <Grid Margin="16">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto"/>
@@ -13,16 +21,19 @@
             <RowDefinition Height="Auto"/>
         </Grid.RowDefinitions>
 
-        <TextBlock Grid.Row="0" TextWrapping="Wrap"
+        <TextBlock Grid.Row="0" TextWrapping="Wrap" Foreground="{StaticResource TextPrimary}"
                    Text="手机端扫下面这张二维码来申请连接。申请到了之后，屏幕正中会弹出提示，由你决定同意还是拒绝。"/>
 
         <!-- 发不出码的时候这里会说清楚为什么（服务没起来 / 只绑了本机 / 没有局域网地址）。
              不说的话，用户看到的就是一张扫不动的码。 -->
         <TextBlock Grid.Row="1" x:Name="BlockerText" Margin="0,10,0,0" TextWrapping="Wrap"
-                   Foreground="#CCB00020" Visibility="Collapsed"/>
+                   Foreground="{StaticResource Danger}" Visibility="Collapsed"/>
 
+        <!-- ⚠️ 这个 Border 的 `Background="White"` 是硬写的、**跟着 Theme 走会出事**：
+             二维码要求高对比（码是黑的、底得是白的），
+             用 Surface 或 PageBackground 那种带灰的底色会降低对比度。 -->
         <Border Grid.Row="2" Margin="0,14,0,0" Padding="10" Background="White"
-                BorderBrush="#33000000" BorderThickness="1" CornerRadius="4"
+                BorderBrush="{StaticResource CardBorder}" BorderThickness="1" CornerRadius="6"
                 HorizontalAlignment="Center">
             <!-- 一个模块一个像素，靠最近邻放大成方块。
                  用别的方式缩放会把模块边缘糊成灰边 —— 糊掉的码在屏幕上看着正常、扫不出来。 -->
@@ -32,25 +43,30 @@
 
         <StackPanel Grid.Row="3" Margin="0,10,0,0">
             <TextBlock x:Name="StatusLine" HorizontalAlignment="Center"
-                       TextAlignment="Center" TextWrapping="Wrap"/>
+                       TextAlignment="Center" TextWrapping="Wrap"
+                       Foreground="{StaticResource TextPrimary}"/>
             <TextBlock x:Name="AddressLine" Margin="0,4,0,0" HorizontalAlignment="Center"
-                       TextAlignment="Center" TextWrapping="Wrap" Foreground="#88666666"/>
+                       TextAlignment="Center" TextWrapping="Wrap"
+                       Foreground="{StaticResource TextSecondary}"/>
         </StackPanel>
 
         <StackPanel Grid.Row="4" Margin="0,14,0,0">
-            <TextBlock Text="已经连过的设备" FontWeight="SemiBold"/>
+            <TextBlock Text="已经连过的设备" FontWeight="SemiBold"
+                       Foreground="{StaticResource TextPrimary}"/>
             <ListBox x:Name="DeviceList" Margin="0,4,0,0" Visibility="Collapsed"
                      HorizontalContentAlignment="Stretch"/>
-            <TextBlock x:Name="DeviceEmpty" Margin="0,4,0,0" Foreground="#88666666"
+            <TextBlock x:Name="DeviceEmpty" Margin="0,4,0,0"
+                       Foreground="{StaticResource TextSecondary}"
                        TextWrapping="Wrap" Text="还没有设备连过这台电脑。"/>
         </StackPanel>
 
         <StackPanel Grid.Row="5" Orientation="Horizontal" Margin="0,14,0,0">
-            <Button x:Name="RegenerateButton" Content="重新生成二维码" Padding="16,6"
-                    Click="OnRegenerate"/>
-            <Button Content="关掉" Padding="16,6" Margin="8,0,0,0" Click="OnClose"/>
+            <Button x:Name="RegenerateButton" Content="重新生成二维码"
+                    Style="{StaticResource PrimaryButton}" Click="OnRegenerate"/>
+            <Button Content="关掉" Style="{StaticResource SecondaryButton}"
+                    Margin="8,0,0,0" Click="OnClose"/>
             <TextBlock x:Name="FootNote" Margin="12,0,0,0" VerticalAlignment="Center"
-                       TextWrapping="Wrap" Foreground="#88666666"/>
+                       TextWrapping="Wrap" Foreground="{StaticResource TextSecondary}"/>
         </StackPanel>
     </Grid>
 </Window>

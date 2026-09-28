@@ -164,6 +164,14 @@ public partial class MainWindow : Window
         // 应该发生在「上次的录像收好了」之后 —— 否则刚收进来的那段可能正好在
         // 清理计划里（它确实会被 24 小时豁免挡住，但顺序反了会让人以为是它被删的）。
         await RunStartupCleanupAsync();
+
+        // ⚠️ 侧栏那一行不会自己初始化：`OnNavChanged` 在构造期间被挡回去了
+        // （那时面板字段还都是 null），而 ticker 只在录制时才跑。
+        UpdateRecordingStatus();
+
+        // 默认页是「概览」，它的数要算一次。**排在清理之后** ——
+        // 否则刚清完的那批还挂在「待清理」上。
+        await RefreshOverviewAsync();
     }
 
     /// <summary>
@@ -206,7 +214,7 @@ public partial class MainWindow : Window
                 this,
                 $"保留期到了的录像有 {plan.Candidates.Count} 条，约 {megabytes} MB。\n\n"
                 + "要现在清理吗？\n"
-                + "· 清理前会逐条回查归档层，**查不到或查不了的那条不会删**；\n"
+                + "· 清理前会逐条回查归档层，查不到或查不了的那条不会删；\n"
                 + "· 删掉的是本机上这一份，归档层上的那份不动；\n"
                 + "· 已锁定与最近 24 小时内录的一条都不会动。",
                 "清理本地副本",
@@ -248,6 +256,227 @@ public partial class MainWindow : Window
         foreach (var warning in _host.Warnings)
         {
             WarningsList.Items.Add(warning);
+        }
+    }
+
+    // ─────────────────────────────────────────────
+    // 导航与概览（SaaS 版式，2026-09-28）
+    // ─────────────────────────────────────────────
+
+    /// <summary>「概览」正在重算 —— 连点【刷新】不该叠起来。</summary>
+    private bool _overviewBusy;
+
+    /// <summary>
+    /// 换了左边那一列 —— 切四个面板的 <see cref="UIElement.Visibility"/>。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// ⚠️ 这里**没有 MVVM**：本仓至今零 ViewModel、零 <c>ICommand</c>，
+    /// 为一个导航引一整套 MVVM 是这一批最不该做的事。
+    /// 互斥也不用自己维护 —— 四个导航项是同一个 <c>GroupName</c> 的
+    /// <see cref="RadioButton"/>，选中谁由 WPF 保证。
+    /// </para>
+    /// <para>
+    /// ⚠️ <b>这件事没有任何测试挡着</b>：App 层的 TFM 是 <c>net9.0-windows</c>，
+    /// 而 <c>Core.Tests</c> 是 <c>net9.0</c>、引用不了它。
+    /// 所以「点了导航真的换页」只能靠人跑一遍看 —— 别以为它是被守着的。
+    /// </para>
+    /// </remarks>
+    private async void OnNavChanged(object sender, RoutedEventArgs e)
+    {
+        // ⚠️ 构造期间就会触发：`NavOverview` 上写着 `IsChecked="True"`，
+        // 而 `Checked` 在 `InitializeComponent` 解析到那一行时就发了 ——
+        // 那时下面这些面板**还一个都没建出来**（XAML 是按文档顺序建的，
+        // 而 `x:Name` 的字段也是边解析边赋的）。不挡就是 NullReferenceException。
+        if (WorkPanel is null || OverviewPanel is null || PageTitleText is null)
+        {
+            return;
+        }
+
+        var target = (sender as RadioButton)?.Tag as string;
+
+        OverviewPanel.Visibility = target == "Overview" ? Visibility.Visible : Visibility.Collapsed;
+        WorkPanel.Visibility = target == "Work" ? Visibility.Visible : Visibility.Collapsed;
+        SearchPanel.Visibility = target == "Search" ? Visibility.Visible : Visibility.Collapsed;
+        SettingsPanel.Visibility = target == "Settings" ? Visibility.Visible : Visibility.Collapsed;
+
+        PageTitleText.Text = target switch
+        {
+            "Work" => "工作",
+            "Search" => "检索与回放",
+            "Settings" => "设置",
+            _ => "概览",
+        };
+
+        if (target == "Overview")
+        {
+            await RefreshOverviewAsync();
+        }
+    }
+
+    private async void OnRefreshOverview(object sender, RoutedEventArgs e) =>
+        await RefreshOverviewAsync();
+
+    /// <summary>
+    /// 重算「概览」页。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// ⚠️ <b>这一页只放盘上真能算出来的东西</b>（规格 §13.1）。这里**没有**
+    /// 「待上传 N 条」「在线手机 N 台」「归档层现在通不通」这类卡片 ——
+    /// 桌面端今天没有上传队列、没有设备心跳、没有 per-录像的归档状态字段。
+    /// 算不出来的数编一个上去比空着坏得多：用户会拿它去做判断（删不删盘上的东西）。
+    /// </para>
+    /// <para>
+    /// ⚠️ 它**不挂那 500ms 的 ticker**：下面 <c>LoadAllAsync</c> 是全量读索引文件，
+    /// 半秒一次会把界面拖死。只在进页面时与点【刷新】时算。
+    /// </para>
+    /// </remarks>
+    private async Task RefreshOverviewAsync()
+    {
+        if (_overviewBusy)
+        {
+            return;
+        }
+
+        _overviewBusy = true;
+        OvRefreshButton.IsEnabled = false;
+
+        try
+        {
+            var root = _host.Services.Layout.ArchiveRoot;
+
+            // ── ① 今天 ────────────────────────────────────────────────
+            var today = DateTime.Today;
+            var from = new DateTimeOffset(today, DateTimeOffset.Now.Offset);
+            var to = new DateTimeOffset(today.AddDays(1), DateTimeOffset.Now.Offset);
+
+            // ⚠️ `Limit` 默认只有 200，必须显式顶高：不顶的话「今天录了多少段」
+            // 会被静静截断在 200，而**界面上一点都看不出来它是截断的**。
+            var hits = await _host.Services.Search.SearchAsync(
+                new RecordingQuery { From = from, To = to, Limit = int.MaxValue });
+
+            var known = hits.Aggregate(TimeSpan.Zero, (sum, hit) => sum + hit.Entry.Duration);
+
+            OvTodayText.Text =
+                $"{hits.Count} 段 · 已知时长合计 {(int)known.TotalHours} 小时 {known.Minutes} 分";
+
+            var all = await _host.Services.Index.LoadAllAsync();
+            OvIndexText.Text = $"{all.Count} 段";
+
+            // 录像库总容量：全量遍历目录，几万个文件时是秒级 ⇒ 挪出 UI 线程，
+            // 否则大库上窗口会僵住（而这正是用户点【刷新】的那一刻）。
+            OvLibraryText.Text = "正在统计…";
+            var footprint = await Task.Run(() => LibraryFootprintProbe.Measure(root));
+
+            // ⚠️ 读不到的位置**必须说出来**：不说的话那个字节数是**静默偏小**的，
+            // 而用户会拿它判断「盘还够用」。
+            OvLibraryText.Text = footprint.UnreadableCount == 0
+                ? $"{FormatBytes(footprint.TotalBytes)} · {footprint.FileCount} 个文件"
+                : $"{FormatBytes(footprint.TotalBytes)} · {footprint.FileCount} 个文件"
+                  + $"（另有 {footprint.UnreadableCount} 处读不到，实际只会更多）";
+
+            OvUpdatedText.Text = $"统计于 {DateTime.Now:HH:mm:ss}";
+
+            // ── ② 状态 ────────────────────────────────────────────────
+            OvCameraText.Text = _host.Services.FfmpegPath is null
+                ? "没有 FFmpeg，无法采集"
+                : CameraCombo.SelectedItem as string ?? "没有找到摄像头";
+
+            // 与设置页、左侧栏读的是**同一个方法** —— 三处不可能说法不一。
+            OvClockText.Text = CalibrationSummary();
+            OvLicenseText.Text = LicenseSummary();
+
+            var server = _host.Services.Server;
+            OvServerText.Text = server?.BaseUrl is { Length: > 0 } url
+                ? server.IsUsingFallback
+                    ? $"已启动 · {url}（只绑到本机，别的设备访问不了）"
+                    : $"已启动 · {url}"
+                : "未启动";
+
+            var archive = _host.Services.ArchiveTarget;
+            OvArchiveText.Text = archive.ConfigurationProblem is { Length: > 0 } problem
+                ? $"⚠️ {archive.Label} —— 没配好：{problem}"
+                : archive.Label;
+
+            OvDiskText.Text = FormatFreeSpace(root);
+
+            var devices = await _host.Services.Devices.DevicesAsync();
+            OvDevicesText.Text = devices.Count == 0 ? "还没有手机接进来" : $"{devices.Count} 台";
+
+            // ── ③ 待办（没有就不出现）─────────────────────────────────
+            var cleanupLine = string.Empty;
+            var overdue = 0;
+
+            // ⚠️ 归档层就是本机磁盘时**连算都不算**：那时盘上这份是唯一副本，
+            // 清理入口本来就不该出现（规格 §3.5.1），何况这里只是看一眼。
+            if (_host.Services.Cleanup.CanCleanup)
+            {
+                var plan = await _host.Services.Cleanup.PreviewAsync(
+                    _host.Settings.Retention, DateTimeOffset.Now);
+
+                if (plan.Candidates.Count > 0)
+                {
+                    // 「约」不能省：那是估算值，而且这一层自己就承认没标定过。
+                    cleanupLine =
+                        $"{plan.Candidates.Count} 条 · 约 {plan.TotalBytes / 1024 / 1024} MB"
+                        + "（估的，清理前会再算一次）";
+                }
+
+                overdue = plan.OverdueUnarchived.Count;
+            }
+
+            OvCleanupText.Text = cleanupLine;
+            OvOverdueText.Text = overdue == 0
+                ? string.Empty
+                : $"{overdue} 条未备份的已过保留期（不会被自动删，只是提醒上传）";
+
+            OvWarningsText.Text = _host.Warnings.Count == 0
+                ? string.Empty
+                : $"⚠️ 启动时有 {_host.Warnings.Count} 处需要注意：{_host.Warnings[0]}"
+                  + "（明细见「设置」页）";
+
+            OvTodoCard.Visibility = cleanupLine.Length > 0 || overdue > 0 || _host.Warnings.Count > 0
+                ? Visibility.Visible
+                : Visibility.Collapsed;
+        }
+        catch (Exception ex)
+        {
+            // 概览算不出来**不该让整个界面出错**（I4 的同一条精神）——
+            // 但也不能装作没事：把原因写在该显示数字的那一格上。
+            OvUpdatedText.Text = $"⚠️ 统计没算完：{ex.Message}";
+        }
+        finally
+        {
+            _overviewBusy = false;
+            OvRefreshButton.IsEnabled = true;
+        }
+    }
+
+    /// <summary>把字节数写成人看的大小。</summary>
+    private static string FormatBytes(long bytes) => bytes switch
+    {
+        >= 1024L * 1024 * 1024 => $"{bytes / 1024.0 / 1024 / 1024:0.##} GB",
+        >= 1024 * 1024 => $"{bytes / 1024.0 / 1024:0.#} MB",
+        >= 1024 => $"{bytes / 1024.0:0.#} KB",
+        _ => $"{bytes} B",
+    };
+
+    /// <summary>数据目录所在盘的可用空间。</summary>
+    /// <remarks>
+    /// ⚠️ 读不到时**不许渲染成一个数字**。<see cref="DriveSpaceProbe"/> 是**抛**的
+    /// （不是返回 -1），而一个「0 GB」或「-1 GB」会被当成真的 ——
+    /// 用户会据此判断「盘满了」。说不出原因也要说「读不到」。
+    /// </remarks>
+    private static string FormatFreeSpace(string path)
+    {
+        try
+        {
+            return $"可用 {FormatBytes(new DriveSpaceProbe().GetFreeBytes(path))}";
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException)
+        {
+            return $"读不到可用空间（{ex.Message}）";
         }
     }
 
@@ -301,6 +530,29 @@ public partial class MainWindow : Window
     /// 这是要让他看见、并且去查为什么读不到的。
     /// </para>
     /// </remarks>
+    /// <summary>
+    /// 许可状态的一句话（左侧栏与概览页用）。
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ <b>「本机软件没配好公钥」与「没激活」是两回事</b>，必须分开说 ——
+    /// 混成一句话，用户会拿着机器码一直去找提供方换码，而换了也没用。
+    /// </remarks>
+    private string LicenseSummary()
+    {
+        var license = _host.Services.License;
+
+        if (license is null)
+        {
+            return "⛔ 本机软件没配好许可公钥（部署时漏了）";
+        }
+
+        var status = license.Status;
+
+        return status.Activated
+            ? $"✅ 已激活：允许接入 {status.Slots} 台手机端。"
+            : $"⛔ {status.FailureReason}允许接入 0 台手机端。";
+    }
+
     private void ShowLicense()
     {
         var license = _host.Services.License;
@@ -312,15 +564,19 @@ public partial class MainWindow : Window
             MachineCodeBox.Text = string.Empty;
             ActivationBox.IsEnabled = false;
             ActivateButton.IsEnabled = false;
+            NavLicenseText.Text = LicenseSummary();
             LicenseNote.Text =
                 "⛔ 本机软件没配好许可公钥（部署时漏了），激活会一律失败。"
-                + "这是**安装的问题**，不是你激活码的问题 —— 请联系提供方重新安装。"
-                + "⚠️ 这只影响**新的录制与新的手机接入**，已有的录像照常可查可导出。";
+                + "这是安装的问题，不是你激活码的问题 —— 请联系提供方重新安装。"
+                + "⚠️ 这只影响新的录制与新的手机接入，已有的录像照常可查可导出。";
             return;
         }
 
         var status = license.Status;
         MachineCodeBox.Text = status.MachineCode;
+
+        // 左侧栏那一行用短的（长的那段留在本页）。
+        NavLicenseText.Text = LicenseSummary();
 
         var degraded = status.Degraded
             ? "⚠️ 这台机器的部分硬件标识读不到（机器码里有全零段），"
@@ -481,7 +737,7 @@ public partial class MainWindow : Window
         ArchiveRelayNote.Visibility = Visibility.Visible;
         ArchiveRelayNote.Text =
             $"⚠️ 最近一次发布到{relay.Label}没成功：{failure}\n"
-            + "盘上这一份仍然是好的、也能检索 —— 但它现在**只有一份**，"
+            + "盘上这一份仍然是好的、也能检索 —— 但它现在只有一份，"
             + "在发上去之前别删它。修好之后下次收尾会自动再发。";
     }
 
@@ -489,21 +745,36 @@ public partial class MainWindow : Window
     // 时间校准（规格 §3.6.3 / §3.6.4）
     // ─────────────────────────────────────────────
 
-    /// <summary>把当前校准状态显示出来。**要能一眼看出「现在录不录得了」**。</summary>
-    private void ShowCalibration()
+    /// <summary>
+    /// 校准状态的一句话。
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ 抽出来是因为它要在**三个地方**显示：设置页、左侧栏、概览页。
+    /// 各写一份的话迟早会出现「侧栏说已校准、设置页说没校准」——
+    /// 而这种自相矛盾比哪一边说错都更让人不敢信这个界面。
+    /// </remarks>
+    private string CalibrationSummary()
     {
         var clock = _host.Services.TrustedClock;
 
-        if (clock.IsCalibrated)
+        if (!clock.IsCalibrated)
         {
-            var source = clock.State.Source == CalibrationSource.PublicTime ? "公网时间" : "归档回执";
-            var at = clock.State.CalibratedAtUtc?.ToLocalTime().ToString("yyyy-MM-dd HH:mm") ?? "—";
-
-            CalibrationNote.Text = $"✅ 已校准（来源：{source}，校准于 {at}）。可以录制。";
-            return;
+            return $"⛔ {clock.BlockedReason}";
         }
 
-        CalibrationNote.Text = $"⛔ {clock.BlockedReason}";
+        var source = clock.State.Source == CalibrationSource.PublicTime ? "公网时间" : "归档回执";
+        var at = clock.State.CalibratedAtUtc?.ToLocalTime().ToString("yyyy-MM-dd HH:mm") ?? "—";
+
+        return $"✅ 已校准（来源：{source}，校准于 {at}）。可以录制。";
+    }
+
+    /// <summary>把当前校准状态显示出来。**要能一眼看出「现在录不录得了」**。</summary>
+    private void ShowCalibration()
+    {
+        var summary = CalibrationSummary();
+
+        CalibrationNote.Text = summary;
+        NavClockText.Text = summary;
     }
 
     /// <summary>点【重新校准】：取一次公网时间。</summary>
@@ -816,12 +1087,24 @@ public partial class MainWindow : Window
         finally
         {
             RefreshStartButton();
+
+            // 结束时 ticker 停了 ⇒ 侧栏那一行不会自己回到「空闲」。
+            UpdateRecordingStatus();
         }
     }
 
     private void UpdateRecordingStatus()
     {
-        if (_host.Coordinator.CurrentWaybill is null)
+        var waybill = _host.Coordinator.CurrentWaybill;
+
+        // 左侧栏那一行**任何一页都要对**，所以在两个分支里都刷 ——
+        // 原来那个「没有单号就 return」会把上一轮的单号留在侧栏上。
+        NavRecordingText.Text = waybill is null ? "空闲" : $"录制中 · {waybill.Value}";
+        NavRecordingText.Foreground = waybill is null
+            ? (System.Windows.Media.Brush)FindResource("TextSecondary")
+            : (System.Windows.Media.Brush)FindResource("Success");
+
+        if (waybill is null)
         {
             return;
         }
@@ -829,7 +1112,7 @@ public partial class MainWindow : Window
         var elapsed = _host.Coordinator.Elapsed;
         var clock = $"{(int)elapsed.TotalHours:00}:{elapsed.Minutes:00}:{elapsed.Seconds:00}";
 
-        RecordingStatus.Text = $"录制中 {clock} · {_host.Coordinator.CurrentWaybill.Value}";
+        RecordingStatus.Text = $"录制中 {clock} · {waybill.Value}";
         StopWorkButton.IsEnabled = true;
     }
 

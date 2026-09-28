@@ -10,6 +10,12 @@
         规格 §3.2.1 要求后台仍然收码。
     -->
     <Application.Resources>
-
+        <ResourceDictionary>
+            <ResourceDictionary.MergedDictionaries>
+                <!-- 设计语言（颜色 / 文字 / 卡片 / 按钮 / 导航项）。
+                     2026-09-28 之前这里是**空的** —— 颜色全是内联字面量手工重复。 -->
+                <ResourceDictionary Source="Theme.xaml"/>
+            </ResourceDictionary.MergedDictionaries>
+        </ResourceDictionary>
     </Application.Resources>
 </Application>

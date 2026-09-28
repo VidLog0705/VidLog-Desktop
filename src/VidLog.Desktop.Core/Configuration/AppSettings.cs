@@ -271,7 +271,7 @@ public sealed class SettingsStore
             warnings.Add(
                 "设置文件里的保留期是旧格式（发货 / 退货各一个数），"
                 + "已按「已备份保留时长」读入 —— 新增的「未备份」那一列默认是「全部保留」。"
-                + "（未备份的那一列**永不自动删**，它到期只提醒。）");
+                + "（未备份的那一列永不自动删，它到期只提醒。）");
         }
 
         return new SettingsLoadResult(parsed, warnings);

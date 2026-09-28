@@ -219,4 +219,34 @@ public static class SpecSelectionPolicy
             ChangedFromRequested: true,
             Reason: firstReason ?? "没有任何可用的录制规格组合");
     }
+
+    /// <summary>
+    /// 把一次选择的结果说成**一句人话**（界面直接用这个字符串）。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// ⚠️ 为什么要有这个方法：<see cref="SpecSelection.ChangedFromRequested"/>
+    /// 一个标志盖了**两种情形**，而它们的说法不一样 ——
+    /// </para>
+    /// <list type="number">
+    /// <item><b>真回落了</b>（探测挑中了别的组合）：说清「从哪落到哪」。</item>
+    /// <item><b>一个组合都没实测通过</b>（上面最后一档回到默认档）：
+    /// 这时 <c>Spec</c> 可能就是用户选的那个 —— 按情形 1 的句式会印出
+    /// 「回落到了 H.264 1080P（你选的是 H.264 1080P）」，**一句自相矛盾的话**
+    /// （2026-09-28 在电脑端概览页上实测到的）。</item>
+    /// </list>
+    /// <para>
+    /// ⚠️ 情形 2 **不能因为「没变」就不说**：它是「探测全失败」这件事的唯一出口
+    /// （I3：不存在静默失败）。所以两句话都带 <see cref="SpecSelection.Reason"/>。
+    /// </para>
+    /// <para>
+    /// 放在 Core 而不是界面里，纯粹是为了**它能被测到** —— 界面那层（App）没有测试工程。
+    /// </para>
+    /// </remarks>
+    public static string Describe(SpecSelection selection, RecordingSpec wanted) =>
+        selection.Spec == wanted
+            ? $"录制规格没能实测通过，仍然按 {selection.Spec.Label} 走。"
+              + $"原因：{selection.Reason}"
+            : $"录制规格回落到了 {selection.Spec.Label}（你选的是 {wanted.Label}）。"
+              + $"原因：{selection.Reason}";
 }

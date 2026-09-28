@@ -131,7 +131,21 @@ public sealed class CalibrationStore
 
         try
         {
-            var json = await File.ReadAllTextAsync(_path, cancellationToken);
+            // ⚠️ `ConfigureAwait(false)` **不能省** —— 少了它就是「电脑端只能启动一次」。
+            //
+            // 缘由：`DesktopServices.Create` 是在 **UI 线程**上
+            // `calibration.LoadAsync().GetAwaiter().GetResult()` 阻塞等它的
+            // （那个 Create 是同步 API）。不写 ConfigureAwait(false) 的话，
+            // 这个 await 的后续会被投回 UI 线程的同步上下文，而 UI 线程正卡在
+            // 那个 GetResult 上 —— 谁也走不了，**进程永久挂住、窗口永远不出现**。
+            //
+            // ⚠️ 为什么第一次跑没事：没校准过时上面 `!File.Exists` 那条**同步返回**，
+            // 根本没有 await，所以不死锁；而它紧接着就把文件写出来了 ——
+            // 于是**从第二次启动起必挂**。这正是「交付后第一次能开、之后再也开不了」。
+            //
+            // ⚠️ 单元测试抓不到：测试线程上 `SynchronizationContext.Current` 是 null，
+            // 而 App 层没有测试工程。见 `CalibrationStoreTests` 里那条专门造上下文拦的。
+            var json = await File.ReadAllTextAsync(_path, cancellationToken).ConfigureAwait(false);
             return JsonSerializer.Deserialize<CalibrationState>(json, Options) ?? CalibrationState.Empty;
         }
         catch (Exception ex) when (ex is JsonException or IOException or UnauthorizedAccessException)
@@ -154,7 +168,8 @@ public sealed class CalibrationStore
         var json = JsonSerializer.Serialize(state, Options);
         var temporary = _path + ".tmp";
 
-        await File.WriteAllTextAsync(temporary, json, cancellationToken);
+        // 与 LoadAsync 同一条理由：这个存储不该带着调用方的同步上下文。
+        await File.WriteAllTextAsync(temporary, json, cancellationToken).ConfigureAwait(false);
 
         try
         {
@@ -163,7 +178,7 @@ public sealed class CalibrationStore
         catch (IOException)
         {
             // Windows 上改名可能被 Defender 之类的句柄短暂拒绝。
-            await Task.Delay(50, cancellationToken);
+            await Task.Delay(50, cancellationToken).ConfigureAwait(false);
             File.Move(temporary, _path, overwrite: true);
         }
     }

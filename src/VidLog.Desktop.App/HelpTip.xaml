@@ -1,0 +1,87 @@
+<UserControl x:Class="VidLog.Desktop.App.HelpTip"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             x:Name="Root">
+    <!--
+        一个「?」圆圈：点开才显示那段解释文字（需求方 2026-09-28 裁决）。
+
+        ⚠️ 为什么做成 UserControl 而不是直接用 `ToolTip`：
+        设置页要用 **15 次**，而 ToolTip 每次都得写
+        `<TextBlock.ToolTip><ToolTip><TextBlock …/>…` 四行，且只能悬停、
+        长段落悬停读着难受、还没法点开钉住。
+        15 处 × 4 行 boilerplate 与这一个 60 行的控件之间选后者。
+
+        ⚠️ 用法一行：`<local:HelpTip Text="…"/>`
+    -->
+    <UserControl.Resources>
+        <Style x:Key="HelpCircle" TargetType="ToggleButton">
+            <Setter Property="Width" Value="18"/>
+            <Setter Property="Height" Value="18"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="Focusable" Value="False"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ToggleButton">
+                        <Border x:Name="Bd" CornerRadius="9" BorderThickness="1"
+                                Background="Transparent"
+                                BorderBrush="{StaticResource TextDisabled}">
+                            <TextBlock x:Name="Glyph" Text="?" FontSize="11"
+                                       FontWeight="SemiBold"
+                                       HorizontalAlignment="Center"
+                                       VerticalAlignment="Center"
+                                       Foreground="{StaticResource TextSecondary}"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Bd" Property="BorderBrush"
+                                        Value="{StaticResource Accent}"/>
+                                <Setter TargetName="Glyph" Property="Foreground"
+                                        Value="{StaticResource Accent}"/>
+                            </Trigger>
+                            <!-- 打开着的时候是实心蓝，让用户知道「这段字是我点出来的、再点一下收」 -->
+                            <Trigger Property="IsChecked" Value="True">
+                                <Setter TargetName="Bd" Property="Background"
+                                        Value="{StaticResource Accent}"/>
+                                <Setter TargetName="Bd" Property="BorderBrush"
+                                        Value="{StaticResource Accent}"/>
+                                <Setter TargetName="Glyph" Property="Foreground" Value="White"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+    </UserControl.Resources>
+
+    <!--
+        ⚠️ 必须是「一个」根元素 —— UserControl 只能有一个子。
+        Popup 放在 StackPanel 里不占布局位置（它不属于可视树的那个位置），
+        所以这个 StackPanel 实际渲染出来就只有那个「?」圆圈。
+    -->
+    <StackPanel Orientation="Horizontal">
+        <ToggleButton x:Name="Toggle" Style="{StaticResource HelpCircle}"
+                      VerticalAlignment="Center"
+                      Checked="OnToggleChanged" Unchecked="OnToggleChanged"/>
+
+        <!--
+            StaysOpen=False ⇒ 点别处自动收起（SaaS 里这种气泡的标准行为）。
+            AllowsTransparency 是为了圆角与投影 —— 不给的话是个直角灰框。
+        -->
+        <Popup x:Name="Tip" StaysOpen="False" AllowsTransparency="True"
+               Placement="Bottom" PlacementTarget="{Binding ElementName=Toggle}"
+               HorizontalOffset="-12" VerticalOffset="4"
+               Closed="OnTipClosed">
+            <Border MaxWidth="440" Padding="12,10" CornerRadius="6"
+                    Background="{StaticResource Surface}"
+                    BorderBrush="{StaticResource CardBorder}" BorderThickness="1">
+                <Border.Effect>
+                    <DropShadowEffect BlurRadius="10" ShadowDepth="2"
+                                      Opacity="0.16" Color="#FF000000"/>
+                </Border.Effect>
+                <TextBlock TextWrapping="Wrap" FontSize="12" LineHeight="19"
+                           Foreground="{StaticResource TextPrimary}"
+                           Text="{Binding Text, ElementName=Root}"/>
+            </Border>
+        </Popup>
+    </StackPanel>
+</UserControl>

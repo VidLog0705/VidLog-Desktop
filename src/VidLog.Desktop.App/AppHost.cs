@@ -236,9 +236,10 @@ public sealed class AppHost : IAsyncDisposable
 
         if (selection.ChangedFromRequested)
         {
-            warnings.Add(
-                $"录制规格回落到了 {selection.Spec.Label}（你选的是 {wantedSpec.Label}）。"
-                + $"原因：{selection.Reason}");
+            // 说法在 Core 那边收口（`SpecSelectionPolicy.Describe`）——
+            // 一个标志盖了「真回落」与「探测全没通过」两种情形，句子不一样，
+            // 而那句话放在 Core 才**测得到**（App 层没有测试工程）。
+            warnings.Add(SpecSelectionPolicy.Describe(selection, wantedSpec));
         }
 
         logger.Log(LogLevel.Info, "启动", $"录制规格 {selection.Spec.Label}", new Dictionary<string, object?>

@@ -187,6 +187,47 @@ public class RecordingSpecTests
         Assert.False(string.IsNullOrWhiteSpace(selection.Reason));
     }
 
+    /// <summary>
+    /// **「回落到了 X（你选的是 X）」那句自相矛盾的话的绊线。**
+    /// </summary>
+    /// <remarks>
+    /// 复现的是 2026-09-28 在电脑端概览页上实测到的那一条警告：本机没摄像头时
+    /// 所有组合都探测失败，策略回到默认档 —— 而用户选的**恰好就是**默认档，
+    /// 于是界面印出「录制规格回落到了 H.264 1080P（你选的是 H.264 1080P）」。
+    /// </remarks>
+    [Fact]
+    public async Task 探测全失败但结果与用户选的一致时_不许说成回落()
+    {
+        // 用户选的就是默认档，而一个组合都跑不通（没摄像头）。
+        var selection = await SpecSelectionPolicy.SelectAsync(
+            RecordingSpec.Default, "Camera", new FakeSpecProbe());
+
+        Assert.Equal(RecordingSpec.Default, selection.Spec);
+
+        var text = SpecSelectionPolicy.Describe(selection, RecordingSpec.Default);
+
+        Assert.DoesNotContain("回落到了", text);
+        // ⚠️ 但不能因为「没变」就闭嘴：探测全失败这件事**必须说出来**（I3）。
+        Assert.Contains("没能实测通过", text);
+        Assert.Contains(selection.Reason!, text);
+    }
+
+    [Fact]
+    public async Task 真回落了就说清从哪落到哪()
+    {
+        var wanted = new RecordingSpec(VideoCodec.H265, VideoResolution.Uhd4K);
+        var only720 = new RecordingSpec(VideoCodec.H265, VideoResolution.P720);
+        var selection = await SpecSelectionPolicy.SelectAsync(
+            wanted, "Camera", new FakeSpecProbe(only720));
+
+        var text = SpecSelectionPolicy.Describe(selection, wanted);
+
+        Assert.Contains(only720.Label, text);
+        Assert.Contains(wanted.Label, text);
+        Assert.Contains("回落到了", text);
+    }
+
+
     // ─────────────────────────────────────────────
     // 容量系数（规格 §3.5.5 的连带项）
     // ─────────────────────────────────────────────
