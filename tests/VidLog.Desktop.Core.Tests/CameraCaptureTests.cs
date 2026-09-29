@@ -172,6 +172,35 @@ public class CameraCaptureTests
             "-flush_packets 是输出侧选项，必须在 -i 之后");
     }
 
+    [Fact]
+    public void 原生档_不带video_size也不带framerate_但方向与编码照旧()
+    {
+        // 设计图步 4 的兜底：「该配置来自**摄像头原生模式**」——
+        // 「不钉尺寸」就是「照相机自己那一档」。
+        //
+        // ⚠️ 而方向与编码**不是相机的能力**，是用户的选择（`RecordingSpec` 的说明：
+        // 回落表里每一档都保住用户选的方向）。原生档也一样一个都不许丢。
+        var native = RecordingSpec.Default with
+        {
+            Rotation = CameraRotation.Right90,
+            NativeCaptureSize = true,
+        };
+
+        var args = FfmpegCameraCapture
+            .BuildArguments(CameraSource.Local("Cam"), @"C:\out\seg.mkv", "libx264", native)
+            .ToList();
+
+        // ⚠️ 两个都**不能出现**：`-video_size` 与 `-framerate` 是
+        // 「按这个模式打开设备」的一部分，留一个就是「既不是原生、也不是用户选的」中间态。
+        Assert.DoesNotContain("-video_size", args);
+        Assert.DoesNotContain("-framerate", args);
+
+        Assert.Contains("libx264", args);
+
+        var filters = args[args.IndexOf("-vf") + 1];
+        Assert.Contains("transpose=1", filters, StringComparison.Ordinal);
+    }
+
     // ─────────────────────────────────────────────
     // 音轨（规格 §3.1.8）
     // ─────────────────────────────────────────────
@@ -523,6 +552,11 @@ public class CameraCaptureTests
 /// 用 <see cref="RequiresCameraFactAttribute"/> 守着：没有摄像头就**跳过并说明**，
 /// 绝不在方法体里静默 return。
 /// </remarks>
+/// <remarks>
+/// ⚠️ 在 <see cref="DshowDeviceCollection"/> 里：它开**真相机**，
+/// 而相机是独占的 —— 与预览那一组并行跑会互相抢设备（实测红过一次）。
+/// </remarks>
+[Collection(DshowDeviceCollection.Name)]
 public class FfmpegCameraCaptureIntegrationTests
 {
     private static string Ffmpeg => FfmpegLocator.TryFind()!;
@@ -616,6 +650,68 @@ public class FfmpegCameraCaptureIntegrationTests
 
         Assert.True(audio.Succeeded,
             $"产物里没有音轨（麦克风是好的，不该降级）：{audio.StandardError}");
+    }
+
+    [RequiresCameraFact]
+    public async Task 真相机上原生档真能录_而且尺寸是问出来的不是猜的()
+    {
+        // §2.5 / 设计图步 4 的未完成态：「已采用可用的**原生配置**」
+        // 「该配置来自**摄像头原生模式**，仅作为安全兜底」。
+        //
+        // 这条验两件事：
+        // ① 不钉尺寸时**真能录出可解码的成品** —— 三档都跑不通时这是唯一的出路；
+        // ② 尺寸是**真开一次问出来的**，而且与产物实际的那一对对得上
+        //    （那个值会写进索引，是我们的证据元数据）。
+        using var dir = new TempDir();
+        var video = (await DshowDevices.ListVideoAsync(Ffmpeg))[0];
+        var runner = new SystemProcessRunner();
+        var encoder = await PickEncoderAsync(runner);
+
+        var native = RecordingSpec.Default with { NativeCaptureSize = true };
+        var result = await new FfmpegSpecProbe(Ffmpeg, runner)
+            .ProbeAsync(native, CameraSource.Local(video));
+
+        Assert.True(result.Usable, result.FailureReason);
+
+        var observed = result.ObservedSize;
+        Assert.NotNull(observed);
+
+        var mkv = dir.File("native.mkv");
+        var capture = new FfmpegCameraCapture(
+            Ffmpeg, native.WithObservedSize(observed!.Value.Width, observed.Value.Height));
+        var process = await capture.StartAsync(CameraSource.Local(video), mkv, encoder);
+
+        await Task.Delay(TimeSpan.FromSeconds(3));
+        var exit = await process.StopAsync(TimeSpan.FromSeconds(20));
+
+        Assert.Equal(0, exit);
+        Assert.True(File.Exists(mkv) && new FileInfo(mkv).Length > 0, "原生档必须产出文件");
+
+        var verification = await new DecodeVerifier(Ffmpeg, runner).VerifyAsync(mkv);
+        Assert.True(verification.IsPlayable, verification.FailureReason);
+
+        // ★ 交叉核对：产物**实际的**尺寸要等于探测报出来的那一对。
+        // 分开量是因为两者走的是不同的文件（探测的那份已删），
+        // 等于说「探测说的」与「真录出来的」是同一个数。
+        Assert.Equal(observed, await MeasureAsync(runner, mkv));
+    }
+
+    /// <summary>从产物里读它**实际**的尺寸（独立于探测那一路，用来交叉核对）。</summary>
+    private static async Task<(int Width, int Height)?> MeasureAsync(IProcessRunner runner, string path)
+    {
+        var result = await runner.RunAsync(Ffmpeg,
+        [
+            "-hide_banner",
+            // ⚠️ 不能压成 `-v error`：尺寸是 info 级别打出来的。
+            "-v", "info",
+            "-i", path, "-frames:v", "1", "-f", "null", "-",
+        ]);
+
+        var streams = FfmpegNetworkCameraProbe.ParseStreams(result.StandardError);
+
+        return streams is { Width: > 0, Height: > 0 }
+            ? (streams.Width.Value, streams.Height.Value)
+            : null;
     }
 
     private static async Task<string> PickEncoderAsync(IProcessRunner runner)

@@ -260,13 +260,24 @@ public class RecordingSpecTests
     {
         public List<RecordingSpec> Tried { get; } = [];
 
+        /// <summary>
+        /// 探测成功时报出来的尺寸。
+        /// </summary>
+        /// <remarks>
+        /// ⚠️ 只有**原生档**会拿到它 —— 其余档的尺寸是我们钉的，本来就已知
+        /// （与生产里 <c>FfmpegSpecProbe</c> 的口径一致）。
+        /// </remarks>
+        public (int Width, int Height)? ObservedOnSuccess { get; init; }
+
         public Task<SpecProbeResult> ProbeAsync(
             RecordingSpec spec, CameraSource source, CancellationToken cancellationToken = default)
         {
             Tried.Add(spec);
 
             return Task.FromResult(usable.Contains(spec)
-                ? new SpecProbeResult(spec, spec.EncoderCandidates[0], true, null)
+                ? new SpecProbeResult(
+                    spec, spec.EncoderCandidates[0], true, null,
+                    spec.NativeCaptureSize ? ObservedOnSuccess : null)
                 : new SpecProbeResult(spec, spec.EncoderCandidates[0], false, "这个组合打不开"));
         }
     }
@@ -355,6 +366,105 @@ public class RecordingSpecTests
         Assert.Contains(only720.Label, text);
         Assert.Contains(wanted.Label, text);
         Assert.Contains("回落到了", text);
+    }
+
+    // ─────────────────────────────────────────────
+    // ★ 相机原生档（设计图步 4 的未完成态）
+    // ─────────────────────────────────────────────
+
+    [Fact]
+    public async Task 三档全跑不通时_回落到相机原生档_而不是假装回到某一档()
+    {
+        // 设计图步 4 未完成态原话：「已采用可用的**原生配置**（640×480 @ 30 FPS）」
+        // 「该配置来自**摄像头原生模式**，仅作为安全兜底」。
+        //
+        // ⚠️ 改之前这里是回到 `RecordingSpec.Default`（H.264 1080P）——
+        // 而三档都跑不通时 1080P **同样跑不通**，那不是兜底，是一句假话：
+        // 2026-09-30 真机实测（一台只支持 640×480 的相机）回落之后录制根本起不来。
+        var wanted = new RecordingSpec(VideoCodec.H265, VideoResolution.Uhd4K, CameraRotation.Right90);
+        var native = RecordingSpec.Default with
+        {
+            Rotation = CameraRotation.Right90,
+            NativeCaptureSize = true,
+        };
+
+        var probe = new FakeSpecProbe(native) { ObservedOnSuccess = (640, 480) };
+        var selection = await SpecSelectionPolicy.SelectAsync(wanted, CameraSource.Local("Camera"), probe);
+
+        Assert.True(selection.NativeFallback);
+        Assert.True(selection.Spec.NativeCaptureSize);
+        Assert.True(selection.ChangedFromRequested);
+
+        // ★ 方向**不能丢**（与回落表同一条规矩：方向与编码能力无关，
+        // 而方向错了的画面可能整段都不能用，不是「画质差一点」）。
+        Assert.Equal(CameraRotation.Right90, selection.Spec.Rotation);
+
+        // ★ 尺寸是**实测出来的那个**，不是标称的 1080P —— 它会进索引（证据元数据）。
+        Assert.Equal((640, 480), selection.Spec.ObservedSize);
+        Assert.Equal((480, 640), selection.Spec.Size);
+    }
+
+    [Fact]
+    public async Task 原生档是最后才试的_前面每一档都试过了()
+    {
+        var wanted = new RecordingSpec(VideoCodec.H264, VideoResolution.P1080);
+        var probe = new FakeSpecProbe();   // 什么都不认
+
+        await SpecSelectionPolicy.SelectAsync(wanted, CameraSource.Local("Camera"), probe);
+
+        var regular = RecordingSpec.FallbacksFrom(wanted).Count;
+        var firstNative = probe.Tried.FindIndex(s => s.NativeCaptureSize);
+
+        Assert.True(firstNative >= 0, "原生档必须被试过");
+        Assert.Equal(regular, firstNative);
+    }
+
+    [Fact]
+    public async Task 连原生档都跑不通时_才是那个一个组合都没通过()
+    {
+        var selection = await SpecSelectionPolicy.SelectAsync(
+            new RecordingSpec(VideoCodec.H265, VideoResolution.Uhd4K),
+            CameraSource.Local("Camera"),
+            new FakeSpecProbe());
+
+        Assert.False(selection.NativeFallback);
+        Assert.Equal(RecordingSpec.Default, selection.Spec);
+        Assert.False(string.IsNullOrWhiteSpace(selection.Reason));
+    }
+
+    [Fact]
+    public async Task 原生档那句话要说出实测尺寸_而且不许印没测过的帧率()
+    {
+        var wanted = new RecordingSpec(VideoCodec.H265, VideoResolution.Uhd4K);
+        var native = RecordingSpec.Default with { NativeCaptureSize = true };
+        var probe = new FakeSpecProbe(native) { ObservedOnSuccess = (640, 480) };
+
+        var selection = await SpecSelectionPolicy.SelectAsync(wanted, CameraSource.Local("Camera"), probe);
+        var text = SpecSelectionPolicy.Describe(selection, wanted);
+
+        Assert.Contains("640×480", text);
+        Assert.Contains("原生", text);
+        Assert.Contains(selection.Reason!, text);
+
+        // ⚠️ 帧率**不印数字**：设计图上那句是「@ 30 FPS」，而我们没测过帧率 ——
+        // 原生档的帧率是相机自己定的。宁可少一句，不写一句没测过的话。
+        Assert.DoesNotContain("30 FPS", text);
+    }
+
+    [Fact]
+    public void 原生档不钉尺寸_也不印一个标称的分辨率()
+    {
+        var native = RecordingSpec.Default with { NativeCaptureSize = true };
+
+        // 不钉 ⇒ ffmpeg 一个 -video_size / -framerate 都不该收到。
+        Assert.Null(native.PinnedFfmpegSize);
+
+        // 而 Label 里**不许**出现「1080P」——那是我们没给它选过的档。
+        Assert.DoesNotContain("1080P", native.Label);
+        Assert.Contains("原生", native.Label);
+
+        // 测出来之后，Label 说的是实测的那一对。
+        Assert.Contains("640×480", native.WithObservedSize(640, 480).Label);
     }
 
 

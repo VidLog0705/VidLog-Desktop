@@ -149,12 +149,85 @@ public sealed record RecordingSpec(
     /// （字跑到画面外或挤成一团）或者「容量按错误的像素数估」
     /// —— 两种都是静默的。所以用哪个**必须在调用点写清楚**。
     /// </remarks>
-    public (int Width, int Height) Size => Rotation is CameraRotation.Left90 or CameraRotation.Right90
-        ? (CaptureSize.Height, CaptureSize.Width)
-        : CaptureSize;
+    /// <remarks>
+    /// ⚠️ 原生档时取 <see cref="ObservedSize"/>（实测出来的那个），**不是**标称的
+    /// <see cref="CaptureSize"/> —— 标称值在那一档是**我们没测过**的，
+    /// 而它会被写进索引（证据元数据）。
+    /// 还没测出来时退回标称值：那是在「探测还没跑完」的窗口里，
+    /// 而那个窗口里不会有条目落盘。
+    /// </remarks>
+    public (int Width, int Height) Size
+    {
+        get
+        {
+            var (width, height) = ObservedSize ?? CaptureSize;
+
+            return Rotation is CameraRotation.Left90 or CameraRotation.Right90
+                ? (height, width)
+                : (width, height);
+        }
+    }
 
     /// <summary>ffmpeg 的 <c>-video_size</c> 参数值（**采集**侧）。</summary>
     public string FfmpegSize => $"{CaptureSize.Width}x{CaptureSize.Height}";
+
+    /// <summary>
+    /// 采集侧**不钉尺寸**：用相机自己的原生档（规格 §3.1.7 的安全兜底）。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// ⚠️ 依据是设计图**步 4「检测录制性能」的未完成态**（原话）：
+    /// 「当前采用：640×480 @ 30 FPS」「该配置来自**摄像头原生模式**，仅作为安全兜底」。
+    /// 也就是说：三档分辨率**一个都跑不通**时，不该假装回落到某一档，
+    /// 而该**照相机自己说的那一档录** —— 有录像总胜过录不出来。
+    /// </para>
+    /// <para>
+    /// ⚠️ <b>它不是用户可以选的一档</b>，所以不在 <see cref="VideoResolution"/> 里
+    /// （那个枚举落设置文件、也上界面）：用户能选的是 4K / 1080P / 720P，
+    /// 而这一档是**探测全失败之后我们自己兜的底**。加进枚举会让它变成第四个选项，
+    /// 而「原生档」根本不是用户能预期的东西。
+    /// </para>
+    /// <para>
+    /// ⚠️ <b>原生档时 ffmpeg 不带 <c>-video_size</c>、也不带 <c>-framerate</c></b>
+    /// （见 <see cref="PinnedFfmpegSize"/>）：那两个是「按这个模式打开设备」的一部分，
+    /// 不钉尺寸却钉帧率会开到一个既不是原生、也不是用户选的中间态。
+    /// 真实尺寸要**开一次相机才知道**，所以它落在
+    /// <see cref="ObservedSize"/> 上，不在这个记录里。
+    /// </para>
+    /// </remarks>
+    public bool NativeCaptureSize { get; init; }
+
+    /// <summary>
+    /// 要钉给 ffmpeg 的采集尺寸；**原生档时是 <see langword="null"/>**（不钉）。
+    /// </summary>
+    /// <remarks>
+    /// 抽出来是为了让「钉不钉」只有**一处**判断 —— 采集那一档要用它两次
+    /// （输入侧 <c>-video_size</c>、网络那一档的输出侧 <c>scale</c>），
+    /// 两处各写一次的话迟早有一处漏掉，而漏掉的表现是
+    /// 「网络摄像头录出来还是 1080P」这种**没有报错**的偏差。
+    /// </remarks>
+    public string? PinnedFfmpegSize => NativeCaptureSize ? null : FfmpegSize;
+
+    /// <summary>
+    /// **实测出来的**采集尺寸（宽 × 高）；没测过就是 <see langword="null"/>。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// ⚠️ 只有原生档需要它：其余档的尺寸是我们钉的，本来就已知；
+    /// 而原生档是**相机自己说它支持什么**，不真开一次问不出来。
+    /// 设计图上那句「当前采用：640×480 @ 30 FPS」就是这个值。
+    /// </para>
+    /// <para>
+    /// ⚠️ 它同时决定**索引里记的分辨率**（<c>RecordingSession</c> 写条目时用
+    /// <see cref="Size"/>）—— 那条是证据元数据，写一个我们**没测过**的标称值
+    /// 等于往档案里写假话。所以原生档选了之后，这个字段**必须**填上。
+    /// </para>
+    /// </remarks>
+    public (int Width, int Height)? ObservedSize { get; init; }
+
+    /// <summary>带上实测出来的采集尺寸（原生档用）。</summary>
+    public RecordingSpec WithObservedSize(int width, int height) =>
+        this with { ObservedSize = (width, height) };
 
     /// <summary>界面上写的方向名（**唯一一处产出**，与 <see cref="CodecLabel"/> 同一条规矩）。</summary>
     public string RotationLabel => Rotation switch
@@ -202,9 +275,25 @@ public sealed record RecordingSpec(
     /// ⚠️ 方向**只在非默认时**才附上：回落提示里带一个不参与回落的东西是噪声，
     /// 而默认档那句话（现有日志与测试都在断言它）一个字都不该变。
     /// </remarks>
-    public string Label => Rotation == CameraRotation.None
-        ? $"{CodecLabel} {ResolutionLabel}"
-        : $"{CodecLabel} {ResolutionLabel} {RotationLabel}";
+    /// <remarks>
+    /// ⚠️ 原生档那一支**必须说「原生档」**，不能印一个标称的分辨率档 ——
+    /// 那一档的尺寸本来就不是我们选的，印成「1080P」是往日志与界面里写假话。
+    /// </remarks>
+    public string Label
+    {
+        get
+        {
+            var size = NativeCaptureSize
+                ? ObservedSize is { } observed
+                    ? $"{observed.Width}×{observed.Height}（相机原生档）"
+                    : "相机原生档"
+                : ResolutionLabel;
+
+            return Rotation == CameraRotation.None
+                ? $"{CodecLabel} {size}"
+                : $"{CodecLabel} {size} {RotationLabel}";
+        }
+    }
 
     /// <summary>
     /// 回落顺序：先用户选的那个，再逐级退。

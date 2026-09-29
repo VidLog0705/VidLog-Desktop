@@ -424,7 +424,9 @@ public sealed class FfmpegCameraCapture : ICameraCapture
 
         // 画面那一路的输入参数由源自己给 —— 本机设备与网络地址的形状不一样，
         // 而那个差别只该有一处（见 CameraSource.InputArguments 的说明）。
-        arguments.AddRange(source.InputArguments(BufferSize, spec?.FfmpegSize));
+        // ⚠️ 传的是 `PinnedFfmpegSize`（原生档时是 null ⇒ 不带 -video_size/-framerate，
+        // 相机用它自己的默认档）。见 `RecordingSpec.NativeCaptureSize` 的说明。
+        arguments.AddRange(source.InputArguments(BufferSize, spec?.PinnedFfmpegSize));
 
         // ⚠️ **必须显式 -map，不能靠 ffmpeg 的默认选流。**
         //
@@ -452,12 +454,15 @@ public sealed class FfmpegCameraCapture : ICameraCapture
         // （没有报错，只是少了一个效果）。所以先攒起来，最后一起拼。
         var filters = new List<string>();
 
-        if (source.IsNetwork && spec is not null)
+        if (source.IsNetwork && spec?.PinnedFfmpegSize is { } target)
         {
             // 网络那一路的尺寸**只能在输出侧**做（RTSP 不能按尺寸开流）。
             // ⚠️ 缩到的是 **CaptureSize**（采集尺寸，恒为横屏）——
             // 方向是**之后**那一步的事，见下面。
-            filters.Add($"scale={spec.FfmpegSize}");
+            //
+            // ⚠️ 原生档（`PinnedFfmpegSize` 为 null）时**不缩** —— 那就是「照它发的收」，
+            // 与相机原生档同一个意思：宁可录到一个我们没选的尺寸，也不要录不出来。
+            filters.Add($"scale={target}");
         }
 
         if (spec?.RotationFilter is { } rotation)

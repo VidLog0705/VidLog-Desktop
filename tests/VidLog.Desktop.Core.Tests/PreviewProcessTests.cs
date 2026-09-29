@@ -8,6 +8,11 @@ namespace VidLog.Desktop.Core.Tests;
 /// <summary>
 /// 取景预览（配置向导第 2/3 步）。
 /// </summary>
+/// <remarks>
+/// ⚠️ 在 <see cref="DshowDeviceCollection"/> 里：它要开**真相机**（下面那条 dshow 用例），
+/// 而相机是独占的 —— 与采集那一组并行跑会互相抢设备。
+/// </remarks>
+[Collection(DshowDeviceCollection.Name)]
 public class PreviewProcessTests
 {
     // ─────────────────────────────────────────────
@@ -246,5 +251,115 @@ public class PreviewProcessTests
 
         // 起不来的话 stderr 尾巴会有话说 —— 这里是空的才正常。
         await preview.StopAsync();
+    }
+
+    // ─────────────────────────────────────────────
+    // ★ 真**本机**设备那一档（dshow）
+    // ─────────────────────────────────────────────
+
+    /// <summary>
+    /// 真相机预览：起得来、帧读得动、**停了之后相机真的放开了**。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// ⚠️ 上面两条真源用例走的是 **RTSP**（`RequiresRtspFact`）。而预览这一档
+    /// 在本机设备上**从来没验过**：§54 验的「一路源两路输出」是 **1 fps 灰度**，
+    /// 预览出的是 **12 fps 彩色**，两条路径的参数完全不同。
+    /// </para>
+    /// <para>
+    /// ★ <b>最要紧的是最后那一段</b>：DirectShow 相机是**独占**的（§25 实测），
+    /// 预览停了之后没释放干净的话，紧接而来的录制会拿到
+    /// <c>device already in use</c> —— 而那是**用户刚配完摄像头、点开始工作**的
+    /// 那一刻，表现是「刚配好就录不了」。
+    /// </para>
+    /// </remarks>
+    [RequiresCameraFact]
+    public async Task 真相机预览_起得来_帧读得动_而且停了之后相机真的放开了()
+    {
+        var ffmpeg = FfmpegLocator.TryFind()!;
+        var video = (await DshowDevices.ListVideoAsync(ffmpeg))[0];
+        var sink = new SingleSlotPreviewSink();
+
+        await using var preview = await PreviewProcess.StartAsync(
+            ffmpeg, CameraSource.Local(video), sink);
+
+        // 起流 + 首帧要一点时间（与 RTSP 那两条同样给 15 秒）。
+        var deadline = Stopwatch.StartNew();
+        PreviewFrame? frame = null;
+
+        while (deadline.Elapsed < TimeSpan.FromSeconds(15) && frame is null)
+        {
+            await Task.Delay(200);
+            frame = sink.TakeLatest();
+        }
+
+        Assert.NotNull(frame);
+        Assert.Equal(PreviewProcess.Width, frame!.Width);
+        Assert.Equal(PreviewProcess.Height, frame.Height);
+        Assert.Equal(PreviewProcess.Width * PreviewProcess.Height * 3, frame.Rgb.Length);
+
+        // 吞吐：数 5 秒里**真的投出来**多少帧。
+        // ⚠️ 不能只数「我取到几帧」—— 取帧是 100ms 一次，而帧是 12 fps，
+        // 那样量到的上限就是 10，永远够不着 12。所以要把**丢弃计数**算进去：
+        // 投出来的帧 = 我取走的 + 被新帧顶掉的。
+        var droppedBefore = sink.DroppedCount;
+        var taken = 0;
+        var window = Stopwatch.StartNew();
+
+        while (window.Elapsed < TimeSpan.FromSeconds(5))
+        {
+            await Task.Delay(100);
+
+            if (sink.TakeLatest() is not null)
+            {
+                taken++;
+            }
+        }
+
+        var published = taken + (sink.DroppedCount - droppedBefore);
+        var fps = published / 5.0;
+
+        // ⚠️ 判据放宽到 8 fps 是**刻意的**：预览要的是「够看」而不是「到 12」，
+        // 而真机上第一条流刚起来时相机还在自动曝光，头一两秒本来就慢。
+        // 写死 ≥12 会因为那一下而红 —— 那是测试写得脆，不是实现错了。
+        Assert.True(fps >= 8, $"预览吞吐只有 {fps:F1} fps（目标 {PreviewProcess.Fps}）");
+
+        await preview.StopAsync();
+
+        // ★ 关键：**紧接着**在同一台相机上开一次真录制。
+        // 相机没放开的话这里会失败（`device already in use`）。
+        var dir = Path.Combine(
+            Path.GetTempPath(), "vidlog-preview-" + Guid.NewGuid().ToString("N")[..8]);
+        Directory.CreateDirectory(dir);
+        var mkv = Path.Combine(dir, "after-preview.mkv");
+
+        try
+        {
+            var runner = new SystemProcessRunner();
+            var probe = await new FfmpegEncoderProbe(ffmpeg, runner).ProbeAsync();
+            var encoder = EncoderSelection.Select(probe);
+            Assert.NotNull(encoder);
+
+            var capture = new FfmpegCameraCapture(ffmpeg);
+            var process = await capture.StartAsync(CameraSource.Local(video), mkv, encoder!);
+
+            await Task.Delay(TimeSpan.FromSeconds(3));
+            var exit = await process.StopAsync(TimeSpan.FromSeconds(20));
+
+            Assert.Equal(0, exit);
+            Assert.True(File.Exists(mkv) && new FileInfo(mkv).Length > 0,
+                "预览停了之后录制起不来 —— 相机多半没放开");
+        }
+        finally
+        {
+            try
+            {
+                Directory.Delete(dir, recursive: true);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                // 清理失败不该让测试红（Windows 在文件被持有时报的是 UAA）。
+            }
+        }
     }
 }
