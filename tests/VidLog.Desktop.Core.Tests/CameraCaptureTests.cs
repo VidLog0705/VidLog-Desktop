@@ -208,6 +208,93 @@ public class CameraCaptureTests
         }
     }
 
+    // ─────────────────────────────────────────────
+    // 显式映射（2026-09-29：网络摄像头自带音轨被偷偷录进去）
+    // ─────────────────────────────────────────────
+
+    /// <summary>按出现顺序取出每个 <c>-i</c> 后面的输入描述。</summary>
+    /// <remarks>
+    /// <c>-map N</c> 里的 N 就是**这里的下标**（ffmpeg 按 <c>-i</c> 出现的顺序编号）。
+    /// 所以判据不能写死数字，要**算出来** —— 算出来的才挡得住「改了顺序、数字没改」。
+    /// </remarks>
+    private static List<string> Inputs(IReadOnlyList<string> args)
+    {
+        var list = new List<string>();
+        for (var i = 0; i < args.Count - 1; i++)
+        {
+            if (args[i] == "-i")
+            {
+                list.Add(args[i + 1]);
+            }
+        }
+
+        return list;
+    }
+
+    private static List<string> Maps(IReadOnlyList<string> args)
+    {
+        var list = new List<string>();
+        for (var i = 0; i < args.Count - 1; i++)
+        {
+            if (args[i] == "-map")
+            {
+                list.Add(args[i + 1]);
+            }
+        }
+
+        return list;
+    }
+
+    [Theory]
+    [InlineData(false)]   // 没开声音
+    [InlineData(true)]    // 开了声音
+    public void map指向的输入必须是那一路自己(bool withMicrophone)
+    {
+        // ⚠️ 这条守的是一个**静默指错输入**的坑：音频那一路刻意排在视频之前
+        // （为了让麦克风打不开时快速失败），所以画面是 input 0 还是 1 取决于开没开声音。
+        // 写死数字的话，改动输入顺序就会把画面映射成音频那一路 ——
+        // 而 ffmpeg 只会报一句难懂的 `Stream map ... matches no streams`。
+        var args = FfmpegCameraCapture.BuildArguments(
+            CameraSource.Local("Cam"), @"C:\out\seg.mkv", "libx264",
+            microphone: withMicrophone ? "话筒" : null).ToList();
+
+        var inputs = Inputs(args);
+        var videoIndex = inputs.FindIndex(a => a.StartsWith("video=", StringComparison.Ordinal));
+
+        Assert.Contains($"-map", args);
+        Assert.Contains($"{videoIndex}:v:0", Maps(args));
+
+        if (withMicrophone)
+        {
+            var audioIndex = inputs.FindIndex(a => a.StartsWith("audio=", StringComparison.Ordinal));
+            Assert.Equal(0, audioIndex);            // 音频确实排在前面
+            Assert.Contains($"{audioIndex}:a:0", Maps(args));
+            Assert.DoesNotContain("-an", args);
+        }
+        else
+        {
+            // ⚠️ 没开声音 ⇒ **一条音频映射都不许有**，而且要把「不要音频」写死。
+            // 少了这一条，网络摄像头自带的那路音轨会被 ffmpeg 的默认选流规则
+            // 自动录进产物（2026-09-29 实测到过）。
+            Assert.DoesNotContain(Maps(args), m => m.Contains(":a:", StringComparison.Ordinal));
+            Assert.Contains("-an", args);
+        }
+    }
+
+    [Fact]
+    public void 网络摄像头自带音轨也不许被偷偷录进去()
+    {
+        // 这一条与上一条的区别在于**源**：网络地址那一路，对端可能自己推音轨。
+        var args = FfmpegCameraCapture.BuildArguments(
+            CameraSource.Network("rtsp://h/s"), @"C:\out\seg.mkv", "libx264").ToList();
+
+        var inputs = Inputs(args);
+        Assert.Equal(["rtsp://h/s"], inputs);
+
+        Assert.Equal(["0:v:0"], Maps(args));
+        Assert.Contains("-an", args);
+    }
+
     /// <summary>本机实测（2026-09-29）：拿一个不存在的麦克风名字开一路 dshow 的 stderr 尾部。</summary>
     private const string BadAudioOutput = """
         [in#0 @ 0000029927401440] Could not enumerate audio only devices (or none found).

@@ -372,6 +372,11 @@ public sealed class FfmpegCameraCapture : ICameraCapture
         // ⚠️ 音频那一路排在**视频之前**：麦克风打不开时 ffmpeg 在打开音频设备那一刻
         // 就退出了（远快于开相机），而「这一次起来了没有」的判定要等它 ——
         // 音频排在后的话，每段开头都要多等一个开相机的时间。
+        //
+        // ⚠️ 正因为顺序是这样，画面是第几个输入要**在这里算**（见下面的 -map）。
+        // 两处各写一个数字的话，改了顺序就会静默指错输入。
+        var videoInput = 0;
+
         if (!string.IsNullOrWhiteSpace(microphone))
         {
             arguments.AddRange(
@@ -380,11 +385,35 @@ public sealed class FfmpegCameraCapture : ICameraCapture
                 "-rtbufsize", BufferSize,
                 "-i", $"audio={microphone}",
             ]);
+
+            videoInput = 1;
         }
 
         // 画面那一路的输入参数由源自己给 —— 本机设备与网络地址的形状不一样，
         // 而那个差别只该有一处（见 CameraSource.InputArguments 的说明）。
         arguments.AddRange(source.InputArguments(BufferSize, spec?.FfmpegSize));
+
+        // ⚠️ **必须显式 -map，不能靠 ffmpeg 的默认选流。**
+        //
+        // 只给一个 `-map` 就会关掉默认选流，于是「录什么」变成我们说了算。
+        // 不写的话 2026-09-29 实测到的后果是：**网络摄像头自己推了一条 AAC**
+        // （那台是 H.264 + AAC），ffmpeg 会自动把「最好的音频流」挑进产物 ——
+        // 于是用户把「录制声音」关掉、甚至本机根本没有麦克风，
+        // 录出来的文件**照样有声音**，而且是摄像头那头的现场音。
+        // 那是与用户的选择相反、而他完全不知道的一件事。
+        arguments.AddRange(["-map", $"{videoInput}:v:0"]);
+
+        if (!string.IsNullOrWhiteSpace(microphone))
+        {
+            // 只取**本地麦克风**那一路（input 0）。对端自带的音轨不映射 ⇒ 丢掉。
+            arguments.AddRange(["-map", "0:a:0"]);
+        }
+        else
+        {
+            // 双保险：把「不要音频」写死。上面的 `-map` 已经排除了音频，
+            // 但这一条让意图一眼可见 —— 将来有人动了输入顺序也不会悄悄放出声音。
+            arguments.Add("-an");
+        }
 
         // ⚠️ 滤镜链只有**一条** `-vf`：写两个 `-vf` 的话后一个会顶掉前一个
         // （没有报错，只是少了一个效果）。所以先攒起来，最后一起拼。

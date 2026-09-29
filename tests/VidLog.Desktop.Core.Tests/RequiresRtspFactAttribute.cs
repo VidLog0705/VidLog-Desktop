@@ -1,0 +1,47 @@
+using VidLog.Desktop.Core.Media;
+
+namespace VidLog.Desktop.Core.Tests;
+
+/// <summary>
+/// 只在**真的有一路网络摄像头可连**时运行的用例。
+/// </summary>
+/// <remarks>
+/// <para>
+/// 地址从环境变量 <see cref="EnvironmentVariable"/> 读，**不写进仓库** ——
+/// 它是内网地址，而且多半带着摄像头的用户名密码。
+/// </para>
+/// <para>
+/// ⚠️ 与 <see cref="RequiresCameraFactAttribute"/> 同一条规矩：
+/// **不许在方法体里静默 <c>return</c>**。跳过必须走 <c>Skip</c>，
+/// 让「跳过」出现在结果里 —— 否则就是「看起来通过了」那种最贵的失败。
+/// 而这一条尤其要紧：本仓此前**从来没有端到端验过 RTSP**，
+/// 一条静默返回的绿会让人以为验过了。
+/// </para>
+/// <para>
+/// 用法（地址是内网地址，别提交）：
+/// <code>
+/// $env:VIDLOG_TEST_RTSP_URL = 'rtsp://账号:密码@192.168.1.9:8554/live'
+/// dotnet test --filter FullyQualifiedName~NetworkCameraIntegrationTests
+/// </code>
+/// </para>
+/// </remarks>
+public sealed class RequiresRtspFactAttribute : FactAttribute
+{
+    /// <summary>放 RTSP 地址的环境变量名。</summary>
+    public const string EnvironmentVariable = "VIDLOG_TEST_RTSP_URL";
+
+    public RequiresRtspFactAttribute()
+    {
+        if (FfmpegLocator.TryFind() is null)
+        {
+            Skip = "本机没有 FFmpeg —— 网络摄像头集成测试跳过";
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable(EnvironmentVariable)))
+        {
+            Skip = $"没有设置 {EnvironmentVariable} —— 网络摄像头集成测试跳过"
+                + "（本机没有可连的 RTSP 源；要跑就设成 rtsp://账号:密码@主机:端口/路径）";
+        }
+    }
+}
