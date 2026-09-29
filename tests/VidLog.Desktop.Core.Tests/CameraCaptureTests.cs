@@ -137,6 +137,42 @@ public class CameraCaptureTests
     }
 
     // ─────────────────────────────────────────────
+    // 产物的可见性（它撑着一个启动判据）
+    // ─────────────────────────────────────────────
+
+    [Fact]
+    public void 输出侧钉住每包都刷_否则产物的非零长度要等一整个缓冲块()
+    {
+        // ⚠️ 这条是 2026-09-29 **真机**上踩出来的，不是推测：
+        //
+        // ffmpeg 的输出是**按块刷**的，实测每块正好 262144 字节（256 KiB）。
+        // 低码率场景（夜里、画面基本不动）填满第一块要 **16 秒** ——
+        // 在那之前 `FileInfo.Length` 一直是 0（三种读法：FileInfo / 开句柄 /
+        // 拷贝文件，读数完全一致，所以不是读法的问题，是文件真的还没写）。
+        //
+        // 而 `FfmpegCameraCapture.Produced()` 的判据就是 `Length > 0`，
+        // 窗口是 `StartupProbeTimeout` = **8 秒**。于是：
+        //   一次**健康**的采集被判成「没起来」⇒ 杀掉 ⇒ 不带音频重开
+        //   ⇒ 带麦克风的那一段**没有音轨**（§3.1.8 要的音轨等于没生效）。
+        // 更重的是那次重开与相机释放抢跑，实测能拿到退出码 -5、0 字节 —— 整段丢。
+        //
+        // 钉住 `-flush_packets 1` 之后，第一块立刻落盘（实测 **2.0 秒**就有
+        // 600 字节的表头），「产物出现」这个判据才真的成立。
+        var args = FfmpegCameraCapture
+            .BuildArguments(CameraSource.Local("Cam"), @"C:\out\seg.mkv", "libx264")
+            .ToList();
+
+        var index = args.IndexOf("-flush_packets");
+        Assert.True(index >= 0,
+            "输出侧必须钉住 -flush_packets，否则产物的非零长度要等填满 256 KiB 才出现");
+        Assert.Equal("1", args[index + 1]);
+
+        // 它是**输出**侧选项：落在 -i 之前的话 ffmpeg 会当成输入选项，静默失效。
+        Assert.True(index > args.IndexOf("-i"),
+            "-flush_packets 是输出侧选项，必须在 -i 之后");
+    }
+
+    // ─────────────────────────────────────────────
     // 音轨（规格 §3.1.8）
     // ─────────────────────────────────────────────
 
@@ -544,6 +580,42 @@ public class FfmpegCameraCaptureIntegrationTests
         var verification = await new DecodeVerifier(Ffmpeg, runner).VerifyAsync(mkv);
         Assert.True(verification.IsPlayable,
             $"优雅停止后的 MKV 应当完整可解：{verification.FailureReason}");
+    }
+
+    [RequiresMicrophoneFact]
+    public async Task 接真麦克风时_产物里必须真的有音轨()
+    {
+        // ⚠️ 这条问的是 2026-09-29 交接单 §2.3 那件事：**真麦克风录出来的文件里
+        // 到底有没有音轨**。此前电脑端从没有一台带麦克风的机器，所以 §3.1.8
+        // 只验过「坏设备」那个方向（坏音频设备 1 秒退出、不产出文件）。
+        //
+        // ⚠️ 判据必须是**产物里的流**，不能只看 `StartupWarning` 是不是 null：
+        // 降级一旦发生，会话会给出警告，但那是**实现自己报的**；
+        // 而这里要问的是「文件里到底有没有」。
+        using var dir = new TempDir();
+        var video = (await DshowDevices.ListVideoAsync(Ffmpeg))[0];
+        var mic = (await DshowDevices.ListAudioAsync(Ffmpeg))[0];
+        var runner = new SystemProcessRunner();
+        var encoder = await PickEncoderAsync(runner);
+        var mkv = dir.File("with-audio.mkv");
+
+        var capture = new FfmpegCameraCapture(Ffmpeg);
+        var process = await capture.StartAsync(CameraSource.Local(video), mkv, encoder, mic);
+
+        await Task.Delay(TimeSpan.FromSeconds(6));
+        await process.StopAsync(TimeSpan.FromSeconds(20));
+
+        Assert.True(File.Exists(mkv) && new FileInfo(mkv).Length > 0, "采集必须产出文件");
+
+        // `-map 0:a:0` 在没有音频流时会直接失败（"matches no streams"），
+        // 所以退出码就是「有没有音轨」的判据 —— 只需 ffmpeg，不需要 ffprobe。
+        var audio = await runner.RunAsync(Ffmpeg,
+        [
+            "-v", "error", "-i", mkv, "-map", "0:a:0", "-f", "null", "-",
+        ]);
+
+        Assert.True(audio.Succeeded,
+            $"产物里没有音轨（麦克风是好的，不该降级）：{audio.StandardError}");
     }
 
     private static async Task<string> PickEncoderAsync(IProcessRunner runner)
