@@ -557,15 +557,27 @@ public class RecordingCoordinatorTests
 
         await coordinator.SubmitAsync(A, PunchSource.KeyboardScanner);
 
-        // 80ms 一段，等 500ms —— 足够滚好几段。
-        await Task.Delay(500);
+        // ⚠️ 原来写的是「80ms 一段，固定等 500ms，应当滚了好几段」—— 那是在**赌墙钟**：
+        // 并行跑几百条测试时机器负载高，500ms 里可能只滚了 1 段，于是这条**随机红**
+        // （2026-09-29 实测 Release 下约 1/3 概率）。
+        //
+        // ⚠️ 我第一版改成「等**工作区里出现 ≥2 个 segment-*.mkv**」，而那个判据**不可靠**：
+        // 实测它会在「一段都没滚」时就成立（数到了别的东西），于是断言照样红 ——
+        // **判据本身没验过**，等于换了一种赌法。
+        //
+        // 现在读的是协调器自己的段数：**条件成立 ⟺ 真的滚过至少一段**。
+        await WaitUntilAsync(() => coordinator.CurrentClosedSegmentCount >= 1);
 
         var outcome = await coordinator.StopWorkAsync();
 
         Assert.NotNull(outcome);
+        // ⚠️ 等到「滚过至少一段」之后，这里必然是 **2 段**：滚走的那一段
+        // 加上停下时封闭的当前段。一句话把三件事一起钉住 ——
+        // 循环真的在跑、段真的在滚、而且滚走的段**没有被丢掉**。
         Assert.True(
             outcome!.Segments.Count >= 2,
-            $"分段时长 80ms、录了约 500ms，应当已经滚过段；实际只有 {outcome.Segments.Count} 段");
+            $"已经滚过至少一段（封闭过 {coordinator.CurrentClosedSegmentCount} 段），"
+            + $"收尾却只有 {outcome.Segments.Count} 段 —— 滚走的段被弄丢了");
     }
 
     [Fact]
@@ -582,13 +594,35 @@ public class RecordingCoordinatorTests
         using var dir = new TempDir();
         var index = new RecordingIndexSpy();
         var notices = new List<CoordinatorNotice>();
+
+        // ⚠️ 通知是**另一个线程**发过来的，而 `List<T>` 不是线程安全的。
+        // 所以「等条件」这一步不看那个列表，看一个 `Interlocked` 的旗子。
+        var prompted = 0;
+
         await using var coordinator = Build(
             dir, WorkMode.StopOnSameWaybill, new FakePunchLog(), index,
             session: FastRolling(TimeSpan.FromSeconds(30), TimeSpan.FromMilliseconds(150)));
-        coordinator.Notice += notices.Add;
+
+        coordinator.Notice += n =>
+        {
+            if (n.Kind == CoordinatorNoticeKind.DurationPrompt)
+            {
+                Interlocked.Exchange(ref prompted, 1);
+            }
+
+            lock (notices)
+            {
+                notices.Add(n);
+            }
+        };
 
         await coordinator.SubmitAsync(A, PunchSource.KeyboardScanner);
-        await Task.Delay(400);   // 越过兜底时机（150 ms），但远没到宽限期（默认 1 分钟）
+
+        // ⚠️ 原来写的是「固定等 400ms，越过兜底时机（150ms）」—— 也是**赌墙钟**，
+        // 而 Release 下这条实测约 1/3 概率红（机器忙时 400ms 里那一圈还没跑到）。
+        // 改成**等到那次询问真的发生**。
+        await WaitUntilAsync(
+            () => Volatile.Read(ref prompted) == 1 || coordinator.CurrentWaybill is null);
 
         // ① 到点了 —— **只是问**，录制必须还在继续。
         Assert.NotNull(coordinator.CurrentWaybill);
@@ -597,7 +631,9 @@ public class RecordingCoordinatorTests
 
         // ② 用户答【停止】→ 这才收尾，而且协调器要把状态接回来。
         coordinator.AnswerDurationPrompt(continueRecording: false);
-        await Task.Delay(400);
+
+        // ⚠️ 同样不赌时间：等**收尾真的走完**（状态被接回来）。
+        await WaitUntilAsync(() => coordinator.CurrentWaybill is null);
 
         Assert.Null(coordinator.CurrentWaybill);
 
