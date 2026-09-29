@@ -324,11 +324,12 @@ public sealed class AppHost : IAsyncDisposable
             // 不填的话用的是硬编码默认（1 分钟 / 30 分钟）——
             // 界面上那两个档位就成了「改了没反应」（踩坑 #13）。
             // 录制规格也在这里交给会话 —— 收尾时它要写进索引（§3.1.7 的连带项）。
+            // ⚠️ 方向**在 spec 里**（`RecordingSpec.Rotation`），所以它跟着
+            // `selection.Spec` 一起进来 —— 回落表保方向，见 `FallbacksFrom`。
             SessionOptions = RecordingSessionOptions
                 .From(settings.SegmentMinutes, settings.DurationFallback)
                 .With(selection.Spec)
-                .WithMicrophone(microphone)
-                .WithRotation(settings.Rotate180),
+                .WithMicrophone(microphone),
         };
 
         var bridge = new KeyboardScanBridge(settings.Scanner);
@@ -360,7 +361,7 @@ public sealed class AppHost : IAsyncDisposable
                 // ⚠️ 与录制那一档**必须一致**（两边朝向不一致会出现
                 // 「录出来是正的、识码却要倒着认」）。它在**每次开始工作**时才被读到，
                 // 所以改设置走下面那处同步即可，不需要重启。
-                Rotate180 = settings.Rotate180,
+                Rotation = settings.Rotation,
             };
 
             scanner.Scanned += waybill =>
@@ -469,17 +470,26 @@ public sealed class AppHost : IAsyncDisposable
         // 会把已经探好的录制规格抹成 null（水印尺寸跟着掉回 1280×720、
         // 索引里也不再记编码）—— 那种值不报错，只是「有时候对、有时候不对」。
         var options = Coordinator.SessionOptions
-            .WithSchedule(next.SegmentMinutes, next.DurationFallback)
-            // 方向（规格 §3.1.7 的需求变更）：它在**每次开段**时被读到，
-            // 所以「改了下次开始工作生效」是这句话本来的语义。
-            .WithRotation(next.Rotate180);
+            .WithSchedule(next.SegmentMinutes, next.DurationFallback);
+
+        // 方向（规格 §3.1.7 的需求变更）：它在 spec 里，改它**不必重新探测** ——
+        // 旋转是滤镜，与「这台机器能不能编这个组合」无关（回落表也保方向，
+        // 见 `RecordingSpec.FallbacksFrom`）。所以它在这里直接改掉即可。
+        //
+        // ⚠️ 编码 / 分辨率**不能**照这样改：那两个变了要**重探**（真开一次相机），
+        // 而这里不重探 ⇒ 它们其实要**重启**才生效。那是既有的行为
+        // （界面上的措辞与此不一致，见 docs/实现决策.md §70）。
+        if (options.Spec is { } spec)
+        {
+            options = options.With(spec with { Rotation = next.Rotation });
+        }
 
         // ⚠️ 取景识码那一档**也要同步** —— 两边朝向不一致会出现
         // 「录出来是正的、识码却要倒着认」（或者反过来），
         // 而那种毛病看起来像「识码坏了」，不会有人想到是方向设置。
         if (Coordinator.Scanner is { } scanner)
         {
-            scanner.Rotate180 = next.Rotate180;
+            scanner.Rotation = next.Rotation;
         }
 
         // 音轨（规格 §3.1.8）：只有音频那两项真变了才重新枚举设备 ——

@@ -60,7 +60,9 @@ public static class CameraSizePolicy
             return CameraSizeVerdict.Unknown;
         }
 
-        var (_, wantedHeight) = new RecordingSpec(VideoCodec.H264, wanted).Size;
+        // ⚠️ 取 **CaptureSize**（分辨率档位的原始尺寸）—— 这里比的是「对端发多大
+        // vs 用户选的档」，与成片方向无关。
+        var (_, wantedHeight) = new RecordingSpec(VideoCodec.H264, wanted).CaptureSize;
 
         return sourceHeight.Value >= wantedHeight
             ? CameraSizeVerdict.Enough

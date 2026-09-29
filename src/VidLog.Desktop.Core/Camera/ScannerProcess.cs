@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using VidLog.Desktop.Core.Media;
 using VidLog.Desktop.Core.Recording;
 
 namespace VidLog.Desktop.Core.Camera;
@@ -53,7 +54,7 @@ public sealed class ScannerProcess
 
     public static Task<ScannerProcess> StartAsync(
         string ffmpegPath, CameraSource source, SingleSlotFrameSink sink,
-        bool rotate180 = false, CancellationToken cancellationToken = default)
+        CameraRotation rotation = CameraRotation.None, CancellationToken cancellationToken = default)
     {
         var startInfo = new ProcessStartInfo
         {
@@ -66,7 +67,7 @@ public sealed class ScannerProcess
             RedirectStandardInput = true,
         };
 
-        foreach (var argument in BuildArguments(source, rotate180))
+        foreach (var argument in BuildArguments(source, rotation))
         {
             startInfo.ArgumentList.Add(argument);
         }
@@ -112,8 +113,9 @@ public sealed class ScannerProcess
     /// 切出来的是**错位的花屏**，识码永远认不出来（而且不会有任何报错）。
     /// </para>
     /// </remarks>
-    /// <param name="rotate180">画面转 180°（规格 §3.1.7 的 2026-09-28 需求变更）。</param>
-    public static IReadOnlyList<string> BuildArguments(CameraSource source, bool rotate180 = false)
+    /// <param name="rotation">方向（规格 §3.1.7）。必须与录制那一档一致。</param>
+    public static IReadOnlyList<string> BuildArguments(
+        CameraSource source, CameraRotation rotation = CameraRotation.None)
     {
         var arguments = new List<string>
         {
@@ -125,20 +127,34 @@ public sealed class ScannerProcess
         // 网络地址一个都不带（见 CameraSource.InputArguments）。
         arguments.AddRange(source.InputArguments("64M", $"{Width}x{Height}"));
 
-        // 几何先定（缩到读端要的尺寸 → 转方向），再降频、转灰度。
+        // ── 几何：缩到「转完之后正好是 640×480」的那个尺寸 ─────────────
+        //
+        // ⚠️ **转 90° 时采集侧要缩到 480×640**（宽高一反），这样 transpose 之后
+        // 正好是读端硬要求的 640×480。
+        // 反过来（先缩到 640×480 再转）会得到 480×640 —— 而读端**按 640×480 切**，
+        // 切出来的是错位的花屏，识码永远认不出来，而且不报错。
+        // 另一种写法「转完再缩回 640×480」会把画面**非等比拉伸**
+        // （480×640 → 640×480），条码被横向拉扁 —— 这一种是「能不能解得出」的问题，
+        // 比花屏好，但仍然没必要。
+        var swapped = rotation is CameraRotation.Left90 or CameraRotation.Right90;
+        var captureWidth = swapped ? Height : Width;
+        var captureHeight = swapped ? Width : Height;
+
         var filters = new List<string>();
 
-        if (source.IsNetwork)
+        // ⚠️ 本机设备**不转**时不必缩：`-video_size 640x480` 已经把采集尺寸钉住了。
+        // 所以这里的条件是「网络源（对端不是 640×480）或者要转 90°」。
+        if (source.IsNetwork || swapped)
         {
-            filters.Add($"scale={Width}:{Height}");
+            filters.Add($"scale={captureWidth}:{captureHeight}");
         }
 
-        if (rotate180)
+        // ⚠️ 方向滤镜的产出**只有一处**（`CameraRotationFilters.For`）——
+        // 与录制那一档用的是同一个函数，所以两边朝向不可能不一致。
+        // `fps`/`format` 排在它之后：那两步不改变几何。
+        if (CameraRotationFilters.For(rotation) is { } rotationFilter)
         {
-            // ⚠️ **必须与录制那一档用同一个滤镜**：两边朝向不一致的话，会出现
-            // 「录出来是正的、识码却要倒着认」（或者反过来）——
-            // 而用户开旋转正是因为画面确实需要转正。
-            filters.Add(FfmpegCameraCapture.RotateFilter);
+            filters.Add(rotationFilter);
         }
 
         filters.Add($"fps={Fps},format=gray");

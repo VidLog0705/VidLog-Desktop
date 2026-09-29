@@ -1,3 +1,4 @@
+using VidLog.Desktop.Core.Camera;
 using VidLog.Desktop.Core.Media;
 using VidLog.Desktop.Core.Recording;
 
@@ -296,84 +297,150 @@ public class CameraCaptureTests
     }
 
     // ─────────────────────────────────────────────
-    // 旋转 180°（规格 §3.1.7 的 2026-09-28 需求变更：电脑端加方向）
+    // 方向（规格 §3.1.7 的 2026-09-28 需求变更：电脑端加方向；
+    // 2026-09-29 需求方裁决「要完整三档方向」+「按转多少度命名」⇒ 四档）
     // ─────────────────────────────────────────────
 
+    /// <summary>四档方向，各带它该有的滤镜（<c>None</c> 是 <see langword="null"/>）。</summary>
+    public static TheoryData<CameraRotation, string?> AllRotations => new()
+    {
+        { CameraRotation.None, null },
+        { CameraRotation.Left90, "transpose=2" },
+        { CameraRotation.Right90, "transpose=1" },
+        { CameraRotation.UpsideDown, "hflip,vflip" },
+    };
+
     [Fact]
-    public void 不转时argv里没有旋转滤镜()
+    public void 不转时argv里一个方向滤镜都没有()
     {
         // ⚠️ 默认那一档必须与改动前**逐字一致** —— 装歪的摄像头是少数，
-        // 默认转一下会让绝大多数人第一次录出来是倒的。
+        // 默认转一下会让绝大多数人第一次录出来是歪的（而那是整段都不能用）。
         var args = FfmpegCameraCapture.BuildArguments(
             CameraSource.Local("Cam"), @"C:\out\seg.mkv", "libx264",
-            new RecordingSpec(VideoCodec.H264, VideoResolution.P1080));
+            RecordingSpec.Default);
 
+        Assert.DoesNotContain(args, a => a.Contains("transpose", StringComparison.Ordinal));
         Assert.DoesNotContain(args, a => a.Contains("hflip", StringComparison.Ordinal));
+        Assert.DoesNotContain("-vf", args);
     }
 
-    [Fact]
-    public void 旋转排在水印之前_否则水印的字也会被转倒()
+    [Theory]
+    [MemberData(nameof(AllRotations))]
+    public void 方向必须排在水印之前_否则水印的字也会被转歪(CameraRotation rotation, string? expected)
     {
-        // ⚠️ **顺序是承重的**：水印是压在画面上的字，先烧后转会把字也转 180°。
-        // 而「画面正了、水印倒着」这种东西在预览里看不出来（预览不烧水印）。
+        // ⚠️ **顺序是承重的**：水印是压在画面上的字，先烧后转会把字也一起转。
+        // 而「画面正了、水印倒着」这种东西在预览里看不出来（预览不烧水印），
+        // 要等回放才发现。
         var args = FfmpegCameraCapture.BuildArguments(
             CameraSource.Network("rtsp://h/s"), @"C:\out\seg.mkv", "libx264",
-            new RecordingSpec(VideoCodec.H264, VideoResolution.P1080),
-            watermarkAssPath: @"C:\work\seg.ass", rotate180: true).ToList();
+            new RecordingSpec(VideoCodec.H264, VideoResolution.P1080, rotation),
+            watermarkAssPath: @"C:\work\seg.ass").ToList();
 
         var filters = args[args.IndexOf("-vf") + 1];
 
-        var scale = filters.IndexOf("scale=", StringComparison.Ordinal);
-        var rotate = filters.IndexOf("hflip", StringComparison.Ordinal);
-        var ass = filters.IndexOf("ass=", StringComparison.Ordinal);
+        if (expected is null)
+        {
+            Assert.DoesNotContain("transpose", filters, StringComparison.Ordinal);
+            Assert.DoesNotContain("hflip", filters, StringComparison.Ordinal);
+        }
+        else
+        {
+            var scale = filters.IndexOf("scale=", StringComparison.Ordinal);
+            var rotate = filters.IndexOf(expected, StringComparison.Ordinal);
+            var ass = filters.IndexOf("ass=", StringComparison.Ordinal);
 
-        Assert.True(scale >= 0 && rotate > scale, $"缩放先于旋转，实际：{filters}");
-        Assert.True(ass > rotate, $"⚠️ 旋转必须排在 ass 之前（否则水印的字也是倒的），实际：{filters}");
+            // ⚠️ 缩放排在最前：它缩到的是**采集**尺寸（横的），
+            // 转完才是成片尺寸（转 90° 时宽高已经换过来了）。
+            Assert.True(scale >= 0 && rotate > scale, $"缩放要先于方向，实际：{filters}");
+            Assert.True(ass > rotate, $"⚠️ 方向必须排在 ass 之前（否则水印的字也是歪的），实际：{filters}");
+        }
 
         // 只有一条 -vf：写两个的话后一个会顶掉前一个，而且不报错。
         Assert.Equal(1, args.Count(a => a == "-vf"));
     }
 
-    [Fact]
-    public void 本机设备加旋转时滤镜就是那一对_没有多余的缩放()
+    [Theory]
+    [MemberData(nameof(AllRotations))]
+    public void 本机设备的方向滤镜就是那一个_没有多余的缩放(CameraRotation rotation, string? expected)
     {
+        // 本机设备的尺寸已经在输入侧钉好了（`-video_size`），
+        // 而转 90° 交换宽高是**成片**的事 —— 录制那条路不需要补缩放。
         var args = FfmpegCameraCapture.BuildArguments(
             CameraSource.Local("Cam"), @"C:\out\seg.mkv", "libx264",
-            new RecordingSpec(VideoCodec.H264, VideoResolution.P1080), rotate180: true).ToList();
+            new RecordingSpec(VideoCodec.H264, VideoResolution.P1080, rotation)).ToList();
 
-        Assert.Equal(FfmpegCameraCapture.RotateFilter, args[args.IndexOf("-vf") + 1]);
+        if (expected is null)
+        {
+            Assert.DoesNotContain("-vf", args);
+        }
+        else
+        {
+            Assert.Equal(expected, args[args.IndexOf("-vf") + 1]);
+        }
     }
 
     // ─────────────────────────────────────────────
     // 取景识码那一档（与录制必须同向）
     // ─────────────────────────────────────────────
 
-    [Fact]
-    public void 取景识码也要转_而且用同一个滤镜()
+    [Theory]
+    [MemberData(nameof(AllRotations))]
+    public void 取景识码用同一个方向滤镜(CameraRotation rotation, string? expected)
     {
         // ⚠️ 两边朝向不一致会出现「录出来是正的、识码却要倒着认」（或者反过来），
         // 而那种毛病看起来像「识码坏了」，不会有人想到是方向设置。
-        var args = VidLog.Desktop.Core.Camera.ScannerProcess
-            .BuildArguments(CameraSource.Local("Cam"), rotate180: true).ToList();
-
+        // 滤镜由 `CameraRotationFilters.For` **一处产出**，所以这条断言
+        // 其实是在守「两边都走那一处」。
+        var args = ScannerProcess.BuildArguments(CameraSource.Local("Cam"), rotation).ToList();
         var filters = args[args.IndexOf("-vf") + 1];
 
-        Assert.Contains(FfmpegCameraCapture.RotateFilter, filters, StringComparison.Ordinal);
+        if (expected is null)
+        {
+            Assert.DoesNotContain("transpose", filters, StringComparison.Ordinal);
+            Assert.DoesNotContain("hflip", filters, StringComparison.Ordinal);
+        }
+        else
+        {
+            Assert.Contains(expected, filters, StringComparison.Ordinal);
 
-        // 几何先定（缩放 → 转方向），再降频、转灰度。
-        Assert.True(
-            filters.IndexOf("hflip", StringComparison.Ordinal)
-                < filters.IndexOf("fps=", StringComparison.Ordinal),
-            $"旋转要排在 fps/format 之前，实际：{filters}");
+            // 几何先定（缩放 → 方向），再降频、转灰度。
+            Assert.True(
+                filters.IndexOf(expected, StringComparison.Ordinal)
+                    < filters.IndexOf("fps=", StringComparison.Ordinal),
+                $"方向要排在 fps/format 之前，实际：{filters}");
+        }
+    }
+
+    [Theory]
+    [InlineData(CameraRotation.Left90, "scale=480:640")]
+    [InlineData(CameraRotation.Right90, "scale=480:640")]
+    [InlineData(CameraRotation.UpsideDown, "fps=3,format=gray")]   // 本机不转 90° ⇒ 不必缩
+    public void 识码转90度时采集侧要缩到480x640_转完才正好是读端要的(CameraRotation rotation, string expected)
+    {
+        // ⚠️ 这条守的是一个**会静默花屏**的坑：读端按 640×480 硬切裸帧
+        // （裸帧没有容器告诉它宽高）。转 90° 会把画面变成 480×640 ⇒
+        // 切出来是错位的花屏，识码永远认不出来，**而且不报错**。
+        // 修法是采集侧先缩到 480×640（宽高一反），transpose 之后正好是 640×480。
+        var args = ScannerProcess.BuildArguments(CameraSource.Local("Cam"), rotation).ToList();
+        var filters = args[args.IndexOf("-vf") + 1];
+
+        Assert.Contains(expected, filters, StringComparison.Ordinal);
+
+        // 缩放必须排在方向之前，否则转完再缩就晚了（尺寸已经错了）。
+        if (expected.StartsWith("scale=", StringComparison.Ordinal))
+        {
+            Assert.True(
+                filters.IndexOf("scale=", StringComparison.Ordinal)
+                    < filters.IndexOf("transpose=", StringComparison.Ordinal),
+                $"缩放要排在方向之前，实际：{filters}");
+        }
     }
 
     [Fact]
     public void 取景识码不转时滤镜与改动前逐字一致()
     {
-        var plain = VidLog.Desktop.Core.Camera.ScannerProcess
-            .BuildArguments(CameraSource.Local("Cam")).ToList();
-        var network = VidLog.Desktop.Core.Camera.ScannerProcess
-            .BuildArguments(CameraSource.Network("rtsp://h/s")).ToList();
+        var plain = ScannerProcess.BuildArguments(CameraSource.Local("Cam")).ToList();
+        var network = ScannerProcess.BuildArguments(CameraSource.Network("rtsp://h/s")).ToList();
 
         Assert.Equal("fps=3,format=gray", plain[plain.IndexOf("-vf") + 1]);
         Assert.Equal("scale=640:480,fps=3,format=gray", network[network.IndexOf("-vf") + 1]);

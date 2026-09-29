@@ -817,7 +817,7 @@ public class RecordingCoordinatorTests
     {
         public Task<ICaptureProcess> StartAsync(
             CameraSource source, string outputPath, string encoder, string? microphone = null,
-            bool rotate180 = false, CancellationToken cancellationToken = default) =>
+            CancellationToken cancellationToken = default) =>
             Task.FromResult<ICaptureProcess>(new FakeProcess(outputPath));
     }
 

@@ -29,16 +29,16 @@ public interface ICameraCapture
     /// <see cref="ICaptureProcess.StartupWarning"/>，**不得**让它变成异常或空段。
     /// </para>
     /// </param>
-    /// <param name="rotate180">
-    /// 画面转 180°（规格 §3.1.7 的 2026-09-28 需求变更）。
-    /// ⚠️ 水印会**排在旋转之后**烧进去，否则连水印的字也一起转倒。
-    /// </param>
     /// <returns>可等待、可优雅停止的采集进程。</returns>
+    /// <remarks>
+    /// ⚠️ <b>方向不在这里</b>：它在实现方构造时拿到的
+    /// <see cref="Media.RecordingSpec"/> 里（<c>Rotation</c>）——
+    /// 规格探测与录制共用那一份，所以两者连方向都必然一致。
+    /// </remarks>
     Task<ICaptureProcess> StartAsync(
         CameraSource source,
         string outputPath,
         string encoder,
         string? microphone = null,
-        bool rotate180 = false,
         CancellationToken cancellationToken = default);
 }

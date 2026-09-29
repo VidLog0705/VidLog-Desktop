@@ -34,8 +34,15 @@ namespace VidLog.Desktop.Core.Index;
 /// </param>
 /// <param name="Resolution">分辨率名（<c>Uhd4K</c> / <c>P1080</c> / <c>P720</c>）。追加字段。</param>
 /// <param name="Orientation">
-/// 方向名。**电脑端恒为 null** —— 规格 §3.1.7 ②：方向选项**只在手机端**
-/// （电脑端的摄像头方向由设备与安装决定）。手机端那一半会写它。
+/// 方向名。**两端都写**（2026-09-29 起）—— 规格 §3.1.7 原本写着「方向只在手机端」，
+/// 但需求方照设计图裁决「要完整三档方向」，所以电脑端从此也写它。
+/// <para>
+/// ⚠️ <b>两端的值不是同一套</b>：手机写 <c>landscapeLeft</c> / <c>portrait</c> /
+/// <c>landscapeRight</c>（持机方向），电脑写 <c>None</c> / <c>Left90</c> /
+/// <c>Right90</c> / <c>UpsideDown</c>（画面转多少度）—— 因为电脑端的摄像头
+/// **是固定的**，「横左」在那里没有对应物（见 <c>CameraRotation</c> 的说明）。
+/// 读端认不出来会**回落默认档**（两端都这么写），不会炸。
+/// </para>
 /// </param>
 /// <remarks>
 /// <para>

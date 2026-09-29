@@ -70,21 +70,6 @@ public class RecordingSessionTests
     }
 
     [Fact]
-    public async Task 旋转从会话选项原样交给采集进程()
-    {
-        // 与麦克风同一条通道：放在会话选项上，「录制中不可改」是靠
-        // 「整份交给会话」保证的（规格 §3.1.7 的需求变更）。
-        using var dir = new TempDir();
-        var capture = new FakeCapture();
-        await using var session = Build(
-            dir, capture, options: RecordingSessionOptions.Default.WithRotation(true));
-
-        await session.StartAsync(WaybillNumber.Parse("SF1"), "libx264");
-
-        Assert.True(Assert.Single(capture.Starts).Rotate180);
-    }
-
-    [Fact]
     public async Task 没配麦克风时传的是null而不是空串()
     {
         // ⚠️ 空串会在 ffmpeg 那边变成 `-i audio=`，那是**一定失败**的一路 ——
@@ -789,7 +774,7 @@ public class RecordingSessionTests
     /// <summary>记录型采集替身：记下每次起采的参数，并真的造出文件。</summary>
     private sealed class FakeCapture : ICameraCapture
     {
-        public List<(CameraSource Source, string OutputPath, string Encoder, string? Microphone, bool Rotate180)> Starts { get; } = [];
+        public List<(CameraSource Source, string OutputPath, string Encoder, string? Microphone)> Starts { get; } = [];
 
         /// <summary>置 false 模拟「摄像头打不开」——进程起来了但没产物。</summary>
         public bool ProcessProducesFile { get; init; } = true;
@@ -802,9 +787,9 @@ public class RecordingSessionTests
 
         public Task<ICaptureProcess> StartAsync(
             CameraSource source, string outputPath, string encoder, string? microphone = null,
-            bool rotate180 = false, CancellationToken cancellationToken = default)
+            CancellationToken cancellationToken = default)
         {
-            Starts.Add((source, outputPath, encoder, microphone, rotate180));
+            Starts.Add((source, outputPath, encoder, microphone));
             return Task.FromResult<ICaptureProcess>(
                 new FakeProcess(outputPath, ProcessProducesFile, StartupWarning, ExitCode));
         }

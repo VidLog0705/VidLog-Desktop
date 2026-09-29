@@ -230,13 +230,20 @@ public sealed class SessionFinalizer
             Location: location,
             ContentHash: contentHash,
             SourceDeviceId: sourceDeviceId,
-            // 规格 §3.1.7 的连带项：索引要记编码 / 分辨率。
+            // 规格 §3.1.7 的连带项：索引要记编码 / 分辨率 / **方向**。
             // 规格为空（老调用点、或探测没跑成）时是 null —— 容量估算那边
             // 靠 null 才敢回落到保守值（见 CleanupPlanner.EstimateBytes）。
             Codec: spec?.Codec.ToString(),
             Resolution: spec?.Resolution.ToString(),
-            // 电脑端恒为 null：方向选项只在手机端（规格 §3.1.7 ②）。
-            Orientation: null);
+            // ⚠️ 2026-09-29 起**不再恒为 null**：需求方裁决「要完整三档方向」
+            // ⇒ 电脑端也写它（规格 §3.1.7 的那条连带要求随之对电脑端生效）。
+            //
+            // ⚠️ 存的是**电脑端自己的枚举名**（`None` / `Left90` / `Right90` /
+            // `UpsideDown`），与手机端那三个（`landscapeLeft` / `portrait` /
+            // `landscapeRight`）**不是同一套值** —— 两端的「方向」含义本来就不同
+            // （手机是持机方向、电脑是画面转多少度）。手机端读不出来会**回落默认档**
+            // （`RecordingOrientation.fromConfig` 的既有行为），不会炸。
+            Orientation: spec?.Rotation.ToString());
 
         try
         {

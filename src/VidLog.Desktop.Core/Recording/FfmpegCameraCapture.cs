@@ -70,7 +70,6 @@ public sealed class FfmpegCameraCapture : ICameraCapture
         string outputPath,
         string encoder,
         string? microphone = null,
-        bool rotate180 = false,
         CancellationToken cancellationToken = default)
     {
         var directory = Path.GetDirectoryName(outputPath);
@@ -86,7 +85,7 @@ public sealed class FfmpegCameraCapture : ICameraCapture
         var assPath = File.Exists(watermark) ? watermark : null;
 
         var wanted = string.IsNullOrWhiteSpace(microphone) ? null : microphone;
-        var process = Launch(source, outputPath, encoder, wanted, assPath, rotate180);
+        var process = Launch(source, outputPath, encoder, wanted, assPath);
 
         var warning = await ConfirmStartedAsync(process, outputPath, wanted, cancellationToken);
 
@@ -97,10 +96,10 @@ public sealed class FfmpegCameraCapture : ICameraCapture
             // 整段录制弄失败」，而一段的失败在这里就等于**整场录像从这一段起全丢**
             // （每一段都会以同样的方式再死一遍）。
             //
-            // ⚠️ 重开时**旋转照旧带上**（它与音频无关）：去掉音频是为了救这一段的
-            // 画面，而画面该怎么转是用户的设置。
+            // ⚠️ 重开时**方向照旧**（它在 spec 里，与音频无关）：去掉音频是为了救
+            // 这一段的画面，而画面该怎么转是用户的设置。
             Kill(process);
-            process = Launch(source, outputPath, encoder, microphone: null, assPath, rotate180);
+            process = Launch(source, outputPath, encoder, microphone: null, assPath);
         }
 
         cancellationToken.ThrowIfCancellationRequested();
@@ -111,7 +110,7 @@ public sealed class FfmpegCameraCapture : ICameraCapture
     /// <summary>起一个 ffmpeg 采集进程，并把两条管道排空。</summary>
     private Process Launch(
         CameraSource source, string outputPath, string encoder, string? microphone,
-        string? watermarkAssPath, bool rotate180)
+        string? watermarkAssPath)
     {
         var startInfo = new ProcessStartInfo
         {
@@ -125,7 +124,7 @@ public sealed class FfmpegCameraCapture : ICameraCapture
         };
 
         foreach (var argument in BuildArguments(
-            source, outputPath, encoder, _spec, watermarkAssPath, microphone, rotate180: rotate180))
+            source, outputPath, encoder, _spec, watermarkAssPath, microphone))
         {
             startInfo.ArgumentList.Add(argument);
         }
@@ -311,24 +310,6 @@ public sealed class FfmpegCameraCapture : ICameraCapture
             .Where(line => line.Length > 0)
             .LastOrDefault(line => line.Contains(microphone, StringComparison.OrdinalIgnoreCase));
 
-    /// <summary>
-    /// 转 180° 的滤镜。
-    /// </summary>
-    /// <remarks>
-    /// <para>
-    /// ⚠️ <b>用 <c>hflip,vflip</c>（水平翻 + 垂直翻）而不是 <c>transpose</c></b>：
-    /// <c>transpose=2,transpose=2</c> 也能转到 180°，但它多绕一层**宽高交换**，
-    /// 而且带参数。两个无参数滤镜拼起来语义直白得多 ——
-    /// 「上下颠倒」正是 180° 旋转在画面上的样子。
-    /// </para>
-    /// <para>
-    /// ⚠️ <b>取景识码那一档必须用同一个滤镜</b>（见 <c>ScannerProcess</c>）：
-    /// 两边的画面朝向不一致的话，会出现「录出来是正的、识码却要倒着认」
-    /// 或者反过来的怪事 —— 而用户开旋转正是因为画面确实需要转正。
-    /// </para>
-    /// </remarks>
-    public const string RotateFilter = "hflip,vflip";
-
     /// <summary>把管道读干。读到流结束为止，异常吞掉（进程退了就是结束，不是错误）。</summary>
     private static async Task DrainAsync(StreamReader reader, BoundedTextTail? sink)
     {
@@ -374,15 +355,11 @@ public sealed class FfmpegCameraCapture : ICameraCapture
     /// 只录这么多秒就自己停（<c>-t</c>）。**只有规格探测用它**（规格 §3.1.7 要「真录 1 秒」）。
     /// <see langword="null"/> = 一直录到我们叫停。
     /// </param>
-    /// <param name="rotate180">
-    /// 画面转 180°（规格 §3.1.7 的 2026-09-28 需求变更）。见 <see cref="RotateFilter"/>。
-    /// </param>
     /// <remarks>
     /// <para>
-    /// ⚠️ <b>参数快装不下了</b>：这个方法现在有 8 个参数、
-    /// <see cref="ICameraCapture.StartAsync"/> 有 6 个。<b>再加一个就该收成
-    /// options record</b> —— 但此刻收是纯搬运（调用点十几处，全是测试），
-    /// 不解决任何真问题，所以先留着。
+    /// ⚠️ <b>方向不用单独传</b>：它在 <paramref name="spec"/> 里
+    /// （<see cref="RecordingSpec.Rotation"/> 与 <c>RotationFilter</c>）——
+    /// 而规格探测共用这个方法，所以「探测的组合」连方向都自动与录制一致。
     /// </para>
     /// <para>
     /// ⚠️ <b>规格探测必须走这个方法，不许自己拼一份 argv。</b>
@@ -394,15 +371,13 @@ public sealed class FfmpegCameraCapture : ICameraCapture
     /// 拼一份就等于把「探测的组合」与「录制的组合」变成两件事，它们迟早会走岔。
     /// </para>
     /// <para>
-    /// ⚠️ <b>滤镜链的顺序是承重的</b>（见 <see cref="RotateFilter"/> 的说明）：
-    /// <c>scale</c> → <c>hflip,vflip</c> → <c>ass</c>。
-    /// 每一环排在哪儿都有理由，挪动前先读那两处的注释。
+    /// ⚠️ <b>滤镜链的顺序是承重的</b>：<c>scale</c> → <c>方向</c> → <c>ass</c>。
+    /// 每一环排在哪儿都有理由，挪动前先读下面那两处的注释。
     /// </para>
     /// </remarks>
     public static IReadOnlyList<string> BuildArguments(
         CameraSource source, string outputPath, string encoder, RecordingSpec? spec = null,
-        string? watermarkAssPath = null, string? microphone = null, int? durationSeconds = null,
-        bool rotate180 = false)
+        string? watermarkAssPath = null, string? microphone = null, int? durationSeconds = null)
     {
         var arguments = new List<string>
         {
@@ -463,14 +438,17 @@ public sealed class FfmpegCameraCapture : ICameraCapture
         if (source.IsNetwork && spec is not null)
         {
             // 网络那一路的尺寸**只能在输出侧**做（RTSP 不能按尺寸开流）。
+            // ⚠️ 缩到的是 **CaptureSize**（采集尺寸，恒为横屏）——
+            // 方向是**之后**那一步的事，见下面。
             filters.Add($"scale={spec.FfmpegSize}");
         }
 
-        if (rotate180)
+        if (spec?.RotationFilter is { } rotation)
         {
             // ⚠️ **必须排在水印之前**：水印是压在画面上的字，先烧后转会把字也转倒。
-            // 而 rotations 与 scale 可交换（都是几何变换，180° 又不换宽高）。
-            filters.Add(RotateFilter);
+            // ⚠️ 也必须排在 scale **之后**：缩放的目标是**采集**尺寸（横的），
+            // 先缩再转，转完才是成片尺寸（转 90° 时宽高已经换过来了）。
+            filters.Add(rotation);
         }
 
         if (!string.IsNullOrWhiteSpace(watermarkAssPath))

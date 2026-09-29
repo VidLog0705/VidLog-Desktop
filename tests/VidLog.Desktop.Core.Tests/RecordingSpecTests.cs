@@ -126,6 +126,97 @@ public class RecordingSpecTests
     // 可用性检查与回落
     // ─────────────────────────────────────────────
 
+    // ─────────────────────────────────────────────
+    // 方向（规格 §3.1.7 的 2026-09-29 需求变更：电脑端四档）
+    // ─────────────────────────────────────────────
+
+    [Fact]
+    public void 转九十度会交换成片尺寸_采集尺寸不变()
+    {
+        // ⚠️ 这两个尺寸**必须分开**，用错的那一处不会报错：
+        // 用错了只会「水印按错误的尺寸排版」（字跑到画面外）或
+        // 「容量按错误的像素数估」—— 两种都是静默的。
+        var upright = new RecordingSpec(VideoCodec.H264, VideoResolution.P1080, CameraRotation.None);
+        var sideways = new RecordingSpec(VideoCodec.H264, VideoResolution.P1080, CameraRotation.Right90);
+
+        // 采集侧永远是横的（相机只按它自己的模式出图）。
+        Assert.Equal((1920, 1080), upright.CaptureSize);
+        Assert.Equal((1920, 1080), sideways.CaptureSize);
+
+        // 成片侧随方向。
+        Assert.Equal((1920, 1080), upright.Size);
+        Assert.Equal((1080, 1920), sideways.Size);
+
+        // 180° 不换宽高。
+        Assert.Equal(
+            (1920, 1080),
+            new RecordingSpec(VideoCodec.H264, VideoResolution.P1080, CameraRotation.UpsideDown).Size);
+    }
+
+    [Fact]
+    public void 分辨率的ffmpeg参数用的是采集尺寸()
+    {
+        // ⚠️ 相机**不能**按「转完的尺寸」打开 —— 它只认自己的模式。
+        // 这里用了成片尺寸的话，转 90° 时相机会打不开（或打开成另一个模式）。
+        var spec = new RecordingSpec(VideoCodec.H264, VideoResolution.P1080, CameraRotation.Right90);
+
+        Assert.Equal("1920x1080", spec.FfmpegSize);
+    }
+
+    [Fact]
+    public void 回落表里每一档都保住用户选的方向()
+    {
+        // ⚠️ 与手机端同一条理由：方向是「摄像头装成什么样」，**不是设备能力** ——
+        // 回落里换掉方向只会让用户莫名其妙拿到一段方向不对的录像，
+        // 而方向错了的画面**可能整段都不能用**（不是画质差一点）。
+        foreach (var candidate in RecordingSpec.FallbacksFrom(
+            new RecordingSpec(VideoCodec.H265, VideoResolution.Uhd4K, CameraRotation.Left90)))
+        {
+            Assert.Equal(CameraRotation.Left90, candidate.Rotation);
+        }
+    }
+
+    [Fact]
+    public void 方向不参与回落的去重()
+    {
+        // 方向本来就每一档都一样，所以回落表里不该出现「同编码同分辨率的两档」。
+        var fallbacks = RecordingSpec.FallbacksFrom(
+            new RecordingSpec(VideoCodec.H264, VideoResolution.P1080, CameraRotation.UpsideDown));
+
+        Assert.Equal(fallbacks.Count, fallbacks.Distinct().Count());
+    }
+
+    [Fact]
+    public void 默认档那句话一个字都没变()
+    {
+        // ⚠️ 现有日志与测试都在断言「H.264 1080P」—— 方向是默认时不附上，
+        // 否则所有旧断言与日志都会莫名其妙地多一截。
+        Assert.Equal("H.264 1080P", RecordingSpec.Default.Label);
+
+        // 非默认时才附上（否则用户在日志里看不出这一段是转过的）。
+        Assert.Equal(
+            "H.264 1080P 左转 90°",
+            new RecordingSpec(VideoCodec.H264, VideoResolution.P1080, CameraRotation.Left90).Label);
+    }
+
+    [Fact]
+    public void 四档方向的名字与滤镜都只有一处产出()
+    {
+        Assert.Null(CameraRotationFilters.For(CameraRotation.None));
+        Assert.Equal("transpose=2", CameraRotationFilters.For(CameraRotation.Left90));
+        Assert.Equal("transpose=1", CameraRotationFilters.For(CameraRotation.Right90));
+        Assert.Equal("hflip,vflip", CameraRotationFilters.For(CameraRotation.UpsideDown));
+
+        // 名字也各有一个（界面上写的就是这四个词）。
+        Assert.Equal("不转", new RecordingSpec(VideoCodec.H264, VideoResolution.P1080).RotationLabel);
+        Assert.Equal(
+            "转 180°",
+            new RecordingSpec(VideoCodec.H264, VideoResolution.P1080, CameraRotation.UpsideDown).RotationLabel);
+
+        // 认不出的档位（手改坏的设置文件）当不转，**不抛**（I4 的同一条精神）。
+        Assert.Null(CameraRotationFilters.For((CameraRotation)99));
+    }
+
 
     [Fact]
     public async Task 探测跑的就是录制那一份argv_一个字都不差()

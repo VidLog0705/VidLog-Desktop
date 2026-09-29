@@ -37,10 +37,7 @@ public sealed record RecordingSessionOptions(
     // 而这里是「这一次工作到底给了哪个设备」。这两件事混成一件的话，
     // 一个没读设置的调用点（测试、诊断工具）会突然要求一个麦克风，
     // 而它接不上时降级虽然不会弄失败录制，却会白白多等一次开设备。
-    string? Microphone = null,
-    // 追加字段（规格 §3.1.7 的 2026-09-28 需求变更：电脑端加方向）。
-    // ⚠️ 默认 false（不转）：装歪的摄像头是少数。
-    bool Rotate180 = false)
+    string? Microphone = null)
 {
     /// <summary>点了【继续】之后隔多久再问（默认 5 分钟，与手机端同值）。</summary>
     public TimeSpan PromptRepeat => PromptRepeatEvery ?? TimeSpan.FromMinutes(5);
@@ -129,18 +126,6 @@ public sealed record RecordingSessionOptions(
     public RecordingSessionOptions WithMicrophone(string? microphone) =>
         this with { Microphone = microphone };
 
-    /// <summary>带上方向（规格 §3.1.7 的 2026-09-28 需求变更）。</summary>
-    /// <remarks>
-    /// 与 <see cref="WithMicrophone"/> 同一条通道、同一个理由：
-    /// 「改了下次开始工作才生效」靠「整份交给会话」保证。
-    /// <para>
-    /// ⚠️ <b>它**不**进 <see cref="Media.RecordingSpec"/></b>：旋转是滤镜、
-    /// 与编码器能力无关，塞进那个组合里会让「回落顺序」凭空翻倍
-    /// （`H.264 1080P × 转/不转` 试两遍，而转不转都不影响能否编码）。
-    /// </para>
-    /// </remarks>
-    public RecordingSessionOptions WithRotation(bool rotate180) =>
-        this with { Rotate180 = rotate180 };
 }
 
 /// <summary>
@@ -654,7 +639,7 @@ public sealed class RecordingSession : IAsyncDisposable
         WriteWatermark(outputPath);
 
         _currentProcess = await _capture.StartAsync(
-            _source, outputPath, encoder, _options.Microphone, _options.Rotate180, cancellationToken);
+            _source, outputPath, encoder, _options.Microphone, cancellationToken);
 
         // 一次交换把两个值一起发布 —— 见 _openSegment 的说明。
         Interlocked.Exchange(ref _openSegment, new OpenSegment(fileName, sequence));

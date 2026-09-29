@@ -125,23 +125,23 @@ public sealed record AppSettings
     public string? MicrophoneDevice { get; init; }
 
     /// <summary>
-    /// 画面旋转 180°（规格 §3.1.7 的 2026-09-28 需求变更 —— 电脑端原本**不做方向**）。
+    /// 成片方向（规格 §3.1.7 的 2026-09-28 需求变更 —— 电脑端原本**不做方向**）。
     /// </summary>
     /// <remarks>
     /// <para>
-    /// 依据是设计图的**配置向导第 2 步**：预览区右上角有一个「旋转 180°」按钮。
-    /// 裁决是「设计图优先，连规格一起改」⇒ 电脑端加方向。
-    /// </para>
-    /// <para>
-    /// ⚠️ 名字是 **180°**（不是「方向」也不是「镜像」）：它是个**开关**，
-    /// 按一下转 180°、再按一下转回来。界面上写的就是设计图上那四个字。
+    /// 依据是需求方两次裁决：① 设计图向导第 2 步有一个方向控件；
+    /// ② 2026-09-29「**要完整三档方向**」+「电脑端按**转多少度**命名」。
+    /// 合起来是**四档**（不转 / 左转 90° / 右转 90° / 转 180°），见
+    /// <see cref="Media.CameraRotation"/>。
     /// </para>
     /// <para>
     /// ⚠️ <b>默认不转</b>：装歪的摄像头是少数，而默认转一下会让绝大多数人
-    /// 第一次录出来的画面是倒的。
+    /// 第一次录出来的画面是歪的 —— 而且那是**整段录像都不能用**，
+    /// 不是画质差一点。老设置文件里没有这个字段 ⇒ 反序列化取
+    /// <see cref="Media.CameraRotation.None"/>（枚举显式写了 0），升级后行为不变。
     /// </para>
     /// </remarks>
-    public bool Rotate180 { get; init; }
+    public Media.CameraRotation Rotation { get; init; } = Media.CameraRotation.None;
 
     /// <summary>扫码枪判定参数（规格 §3.2.1）。</summary>
     public ScannerOptions Scanner { get; init; } = new();
@@ -450,7 +450,7 @@ public sealed class SettingsStore
 
         Compare(nameof(AppSettings.RecordAudio), previous.RecordAudio, next.RecordAudio);
         Compare(nameof(AppSettings.MicrophoneDevice), previous.MicrophoneDevice, next.MicrophoneDevice);
-        Compare(nameof(AppSettings.Rotate180), previous.Rotate180, next.Rotate180);
+        Compare(nameof(AppSettings.Rotation), previous.Rotation, next.Rotation);
         Compare(nameof(AppSettings.LogRetainDays), previous.LogRetainDays, next.LogRetainDays);
         Compare(nameof(AppSettings.ArchiveBackend), previous.ArchiveBackend, next.ArchiveBackend);
         Compare(nameof(AppSettings.ArchiveDirectory), previous.ArchiveDirectory, next.ArchiveDirectory);
