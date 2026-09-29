@@ -125,6 +125,67 @@ public class RecordingSpecTests
     // 可用性检查与回落
     // ─────────────────────────────────────────────
 
+    /// <summary>只记 argv，并按 <c>-y</c> 那个位置造一个产物 —— 让真探测能走完。</summary>
+    private sealed class ProbingRunner : IProcessRunner
+    {
+        public List<List<string>> Invocations { get; } = [];
+
+        public Task<ProcessResult> RunAsync(
+            string executable, IReadOnlyList<string> arguments, CancellationToken cancellationToken = default)
+        {
+            var args = arguments.ToList();
+            Invocations.Add(args);
+
+
+            var y = args.IndexOf("-y");
+            if (y >= 0 && y + 1 < args.Count)
+            {
+                var path = args[y + 1];
+                Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+                File.WriteAllText(path, "probed-bytes");
+            }
+
+            return Task.FromResult(new ProcessResult(0, string.Empty, string.Empty));
+        }
+    }
+
+    [Fact]
+    public async Task 探测跑的就是录制那一份argv_一个字都不差()
+    {
+        // ⚠️ 这条守的是 2026-09-29 修掉的那个 bug：探测原来**自己拼一份 argv**，
+        // 把 `-video_size` 写在 `-i` **之后**。真 ffmpeg 实测那是输出侧选项，
+        // 于是被**静默忽略**（让它录 1280×720，产物 320×240），退出码 0、无任何报错
+        // ⇒ 探测**没在验它声称要验的东西**：用户选 4K 而相机不支持时，探测报「通过」，
+        // 接着真录制打不开设备、整段录不出来 —— 而拦住这种事正是这个探测的全部理由。
+        //
+        // 判据取「两份 argv 逐字相等」而**不是**「-video_size 在 -i 前面」：
+        // 后者只挡住已经发生过的那一种走岔，而这里要挡的是**这一类**。
+        var runner = new ProbingRunner();
+        var probe = new FfmpegSpecProbe("ffmpeg.exe", runner);
+        var spec = new RecordingSpec(VideoCodec.H264, VideoResolution.P720);
+
+        await probe.ProbeAsync(spec, "Camera");
+
+        Assert.NotEmpty(runner.Invocations);
+
+        // 第 1 次是探测本身；后面几次是解码校验（它走同一个 runner）。
+        var arguments = runner.Invocations[0];
+        var probeFile = arguments[arguments.IndexOf("-y") + 1];
+
+        var recording = FfmpegCameraCapture.BuildArguments(
+            "Camera", probeFile, spec.EncoderCandidates[0], spec, durationSeconds: 1);
+
+        Assert.Equal(recording.ToArray(), arguments.ToArray());
+
+        // 另外把两处最要紧的位置单独钉一下，失败时能一眼看出是哪一种走岔。
+        var sizeIndex = arguments.IndexOf("-video_size");
+        Assert.True(
+            sizeIndex >= 0 && sizeIndex < arguments.IndexOf("-i"),
+            "-video_size 必须在 -i 之前：写在后面 ffmpeg 会**静默忽略**它，探测就成了空转");
+
+        Assert.Equal("1", arguments[arguments.IndexOf("-t") + 1]);
+    }
+
     /// <summary>只认某些组合的假探测。</summary>
     private sealed class FakeSpecProbe(params RecordingSpec[] usable) : IRecordingSpecProbe
     {

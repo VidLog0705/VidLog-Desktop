@@ -333,9 +333,22 @@ public sealed class FfmpegCameraCapture : ICameraCapture
     /// 那一步加不了滤镜（加了就得重编码，违反「不转码」）。
     /// </para>
     /// </param>
+    /// <param name="durationSeconds">
+    /// 只录这么多秒就自己停（<c>-t</c>）。**只有规格探测用它**（规格 §3.1.7 要「真录 1 秒」）。
+    /// <see langword="null"/> = 一直录到我们叫停。
+    /// </param>
+    /// <remarks>
+    /// ⚠️ <b>规格探测必须走这个方法，不许自己拼一份 argv。</b>
+    /// 2026-09-29 修掉的就是这条：探测原来自己拼了一份，把 <c>-video_size</c> 写在了
+    /// <c>-i</c> **之后** —— 真 ffmpeg 实测那是**输出侧**选项，于是它被**静默忽略**
+    /// （让它录 1280×720，产物是 320×240），退出码 0、没有任何报错。
+    /// 后果是探测**没在验它声称要验的东西**：用户选 4K 而相机不支持时，探测报「通过」，
+    /// 接着真录制（那边是对的）打不开设备、整段录不出来 —— 正是探测本该拦住的。
+    /// 拼一份就等于把「探测的组合」与「录制的组合」变成两件事，它们迟早会走岔。
+    /// </remarks>
     public static IReadOnlyList<string> BuildArguments(
         string device, string outputPath, string encoder, RecordingSpec? spec = null,
-        string? watermarkAssPath = null, string? microphone = null)
+        string? watermarkAssPath = null, string? microphone = null, int? durationSeconds = null)
     {
         var arguments = new List<string>
         {
@@ -404,6 +417,15 @@ public sealed class FfmpegCameraCapture : ICameraCapture
                 "-ac", "1",
                 "-ar", "44100",
                 "-b:a", "64k",
+            ]);
+        }
+
+        if (durationSeconds is { } seconds)
+        {
+            // ⚠️ 输出侧选项：要落在 `-i` **之后**、输出路径之前。
+            arguments.AddRange(
+            [
+                "-t", seconds.ToString(System.Globalization.CultureInfo.InvariantCulture),
             ]);
         }
 

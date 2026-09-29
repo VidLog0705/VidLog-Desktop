@@ -1,3 +1,5 @@
+using VidLog.Desktop.Core.Recording;
+
 namespace VidLog.Desktop.Core.Media;
 
 /// <summary>一次规格探测的结果。</summary>
@@ -34,6 +36,10 @@ public interface IRecordingSpecProbe
 /// 代价是每次探测要开一次相机、录 1 秒（独占：跑的时候别的取景进程必须停）。
 /// 所以它只在**启动时**跑一次，结果管一次运行 —— 与规格「录制前可选、录制中不可改、
 /// 改了下次开始工作才生效」是同一个口径。
+/// </para>
+/// <para>
+/// ⚠️ <b>argv 走 <see cref="FfmpegCameraCapture.BuildArguments"/></b>，本类不自己拼 ——
+/// 「探测的组合」与「录制的组合」必须是同一个东西，拼两份迟早走岔（2026-09-29 修过一次）。
 /// </para>
 /// </remarks>
 public sealed class FfmpegSpecProbe : IRecordingSpecProbe
@@ -101,22 +107,19 @@ public sealed class FfmpegSpecProbe : IRecordingSpecProbe
 
         try
         {
-            var arguments = new[]
-            {
-                "-hide_banner",
-                "-v", "error",
-                "-f", "dshow",
-                // 相机是独占的，探测时别抢太久。
-                "-rtbufsize", "64M",
-                "-i", $"video={device}",
-                "-t", "1",
-                "-video_size", spec.FfmpegSize,
-                "-r", RecordingSpec.FrameRate.ToString(System.Globalization.CultureInfo.InvariantCulture),
-                "-c:v", encoder,
-                "-pix_fmt", "yuv420p",
-                "-f", "matroska",
-                "-y", probeFile,
-            };
+            // ⚠️ **argv 走录制那一条路的构造器**，不在这里另拼一份。
+            //
+            // 2026-09-29 修掉的正是这条：这里原来自己拼了一份，把 `-video_size` 写在
+            // `-i` **之后** —— 真 ffmpeg 实测那是输出侧选项，于是**被静默忽略**
+            // （让它录 1280×720，产物 320×240），退出码 0、无任何报错。
+            // 后果是探测**没在验它声称要验的东西**：用户选 4K 而相机不支持时，
+            // 探测报「通过」，接着真录制（那边把 `-video_size` 放在 `-i` 之前）打不开设备、
+            // 整段录不出来 —— 而拦住这种事正是 §3.1.7 要这个探测的全部理由。
+            //
+            // 共用构造器之后，「探测的组合」与「录制的组合」**从形状上就是同一个**，
+            // 不可能再走岔。`durationSeconds: 1` 是唯一的差别（规格要求真录 1 秒）。
+            var arguments = FfmpegCameraCapture.BuildArguments(
+                device, probeFile, encoder, spec, durationSeconds: 1);
 
             ProcessResult result;
             try
