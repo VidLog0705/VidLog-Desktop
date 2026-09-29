@@ -327,7 +327,8 @@ public sealed class AppHost : IAsyncDisposable
             SessionOptions = RecordingSessionOptions
                 .From(settings.SegmentMinutes, settings.DurationFallback)
                 .With(selection.Spec)
-                .WithMicrophone(microphone),
+                .WithMicrophone(microphone)
+                .WithRotation(settings.Rotate180),
         };
 
         var bridge = new KeyboardScanBridge(settings.Scanner);
@@ -354,7 +355,13 @@ public sealed class AppHost : IAsyncDisposable
         if (services.FfmpegPath is { } ffmpegPath && !camera.IsEmpty)
         {
             var scanner = new CameraFrameScanner(
-                ffmpegPath, camera, new ZXingFrameScanner(), logger);
+                ffmpegPath, camera, new ZXingFrameScanner(), logger)
+            {
+                // ⚠️ 与录制那一档**必须一致**（两边朝向不一致会出现
+                // 「录出来是正的、识码却要倒着认」）。它在**每次开始工作**时才被读到，
+                // 所以改设置走下面那处同步即可，不需要重启。
+                Rotate180 = settings.Rotate180,
+            };
 
             scanner.Scanned += waybill =>
             {
@@ -462,7 +469,18 @@ public sealed class AppHost : IAsyncDisposable
         // 会把已经探好的录制规格抹成 null（水印尺寸跟着掉回 1280×720、
         // 索引里也不再记编码）—— 那种值不报错，只是「有时候对、有时候不对」。
         var options = Coordinator.SessionOptions
-            .WithSchedule(next.SegmentMinutes, next.DurationFallback);
+            .WithSchedule(next.SegmentMinutes, next.DurationFallback)
+            // 方向（规格 §3.1.7 的需求变更）：它在**每次开段**时被读到，
+            // 所以「改了下次开始工作生效」是这句话本来的语义。
+            .WithRotation(next.Rotate180);
+
+        // ⚠️ 取景识码那一档**也要同步** —— 两边朝向不一致会出现
+        // 「录出来是正的、识码却要倒着认」（或者反过来），
+        // 而那种毛病看起来像「识码坏了」，不会有人想到是方向设置。
+        if (Coordinator.Scanner is { } scanner)
+        {
+            scanner.Rotate180 = next.Rotate180;
+        }
 
         // 音轨（规格 §3.1.8）：只有音频那两项真变了才重新枚举设备 ——
         // 每次存设置都起一次 ffmpeg 枚举设备是白花 0.3 秒。

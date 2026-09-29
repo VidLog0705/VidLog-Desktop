@@ -295,6 +295,90 @@ public class CameraCaptureTests
         Assert.Contains("-an", args);
     }
 
+    // ─────────────────────────────────────────────
+    // 旋转 180°（规格 §3.1.7 的 2026-09-28 需求变更：电脑端加方向）
+    // ─────────────────────────────────────────────
+
+    [Fact]
+    public void 不转时argv里没有旋转滤镜()
+    {
+        // ⚠️ 默认那一档必须与改动前**逐字一致** —— 装歪的摄像头是少数，
+        // 默认转一下会让绝大多数人第一次录出来是倒的。
+        var args = FfmpegCameraCapture.BuildArguments(
+            CameraSource.Local("Cam"), @"C:\out\seg.mkv", "libx264",
+            new RecordingSpec(VideoCodec.H264, VideoResolution.P1080));
+
+        Assert.DoesNotContain(args, a => a.Contains("hflip", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void 旋转排在水印之前_否则水印的字也会被转倒()
+    {
+        // ⚠️ **顺序是承重的**：水印是压在画面上的字，先烧后转会把字也转 180°。
+        // 而「画面正了、水印倒着」这种东西在预览里看不出来（预览不烧水印）。
+        var args = FfmpegCameraCapture.BuildArguments(
+            CameraSource.Network("rtsp://h/s"), @"C:\out\seg.mkv", "libx264",
+            new RecordingSpec(VideoCodec.H264, VideoResolution.P1080),
+            watermarkAssPath: @"C:\work\seg.ass", rotate180: true).ToList();
+
+        var filters = args[args.IndexOf("-vf") + 1];
+
+        var scale = filters.IndexOf("scale=", StringComparison.Ordinal);
+        var rotate = filters.IndexOf("hflip", StringComparison.Ordinal);
+        var ass = filters.IndexOf("ass=", StringComparison.Ordinal);
+
+        Assert.True(scale >= 0 && rotate > scale, $"缩放先于旋转，实际：{filters}");
+        Assert.True(ass > rotate, $"⚠️ 旋转必须排在 ass 之前（否则水印的字也是倒的），实际：{filters}");
+
+        // 只有一条 -vf：写两个的话后一个会顶掉前一个，而且不报错。
+        Assert.Equal(1, args.Count(a => a == "-vf"));
+    }
+
+    [Fact]
+    public void 本机设备加旋转时滤镜就是那一对_没有多余的缩放()
+    {
+        var args = FfmpegCameraCapture.BuildArguments(
+            CameraSource.Local("Cam"), @"C:\out\seg.mkv", "libx264",
+            new RecordingSpec(VideoCodec.H264, VideoResolution.P1080), rotate180: true).ToList();
+
+        Assert.Equal(FfmpegCameraCapture.RotateFilter, args[args.IndexOf("-vf") + 1]);
+    }
+
+    // ─────────────────────────────────────────────
+    // 取景识码那一档（与录制必须同向）
+    // ─────────────────────────────────────────────
+
+    [Fact]
+    public void 取景识码也要转_而且用同一个滤镜()
+    {
+        // ⚠️ 两边朝向不一致会出现「录出来是正的、识码却要倒着认」（或者反过来），
+        // 而那种毛病看起来像「识码坏了」，不会有人想到是方向设置。
+        var args = VidLog.Desktop.Core.Camera.ScannerProcess
+            .BuildArguments(CameraSource.Local("Cam"), rotate180: true).ToList();
+
+        var filters = args[args.IndexOf("-vf") + 1];
+
+        Assert.Contains(FfmpegCameraCapture.RotateFilter, filters, StringComparison.Ordinal);
+
+        // 几何先定（缩放 → 转方向），再降频、转灰度。
+        Assert.True(
+            filters.IndexOf("hflip", StringComparison.Ordinal)
+                < filters.IndexOf("fps=", StringComparison.Ordinal),
+            $"旋转要排在 fps/format 之前，实际：{filters}");
+    }
+
+    [Fact]
+    public void 取景识码不转时滤镜与改动前逐字一致()
+    {
+        var plain = VidLog.Desktop.Core.Camera.ScannerProcess
+            .BuildArguments(CameraSource.Local("Cam")).ToList();
+        var network = VidLog.Desktop.Core.Camera.ScannerProcess
+            .BuildArguments(CameraSource.Network("rtsp://h/s")).ToList();
+
+        Assert.Equal("fps=3,format=gray", plain[plain.IndexOf("-vf") + 1]);
+        Assert.Equal("scale=640:480,fps=3,format=gray", network[network.IndexOf("-vf") + 1]);
+    }
+
     /// <summary>本机实测（2026-09-29）：拿一个不存在的麦克风名字开一路 dshow 的 stderr 尾部。</summary>
     private const string BadAudioOutput = """
         [in#0 @ 0000029927401440] Could not enumerate audio only devices (or none found).

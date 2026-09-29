@@ -38,6 +38,20 @@ public sealed class CameraFrameScanner : IAsyncDisposable
         _logger = logger;
     }
 
+    /// <summary>
+    /// 取景时画面转 180°（规格 §3.1.7 的 2026-09-28 需求变更）。
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ <b>必须与录制那一档一致</b>：两边朝向不一致会出现「录出来是正的、
+    /// 识码却要倒着认」（或者反过来）。
+    /// <para>
+    /// ⚠️ 做成可写属性而不是 ctor 参数：它读的时刻是**每次开始工作**
+    /// （那时才 <see cref="StartAsync"/>），所以「改了下次开始工作生效」
+    /// 是这句话本来的语义，不需要重启。
+    /// </para>
+    /// </remarks>
+    public bool Rotate180 { get; set; }
+
     /// <summary>识别到单号。</summary>
     public event Action<WaybillNumber>? Scanned;
 
@@ -59,7 +73,8 @@ public sealed class CameraFrameScanner : IAsyncDisposable
         try
         {
             _gate.Reset();
-            _process = await ScannerProcess.StartAsync(_ffmpegPath, _source, _sink, cancellationToken);
+            _process = await ScannerProcess.StartAsync(
+                _ffmpegPath, _source, _sink, Rotate180, cancellationToken);
 
             _loop = new CancellationTokenSource();
             _ = Task.Run(() => DecodeLoopAsync(_loop.Token), CancellationToken.None);

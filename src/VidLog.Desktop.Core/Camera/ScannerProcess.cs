@@ -53,7 +53,7 @@ public sealed class ScannerProcess
 
     public static Task<ScannerProcess> StartAsync(
         string ffmpegPath, CameraSource source, SingleSlotFrameSink sink,
-        CancellationToken cancellationToken = default)
+        bool rotate180 = false, CancellationToken cancellationToken = default)
     {
         var startInfo = new ProcessStartInfo
         {
@@ -66,7 +66,7 @@ public sealed class ScannerProcess
             RedirectStandardInput = true,
         };
 
-        foreach (var argument in BuildArguments(source))
+        foreach (var argument in BuildArguments(source, rotate180))
         {
             startInfo.ArgumentList.Add(argument);
         }
@@ -112,7 +112,8 @@ public sealed class ScannerProcess
     /// 切出来的是**错位的花屏**，识码永远认不出来（而且不会有任何报错）。
     /// </para>
     /// </remarks>
-    public static IReadOnlyList<string> BuildArguments(CameraSource source)
+    /// <param name="rotate180">画面转 180°（规格 §3.1.7 的 2026-09-28 需求变更）。</param>
+    public static IReadOnlyList<string> BuildArguments(CameraSource source, bool rotate180 = false)
     {
         var arguments = new List<string>
         {
@@ -124,12 +125,27 @@ public sealed class ScannerProcess
         // 网络地址一个都不带（见 CameraSource.InputArguments）。
         arguments.AddRange(source.InputArguments("64M", $"{Width}x{Height}"));
 
+        // 几何先定（缩到读端要的尺寸 → 转方向），再降频、转灰度。
+        var filters = new List<string>();
+
+        if (source.IsNetwork)
+        {
+            filters.Add($"scale={Width}:{Height}");
+        }
+
+        if (rotate180)
+        {
+            // ⚠️ **必须与录制那一档用同一个滤镜**：两边朝向不一致的话，会出现
+            // 「录出来是正的、识码却要倒着认」（或者反过来）——
+            // 而用户开旋转正是因为画面确实需要转正。
+            filters.Add(FfmpegCameraCapture.RotateFilter);
+        }
+
+        filters.Add($"fps={Fps},format=gray");
+
         arguments.AddRange(
         [
-            "-vf", source.IsNetwork
-                // 缩放排在 fps/format **之前**：先归一到读端要的几何，再降频、转灰度。
-                ? $"scale={Width}:{Height},fps={Fps},format=gray"
-                : $"fps={Fps},format=gray",
+            "-vf", string.Join(',', filters),
             "-pix_fmt", "gray",
             "-f", "rawvideo",
             "pipe:1",
