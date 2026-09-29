@@ -53,7 +53,15 @@ public sealed class CleanupService
     /// </remarks>
     public bool CanCleanup => _executor.CanCleanup;
 
-    /// <summary>算一次清理计划。**一个文件都不碰。**</summary>
+    /// <summary>
+    /// 算一次「按时间清理」的计划。**一个文件都不碰。**
+    /// </summary>
+    /// <remarks>
+    /// 设计图 `_43` 上那个【按时间清理…】按钮走这里。
+    /// 另一个按钮【按空间释放…】走 <see cref="PreviewBySpaceAsync"/> ——
+    /// **两者刻意分开**：它们要算的东西不一样（一个是保留期，一个是磁盘剩余），
+    /// 合成一个方法就得先判断「这次是哪种」，而那正是两个入口本来的区别。
+    /// </remarks>
     public async Task<CleanupPlan> PreviewAsync(
         RetentionSettings settings,
         DateTimeOffset now,
@@ -67,6 +75,71 @@ public sealed class CleanupService
         var anchors = await _receipts.LoadAnchorMapAsync(cancellationToken);
 
         return new CleanupPlanner().PlanPerBusinessType(entries, labels, anchors, settings, now);
+    }
+
+    /// <summary>
+    /// 按空间释放：把这批录像清到**磁盘至少还剩 <paramref name="minFreeBytes"/>**。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// 依据是设计图 `_43` 上那个【**按空间释放…**】按钮（与【按时间清理…】并列）。
+    /// </para>
+    /// <para>
+    /// ⚠️ <b>它走的是**单份**策略，不走「按业务类型」那条路</b> ——
+    /// 磁盘满不满跟业务类型无关（`PlanPerBusinessType` 的注释里已经写着这一条），
+    /// 所以「按空间」不分成发货/退货两份。
+    /// </para>
+    /// <para>
+    /// ⚠️ <b>归档层就在本机时**不给这个入口**</b>（规格 §3.5.1）：那种情况下
+    /// 本地这一份是**唯一副本**，清掉就是删证据。这里挡一道，界面上还有一道 ——
+    /// 界面那道是「不给用户一个点了就报错的按钮」，这道是「就算被绕过了也不许删」。
+    /// </para>
+    /// <para>
+    /// ⚠️ 三条豁免（未归档 / 已锁定 / 24 小时内）**照样生效**：它们在
+    /// <see cref="CleanupPlanner.Plan"/> 里判，与策略模式无关。所以
+    /// 「按空间释放」**清不到**那些 —— 于是它可能**释放不出足够空间**，
+    /// 而那是**对**的：宁可盘满，也不删唯一副本。
+    /// </para>
+    /// </remarks>
+    /// <param name="minFreeBytes">
+    /// 要留出多少空间。来自「预留空间」那个设置（默认值见 <see cref="ReservedSpace"/>）。
+    /// </param>
+    /// <param name="freeBytes">
+    /// 那块盘现在还剩多少。**由调用方探**（`IDiskSpaceProbe`），与
+    /// <see cref="CleanupPlanner.Plan"/> 同形 —— 因为调用方**本来就要探**：
+    /// 设计图 `_43` 顶上那条「0.0 / 504.4 GB」的容量条用的就是同一个数。
+    /// </param>
+    /// <returns>
+    /// 计划；**<see langword="null"/> 表示「不允许清理」**（归档层就在本机）。
+    /// </returns>
+    /// <remarks>
+    /// ⚠️ <b>用可空返回而不是「返回一个空的计划」</b>：「不许清」与「没得清」
+    /// 是两回事 —— 前者要说一句原因（否则用户点了【按空间释放】什么都没发生），
+    /// 而后者不该说话。混成一个的话，界面只能靠 `CanCleanup` 再判一次，
+    /// 而那正是「同一件事写两遍」。
+    /// </remarks>
+    public async Task<CleanupPlan?> PreviewBySpaceAsync(
+        long minFreeBytes,
+        long freeBytes,
+        DateTimeOffset now,
+        CancellationToken cancellationToken = default)
+    {
+        if (!CanCleanup)
+        {
+            // ⚠️ 与界面上「摆不摆这个入口」是同一条判据（`CanCleanup`）。
+            // 只挡界面的话，一个绕过界面的调用点就能把唯一副本删掉。
+            return null;
+        }
+
+        var entries = await _index.LoadAllAsync(cancellationToken);
+        var labels = await _labels.LoadAllAsync(cancellationToken);
+        var anchors = await _receipts.LoadAnchorMapAsync(cancellationToken);
+
+        return new CleanupPlanner().Plan(
+            entries, labels, anchors,
+            new RetentionPolicy(RetentionMode.BySpace, MinFreeBytes: minFreeBytes),
+            now,
+            freeBytes);
     }
 
     /// <summary>按计划真删。逐条回查归档层，查不到或查不了都**不删**（I8）。</summary>

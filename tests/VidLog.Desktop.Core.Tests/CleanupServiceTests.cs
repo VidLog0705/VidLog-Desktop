@@ -99,6 +99,144 @@ public class CleanupServiceTests
         ArchivedReturn = new RetentionSetting(days),
     };
 
+    // ─────────────────────────────────────────────
+    // 按空间释放（设计图 `_43` 上那个按钮）
+    // ─────────────────────────────────────────────
+
+    /// <summary>GB → 字节。</summary>
+    private static long Gb(double n) => (long)(n * 1024 * 1024 * 1024);
+
+    /// <summary>三条可清的录像，最旧的叫 oldest。</summary>
+    private static (IReadOnlyList<RecordingEntry> Entries, IReadOnlyList<RecordingLabel> Labels, IReadOnlyList<ReceiptPayload> Receipts) ThreeClearable() => (
+        [Entry("oldest", Now.AddDays(-40)), Entry("middle", Now.AddDays(-30)), Entry("newest", Now.AddDays(-20))],
+        [Outbound("oldest"), Outbound("middle"), Outbound("newest")],
+        [Receipt("oldest", Now.AddDays(-39)), Receipt("middle", Now.AddDays(-29)), Receipt("newest", Now.AddDays(-19))]);
+
+    [Fact]
+    public async Task 空间充足时按空间释放什么都不清()
+    {
+        using var fixture = new Fixture();
+
+        var service = Build(
+            fixture, ArchiveBackendKind.Nas,
+            entries: [Entry("e1", Now.AddDays(-40))],
+            labels: [Outbound("e1")],
+            receipts: [Receipt("e1", Now.AddDays(-39))]);
+
+        var plan = await service.PreviewBySpaceAsync(minFreeBytes: Gb(20), freeBytes: Gb(50), Now);
+
+        Assert.NotNull(plan);
+        Assert.Empty(plan!.Candidates);
+    }
+
+    [Fact]
+    public async Task 缺一点点就只清最旧的那一条_清到够就停()
+    {
+        // ⚠️ 判据刻意**不依赖单条录像估多大**：缺口只要 1 字节 ⇒
+        // 清掉**第一条**（最旧的）就够了 ⇒ 候选恰好一条。
+        // 写成「清掉 N 条」的话，那条断言会随着字节系数的标定而碎。
+        using var fixture = new Fixture();
+        var (entries, labels, receipts) = ThreeClearable();
+
+        var service = Build(
+            fixture, ArchiveBackendKind.Nas,
+            entries: entries, labels: labels, receipts: receipts);
+
+        var plan = await service.PreviewBySpaceAsync(minFreeBytes: 1, freeBytes: 0, Now);
+
+        var candidate = Assert.Single(plan!.Candidates);
+
+        // ⚠️ **从最旧的开始** —— 空间紧张时先腾掉最老的素材。
+        Assert.Equal("oldest", candidate.Entry.EvidenceId);
+    }
+
+    [Fact]
+    public async Task 缺口很大时把能清的全清上()
+    {
+        // 缺口远比全部录像加起来还大 ⇒ 可清的一条不剩（但**豁免的那些仍然不动**）。
+        using var fixture = new Fixture();
+        var (entries, labels, receipts) = ThreeClearable();
+
+        var service = Build(
+            fixture, ArchiveBackendKind.Nas,
+            entries: entries, labels: labels, receipts: receipts);
+
+        var plan = await service.PreviewBySpaceAsync(minFreeBytes: Gb(1024), freeBytes: 0, Now);
+
+        Assert.Equal(3, plan!.Candidates.Count);
+    }
+
+    [Fact]
+    public async Task 按空间释放不看业务类型_只走一份策略()
+    {
+        // ⚠️ 磁盘满不满跟发货/退货无关（`PlanPerBusinessType` 的注释里写着这条）。
+        // 判据取「**没有业务类型标签**的录像在按空间释放时也会被清」——
+        // 而在按时间清理那条路上，它会因为「判不出该用哪份保留期」被豁免。
+        // 这是两条路行为上唯一看得见的差别，所以用它钉住。
+        using var fixture = new Fixture();
+
+        var service = Build(
+            fixture, ArchiveBackendKind.Nas,
+            entries: [Entry("no-label", Now.AddDays(-40))],
+            labels: [],                                    // ← 故意没有业务类型标签
+            receipts: [Receipt("no-label", Now.AddDays(-39))]);
+
+        var byTime = await service.PreviewAsync(DeleteAfter(7), Now);
+        var bySpace = await service.PreviewBySpaceAsync(Gb(20), 0, Now);
+
+        Assert.Empty(byTime.Candidates);
+        Assert.Single(bySpace!.Candidates);
+    }
+
+    [Fact]
+    public async Task 归档层是本机时按空间释放返回null而不是空计划()
+    {
+        // ⚠️ 用 null 而不是空计划：界面要能分开「**不许**清」与「**没得**清」——
+        // 前者得说一句原因（否则用户点了按钮什么都没发生），后者不该说话。
+        using var fixture = new Fixture();
+
+        var service = Build(
+            fixture, ArchiveBackendKind.LocalDisk,
+            entries: [Entry("e1", Now.AddDays(-40))],
+            labels: [Outbound("e1")],
+            receipts: [Receipt("e1", Now.AddDays(-39))]);
+
+        Assert.Null(await service.PreviewBySpaceAsync(Gb(20), 0, Now));
+    }
+
+    [Fact]
+    public async Task 按空间释放也清不到未归档与锁着的_宁可盘满()
+    {
+        // ⚠️ 规格 §3.5.3 的三条豁免与「策略模式」无关（它们在 `Plan` 里判）
+        // ⇒ 按空间释放**可能释放不出足够空间**。而那是**对的**：
+        // **宁可盘满，也不删唯一副本**（I2）。
+        using var fixture = new Fixture();
+
+        var service = Build(
+            fixture, ArchiveBackendKind.Nas,
+            entries:
+            [
+                Entry("unarchived", Now.AddDays(-40)),   // 没有回执 ⇒ 未归档 ⇒ 唯一副本
+                Entry("locked", Now.AddDays(-40)),
+            ],
+            labels:
+            [
+                Outbound("unarchived"),
+                new RecordingLabel("locked", LabelKeys.Locked, "true", Now),
+            ],
+            receipts: [Receipt("locked", Now.AddDays(-39))]);
+
+        var plan = await service.PreviewBySpaceAsync(Gb(1024), 0, Now);
+
+        Assert.NotNull(plan);
+        Assert.Empty(plan!.Candidates);
+
+        // 两条都要**说出为什么没清**（规格 §3.5.5：不许静默）。
+        Assert.Equal(2, plan.Exempted.Count);
+        Assert.Contains(plan.Exempted, e => e.Why.Contains("唯一副本"));
+        Assert.Contains(plan.Exempted, e => e.Why.Contains("锁定"));
+    }
+
     [Fact]
     public void 归档层是本机时根本不允许清理()
     {
