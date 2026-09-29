@@ -30,8 +30,8 @@ public sealed class RequiresCameraFactAttribute : FactAttribute
 
         // 枚举是同步等待一个短命进程，这里同步等它是可接受的：
         // 它只在特性构造时跑一次，且 ffmpeg 会立刻打印完设备表退出。
-        var devices = CameraDevices
-            .ListAsync(ffmpeg)
+        var devices = DshowDevices
+            .ListVideoAsync(ffmpeg)
             .GetAwaiter()
             .GetResult();
 

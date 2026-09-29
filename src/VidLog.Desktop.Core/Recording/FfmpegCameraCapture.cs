@@ -23,6 +23,19 @@ public sealed class FfmpegCameraCapture : ICameraCapture
     /// </remarks>
     private const string BufferSize = "256M";
 
+    /// <summary>
+    /// 「这一次采集真的起来了没有」的等待上限（规格 §3.1.8）。
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ 正常路径上**用不到这个数**：判据是「产物出现」，而它一出现就返回
+    /// （实测约 1.5 秒，就是开一次相机的时间）。这个上限只在「既没有产物、
+    /// 进程又没退出」时才等满 —— 那种情况下等满也胜过直接判它成功。
+    /// </remarks>
+    private static readonly TimeSpan StartupProbeTimeout = TimeSpan.FromSeconds(8);
+
+    /// <summary>产物的轮询间隔。摄像头开设备期间给 50ms 足够密。</summary>
+    private static readonly TimeSpan StartupProbeInterval = TimeSpan.FromMilliseconds(50);
+
     private readonly string _ffmpegPath;
 
     /// <summary>采集进程 stderr 的尾部。</summary>
@@ -47,10 +60,11 @@ public sealed class FfmpegCameraCapture : ICameraCapture
         _spec = spec;
     }
 
-    public Task<ICaptureProcess> StartAsync(
+    public async Task<ICaptureProcess> StartAsync(
         string device,
         string outputPath,
         string encoder,
+        string? microphone = null,
         CancellationToken cancellationToken = default)
     {
         var directory = Path.GetDirectoryName(outputPath);
@@ -59,6 +73,36 @@ public sealed class FfmpegCameraCapture : ICameraCapture
             Directory.CreateDirectory(directory);
         }
 
+        // 水印字幕（规格 §3.6.2）：**按约定**从输出路径推同一个名字。
+        // 文件不在时 ffmpeg 会报错起不来 —— 所以只在它真的存在时才带上，
+        // 让「没有水印」比「录不起来」先发生（会话那边写失败也是这个口径）。
+        var watermark = AssWatermark.PathFor(outputPath);
+        var assPath = File.Exists(watermark) ? watermark : null;
+
+        var wanted = string.IsNullOrWhiteSpace(microphone) ? null : microphone;
+        var process = Launch(device, outputPath, encoder, wanted, assPath);
+
+        var warning = await ConfirmStartedAsync(process, outputPath, wanted, cancellationToken);
+
+        if (warning is not null)
+        {
+            // ⚠️ 规格 §3.1.8 的降级：**照常录视频，只是这一段没有音轨**。
+            // 重开、而不是把这一段的失败交给上层 —— I4 明令「绝不允许音频把
+            // 整段录制弄失败」，而一段的失败在这里就等于**整场录像从这一段起全丢**
+            // （每一段都会以同样的方式再死一遍）。
+            Kill(process);
+            process = Launch(device, outputPath, encoder, microphone: null, assPath);
+        }
+
+        cancellationToken.ThrowIfCancellationRequested();
+
+        return new FfmpegCaptureProcess(process, () => _errorTail.ToString(), warning);
+    }
+
+    /// <summary>起一个 ffmpeg 采集进程，并把两条管道排空。</summary>
+    private Process Launch(
+        string device, string outputPath, string encoder, string? microphone, string? watermarkAssPath)
+    {
         var startInfo = new ProcessStartInfo
         {
             FileName = _ffmpegPath,
@@ -70,14 +114,8 @@ public sealed class FfmpegCameraCapture : ICameraCapture
             RedirectStandardInput = true,
         };
 
-        // 水印字幕（规格 §3.6.2）：**按约定**从输出路径推同一个名字。
-        // 文件不在时 ffmpeg 会报错起不来 —— 所以只在它真的存在时才带上，
-        // 让「没有水印」比「录不起来」先发生（会话那边写失败也是这个口径）。
-        var watermark = AssWatermark.PathFor(outputPath);
-        var hasWatermark = File.Exists(watermark);
-
         foreach (var argument in BuildArguments(
-            device, outputPath, encoder, _spec, hasWatermark ? watermark : null))
+            device, outputPath, encoder, _spec, watermarkAssPath, microphone))
         {
             startInfo.ArgumentList.Add(argument);
         }
@@ -100,11 +138,159 @@ public sealed class FfmpegCameraCapture : ICameraCapture
         // 所以排进一个有上限的环形缓冲，而不是丢掉。
         _ = Task.Run(() => DrainAsync(process.StandardError, _errorTail));
 
-        cancellationToken.ThrowIfCancellationRequested();
-
-        return Task.FromResult<ICaptureProcess>(
-            new FfmpegCaptureProcess(process, () => _errorTail.ToString()));
+        return process;
     }
+
+    /// <summary>
+    /// 这一次采集真的起来了没有。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// ⚠️ 规格 §3.1.8 的硬约束：判据必须是「**这一路真的接起来了没有**」，
+    /// 而不是「设置里开着没有」。麦克风被别的程序占着、被系统权限拒掉、
+    /// 或者 USB 中途掉了，都表现为 ffmpeg 在**写出任何东西之前**整个退出。
+    /// </para>
+    /// <para>
+    /// ⚠️ <b>判据取的是成功的证据（产物出现），不是「等它死」</b>：ffmpeg 要先把
+    /// 所有 <c>-i</c> 打开才会建输出文件，所以「产物出现」就等价于「每一路都接上了」。
+    /// 反过来等它死则**等不准** —— 开一次相机实测要 1~1.5 秒，死的时刻因此可能晚于
+    /// 任何写死的等待窗口，等不到就漏判，而漏判的后果是整场录像全丢。
+    /// </para>
+    /// <para>
+    /// ⚠️ 也不能写成规格里点名的那条陷阱「等音频那一路准备好再开段」：麦克风被拒时
+    /// 那个等待**永远等不到**，第一段根本开不了。这里等的是产物，不是音频。
+    /// </para>
+    /// </remarks>
+    /// <returns>起来了返回 <see langword="null"/>；否则返回一句给用户看的话。</returns>
+    private async Task<string?> ConfirmStartedAsync(
+        Process process, string outputPath, string? microphone, CancellationToken cancellationToken)
+    {
+        // 没要音频 ⇒ 行为与本次改动**逐字一致**：不等、不判、不重开。
+        if (microphone is null)
+        {
+            return null;
+        }
+
+        var clock = System.Diagnostics.Stopwatch.StartNew();
+
+        while (true)
+        {
+            if (cancellationToken.IsCancellationRequested)
+            {
+                // 取消不是「没起来」。交给调用方最后那句 ThrowIfCancellationRequested。
+                return null;
+            }
+
+            if (Produced(outputPath))
+            {
+                return null;
+            }
+
+            if (HasExited(process))
+            {
+                return Describe(microphone);
+            }
+
+            if (clock.Elapsed >= StartupProbeTimeout)
+            {
+                // 措辞与 Describe 同一条口径：没有证据就不指认麦克风。
+                return "采集迟迟没有开始（麦克风可能没能就绪），这一段改成没有音轨重录了。";
+            }
+
+            try
+            {
+                await Task.Delay(StartupProbeInterval, cancellationToken);
+            }
+            catch (OperationCanceledException)
+            {
+                return null;
+            }
+        }
+    }
+
+    /// <summary>产物已经落盘且有内容 —— 这就是「每一路都接上了」的证据。</summary>
+    private static bool Produced(string outputPath)
+    {
+        try
+        {
+            return File.Exists(outputPath) && new FileInfo(outputPath).Length > 0;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            // 文件正被 ffmpeg 持有而读不到属性 —— 那是「它正在写」，不是「没有」。
+            return true;
+        }
+    }
+
+    private static bool HasExited(Process process)
+    {
+        try
+        {
+            return process.HasExited;
+        }
+        catch (InvalidOperationException)
+        {
+            return true;
+        }
+    }
+
+    private void Kill(Process process)
+    {
+        try
+        {
+            if (!HasExited(process))
+            {
+                process.Kill(entireProcessTree: true);
+            }
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or NotSupportedException)
+        {
+        }
+    }
+
+    /// <summary>
+    /// 把这一路没起来的原因说成一句给用户看的话。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// ⚠️ <b>只有 ffmpeg 那句话真的提到这个麦克风时，才把锅算到它头上。</b>
+    /// 否则摄像头坏了也会被说成「麦克风没接上」—— 那是两句相反的话，
+    /// 而用户会照着它去查一个没坏的东西。
+    /// </para>
+    /// <para>
+    /// ⚠️ 取「提到设备名的那一行」而不是最后一行：2026-09-29 实测，一次麦克风打不开的
+    /// 输出尾部长这样，最后一行是**通用的包装话**，什么都没说。
+    /// <code>
+    /// [in#0 @ …] Could not enumerate audio only devices (or none found).
+    /// [in#0 @ …] Error opening input: I/O error
+    /// Error opening input file audio=不存在的麦克风.
+    /// Error opening input files: I/O error     ← 最后一行
+    /// </code>
+    /// 按名字挑不需要解析 ffmpeg 的措辞（那种解析会随版本失效）。
+    /// </para>
+    /// </remarks>
+    private string Describe(string microphone) =>
+        PickUsefulLine(_errorTail.ToString(), microphone) is { } line
+            ? $"麦克风没能接上（{line}），这一段没有音轨。"
+            // 没提到麦克风 ⇒ 这一路没起来的原因**不是它**（多半是摄像头），
+            // 所以只说「没起来」。真正的原因会由重开那一次的退出码报出来。
+            : "采集没能起来，这一段改成没有音轨重录了。";
+
+    /// <summary>
+    /// 从 stderr 尾部里挑出**提到这个设备**的那一行；没有这样的行就返回
+    /// <see langword="null"/>。
+    /// </summary>
+    /// <remarks>
+    /// 抽成静态的纯函数、并跟着 <see cref="BuildArguments"/> 一起 <c>public</c>，
+    /// 只为一件事：让「挑得对不对」**不依赖麦克风**被断言到 ——
+    /// 本机一台 dshow 设备都没有（实测 2026-09-29），拆不开就没法验。
+    /// </remarks>
+    public static string? PickUsefulLine(string errorTail, string microphone) =>
+        errorTail
+            .Split('\n')
+            .Select(line => line.Trim())
+            .Where(line => line.Length > 0)
+            .LastOrDefault(line => line.Contains(microphone, StringComparison.OrdinalIgnoreCase));
 
     /// <summary>把管道读干。读到流结束为止，异常吞掉（进程退了就是结束，不是错误）。</summary>
     private static async Task DrainAsync(StreamReader reader, BoundedTextTail? sink)
@@ -149,15 +335,32 @@ public sealed class FfmpegCameraCapture : ICameraCapture
     /// </param>
     public static IReadOnlyList<string> BuildArguments(
         string device, string outputPath, string encoder, RecordingSpec? spec = null,
-        string? watermarkAssPath = null)
+        string? watermarkAssPath = null, string? microphone = null)
     {
         var arguments = new List<string>
         {
             "-hide_banner",
             "-v", "error",
+        };
+
+        // ⚠️ 音频那一路排在**视频之前**：麦克风打不开时 ffmpeg 在打开音频设备那一刻
+        // 就退出了（远快于开相机），而「这一次起来了没有」的判定要等它 ——
+        // 音频排在后的话，每段开头都要多等一个开相机的时间。
+        if (!string.IsNullOrWhiteSpace(microphone))
+        {
+            arguments.AddRange(
+            [
+                "-f", "dshow",
+                "-rtbufsize", BufferSize,
+                "-i", $"audio={microphone}",
+            ]);
+        }
+
+        arguments.AddRange(
+        [
             "-f", "dshow",
             "-rtbufsize", BufferSize,
-        };
+        ]);
 
         if (spec is not null)
         {
@@ -188,6 +391,24 @@ public sealed class FfmpegCameraCapture : ICameraCapture
             // 摄像头出的是 yuyv422，H.264 要 4:2:0。让 ffmpeg 显式转，
             // 而不是指望编码器自己接受 —— libx264 接受不了 yuyv422 会直接失败。
             "-pix_fmt", "yuv420p",
+        ]);
+
+        if (!string.IsNullOrWhiteSpace(microphone))
+        {
+            // ⚠️ 规格 §3.1.8 **逐字**：AAC、单声道、44.1 kHz、64 kbps。
+            // 两端必须一致 —— 一边一套参数的话，同一段素材在两个端上
+            // 转出来是两个体积，而「按空间清理」是按体积算的。
+            arguments.AddRange(
+            [
+                "-c:a", "aac",
+                "-ac", "1",
+                "-ar", "44100",
+                "-b:a", "64k",
+            ]);
+        }
+
+        arguments.AddRange(
+        [
             "-f", "matroska",
             "-y", outputPath,
         ]);

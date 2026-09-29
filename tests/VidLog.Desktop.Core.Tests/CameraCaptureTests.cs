@@ -28,7 +28,7 @@ public class CameraCaptureTests
     [Fact]
     public void 只挑视频设备_音频与alternative_name都要排除()
     {
-        var devices = CameraDevices.ParseVideoDevices(RealOutput);
+        var devices = DshowDevices.ParseVideoDevices(RealOutput);
 
         // 只该剩摄像头。Alternative name 是同一台设备的另一种写法，
         // 不是第二台设备 —— 不过滤的话一台相机会被数成三个。
@@ -37,17 +37,34 @@ public class CameraCaptureTests
     }
 
     [Fact]
+    public void 只挑音频设备_规格3_1_8的麦克风那一半()
+    {
+        // 与上面那条是**两件事**（2026-09-29 拆开的）：视频那条说的是「别把麦克风
+        // 数成摄像头」，这条说的是「麦克风自己数得出来」—— 同一次输出、同一套引号解析，
+        // 但漏了任何一半，配置向导的麦克风那一步就会是一个空气下拉。
+        var devices = DshowDevices.ParseAudioDevices(RealOutput);
+
+        var device = Assert.Single(devices);
+        Assert.Equal("麦克风 (USB Audio Device)", device);
+    }
+
+    [Fact]
     public void 没有摄像头时返回空表而不是抛()
     {
         // 「本机没摄像头」是正常的运行环境（上一台开发机就是），不是异常。
-        Assert.Empty(CameraDevices.ParseVideoDevices("[dshow @ 0000] \"麦克风\" (audio)"));
-        Assert.Empty(CameraDevices.ParseVideoDevices(string.Empty));
+        Assert.Empty(DshowDevices.ParseVideoDevices("[dshow @ 0000] \"麦克风\" (audio)"));
+        Assert.Empty(DshowDevices.ParseVideoDevices(string.Empty));
+
+        // 反过来也一样：只有摄像头时，麦克风那一半必须是空的 ——
+        // 「没有麦克风」和「没有摄像头」都不是异常，只是不同的降级。
+        Assert.Empty(DshowDevices.ParseAudioDevices("[dshow @ 0000] \"Cam\" (video)"));
+        Assert.Empty(DshowDevices.ParseAudioDevices(string.Empty));
     }
 
     [Fact]
     public void 同一设备重复出现只算一个()
     {
-        var devices = CameraDevices.ParseVideoDevices(
+        var devices = DshowDevices.ParseVideoDevices(
             "[dshow @ 0] \"Cam\" (video)\n[dshow @ 0] \"Cam\" (video)");
 
         Assert.Single(devices);
@@ -111,11 +128,115 @@ public class CameraCaptureTests
     [Fact]
     public void 枚举命令故意让它失败因为退出码在这里没有意义()
     {
-        var args = CameraDevices.BuildListArguments();
+        var args = DshowDevices.BuildListArguments();
 
         Assert.Contains("-list_devices", args);
         Assert.Contains("dshow", args);
         Assert.Contains("dummy", args);
+    }
+
+    // ─────────────────────────────────────────────
+    // 音轨（规格 §3.1.8）
+    // ─────────────────────────────────────────────
+
+    [Fact]
+    public void 没给麦克风时_命令里一个音频参数都没有()
+    {
+        // ⚠️ 这条守的是「不开声音的人与本次改动之前**逐字一致**」：
+        // 多一个 `-c:a` 不会让 ffmpeg 报错，只会在没有音轨时白写一段参数，
+        // 而真的危险是**多一个 `-i audio=`** —— 那会让一台没有麦克风的机器
+        // 连录像都起不来。
+        var args = FfmpegCameraCapture.BuildArguments("Cam", @"C:\out\seg.mkv", "libx264");
+
+        Assert.DoesNotContain(args, a => a.StartsWith("audio=", StringComparison.Ordinal));
+        Assert.DoesNotContain("-c:a", args);
+        Assert.DoesNotContain("-ac", args);
+    }
+
+    [Fact]
+    public void 带麦克风时_音频那一路排在视频之前()
+    {
+        // ⚠️ 顺序是承重的：麦克风打不开时 ffmpeg 在打开音频设备那一刻就退出，
+        // 而摄像头实测要 1~1.5 秒才开得起来。音频排在后的话，
+        // 每段开头判定「这一次起来了没有」都要多等一个开相机的时间。
+        var args = FfmpegCameraCapture.BuildArguments(
+            "Cam", @"C:\out\seg.mkv", "libx264", microphone: "话筒").ToList();
+
+        Assert.Contains("audio=话筒", args);
+        Assert.Contains("video=Cam", args);
+        Assert.True(
+            args.IndexOf("audio=话筒") < args.IndexOf("video=Cam"),
+            "音频那一路必须排在视频之前");
+    }
+
+    [Fact]
+    public void 音轨参数逐字_规格3_1_8的四个数()
+    {
+        // AAC、单声道、44.1 kHz、64 kbps —— 规格原话。两端必须逐字一致：
+        // 一边一套参数的话，同一段素材在两个端上转出来是两个体积，
+        // 而「按空间清理」是按体积算的。
+        var args = FfmpegCameraCapture.BuildArguments(
+            "Cam", @"C:\out\seg.mkv", "libx264", microphone: "话筒").ToList();
+
+        Assert.Equal("aac", args[args.IndexOf("-c:a") + 1]);
+        Assert.Equal("1", args[args.IndexOf("-ac") + 1]);
+        Assert.Equal("44100", args[args.IndexOf("-ar") + 1]);
+        Assert.Equal("64k", args[args.IndexOf("-b:a") + 1]);
+    }
+
+    [Fact]
+    public void 带麦时输出路径仍紧跟在y之后()
+    {
+        // 判据与上面那条同源：测试替身靠「-y 后面那个参数就是产物」定位输出文件。
+        var args = FfmpegCameraCapture.BuildArguments(
+            "Cam", @"C:\out\seg.mkv", "libx264", microphone: "话筒").ToList();
+
+        Assert.Equal(@"C:\out\seg.mkv", args[args.IndexOf("-y") + 1]);
+    }
+
+    [Fact]
+    public void 空白的麦克风名字视同没有麦克风()
+    {
+        // 设置文件是可以被手改的，`""` 与 `"   "` 都可能出现 ——
+        // 而 `audio=` 后面跟一个空名字会让 ffmpeg 直接失败（就是 I4 禁止的那种）。
+        foreach (var blank in new[] { "", "   ", null })
+        {
+            var args = FfmpegCameraCapture.BuildArguments("Cam", @"C:\out\seg.mkv", "libx264", microphone: blank);
+
+            Assert.DoesNotContain(args, a => a.StartsWith("audio=", StringComparison.Ordinal));
+        }
+    }
+
+    /// <summary>本机实测（2026-09-29）：拿一个不存在的麦克风名字开一路 dshow 的 stderr 尾部。</summary>
+    private const string BadAudioOutput = """
+        [in#0 @ 0000029927401440] Could not enumerate audio only devices (or none found).
+            Last message repeated 1 times
+        [in#0 @ 000002992738ea00] Error opening input: I/O error
+        Error opening input file audio=不存在的麦克风.
+        Error opening input files: I/O error
+        """;
+
+    [Fact]
+    public void 报给用户的是提到这个设备名的那一行_不是最后一行()
+    {
+        // ⚠️ 最后一行 `Error opening input files: I/O error` 是**通用包装话** ——
+        // 拿它当原因等于什么都没说，而 I3 要的是「用户看得到才有得治」。
+        var picked = FfmpegCameraCapture.PickUsefulLine(BadAudioOutput, "不存在的麦克风");
+
+        Assert.NotNull(picked);
+        Assert.Contains("不存在的麦克风", picked);
+        Assert.DoesNotContain("I/O error", picked);
+    }
+
+    [Fact]
+    public void 挑不到提到设备名的那一行时返回null_而不是硬塞最后一行()
+    {
+        // ⚠️ 这一条是**刻意的**：拿最后一行当原因的话，摄像头坏了也会被说成
+        // 「麦克风没能接上」—— 那是两句相反的话，用户会照着它去查一个没坏的东西。
+        // 挑不出来就不指认，只报「没起来」。
+        Assert.Null(FfmpegCameraCapture.PickUsefulLine("第一行\n第二行\n第三行", "话筒"));
+        Assert.Null(FfmpegCameraCapture.PickUsefulLine("", "话筒"));
+        Assert.Null(FfmpegCameraCapture.PickUsefulLine("   \n  \n", "话筒"));
     }
 }
 
@@ -135,7 +256,7 @@ public class FfmpegCameraCaptureIntegrationTests
     public async Task 录一段_产物非空且能通过真实解码校验()
     {
         using var dir = new TempDir();
-        var device = (await CameraDevices.ListAsync(Ffmpeg))[0];
+        var device = (await DshowDevices.ListVideoAsync(Ffmpeg))[0];
         var runner = new SystemProcessRunner();
 
         // 用探测出来的编码器，而不是写死 libx264 —— 这正是 §3.1.5 要求的
@@ -168,7 +289,7 @@ public class FfmpegCameraCaptureIntegrationTests
     public async Task 优雅停止留下的MKV是完整的_不是靠杀进程()
     {
         using var dir = new TempDir();
-        var device = (await CameraDevices.ListAsync(Ffmpeg))[0];
+        var device = (await DshowDevices.ListVideoAsync(Ffmpeg))[0];
         var runner = new SystemProcessRunner();
         var encoder = await PickEncoderAsync(runner);
         var mkv = dir.File("graceful.mkv");

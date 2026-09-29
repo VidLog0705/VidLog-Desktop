@@ -20,14 +20,21 @@ public sealed class FfmpegCaptureProcess : ICaptureProcess
     /// 取 stderr 尾部的回调。用来把 ffmpeg 真正说的话报给用户 ——
     /// 只说「采集失败」是 I3 不允许的静默失败。
     /// </param>
-    internal FfmpegCaptureProcess(Process process, Func<string> errors)
+    /// <param name="startupWarning">
+    /// 起这一路时发生的、用户需要知道的事（规格 §3.1.8 的音频降级）。
+    /// </param>
+    internal FfmpegCaptureProcess(Process process, Func<string> errors, string? startupWarning = null)
     {
         _process = process;
         _errors = errors;
+        StartupWarning = startupWarning;
     }
 
     /// <summary>采集进程 stderr 的尾部（有上限）。</summary>
     public string ErrorTail => _errors();
+
+    /// <inheritdoc/>
+    public string? StartupWarning { get; }
 
     public async Task<int?> StopAsync(TimeSpan timeout, CancellationToken cancellationToken = default)
     {

@@ -230,6 +230,11 @@ public sealed class AppHost : IAsyncDisposable
 
         var device = await ResolveCameraAsync(services, settings, warnings, cancellationToken);
 
+        // 麦克风（规格 §3.1.8）。⚠️ 与摄像头同一个时机解析：都在**启动时**一次，
+        // 而「改了下次开始工作才生效」是靠 `SessionOptions.Microphone` 在
+        // 每次开始工作时整份交给会话保证的（见 ApplySettingsAsync）。
+        var microphone = await ResolveMicrophoneAsync(services, settings, warnings, cancellationToken);
+
         // ── 录制规格：**真实**的可用性检查（规格 §3.1.7）──────────────────
         //
         // ⚠️ 为什么要真开一次相机：规格原话「组合是稀疏的……设备能真跑通的**远少于**这个数
@@ -311,7 +316,8 @@ public sealed class AppHost : IAsyncDisposable
             // 录制规格也在这里交给会话 —— 收尾时它要写进索引（§3.1.7 的连带项）。
             SessionOptions = RecordingSessionOptions
                 .From(settings.SegmentMinutes, settings.DurationFallback)
-                .With(selection.Spec),
+                .With(selection.Spec)
+                .WithMicrophone(microphone),
         };
 
         var bridge = new KeyboardScanBridge(settings.Scanner);
@@ -429,13 +435,41 @@ public sealed class AppHost : IAsyncDisposable
     {
         var changes = SettingsStore.DescribeChanges(Settings, next);
 
+        // ⚠️ 必须在 `Settings = next` **之前**算：赋值之后这两个比较就恒为假了。
+        var audioChanged =
+            next.RecordAudio != Settings.RecordAudio
+            || !string.Equals(next.MicrophoneDevice, Settings.MicrophoneDevice, StringComparison.Ordinal);
+
         await new SettingsStore(Services.Layout.SettingsPath).SaveAsync(next);
         Settings = next;
 
         // 档位立即生效（下次开段时取值）—— 界面上写着「下次录段生效」，
         // 不跟着更新的话那句话就是假的。
-        Coordinator.SessionOptions = RecordingSessionOptions.From(
-            next.SegmentMinutes, next.DurationFallback);
+        //
+        // ⚠️ 在**现有值**上改字段，不是重新 `From(...)`：`From` 从 `Default` 起算，
+        // 会把已经探好的录制规格抹成 null（水印尺寸跟着掉回 1280×720、
+        // 索引里也不再记编码）—— 那种值不报错，只是「有时候对、有时候不对」。
+        var options = Coordinator.SessionOptions
+            .WithSchedule(next.SegmentMinutes, next.DurationFallback);
+
+        // 音轨（规格 §3.1.8）：只有音频那两项真变了才重新枚举设备 ——
+        // 每次存设置都起一次 ffmpeg 枚举设备是白花 0.3 秒。
+        if (audioChanged)
+        {
+            var picked = await ResolveMicrophoneAsync(Services, next, [], CancellationToken.None);
+            options = options.WithMicrophone(picked);
+
+            // ⚠️ 开着却一个麦克风都没有时要**说出来**：否则用户以为声音打开了，
+            // 而录出来的全是默片 —— I3 不允许静默降级。
+            if (next.RecordAudio && picked is null)
+            {
+                Notice?.Invoke(new CoordinatorNotice(
+                    CoordinatorNoticeKind.FinalizeFailed, null,
+                    "没有找到麦克风，之后录的都不会有声音。"));
+            }
+        }
+
+        Coordinator.SessionOptions = options;
         Coordinator.Mode = next.Mode;
         Coordinator.IdleReminder = next.IdleReminder;
         Coordinator.IdleReminderMinutes = next.IdleReminderMinutes;
@@ -457,7 +491,7 @@ public sealed class AppHost : IAsyncDisposable
             return settings.CameraDevice ?? string.Empty;
         }
 
-        var devices = await CameraDevices.ListAsync(services.FfmpegPath, cancellationToken);
+        var devices = await DshowDevices.ListVideoAsync(services.FfmpegPath, cancellationToken);
 
         if (devices.Count == 0)
         {
@@ -467,6 +501,52 @@ public sealed class AppHost : IAsyncDisposable
 
         // 之前用过的设备优先 —— 换了 USB 口之后设备名可能变，所以找不到就退回第一个。
         if (settings.CameraDevice is { Length: > 0 } remembered && devices.Contains(remembered))
+        {
+            return remembered;
+        }
+
+        return devices[0];
+    }
+
+    /// <summary>
+    /// 定下这次用的麦克风（规格 §3.1.8）。<see langword="null"/> = 不录声音。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// ⚠️ <b>「设置里开着」不等于「有麦克风」</b>，更不等于「麦克风接得上」——
+    /// 这里只解决前两件事（关着、或者本机一个麦克风都没有 ⇒ 不给设备名，
+    /// 于是采集那一路**根本不会去开音频**）。第三件事只能由采集侧判定，
+    /// 因为「接得上」只有真开一次才知道，见 <c>FfmpegCameraCapture.ConfirmStartedAsync</c>。
+    /// </para>
+    /// <para>
+    /// ⚠️ 枚举不到麦克风时报一条**用户可见**的话（I3）：那种情况下录像照录，
+    /// 只是没有声音 —— 而「事后才发现整批货都没声音」正是静默失败的典型。
+    /// </para>
+    /// </remarks>
+    private static async Task<string?> ResolveMicrophoneAsync(
+        DesktopServices services, AppSettings settings, List<string> warnings,
+        CancellationToken cancellationToken)
+    {
+        if (!settings.RecordAudio)
+        {
+            return null;
+        }
+
+        if (services.FfmpegPath is null)
+        {
+            return null;
+        }
+
+        var devices = await DshowDevices.ListAudioAsync(services.FfmpegPath, cancellationToken);
+
+        if (devices.Count == 0)
+        {
+            warnings.Add("没有找到麦克风，录像不会有声音（设置里的「录制声音」是开着的）。");
+            return null;
+        }
+
+        // 与摄像头同一条口径：之前用过的优先，找不到就退回第一个。
+        if (settings.MicrophoneDevice is { Length: > 0 } remembered && devices.Contains(remembered))
         {
             return remembered;
         }

@@ -815,12 +815,15 @@ public class RecordingCoordinatorTests
     private sealed class FakeCapture : ICameraCapture
     {
         public Task<ICaptureProcess> StartAsync(
-            string device, string outputPath, string encoder, CancellationToken cancellationToken = default) =>
+            string device, string outputPath, string encoder, string? microphone = null,
+            CancellationToken cancellationToken = default) =>
             Task.FromResult<ICaptureProcess>(new FakeProcess(outputPath));
     }
 
     private sealed class FakeProcess(string outputPath) : ICaptureProcess
     {
+        public string? StartupWarning => null;
+
         public Task<int?> StopAsync(TimeSpan timeout, CancellationToken cancellationToken = default)
         {
             Directory.CreateDirectory(Path.GetDirectoryName(outputPath)!);

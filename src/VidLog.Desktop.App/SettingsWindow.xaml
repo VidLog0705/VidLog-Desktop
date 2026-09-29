@@ -97,6 +97,36 @@
 
                         <Separator Margin="0,18,0,16"/>
 
+                        <!-- 录制声音（规格 §3.1.8）。设置项名逐字照规格，**默认开**。 -->
+                        <TextBlock Style="{StaticResource SectionTitle}" Text="录制声音"/>
+                        <TextBlock Style="{StaticResource Caption}" Margin="0,0,0,8"
+                                   Text="音轨固定为 AAC、单声道、44.1 kHz、64 kbps，不提供选择。改了下次开始工作生效，录制中不可改。"/>
+                        <StackPanel Orientation="Horizontal">
+                            <!-- ⚠️ 挂 Checked/Unchecked 而**不是 Click**：Click 只在用户点的时候响，
+                                 而 IsChecked 还能被别的途径改（UIA 的 TogglePattern 就是直接赋值的，
+                                 2026-09-29 截图脚本实测：那样拨出来的开关是关的、旁边的字还写着「开」）。
+                                 挂这两个事件，界面状态就**不可能**与开关本身走岔。 -->
+                            <ToggleButton x:Name="AudioToggle" Style="{StaticResource ToggleSwitch}"
+                                          VerticalAlignment="Center"
+                                          Checked="OnAudioChanged" Unchecked="OnAudioChanged"/>
+                            <TextBlock x:Name="AudioStateText" Margin="10,0,0,0"
+                                       VerticalAlignment="Center"
+                                       Foreground="{StaticResource TextPrimary}" Text=""/>
+                            <ComboBox x:Name="MicrophoneCombo" Width="260" Margin="18,0,0,0"
+                                      IsEnabled="False"/>
+                            <TextBlock x:Name="MicrophoneHint" Margin="10,0,0,0"
+                                       VerticalAlignment="Center"
+                                       Foreground="{StaticResource TextSecondary}" Text=""/>
+                        </StackPanel>
+
+                        <!-- ⚠️ 这一条**不折进「?」**：它说的是「麦克风出问题也不会毁掉录像」，
+                             不写出来用户不敢开声音（而且它正是 I4 在界面上的落点）。 -->
+                        <TextBlock Style="{StaticResource Caption}" Margin="0,8,0,0"
+                                   TextWrapping="Wrap" MaxWidth="620"
+                                   Text="⚠️ 麦克风被拒、被别的程序占用、或者中途被拔掉，录像照常进行 —— 只有那一段没有音轨，界面上会写明原因。声音绝不会让整段录像失败。"/>
+
+                        <Separator Margin="0,18,0,16"/>
+
                         <TextBlock Style="{StaticResource SectionTitle}" Text="工作模式"/>
                         <TextBlock Style="{StaticResource Caption}" Margin="0,0,0,8"
                                    Text="连续扫：换件即换段。同码停：复扫同一张单号就停 —— 它不会因为扫到别的面单就自动换段，也不会一路录到把盘写满。"/>

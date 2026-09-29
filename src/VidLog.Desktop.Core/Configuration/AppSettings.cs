@@ -74,6 +74,22 @@ public sealed record AppSettings
     /// <summary>上次用的摄像头设备名；为空表示用枚举出来的第一个。</summary>
     public string? CameraDevice { get; init; }
 
+    /// <summary>
+    /// 录制声音（规格 §3.1.8）。
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ 规格里那个设置项的名字就叫「录制声音」，界面上一字不改。
+    /// <b>默认开着</b>（规格原话）。
+    /// <para>
+    /// ⚠️ 它开着**不等于**每一段都有音轨 —— 麦克风被拒/被占/接不上时按规格降级成
+    /// 「照常录视频、只是这一段没有声音」（I4），并把原因报到界面上。
+    /// </para>
+    /// </remarks>
+    public bool RecordAudio { get; init; } = true;
+
+    /// <summary>上次用的麦克风设备名（规格 §3.1.8）；为空表示用枚举出来的第一个。</summary>
+    public string? MicrophoneDevice { get; init; }
+
     /// <summary>扫码枪判定参数（规格 §3.2.1）。</summary>
     public ScannerOptions Scanner { get; init; } = new();
 
@@ -345,6 +361,8 @@ public sealed class SettingsStore
         Compare(nameof(AppSettings.SegmentMinutes), previous.SegmentMinutes, next.SegmentMinutes);
         Compare(nameof(AppSettings.PlaybackPort), previous.PlaybackPort, next.PlaybackPort);
         Compare(nameof(AppSettings.CameraDevice), previous.CameraDevice, next.CameraDevice);
+        Compare(nameof(AppSettings.RecordAudio), previous.RecordAudio, next.RecordAudio);
+        Compare(nameof(AppSettings.MicrophoneDevice), previous.MicrophoneDevice, next.MicrophoneDevice);
         Compare(nameof(AppSettings.LogRetainDays), previous.LogRetainDays, next.LogRetainDays);
         Compare(nameof(AppSettings.ArchiveBackend), previous.ArchiveBackend, next.ArchiveBackend);
         Compare(nameof(AppSettings.ArchiveDirectory), previous.ArchiveDirectory, next.ArchiveDirectory);

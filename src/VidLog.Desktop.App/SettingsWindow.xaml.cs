@@ -133,6 +133,7 @@ public partial class SettingsWindow : Window
         ShowLicense();
         ShowAbout();
         LoadCameras();
+        LoadAudio();
     }
 
     // ─────────────────────────────────────────────
@@ -155,7 +156,7 @@ public partial class SettingsWindow : Window
             return;
         }
 
-        var devices = await CameraDevices.ListAsync(_host.Services.FfmpegPath);
+        var devices = await DshowDevices.ListVideoAsync(_host.Services.FfmpegPath);
 
         if (devices.Count == 0)
         {
@@ -174,6 +175,105 @@ public partial class SettingsWindow : Window
             remembered is not null && devices.Contains(remembered) ? devices.ToList().IndexOf(remembered) : 0;
 
         CameraCombo.IsEnabled = true;
+    }
+
+    // ─────────────────────────────────────────────
+    // 录制声音（规格 §3.1.8）
+    // ─────────────────────────────────────────────
+
+    /// <summary>
+    /// 把开关拨到已保存的那一档。
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ 这里**不自己刷下面那两行** —— 那是 <see cref="SyncAudioAsync"/> 一处的活
+    /// （写两遍就会漏，见那里的说明）。
+    /// 赋值时借用 <c>_suppressSettingsEvents</c> 把事件挡回去：不挡的话就会
+    /// 「事件里刷一遍、这里再刷一遍」，白枚举两遍麦克风。
+    /// </remarks>
+    private async void LoadAudio()
+    {
+        _suppressSettingsEvents = true;
+        AudioToggle.IsChecked = _host.Settings.RecordAudio;
+        _suppressSettingsEvents = false;
+
+        await SyncAudioAsync();
+    }
+
+    private void OnAudioChanged(object sender, RoutedEventArgs e)
+    {
+        MarkDirty();
+
+        if (_suppressSettingsEvents)
+        {
+            return;
+        }
+
+        // 与 OnArchiveChanged 同一路数：顺手刷新与保存无关的那一半。
+        _ = SyncAudioAsync();
+    }
+
+    /// <summary>
+    /// 把「开关的状态」翻译成下面那两行的样子。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// ⚠️ <b>只此一处</b>。写在两遍（开一次、关一次各写一遍）就会漏 ——
+    /// 实测过一次：开关是关的、旁边的字还写着「开」，界面自相矛盾，
+    /// 而 App 层没有测试工程，这种东西没有任何测试挡得住。
+    /// </para>
+    /// <para>
+    /// ⚠️ 关着的时候**不去枚举**：那是白起一次 ffmpeg，而结果只为了填一个被禁用的下拉。
+    /// </para>
+    /// </remarks>
+    private async Task SyncAudioAsync()
+    {
+        if (AudioToggle.IsChecked != true)
+        {
+            AudioStateText.Text = "关";
+            MicrophoneCombo.IsEnabled = false;
+            MicrophoneHint.Text = "";
+            return;
+        }
+
+        AudioStateText.Text = "开";
+        MicrophoneCombo.Items.Clear();
+        MicrophoneCombo.IsEnabled = false;
+
+        if (_host.Services.FfmpegPath is null)
+        {
+            MicrophoneHint.Text = "没有 FFmpeg，无法采集";
+            return;
+        }
+
+        var devices = await DshowDevices.ListAudioAsync(_host.Services.FfmpegPath);
+
+        // ⚠️ 枚举是异步的，而用户完全可能在这期间把开关拨掉 —— 那时这批结果已经作废，
+        // 写回去会把刚拨出来的那一档盖掉。开窗时那次枚举要好几秒
+        // （ffmpeg 枚举 dshow 失败也要走完），这个窗口是真实存在的。
+        if (AudioToggle.IsChecked != true)
+        {
+            return;
+        }
+
+        if (devices.Count == 0)
+        {
+            // 「没有麦克风」是正常的运行环境，不是错误 —— 但**必须说出来**：
+            // 开关开着而一个麦克风都没有时，用户会以为录的是有声的。
+            MicrophoneHint.Text = "没有找到麦克风，录像不会有声音";
+            return;
+        }
+
+        foreach (var device in devices)
+        {
+            MicrophoneCombo.Items.Add(device);
+        }
+
+        var remembered = _host.Settings.MicrophoneDevice;
+        MicrophoneCombo.SelectedIndex =
+            remembered is not null && devices.Contains(remembered) ? devices.ToList().IndexOf(remembered) : 0;
+
+        MicrophoneCombo.IsEnabled = true;
+        MicrophoneHint.Text = "";
     }
 
     // ─────────────────────────────────────────────
@@ -298,6 +398,11 @@ public partial class SettingsWindow : Window
             DuplicateCheckDays = duplicateDays,
             PlaybackPort = port,
             CameraDevice = CameraCombo.SelectedItem as string,
+            // ⚠️ 关掉时麦克风那一栏**仍然记着**选的是哪个（与归档目录同一个道理）：
+            // 用户来回拨开关时不必重选一遍。关着的时候那个下拉根本没被填过，
+            // 直接取 SelectedItem 会把记着的名字抹成 null。
+            RecordAudio = AudioToggle.IsChecked == true,
+            MicrophoneDevice = MicrophoneCombo.SelectedItem as string ?? _host.Settings.MicrophoneDevice,
             ArchiveBackend = Enum.TryParse<ArchiveBackendKind>(TagOf(ArchiveCombo), out var backend)
                 ? backend : _host.Settings.ArchiveBackend,
             // 目录型那两档的根。别的档位下这个框是藏着的，但值仍然记着 ——
@@ -324,7 +429,7 @@ public partial class SettingsWindow : Window
         // 逐项说清楚，别笼统写「下次生效」——
         // 笼统的话就有一半是假的，而用户没法知道是哪一半。
         SettingsStatus.Text =
-            "已保存。工作模式立即生效；时长兜底与分段时长下次开段生效；摄像头与端口要重启。";
+            "已保存。工作模式立即生效；时长兜底、分段时长与录制声音下次开始工作生效；摄像头与端口要重启。";
 
         // 保存之后再刷一遍：实际规格那句依赖刚存下的编码/分辨率，
         // 不刷的话它会一直说上一次的那个组合。

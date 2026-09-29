@@ -52,6 +52,80 @@ public class RecordingSessionTests
     }
 
     // ─────────────────────────────────────────────
+    // 音轨（规格 §3.1.8）
+    // ─────────────────────────────────────────────
+
+    [Fact]
+    public async Task 麦克风从会话选项原样交给采集进程()
+    {
+        using var dir = new TempDir();
+        var capture = new FakeCapture();
+        await using var session = Build(
+            dir, capture,
+            options: RecordingSessionOptions.Default.WithMicrophone("麦克风 (USB Audio Device)"));
+
+        await session.StartAsync(WaybillNumber.Parse("SF1"), "libx264");
+
+        Assert.Equal("麦克风 (USB Audio Device)", Assert.Single(capture.Starts).Microphone);
+    }
+
+    [Fact]
+    public async Task 没配麦克风时传的是null而不是空串()
+    {
+        // ⚠️ 空串会在 ffmpeg 那边变成 `-i audio=`，那是**一定失败**的一路 ——
+        // 而失败的代价是每段开头都白等一次「起没起来」的判定。
+        using var dir = new TempDir();
+        var capture = new FakeCapture();
+        await using var session = Build(dir, capture);
+
+        await session.StartAsync(WaybillNumber.Parse("SF1"), "libx264");
+
+        Assert.Null(Assert.Single(capture.Starts).Microphone);
+    }
+
+    [Fact]
+    public async Task 音频降级的那句话必须让用户看见()
+    {
+        // 规格 §3.1.8：麦克风接不上 ⇒ 照常录视频、只是这一段没有音轨。
+        // 但「照常录」不等于「当没事发生」—— I3 不允许静默降级，
+        // 否则用户是**事后听回放**才发现整批货都没声音的。
+        using var dir = new TempDir();
+        var capture = new FakeCapture { StartupWarning = "麦克风没能接上，这一段没有音轨。" };
+
+        await using var session = Build(
+            dir, capture,
+            options: RecordingSessionOptions.Default.WithMicrophone("话筒"));
+
+        await session.StartAsync(WaybillNumber.Parse("SF1"), "libx264");
+        await session.ReleaseCaptureAsync();
+
+        Assert.Equal("麦克风没能接上，这一段没有音轨。", session.LastProblem);
+    }
+
+    [Fact]
+    public async Task 进程真的崩了时_崩溃那句盖掉音频降级那句()
+    {
+        // 两句都成立（比如摄像头坏了 ⇒ 降级重开也没起来）时，用户要看的是
+        // **真正的原因**。顺序反过来的话，界面会把一次设备故障说成「麦克风没接上」。
+        using var dir = new TempDir();
+        var capture = new FakeCapture
+        {
+            StartupWarning = "麦克风没能接上，这一段没有音轨。",
+            ExitCode = 1,
+        };
+
+        await using var session = Build(
+            dir, capture,
+            options: RecordingSessionOptions.Default.WithMicrophone("话筒"));
+
+        await session.StartAsync(WaybillNumber.Parse("SF1"), "libx264");
+        await session.ReleaseCaptureAsync();
+
+        Assert.NotNull(session.LastProblem);
+        Assert.DoesNotContain("麦克风", session.LastProblem);
+    }
+
+    // ─────────────────────────────────────────────
     // 设置 → 会话参数的映射（规格 §3.3.4）
     // ─────────────────────────────────────────────
 
@@ -700,23 +774,35 @@ public class RecordingSessionTests
     /// <summary>记录型采集替身：记下每次起采的参数，并真的造出文件。</summary>
     private sealed class FakeCapture : ICameraCapture
     {
-        public List<(string Device, string OutputPath, string Encoder)> Starts { get; } = [];
+        public List<(string Device, string OutputPath, string Encoder, string? Microphone)> Starts { get; } = [];
 
         /// <summary>置 false 模拟「摄像头打不开」——进程起来了但没产物。</summary>
         public bool ProcessProducesFile { get; init; } = true;
 
+        /// <summary>模拟「音频那一路没接上」的降级说明（规格 §3.1.8）。</summary>
+        public string? StartupWarning { get; init; }
+
+        /// <summary>停止时报的退出码（非 0 模拟采集中途出过事）。</summary>
+        public int ExitCode { get; init; }
+
         public Task<ICaptureProcess> StartAsync(
-            string device, string outputPath, string encoder, CancellationToken cancellationToken = default)
+            string device, string outputPath, string encoder, string? microphone = null,
+            CancellationToken cancellationToken = default)
         {
-            Starts.Add((device, outputPath, encoder));
-            return Task.FromResult<ICaptureProcess>(new FakeProcess(outputPath, ProcessProducesFile));
+            Starts.Add((device, outputPath, encoder, microphone));
+            return Task.FromResult<ICaptureProcess>(
+                new FakeProcess(outputPath, ProcessProducesFile, StartupWarning, ExitCode));
         }
     }
 
     /// <summary>假的采集进程。停的时候按需留下产物。</summary>
-    private sealed class FakeProcess(string outputPath, bool producesFile) : ICaptureProcess
+    private sealed class FakeProcess(
+        string outputPath, bool producesFile, string? startupWarning = null, int exitCode = 0)
+        : ICaptureProcess
     {
         public bool HasExited { get; private set; }
+
+        public string? StartupWarning { get; } = startupWarning;
 
         public Task<int?> StopAsync(TimeSpan timeout, CancellationToken cancellationToken = default)
         {
@@ -727,7 +813,7 @@ public class RecordingSessionTests
             }
 
             HasExited = true;
-            return Task.FromResult<int?>(0);
+            return Task.FromResult<int?>(exitCode);
         }
     }
 

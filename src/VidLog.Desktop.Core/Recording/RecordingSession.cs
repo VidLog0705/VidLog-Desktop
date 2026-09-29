@@ -30,7 +30,14 @@ public sealed record RecordingSessionOptions(
     // ⚠️ 默认值与手机端 `RecorderConfig` **逐字同值**（5 分钟 / 1 分钟）——
     // 两端对这条的行为必须一样，见 `From` 的说明。
     TimeSpan? PromptRepeatEvery = null,
-    TimeSpan? PromptGrace = null)
+    TimeSpan? PromptGrace = null,
+    // 追加字段（规格 §3.1.8 的音轨）。
+    // ⚠️ 默认值是 **null（不录声音）**，而不是规格里那句「默认开」——
+    // 「默认开」是**设置层**的事（`AppSettings.RecordAudio = true`），
+    // 而这里是「这一次工作到底给了哪个设备」。这两件事混成一件的话，
+    // 一个没读设置的调用点（测试、诊断工具）会突然要求一个麦克风，
+    // 而它接不上时降级虽然不会弄失败录制，却会白白多等一次开设备。
+    string? Microphone = null)
 {
     /// <summary>点了【继续】之后隔多久再问（默认 5 分钟，与手机端同值）。</summary>
     public TimeSpan PromptRepeat => PromptRepeatEvery ?? TimeSpan.FromMinutes(5);
@@ -75,14 +82,27 @@ public sealed record RecordingSessionOptions(
     /// 映射只此一处 —— 写两遍就会有一天两边不一致，而不一致的表现是
     /// 「界面上写着 5 分钟，实际按 1 分钟录」，极难被发现。
     /// </remarks>
-    public static RecordingSessionOptions From(int segmentMinutes, DurationFallbackOption durationFallback)
+    public static RecordingSessionOptions From(int segmentMinutes, DurationFallbackOption durationFallback) =>
+        Default.WithSchedule(segmentMinutes, durationFallback);
+
+    /// <summary>
+    /// 只改时长那两个档位，**其余字段原样保留**。
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ 存在的理由是那个已经发生过的 bug：<c>AppHost.ApplySettingsAsync</c> 原来写的是
+    /// <c>SessionOptions = From(…)</c> —— `From` 从 `Default` 起算，于是**用户一改任何设置，
+    /// 已经探好的录制规格就被抹成 null**（水印尺寸跟着掉回 1280×720、索引里也不再记编码）。
+    /// 那种值不会报错，只会「有时候对、有时候不对」。
+    /// 改成在**现有值**上改字段，从形状上就不可能再丢。
+    /// </remarks>
+    public RecordingSessionOptions WithSchedule(int segmentMinutes, DurationFallbackOption durationFallback)
     {
         // 越界的值不抛：设置文件是可以被手改的，而一个改坏了的配置
         // 不该让用户**录不了像**（I4 的同一条精神）。夹到合法区间继续用。
         var minutes = Math.Clamp(segmentMinutes, 1, 10);
         var fallback = durationFallback.Minutes();
 
-        return Default with
+        return this with
         {
             SegmentDuration = TimeSpan.FromMinutes(minutes),
             MaxDuration = fallback is { } value ? TimeSpan.FromMinutes(value) : NoFallback,
@@ -96,6 +116,15 @@ public sealed record RecordingSessionOptions(
     /// 不该被一个跟它们无关的参数牵连着全改一遍。
     /// </remarks>
     public RecordingSessionOptions With(Media.RecordingSpec spec) => this with { Spec = spec };
+
+    /// <summary>带上麦克风（规格 §3.1.8）。<see langword="null"/> = 这一段不录声音。</summary>
+    /// <remarks>
+    /// ⚠️ 它落在**会话选项**上而不是采集进程上，正是为了规格那句
+    /// 「改了下次『开始工作』才生效、录制中不可改」：本记录由协调器在
+    /// **每次开始工作**时整份交给会话，会话在整场里读的是同一个值。
+    /// </remarks>
+    public RecordingSessionOptions WithMicrophone(string? microphone) =>
+        this with { Microphone = microphone };
 }
 
 /// <summary>
@@ -601,7 +630,7 @@ public sealed class RecordingSession : IAsyncDisposable
         WriteWatermark(outputPath);
 
         _currentProcess = await _capture.StartAsync(
-            _deviceName, outputPath, encoder, cancellationToken);
+            _deviceName, outputPath, encoder, _options.Microphone, cancellationToken);
 
         // 一次交换把两个值一起发布 —— 见 _openSegment 的说明。
         Interlocked.Exchange(ref _openSegment, new OpenSegment(fileName, sequence));
@@ -681,6 +710,15 @@ public sealed class RecordingSession : IAsyncDisposable
         }
 
         var exitCode = await process.StopAsync(_options.StopGracePeriod, cancellationToken);
+
+        // ⚠️ 降级也要**可见**（I3）：音频那一路没接上时这一段照录，但用户有权知道
+        // 它没有声音 —— 否则「事后发现整批货都没声音」就成了一次静默失败。
+        // 顺序在退出码之前：两句都成立时（比如摄像头真的坏了），
+        // 退出码那句才是真正的原因，让它盖掉这里的降级说明。
+        if (process.StartupWarning is { Length: > 0 } warning)
+        {
+            LastProblem = warning;
+        }
 
         if (exitCode is not null and not 0)
         {

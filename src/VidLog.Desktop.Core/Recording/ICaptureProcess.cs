@@ -18,6 +18,16 @@ namespace VidLog.Desktop.Core.Recording;
 public interface ICaptureProcess
 {
     /// <summary>
+    /// 起这一路时发生的、**用户需要知道**的事；没有就是 <see langword="null"/>。
+    /// </summary>
+    /// <remarks>
+    /// 规格 §3.1.8：麦克风接不上时「照常录视频，只是那一段没有音轨」——
+    /// 那是一次**降级**，而 I3 不允许静默降级。它发生时进程还活着（正是为了不中断
+    /// 录制），所以这句只能由进程对象捎回来，由会话并进 <c>LastProblem</c>。
+    /// </remarks>
+    string? StartupWarning { get; }
+
+    /// <summary>
     /// 优雅停止：发 <c>q</c>，等它自己写完尾部退出。
     /// </summary>
     /// <param name="timeout">等待上限；超时后升级为强杀。</param>

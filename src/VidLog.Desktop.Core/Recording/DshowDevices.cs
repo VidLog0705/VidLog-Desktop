@@ -4,22 +4,46 @@ using VidLog.Desktop.Core.Media;
 namespace VidLog.Desktop.Core.Recording;
 
 /// <summary>
-/// 枚举本机的 DirectShow 视频设备。
+/// 枚举本机的 DirectShow 设备：摄像头与麦克风。
 /// </summary>
 /// <remarks>
+/// <para>
 /// 形状仿 <see cref="FfmpegLocator"/>：静态、不抛、找不到就给空。
 /// 「没有摄像头」是一个**正常的运行环境**（上一台机器就是），
 /// 不是异常 —— 界面该把它显示成一句说明，而不是一条崩溃。
+/// </para>
+/// <para>
+/// ⚠️ 名字里**没有 Camera**：规格 §3.1.8 之后它同时管麦克风，而一个叫
+/// <c>CameraDevices</c> 的类返回麦克风是句谎话（2026-09-29 改名）。
+/// </para>
+/// <para>
+/// ⚠️ 视频与音频是**两次各自独立**的调用，不是一次返回两类 —— 调用点几乎都只关心
+/// 其中一类（配置向导的摄像头一步、麦克风一步），合成一个「设备表」只会让
+/// 每个调用点都去挑自己那半。代价是两次枚举时各起一次 ffmpeg（各约 0.3 秒），
+/// 而这两处都在启动/开设置窗时，不在录制路径上。
+/// </para>
 /// </remarks>
-public static class CameraDevices
+public static class DshowDevices
 {
-    /// <summary>
-    /// 列出可用的视频设备名。
-    /// </summary>
-    /// <returns>设备名；一个都没有（或 ffmpeg 跑不起来）时返回空列表。</returns>
-    public static async Task<IReadOnlyList<string>> ListAsync(
+    /// <summary>列出可用的**视频**设备名。返回空列表 = 没有摄像头（或 ffmpeg 跑不起来）。</summary>
+    public static async Task<IReadOnlyList<string>> ListVideoAsync(
         string ffmpegPath,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default) =>
+        ParseVideoDevices(await ListAllAsync(ffmpegPath, cancellationToken));
+
+    /// <summary>列出可用的**音频**设备名（规格 §3.1.8）。返回空列表 = 没有麦克风。</summary>
+    public static async Task<IReadOnlyList<string>> ListAudioAsync(
+        string ffmpegPath,
+        CancellationToken cancellationToken = default) =>
+        ParseAudioDevices(await ListAllAsync(ffmpegPath, cancellationToken));
+
+    /// <summary>跑一次 <c>-list_devices</c>，把 stderr 原样拿回来。</summary>
+    /// <remarks>
+    /// 失败时返回空串而不是抛：调用方拿到空串，解析出来就是空表 ——
+    /// 与「本机没这个设备」同一条路（上层已经有一条「找不到 FFmpeg」的警告了，
+    /// 这里再抛一次只会变成重复噪声）。
+    /// </remarks>
+    private static async Task<string> ListAllAsync(string ffmpegPath, CancellationToken cancellationToken)
     {
         var startInfo = new ProcessStartInfo
         {
@@ -40,19 +64,17 @@ public static class CameraDevices
             using var process = Process.Start(startInfo);
             if (process is null)
             {
-                return [];
+                return string.Empty;
             }
 
             var stderr = await process.StandardError.ReadToEndAsync(cancellationToken);
             await process.WaitForExitAsync(cancellationToken);
 
-            return ParseVideoDevices(stderr);
+            return stderr;
         }
         catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or InvalidOperationException)
         {
-            // ffmpeg 不在、或起不来。上层已经有一条「找不到 FFmpeg」的警告了，
-            // 这里再抛一次只会变成重复噪声。
-            return [];
+            return string.Empty;
         }
     }
 
@@ -85,7 +107,19 @@ public static class CameraDevices
     /// <c>-i</c> 用的另一种写法，不是另一个设备，必须排除 ——
     /// 不过滤的话同一台相机会被数成好几个。
     /// </remarks>
-    public static IReadOnlyList<string> ParseVideoDevices(string ffmpegOutput)
+    public static IReadOnlyList<string> ParseVideoDevices(string ffmpegOutput) =>
+        ParseDevices(ffmpegOutput, "(video)");
+
+    /// <summary>同上，挑**音频**设备名（规格 §3.1.8）。</summary>
+    /// <remarks>
+    /// 与视频分开是有意的：`(video)` 与 `(audio)` 是同一份输出里的两类行，
+    /// 混在一起解析的话，「本机只有麦克风没有摄像头」会被当成「有设备」，
+    /// 而那条路的下一步是拿麦克风的名字去开视频设备。
+    /// </remarks>
+    public static IReadOnlyList<string> ParseAudioDevices(string ffmpegOutput) =>
+        ParseDevices(ffmpegOutput, "(audio)");
+
+    private static IReadOnlyList<string> ParseDevices(string ffmpegOutput, string suffix)
     {
         if (string.IsNullOrEmpty(ffmpegOutput))
         {
@@ -98,7 +132,7 @@ public static class CameraDevices
         {
             var line = rawLine.Trim();
 
-            if (!line.EndsWith("(video)", StringComparison.Ordinal))
+            if (!line.EndsWith(suffix, StringComparison.Ordinal))
             {
                 continue;
             }
