@@ -46,7 +46,7 @@ public class RecordingSessionTests
         await session.StartAsync(WaybillNumber.Parse("SF1"), "h264_nvenc");
 
         var start = Assert.Single(capture.Starts);
-        Assert.Equal("Lenovo EasyCamera", start.Device);
+        Assert.Equal("Lenovo EasyCamera", start.Source.Address);
         Assert.Equal("h264_nvenc", start.Encoder);
         Assert.EndsWith("segment-000.mkv", start.OutputPath);
     }
@@ -248,7 +248,7 @@ public class RecordingSessionTests
             new RecordingWorkspace(dir.WorkspaceRoot), capture,
             BuildFinalizer(dir, new SucceedingRunner(), new RecordingIndexSpy()),
             new DiskSpaceGuard(new PlentyOfSpaceProbe()),
-            "Lenovo EasyCamera", "device-1",
+            CameraSource.Local("Lenovo EasyCamera"), "device-1",
             new RecordingSessionOptions(
                 SegmentDuration: TimeSpan.FromMinutes(1),
                 MaxDuration: TimeSpan.FromHours(1),
@@ -423,7 +423,7 @@ public class RecordingSessionTests
             new RecordingWorkspace(dir.WorkspaceRoot), capture,
             BuildFinalizer(dir, new SucceedingRunner(), new RecordingIndexSpy()),
             new DiskSpaceGuard(new AlwaysFullProbe()),
-            "Lenovo EasyCamera", "device-1",
+            CameraSource.Local("Lenovo EasyCamera"), "device-1",
             // 磁盘永远告急 ⇒ 第一轮轮询就该收尾，与时长无关。
             DefaultOptions, clock.Read, AdvancingDelay(clock));
 
@@ -683,7 +683,7 @@ public class RecordingSessionTests
             capture,
             BuildFinalizer(dir, runner ?? new SucceedingRunner(), index ?? new RecordingIndexSpy()),
             new DiskSpaceGuard(new PlentyOfSpaceProbe()),
-            "Lenovo EasyCamera",
+            CameraSource.Local("Lenovo EasyCamera"),
             "device-1",
             options ?? DefaultOptions,
             effectiveClock,
@@ -774,7 +774,7 @@ public class RecordingSessionTests
     /// <summary>记录型采集替身：记下每次起采的参数，并真的造出文件。</summary>
     private sealed class FakeCapture : ICameraCapture
     {
-        public List<(string Device, string OutputPath, string Encoder, string? Microphone)> Starts { get; } = [];
+        public List<(CameraSource Source, string OutputPath, string Encoder, string? Microphone)> Starts { get; } = [];
 
         /// <summary>置 false 模拟「摄像头打不开」——进程起来了但没产物。</summary>
         public bool ProcessProducesFile { get; init; } = true;
@@ -786,10 +786,10 @@ public class RecordingSessionTests
         public int ExitCode { get; init; }
 
         public Task<ICaptureProcess> StartAsync(
-            string device, string outputPath, string encoder, string? microphone = null,
+            CameraSource source, string outputPath, string encoder, string? microphone = null,
             CancellationToken cancellationToken = default)
         {
-            Starts.Add((device, outputPath, encoder, microphone));
+            Starts.Add((source, outputPath, encoder, microphone));
             return Task.FromResult<ICaptureProcess>(
                 new FakeProcess(outputPath, ProcessProducesFile, StartupWarning, ExitCode));
         }

@@ -485,7 +485,7 @@ public sealed class DesktopServices : IAsyncDisposable
     /// 而不是靠每个调用点记得传对 —— 规格 §4.1 要求收尾只有一条路径（I9）。
     /// </remarks>
     public RecordingSession CreateRecordingSession(
-        string deviceName,
+        CameraSource source,
         string? sourceDeviceId = null,
         RecordingSessionOptions? options = null)
     {
@@ -499,8 +499,10 @@ public sealed class DesktopServices : IAsyncDisposable
             capture,
             Finalizer,
             new DiskSpaceGuard(new DriveSpaceProbe()),
-            deviceName,
-            sourceDeviceId ?? deviceName,
+            source,
+            // ⚠️ 默认取 **Identity**（凭据已抹掉），不是 Address ——
+            // 它会被写进 manifest 与索引，而网络地址里带着摄像头密码。
+            sourceDeviceId ?? source.Identity,
             options);
     }
 

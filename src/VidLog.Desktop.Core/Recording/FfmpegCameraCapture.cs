@@ -4,13 +4,18 @@ using VidLog.Desktop.Core.Media;
 namespace VidLog.Desktop.Core.Recording;
 
 /// <summary>
-/// 用 ffmpeg 从 DirectShow 设备采集。
+/// 用 ffmpeg 从一路画面源采集（本机 DirectShow 设备，或网络摄像头地址）。
 /// </summary>
 /// <remarks>
 /// 选 ffmpeg 而不是 Media Foundation：本项目**已经**把 ffmpeg 当外部工具用
 /// （<see cref="Media.FfmpegLocator"/>、remux、解码校验、编码探测），
 /// 采集沿用它是零新依赖。走 MF 要引 Windows 互操作层，还得自己接编码器 ——
 /// 而编码能力探测本来就以 ffmpeg 的编码器名为准。
+/// <para>
+/// ⚠️ 网络摄像头（RTSP）也从这里走：ffmpeg 对两者是同一套流程，
+/// 差别只在**输入参数**、以及**尺寸能不能在输入侧指定** ——
+/// 那两件事都收在 <see cref="CameraSource"/> 里，本类不重复判断。
+/// </para>
 /// </remarks>
 public sealed class FfmpegCameraCapture : ICameraCapture
 {
@@ -61,7 +66,7 @@ public sealed class FfmpegCameraCapture : ICameraCapture
     }
 
     public async Task<ICaptureProcess> StartAsync(
-        string device,
+        CameraSource source,
         string outputPath,
         string encoder,
         string? microphone = null,
@@ -80,7 +85,7 @@ public sealed class FfmpegCameraCapture : ICameraCapture
         var assPath = File.Exists(watermark) ? watermark : null;
 
         var wanted = string.IsNullOrWhiteSpace(microphone) ? null : microphone;
-        var process = Launch(device, outputPath, encoder, wanted, assPath);
+        var process = Launch(source, outputPath, encoder, wanted, assPath);
 
         var warning = await ConfirmStartedAsync(process, outputPath, wanted, cancellationToken);
 
@@ -91,7 +96,7 @@ public sealed class FfmpegCameraCapture : ICameraCapture
             // 整段录制弄失败」，而一段的失败在这里就等于**整场录像从这一段起全丢**
             // （每一段都会以同样的方式再死一遍）。
             Kill(process);
-            process = Launch(device, outputPath, encoder, microphone: null, assPath);
+            process = Launch(source, outputPath, encoder, microphone: null, assPath);
         }
 
         cancellationToken.ThrowIfCancellationRequested();
@@ -101,7 +106,7 @@ public sealed class FfmpegCameraCapture : ICameraCapture
 
     /// <summary>起一个 ffmpeg 采集进程，并把两条管道排空。</summary>
     private Process Launch(
-        string device, string outputPath, string encoder, string? microphone, string? watermarkAssPath)
+        CameraSource source, string outputPath, string encoder, string? microphone, string? watermarkAssPath)
     {
         var startInfo = new ProcessStartInfo
         {
@@ -115,7 +120,7 @@ public sealed class FfmpegCameraCapture : ICameraCapture
         };
 
         foreach (var argument in BuildArguments(
-            device, outputPath, encoder, _spec, watermarkAssPath, microphone))
+            source, outputPath, encoder, _spec, watermarkAssPath, microphone))
         {
             startInfo.ArgumentList.Add(argument);
         }
@@ -338,6 +343,7 @@ public sealed class FfmpegCameraCapture : ICameraCapture
     /// <see langword="null"/> = 一直录到我们叫停。
     /// </param>
     /// <remarks>
+    /// <para>
     /// ⚠️ <b>规格探测必须走这个方法，不许自己拼一份 argv。</b>
     /// 2026-09-29 修掉的就是这条：探测原来自己拼了一份，把 <c>-video_size</c> 写在了
     /// <c>-i</c> **之后** —— 真 ffmpeg 实测那是**输出侧**选项，于是它被**静默忽略**
@@ -345,9 +351,16 @@ public sealed class FfmpegCameraCapture : ICameraCapture
     /// 后果是探测**没在验它声称要验的东西**：用户选 4K 而相机不支持时，探测报「通过」，
     /// 接着真录制（那边是对的）打不开设备、整段录不出来 —— 正是探测本该拦住的。
     /// 拼一份就等于把「探测的组合」与「录制的组合」变成两件事，它们迟早会走岔。
+    /// </para>
+    /// <para>
+    /// ⚠️ <b>网络摄像头那一档的尺寸走输出侧</b>（<c>-vf scale</c>），
+    /// 因为 RTSP 没法要求对端发多大 —— 见 <see cref="CameraSource.InputArguments"/>。
+    /// 缩放必须排在 <c>ass</c> **之前**：水印是按最终分辨率排版烧上去的，
+    /// 先烧后缩会把字的位置和大小一起缩歪。
+    /// </para>
     /// </remarks>
     public static IReadOnlyList<string> BuildArguments(
-        string device, string outputPath, string encoder, RecordingSpec? spec = null,
+        CameraSource source, string outputPath, string encoder, RecordingSpec? spec = null,
         string? watermarkAssPath = null, string? microphone = null, int? durationSeconds = null)
     {
         var arguments = new List<string>
@@ -369,33 +382,31 @@ public sealed class FfmpegCameraCapture : ICameraCapture
             ]);
         }
 
-        arguments.AddRange(
-        [
-            "-f", "dshow",
-            "-rtbufsize", BufferSize,
-        ]);
+        // 画面那一路的输入参数由源自己给 —— 本机设备与网络地址的形状不一样，
+        // 而那个差别只该有一处（见 CameraSource.InputArguments 的说明）。
+        arguments.AddRange(source.InputArguments(BufferSize, spec?.FfmpegSize));
 
-        if (spec is not null)
+        // ⚠️ 滤镜链只有**一条** `-vf`：写两个 `-vf` 的话后一个会顶掉前一个
+        // （没有报错，只是少了一个效果）。所以先攒起来，最后一起拼。
+        var filters = new List<string>();
+
+        if (source.IsNetwork && spec is not null)
         {
-            // ⚠️ 这两个都必须是**输入选项**（放在 `-i` 之前）：对 dshow 来说
-            // `-video_size` 是「按这个模式打开设备」，写在 `-i` 后面会变成
-            // 「把画面缩到这个尺寸」—— 前者打不开就报错（那是对的，探测要的就是这个），
-            // 后者会悄悄缩放，于是**探测永远成功、而画质不是用户选的那一档**。
-            arguments.Add("-video_size");
-            arguments.Add(spec.FfmpegSize);
-            arguments.Add("-framerate");
-            arguments.Add(RecordingSpec.FrameRate.ToString(
-                System.Globalization.CultureInfo.InvariantCulture));
+            // 网络那一路的尺寸**只能在输出侧**做（RTSP 不能按尺寸开流）。
+            filters.Add($"scale={spec.FfmpegSize}");
         }
-
-        arguments.AddRange(["-i", $"video={device}"]);
 
         if (!string.IsNullOrWhiteSpace(watermarkAssPath))
         {
             // ⚠️ 滤镜是**输出选项**（放在 `-i` 之后、输出路径之前）。
             // 写成输入选项的话 ffmpeg 会把它当成对输入的处理，行为完全不同。
+            filters.Add($"ass={AssWatermark.EscapeFilterPath(watermarkAssPath)}");
+        }
+
+        if (filters.Count > 0)
+        {
             arguments.Add("-vf");
-            arguments.Add($"ass={AssWatermark.EscapeFilterPath(watermarkAssPath)}");
+            arguments.Add(string.Join(',', filters));
         }
 
         arguments.AddRange(
@@ -405,6 +416,16 @@ public sealed class FfmpegCameraCapture : ICameraCapture
             // 而不是指望编码器自己接受 —— libx264 接受不了 yuyv422 会直接失败。
             "-pix_fmt", "yuv420p",
         ]);
+
+        if (source.IsNetwork)
+        {
+            // ⚠️ 规格 §3.1.7「帧率固定 30，不提供选择」。本机设备靠输入侧的
+            // `-framerate 30` 钉住，而网络那一路**没有输入侧选项可用**
+            // ⇒ 只能在输出侧补一个，否则「固定 30」在网络摄像头上就是句空话
+            // （对端发 25 就录成 25）。
+            arguments.Add("-r");
+            arguments.Add(RecordingSpec.FrameRate.ToString(System.Globalization.CultureInfo.InvariantCulture));
+        }
 
         if (!string.IsNullOrWhiteSpace(microphone))
         {

@@ -338,6 +338,47 @@ public class SettingsStoreTests
         Assert.DoesNotContain(changes, c => c.Contains("token"));
     }
 
+    [Fact]
+    public void 网络摄像头的密码不许进留痕()
+    {
+        // ⚠️ 这条是**真会有后果**的那一种：网络摄像头的地址里带用户自己的密码，
+        // 而留痕默认写的是 `字段: 旧值 → 新值`。
+        // `SensitiveName.Is` 按**名字**挡，而 `CameraNetworkUrl` 这个名字
+        // 不含 secret/password/key 任何一个词 —— 靠它挡不住，得靠这里钉住。
+        var previous = AppSettings.Default with
+        {
+            CameraSource = CameraSourceKind.Network,
+            CameraNetworkUrl = "rtsp://admin:hunter2@10.0.0.9:554/stream",
+        };
+        var next = previous with
+        {
+            CameraNetworkUrl = "rtsp://admin:newpass@10.0.0.9:554/stream",
+        };
+
+        var changes = SettingsStore.DescribeChanges(previous, next);
+
+        var line = Assert.Single(changes);
+        Assert.DoesNotContain("hunter2", line);
+        Assert.DoesNotContain("newpass", line);
+
+        // ⚠️ 但**不能整条不记**：剩下的主机与路径对排查有用
+        // （「换了哪台摄像头」是很常见的一次改动），整条不记的话事后分不清
+        // 是改了地址还是清空了地址。
+        Assert.Contains(nameof(AppSettings.CameraNetworkUrl), line, StringComparison.Ordinal);
+        Assert.Contains("10.0.0.9", line, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void 清空网络地址也要留一行痕()
+    {
+        var previous = AppSettings.Default with { CameraNetworkUrl = "rtsp://10.0.0.9:554/s" };
+        var next = previous with { CameraNetworkUrl = null };
+
+        var line = Assert.Single(SettingsStore.DescribeChanges(previous, next));
+
+        Assert.Contains("（空）", line, StringComparison.Ordinal);
+    }
+
     private sealed class TempDir : IDisposable
     {
         public string Path { get; }

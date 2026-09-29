@@ -77,7 +77,7 @@ public class CameraCaptureTests
     [Fact]
     public void 采集命令走dshow并带上设备名与目标路径()
     {
-        var args = FfmpegCameraCapture.BuildArguments("Lenovo EasyCamera", @"C:\out\seg.mkv", "libx264");
+        var args = FfmpegCameraCapture.BuildArguments(CameraSource.Local("Lenovo EasyCamera"), @"C:\out\seg.mkv", "libx264");
 
         Assert.Contains("dshow", args);
         Assert.Contains("video=Lenovo EasyCamera", args);
@@ -95,7 +95,7 @@ public class CameraCaptureTests
     public void 输出路径紧跟在y之后()
     {
         // 测试替身靠「-y 后面那个参数就是产物」来定位输出文件，换顺序会静默失效。
-        var args = FfmpegCameraCapture.BuildArguments("Cam", @"C:\out\seg.mkv", "libx264").ToList();
+        var args = FfmpegCameraCapture.BuildArguments(CameraSource.Local("Cam"), @"C:\out\seg.mkv", "libx264").ToList();
 
         var yIndex = args.IndexOf("-y");
         Assert.True(yIndex >= 0, "采集命令必须有 -y");
@@ -106,7 +106,7 @@ public class CameraCaptureTests
     public void 显式把像素格式转成yuv420p()
     {
         // 摄像头出的是 yuyv422，而 libx264 不接受它 —— 不显式转的话编码器直接失败。
-        var args = FfmpegCameraCapture.BuildArguments("Cam", @"C:\out\seg.mkv", "libx264");
+        var args = FfmpegCameraCapture.BuildArguments(CameraSource.Local("Cam"), @"C:\out\seg.mkv", "libx264");
 
         var list = args.ToList();
         var pixIndex = list.IndexOf("-pix_fmt");
@@ -118,7 +118,7 @@ public class CameraCaptureTests
     public void 中间容器是matroska()
     {
         // 规格 §3.1.4 的实现决策：录制期写 MKV（抗截断），停下再 remux 成 MP4。
-        var args = FfmpegCameraCapture.BuildArguments("Cam", @"C:\out\seg.mkv", "libx264").ToList();
+        var args = FfmpegCameraCapture.BuildArguments(CameraSource.Local("Cam"), @"C:\out\seg.mkv", "libx264").ToList();
 
         var fIndex = args.IndexOf("-f", args.IndexOf("-i"));
         Assert.True(fIndex >= 0, "输出侧必须显式指定容器");
@@ -146,7 +146,7 @@ public class CameraCaptureTests
         // 多一个 `-c:a` 不会让 ffmpeg 报错，只会在没有音轨时白写一段参数，
         // 而真的危险是**多一个 `-i audio=`** —— 那会让一台没有麦克风的机器
         // 连录像都起不来。
-        var args = FfmpegCameraCapture.BuildArguments("Cam", @"C:\out\seg.mkv", "libx264");
+        var args = FfmpegCameraCapture.BuildArguments(CameraSource.Local("Cam"), @"C:\out\seg.mkv", "libx264");
 
         Assert.DoesNotContain(args, a => a.StartsWith("audio=", StringComparison.Ordinal));
         Assert.DoesNotContain("-c:a", args);
@@ -160,7 +160,7 @@ public class CameraCaptureTests
         // 而摄像头实测要 1~1.5 秒才开得起来。音频排在后的话，
         // 每段开头判定「这一次起来了没有」都要多等一个开相机的时间。
         var args = FfmpegCameraCapture.BuildArguments(
-            "Cam", @"C:\out\seg.mkv", "libx264", microphone: "话筒").ToList();
+            CameraSource.Local("Cam"), @"C:\out\seg.mkv", "libx264", microphone: "话筒").ToList();
 
         Assert.Contains("audio=话筒", args);
         Assert.Contains("video=Cam", args);
@@ -176,7 +176,7 @@ public class CameraCaptureTests
         // 一边一套参数的话，同一段素材在两个端上转出来是两个体积，
         // 而「按空间清理」是按体积算的。
         var args = FfmpegCameraCapture.BuildArguments(
-            "Cam", @"C:\out\seg.mkv", "libx264", microphone: "话筒").ToList();
+            CameraSource.Local("Cam"), @"C:\out\seg.mkv", "libx264", microphone: "话筒").ToList();
 
         Assert.Equal("aac", args[args.IndexOf("-c:a") + 1]);
         Assert.Equal("1", args[args.IndexOf("-ac") + 1]);
@@ -189,7 +189,7 @@ public class CameraCaptureTests
     {
         // 判据与上面那条同源：测试替身靠「-y 后面那个参数就是产物」定位输出文件。
         var args = FfmpegCameraCapture.BuildArguments(
-            "Cam", @"C:\out\seg.mkv", "libx264", microphone: "话筒").ToList();
+            CameraSource.Local("Cam"), @"C:\out\seg.mkv", "libx264", microphone: "话筒").ToList();
 
         Assert.Equal(@"C:\out\seg.mkv", args[args.IndexOf("-y") + 1]);
     }
@@ -201,7 +201,8 @@ public class CameraCaptureTests
         // 而 `audio=` 后面跟一个空名字会让 ffmpeg 直接失败（就是 I4 禁止的那种）。
         foreach (var blank in new[] { "", "   ", null })
         {
-            var args = FfmpegCameraCapture.BuildArguments("Cam", @"C:\out\seg.mkv", "libx264", microphone: blank);
+            var args = FfmpegCameraCapture.BuildArguments(
+                CameraSource.Local("Cam"), @"C:\out\seg.mkv", "libx264", microphone: blank);
 
             Assert.DoesNotContain(args, a => a.StartsWith("audio=", StringComparison.Ordinal));
         }
@@ -265,7 +266,7 @@ public class FfmpegCameraCaptureIntegrationTests
         var mkv = dir.File("segment-000.mkv");
 
         var capture = new FfmpegCameraCapture(Ffmpeg);
-        var process = await capture.StartAsync(device, mkv, encoder);
+        var process = await capture.StartAsync(CameraSource.Local(device), mkv, encoder);
 
         // dshow 打开设备有 1~1.5 秒延迟，录太短会得到空文件。
         await Task.Delay(TimeSpan.FromSeconds(3));
@@ -295,7 +296,7 @@ public class FfmpegCameraCaptureIntegrationTests
         var mkv = dir.File("graceful.mkv");
 
         var capture = new FfmpegCameraCapture(Ffmpeg);
-        var process = await capture.StartAsync(device, mkv, encoder);
+        var process = await capture.StartAsync(CameraSource.Local(device), mkv, encoder);
 
         await Task.Delay(TimeSpan.FromSeconds(3));
         await process.StopAsync(TimeSpan.FromSeconds(15));

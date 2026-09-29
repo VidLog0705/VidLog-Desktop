@@ -14,7 +14,10 @@ public interface ICameraCapture
     /// <summary>
     /// 开始往 <paramref name="outputPath"/> 录。
     /// </summary>
-    /// <param name="device">视频设备名，来自 <see cref="DshowDevices.ListVideoAsync"/>。</param>
+    /// <param name="source">
+    /// 画面从哪来（本机设备或网络地址）。本机设备名来自
+    /// <see cref="DshowDevices.ListVideoAsync"/>。
+    /// </param>
     /// <param name="outputPath">目标文件。调用方保证父目录已存在。</param>
     /// <param name="encoder">H.264 编码器名，来自编码探测的结果。</param>
     /// <param name="microphone">
@@ -28,7 +31,7 @@ public interface ICameraCapture
     /// </param>
     /// <returns>可等待、可优雅停止的采集进程。</returns>
     Task<ICaptureProcess> StartAsync(
-        string device,
+        CameraSource source,
         string outputPath,
         string encoder,
         string? microphone = null,

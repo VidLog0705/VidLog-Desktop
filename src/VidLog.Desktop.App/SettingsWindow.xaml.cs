@@ -150,6 +150,19 @@ public partial class SettingsWindow : Window
     /// </remarks>
     private async void LoadCameras()
     {
+        // ⚠️ 当前用的是**网络摄像头**时，这个下拉要如实说，且**禁用** ——
+        // 列表里只列本机设备，照常填的话会显示成「当前用的是这台本机摄像头」，
+        // 而实际在录的是那路 RTSP。那是界面上的一句假话。
+        // 地址是用户在**配置向导**第 2 步填的，所以提示指向那里
+        // （本仓惯例：配不了的东西禁用 + 写明原因，踩坑 #13）。
+        if (_host.Settings.Camera.IsNetwork)
+        {
+            CameraCombo.IsEnabled = false;
+            CameraHint.Text = $"当前用的是网络摄像头（{_host.Settings.Camera.Identity}），"
+                + "在【配置向导 → 选择摄像头】里改。";
+            return;
+        }
+
         if (_host.Services.FfmpegPath is null)
         {
             CameraHint.Text = "没有 FFmpeg，无法采集";
@@ -397,7 +410,9 @@ public partial class SettingsWindow : Window
             SegmentMinutes = segment,
             DuplicateCheckDays = duplicateDays,
             PlaybackPort = port,
-            CameraDevice = CameraCombo.SelectedItem as string,
+            // ⚠️ 用着网络摄像头时那个下拉是禁用且空的，直接取 SelectedItem
+            // 会把记着的本机设备名抹成 null —— 用户哪天切回本机设备就得重选一遍。
+            CameraDevice = CameraCombo.SelectedItem as string ?? _host.Settings.CameraDevice,
             // ⚠️ 关掉时麦克风那一栏**仍然记着**选的是哪个（与归档目录同一个道理）：
             // 用户来回拨开关时不必重选一遍。关着的时候那个下拉根本没被填过，
             // 直接取 SelectedItem 会把记着的名字抹成 null。

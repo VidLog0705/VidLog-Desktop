@@ -88,12 +88,20 @@ public class OrphanRecoveryTests
         return workspace;
     }
 
+    /// <param name="ffmpegPath">
+    /// 真 ffmpeg 的路径。⚠️ **不许写死 `"ffmpeg"`** —— 2026-09-29 实测：
+    /// 写死的话这台机器上那条端到端用例**必然红**（本机 ffmpeg 不在 PATH 上，
+    /// 只有 `FFMPEG_EXE` 指得到它），而它在 CI 上又是绿的（CI 把 ffmpeg 装在 PATH 里）
+    /// ⇒ 一条「只在 CI 上绿」的用例，本机永远验不了收尾那条路。
+    /// 那几条用假 runner 的用例随便传什么都行，它们不真开进程。
+    /// </param>
     private static OrphanRecovery BuildRecovery(
-        TempDir dir, RecordingWorkspace workspace, IProcessRunner runner, IRecordingIndex index)
+        TempDir dir, RecordingWorkspace workspace, IProcessRunner runner, IRecordingIndex index,
+        string ffmpegPath = "ffmpeg")
     {
         var finalizer = new SessionFinalizer(
-            new RemuxPipeline("ffmpeg", runner),
-            new DecodeVerifier("ffmpeg", runner),
+            new RemuxPipeline(ffmpegPath, runner),
+            new DecodeVerifier(ffmpegPath, runner),
             index,
             dir.Dir("archive"));
 
@@ -258,7 +266,7 @@ public class OrphanRecoveryTests
         await workspace.WriteManifestAsync(ManifestFor("session-real", "segment-000.mkv"));
 
         var index = new JsonLinesRecordingIndex(dir.File("index.jsonl"));
-        var recovery = BuildRecovery(dir, workspace, runner, index);
+        var recovery = BuildRecovery(dir, workspace, runner, index, ffmpeg);
 
         var outcomes = await recovery.RecoverAsync();
 

@@ -75,7 +75,7 @@ public enum CoordinatorNoticeKind
 /// </para>
 /// </param>
 public sealed record CoordinatorOptions(
-    string DeviceName,
+    CameraSource Source,
     string SourceDeviceId,
     string Encoder,
     int DuplicateCheckDays = 0);
@@ -548,7 +548,7 @@ public sealed class RecordingCoordinator : IAsyncDisposable
 
         var session = new RecordingSession(
             _workspace, _capture, _finalizer, _diskGuard,
-            _options.DeviceName, _options.SourceDeviceId, SessionOptions,
+            _options.Source, _options.SourceDeviceId, SessionOptions,
             trustedClock: _trustedClock,
             // 时长兜底的询问（规格 §3.3.4）。
             //

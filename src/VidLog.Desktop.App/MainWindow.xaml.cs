@@ -417,13 +417,16 @@ public partial class MainWindow : Window
 
             // ── ② 状态 ────────────────────────────────────────────────
             //
-            // ⚠️ 读的是 `AppHost.DeviceName`（**启动时**定下来的那个），
+            // ⚠️ 读的是 `AppHost.Camera`（**启动时**定下来的那个），
             // 不是设置里用户刚选的那个 —— 摄像头改了要重启才生效。
+            //
+            // ⚠️ 显示用 `Display`（网络那一档会写成「网络摄像头 · <地址>」），
+            // 而不是 `Address` —— 后者在网络那一档带着摄像头密码。
             OvCameraText.Text = _host.Services.FfmpegPath is null
                 ? "没有 FFmpeg，无法采集"
-                : _host.DeviceName is { Length: > 0 } device
-                    ? device
-                    : "没有找到摄像头";
+                : _host.Camera.IsEmpty
+                    ? "没有找到摄像头"
+                    : _host.Camera.Display;
 
             var server = _host.Services.Server;
             OvServerText.Text = server?.BaseUrl is { Length: > 0 } url
@@ -632,14 +635,14 @@ public partial class MainWindow : Window
     /// 那是这一版比原来两个按钮更好的地方。
     /// </para>
     /// <para>
-    /// ⚠️ 摄像头取 <see cref="AppHost.DeviceName"/>（启动时定的那个）——
+    /// ⚠️ 摄像头取 <see cref="AppHost.Camera"/>（启动时定的那个）——
     /// 拆窗之后主窗没有摄像头下拉了，它只能靠这一个属性回答「现在有没有摄像头」。
     /// </para>
     /// </remarks>
     private void RefreshStartButton()
     {
         var recording = _host.Coordinator.CurrentWaybill is not null;
-        var hasCamera = _host.DeviceName.Length > 0;
+        var hasCamera = !_host.Camera.IsEmpty;
         var hasWaybill = WaybillNumber.TryParse(WaybillBox.Text, out _, out _);
 
         StartWorkLabel.Text = recording ? "停止录制" : "开始录制";

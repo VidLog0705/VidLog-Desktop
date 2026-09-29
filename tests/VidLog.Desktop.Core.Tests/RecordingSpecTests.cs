@@ -92,7 +92,8 @@ public class RecordingSpecTests
     public void 尺寸与帧率必须是输入选项_写在_i_前面()
     {
         var spec = new RecordingSpec(VideoCodec.H264, VideoResolution.P720);
-        var arguments = FfmpegCameraCapture.BuildArguments("Camera", "out.mkv", "libx264", spec);
+        var arguments = FfmpegCameraCapture.BuildArguments(
+            CameraSource.Local("Camera"), "out.mkv", "libx264", spec);
 
         var inputIndex = arguments.ToList().IndexOf("-i");
         var sizeIndex = arguments.ToList().IndexOf("-video_size");
@@ -114,7 +115,7 @@ public class RecordingSpecTests
     public void 不带规格时_argv_里没有尺寸与帧率()
     {
         // 改动前的行为：相机用自己的默认档。探测失败时的兜底就走这条路。
-        var arguments = FfmpegCameraCapture.BuildArguments("Camera", "out.mkv", "libx264");
+        var arguments = FfmpegCameraCapture.BuildArguments(CameraSource.Local("Camera"), "out.mkv", "libx264");
 
         Assert.DoesNotContain("-video_size", arguments);
         Assert.DoesNotContain("-framerate", arguments);
@@ -125,29 +126,6 @@ public class RecordingSpecTests
     // 可用性检查与回落
     // ─────────────────────────────────────────────
 
-    /// <summary>只记 argv，并按 <c>-y</c> 那个位置造一个产物 —— 让真探测能走完。</summary>
-    private sealed class ProbingRunner : IProcessRunner
-    {
-        public List<List<string>> Invocations { get; } = [];
-
-        public Task<ProcessResult> RunAsync(
-            string executable, IReadOnlyList<string> arguments, CancellationToken cancellationToken = default)
-        {
-            var args = arguments.ToList();
-            Invocations.Add(args);
-
-
-            var y = args.IndexOf("-y");
-            if (y >= 0 && y + 1 < args.Count)
-            {
-                var path = args[y + 1];
-                Directory.CreateDirectory(Path.GetDirectoryName(path)!);
-                File.WriteAllText(path, "probed-bytes");
-            }
-
-            return Task.FromResult(new ProcessResult(0, string.Empty, string.Empty));
-        }
-    }
 
     [Fact]
     public async Task 探测跑的就是录制那一份argv_一个字都不差()
@@ -164,7 +142,7 @@ public class RecordingSpecTests
         var probe = new FfmpegSpecProbe("ffmpeg.exe", runner);
         var spec = new RecordingSpec(VideoCodec.H264, VideoResolution.P720);
 
-        await probe.ProbeAsync(spec, "Camera");
+        await probe.ProbeAsync(spec, CameraSource.Local("Camera"));
 
         Assert.NotEmpty(runner.Invocations);
 
@@ -173,7 +151,7 @@ public class RecordingSpecTests
         var probeFile = arguments[arguments.IndexOf("-y") + 1];
 
         var recording = FfmpegCameraCapture.BuildArguments(
-            "Camera", probeFile, spec.EncoderCandidates[0], spec, durationSeconds: 1);
+            CameraSource.Local("Camera"), probeFile, spec.EncoderCandidates[0], spec, durationSeconds: 1);
 
         Assert.Equal(recording.ToArray(), arguments.ToArray());
 
@@ -192,7 +170,7 @@ public class RecordingSpecTests
         public List<RecordingSpec> Tried { get; } = [];
 
         public Task<SpecProbeResult> ProbeAsync(
-            RecordingSpec spec, string device, CancellationToken cancellationToken = default)
+            RecordingSpec spec, CameraSource source, CancellationToken cancellationToken = default)
         {
             Tried.Add(spec);
 
@@ -207,7 +185,7 @@ public class RecordingSpecTests
     {
         var wanted = new RecordingSpec(VideoCodec.H264, VideoResolution.P720);
         var selection = await SpecSelectionPolicy.SelectAsync(
-            wanted, "Camera", new FakeSpecProbe(wanted));
+            wanted, CameraSource.Local("Camera"),new FakeSpecProbe(wanted));
 
         Assert.Equal(wanted, selection.Spec);
         Assert.False(selection.ChangedFromRequested);
@@ -224,7 +202,7 @@ public class RecordingSpecTests
         var only720 = new RecordingSpec(VideoCodec.H265, VideoResolution.P720);
 
         var probe = new FakeSpecProbe(only720);
-        var selection = await SpecSelectionPolicy.SelectAsync(wanted, "Camera", probe);
+        var selection = await SpecSelectionPolicy.SelectAsync(wanted, CameraSource.Local("Camera"), probe);
 
         Assert.Equal(only720, selection.Spec);
         Assert.True(selection.ChangedFromRequested);
@@ -240,7 +218,7 @@ public class RecordingSpecTests
     {
         var selection = await SpecSelectionPolicy.SelectAsync(
             new RecordingSpec(VideoCodec.H265, VideoResolution.Uhd4K),
-            "Camera",
+            CameraSource.Local("Camera"),
             new FakeSpecProbe());
 
         Assert.Equal(RecordingSpec.Default, selection.Spec);
@@ -261,7 +239,7 @@ public class RecordingSpecTests
     {
         // 用户选的就是默认档，而一个组合都跑不通（没摄像头）。
         var selection = await SpecSelectionPolicy.SelectAsync(
-            RecordingSpec.Default, "Camera", new FakeSpecProbe());
+            RecordingSpec.Default, CameraSource.Local("Camera"), new FakeSpecProbe());
 
         Assert.Equal(RecordingSpec.Default, selection.Spec);
 
@@ -279,7 +257,7 @@ public class RecordingSpecTests
         var wanted = new RecordingSpec(VideoCodec.H265, VideoResolution.Uhd4K);
         var only720 = new RecordingSpec(VideoCodec.H265, VideoResolution.P720);
         var selection = await SpecSelectionPolicy.SelectAsync(
-            wanted, "Camera", new FakeSpecProbe(only720));
+            wanted, CameraSource.Local("Camera"),new FakeSpecProbe(only720));
 
         var text = SpecSelectionPolicy.Describe(selection, wanted);
 

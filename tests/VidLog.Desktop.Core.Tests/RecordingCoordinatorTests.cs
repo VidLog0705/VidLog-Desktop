@@ -800,7 +800,8 @@ public class RecordingCoordinatorTests
             punches,
             NullLogger.Instance,
             policy ?? new WorkModePolicy(mode, IdleReminderOption.Off),
-            new CoordinatorOptions("Lenovo EasyCamera", "device-1", "libx264", duplicateCheckDays),
+            new CoordinatorOptions(
+                CameraSource.Local("Lenovo EasyCamera"), "device-1", "libx264", duplicateCheckDays),
             scanErrors,
             clock,
             delay,
@@ -815,7 +816,7 @@ public class RecordingCoordinatorTests
     private sealed class FakeCapture : ICameraCapture
     {
         public Task<ICaptureProcess> StartAsync(
-            string device, string outputPath, string encoder, string? microphone = null,
+            CameraSource source, string outputPath, string encoder, string? microphone = null,
             CancellationToken cancellationToken = default) =>
             Task.FromResult<ICaptureProcess>(new FakeProcess(outputPath));
     }

@@ -95,7 +95,11 @@ public sealed class SystemProcessRunner : IProcessRunner
             _logger.Log(LogLevel.Warn, "外部进程", $"{System.IO.Path.GetFileName(executable)} 以 {result.ExitCode} 退出",
                 new Dictionary<string, object?>
                 {
-                    ["参数"] = string.Join(' ', arguments),
+                    // ⚠️ **逐条抹掉 URL 里的凭据再拼**：网络摄像头的地址
+                    // （`rtsp://账号:密码@主机/流`）就在 argv 里，而落败的 RTSP 连接
+                    // 正是最常走到这一行的情况 —— 不抹的话，用户改错一次密码，
+                    // 密码就进了日志文件，而诊断包会把整个 logs/ 打包外发。
+                    ["参数"] = string.Join(' ', arguments.Select(Diagnostics.UrlCredentials.Strip)),
                     ["stderr"] = Tail(result.StandardError),
                 });
         }

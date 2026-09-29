@@ -20,7 +20,7 @@ namespace VidLog.Desktop.Core.Camera;
 public sealed class CameraFrameScanner : IAsyncDisposable
 {
     private readonly string _ffmpegPath;
-    private readonly string _device;
+    private readonly CameraSource _source;
     private readonly IFrameScanner _decoder;
     private readonly IAppLogger _logger;
     private readonly DecodeGate _gate = new();
@@ -30,10 +30,10 @@ public sealed class CameraFrameScanner : IAsyncDisposable
     private CancellationTokenSource? _loop;
 
     public CameraFrameScanner(
-        string ffmpegPath, string device, IFrameScanner decoder, IAppLogger logger)
+        string ffmpegPath, CameraSource source, IFrameScanner decoder, IAppLogger logger)
     {
         _ffmpegPath = ffmpegPath;
-        _device = device;
+        _source = source;
         _decoder = decoder;
         _logger = logger;
     }
@@ -59,7 +59,7 @@ public sealed class CameraFrameScanner : IAsyncDisposable
         try
         {
             _gate.Reset();
-            _process = await ScannerProcess.StartAsync(_ffmpegPath, _device, _sink, cancellationToken);
+            _process = await ScannerProcess.StartAsync(_ffmpegPath, _source, _sink, cancellationToken);
 
             _loop = new CancellationTokenSource();
             _ = Task.Run(() => DecodeLoopAsync(_loop.Token), CancellationToken.None);

@@ -162,7 +162,8 @@ public class WatermarkTests
     public void 滤镜是输出选项_写在_i_之后_输出路径之前()
     {
         var arguments = FfmpegCameraCapture.BuildArguments(
-            "Camera", "out.mkv", "libx264", watermarkAssPath: @"C:\work\segment-000.ass");
+            CameraSource.Local("Camera"), "out.mkv", "libx264",
+            watermarkAssPath: @"C:\work\segment-000.ass");
 
         var filterIndex = arguments.ToList().IndexOf("-vf");
         var inputIndex = arguments.ToList().IndexOf("-i");
@@ -181,7 +182,7 @@ public class WatermarkTests
     [Fact]
     public void 不给水印时_argv_里没有_vf()
     {
-        var arguments = FfmpegCameraCapture.BuildArguments("Camera", "out.mkv", "libx264");
+        var arguments = FfmpegCameraCapture.BuildArguments(CameraSource.Local("Camera"), "out.mkv", "libx264");
 
         Assert.DoesNotContain("-vf", arguments);
     }

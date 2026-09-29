@@ -76,14 +76,21 @@ public sealed class AppHost : IAsyncDisposable
     public string EncoderName { get; private set; } = "libx264";
 
     /// <summary>
-    /// 本次运行真正在用的摄像头设备名；空串表示没找到。
+    /// 本次运行真正在用的那一路画面源；<see cref="CameraSource.IsEmpty"/> 表示没找到。
     /// </summary>
     /// <remarks>
     /// ⚠️ <b>它是「启动时定下来的那个」，不是用户在设置里刚选的那个</b> ——
     /// 摄像头改了要重启才生效（界面上就是这么写的）。拆窗之后主窗口不再有
     /// 摄像头下拉，它要靠这一个属性回答「现在到底有没有摄像头」。
+    /// <para>
+    /// ⚠️ 界面上要用 <see cref="CameraSource.Display"/> 或 <see cref="CameraSource.Identity"/>，
+    /// **不要**碰 <see cref="CameraSource.Address"/> —— 网络那一路的地址里带凭据。
+    /// </para>
     /// </remarks>
-    public string DeviceName { get; private set; } = string.Empty;
+    public CameraSource Camera { get; private set; } = CameraSource.None;
+
+    /// <summary>本次运行真正在用的摄像头名字（已抹掉凭据）—— 界面上直接显示这个。</summary>
+    public string DeviceName => Camera.Identity;
 
     public TrayIcon? Tray { get; private set; }
 
@@ -228,7 +235,7 @@ public sealed class AppHost : IAsyncDisposable
             warnings.Add("本机没有任何可用的 H.264 编码器，无法录制。");
         }
 
-        var device = await ResolveCameraAsync(services, settings, warnings, cancellationToken);
+        var camera = await ResolveCameraAsync(services, settings, warnings, cancellationToken);
 
         // 麦克风（规格 §3.1.8）。⚠️ 与摄像头同一个时机解析：都在**启动时**一次，
         // 而「改了下次开始工作才生效」是靠 `SessionOptions.Microphone` 在
@@ -246,7 +253,7 @@ public sealed class AppHost : IAsyncDisposable
         var selection = services.FfmpegPath is null
             ? new SpecSelection(wantedSpec, false, null)
             : await SpecSelectionPolicy.SelectAsync(
-                wantedSpec, device, new FfmpegSpecProbe(services.FfmpegPath, new SystemProcessRunner(logger)),
+                wantedSpec, camera, new FfmpegSpecProbe(services.FfmpegPath, new SystemProcessRunner(logger)),
                 cancellationToken);
 
         if (selection.ChangedFromRequested)
@@ -274,7 +281,10 @@ public sealed class AppHost : IAsyncDisposable
             logger,
             new WorkModePolicy(settings.Mode, settings.IdleReminder, settings.IdleReminderMinutes),
             new CoordinatorOptions(
-                device,
+                camera,
+                // ⚠️ 本机的**身份**（写进 manifest 与索引的那一个）——
+                // 它说的是「这段录像是哪台机器录的」，与摄像头无关，所以是机器名。
+                // **不要**换成摄像头的地址：那个带凭据。
                 Environment.MachineName,
                 encoder ?? "libx264",
                 // 重复单号检测回看几天（规格 §3.2.5 的「N 可配置」，0 = 关闭）。
@@ -329,7 +339,7 @@ public sealed class AppHost : IAsyncDisposable
             EffectiveSpec = selection.Spec,
             SpecFallbackReason = selection.Reason,
             EncoderName = encoder ?? "libx264",
-            DeviceName = device,
+            Camera = camera,
         };
 
         // 清理也留痕（AGENTS.md §6「关键操作必须留痕」）——
@@ -341,10 +351,10 @@ public sealed class AppHost : IAsyncDisposable
 
         // 摄像头识码（规格 §3.2.1 的第二种入口）。装在协调器上，
         // 【开始工作】时会自动开始取景，扫到单号自动开录。
-        if (services.FfmpegPath is { } ffmpegPath && device.Length > 0)
+        if (services.FfmpegPath is { } ffmpegPath && !camera.IsEmpty)
         {
             var scanner = new CameraFrameScanner(
-                ffmpegPath, device, new ZXingFrameScanner(), logger);
+                ffmpegPath, camera, new ZXingFrameScanner(), logger);
 
             scanner.Scanned += waybill =>
             {
@@ -363,7 +373,9 @@ public sealed class AppHost : IAsyncDisposable
         logger.Log(LogLevel.Info, "启动", "应用已启动",
             new Dictionary<string, object?>
             {
-                ["摄像头"] = device,
+                // ⚠️ 取 **Identity**（凭据已抹掉），不是 Address：
+                // 网络摄像头的地址里带**用户自己的密码**，而这里是日志文件。
+                ["摄像头"] = camera.Identity,
                 ["编码器"] = encoder,
                 ["工作模式"] = settings.Mode,
             });
@@ -482,13 +494,26 @@ public sealed class AppHost : IAsyncDisposable
         }
     }
 
-    private static async Task<string> ResolveCameraAsync(
+    private static async Task<CameraSource> ResolveCameraAsync(
         DesktopServices services, AppSettings settings, List<string> warnings,
         CancellationToken cancellationToken)
     {
+        // ⚠️ 网络摄像头**不枚举本机设备**：地址是用户手填的，
+        // 与「本机有几台 USB 摄像头」完全无关。反过来也一样 ——
+        // 选了网络摄像头却还去枚举，会让一个地址配错的人先去怀疑他的摄像头。
+        if (settings.Camera.IsNetwork)
+        {
+            if (settings.Camera.ConfigurationProblem is { } problem)
+            {
+                warnings.Add($"{problem}录像无法开始。");
+            }
+
+            return settings.Camera;
+        }
+
         if (services.FfmpegPath is null)
         {
-            return settings.CameraDevice ?? string.Empty;
+            return CameraSource.Local(settings.CameraDevice);
         }
 
         var devices = await DshowDevices.ListVideoAsync(services.FfmpegPath, cancellationToken);
@@ -496,16 +521,16 @@ public sealed class AppHost : IAsyncDisposable
         if (devices.Count == 0)
         {
             warnings.Add("没有找到摄像头，无法录制。");
-            return settings.CameraDevice ?? string.Empty;
+            return CameraSource.Local(settings.CameraDevice);
         }
 
         // 之前用过的设备优先 —— 换了 USB 口之后设备名可能变，所以找不到就退回第一个。
         if (settings.CameraDevice is { Length: > 0 } remembered && devices.Contains(remembered))
         {
-            return remembered;
+            return CameraSource.Local(remembered);
         }
 
-        return devices[0];
+        return CameraSource.Local(devices[0]);
     }
 
     /// <summary>

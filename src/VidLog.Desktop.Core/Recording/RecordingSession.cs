@@ -169,7 +169,15 @@ public sealed class RecordingSession : IAsyncDisposable
     /// </remarks>
     private TimeSpan _clockOrigin;
     private readonly Func<TimeSpan, CancellationToken, Task> _delay;
-    private readonly string _deviceName;
+
+    /// <summary>画面从哪来（本机设备或网络地址）。</summary>
+    /// <remarks>
+    /// ⚠️ 存的是整个 <see cref="CameraSource"/> 而不是一个名字：网络那一路
+    /// 的地址里**带凭据**，而 <see cref="SourceDeviceId"/> 会写进 manifest 与索引 ——
+    /// 两件事分开之后，进盘的那一份永远是抹掉凭据的
+    /// （见 <see cref="CameraSource.Identity"/>）。
+    /// </remarks>
+    private readonly CameraSource _source;
 
     private readonly List<SegmentProduct> _closedSegments = [];
     private readonly Lock _gate = new();
@@ -244,7 +252,7 @@ public sealed class RecordingSession : IAsyncDisposable
         ICameraCapture capture,
         SessionFinalizer finalizer,
         DiskSpaceGuard diskGuard,
-        string deviceName,
+        CameraSource source,
         string sourceDeviceId,
         RecordingSessionOptions? options = null,
         Func<TimeSpan>? clock = null,
@@ -256,7 +264,7 @@ public sealed class RecordingSession : IAsyncDisposable
         _capture = capture;
         _finalizer = finalizer;
         _diskGuard = diskGuard;
-        _deviceName = deviceName;
+        _source = source;
         _options = options ?? RecordingSessionOptions.Default;
         _clock = clock ?? NewDefaultClock();
         _delay = delay ?? Task.Delay;
@@ -630,7 +638,7 @@ public sealed class RecordingSession : IAsyncDisposable
         WriteWatermark(outputPath);
 
         _currentProcess = await _capture.StartAsync(
-            _deviceName, outputPath, encoder, _options.Microphone, cancellationToken);
+            _source, outputPath, encoder, _options.Microphone, cancellationToken);
 
         // 一次交换把两个值一起发布 —— 见 _openSegment 的说明。
         Interlocked.Exchange(ref _openSegment, new OpenSegment(fileName, sequence));

@@ -75,6 +75,40 @@ public sealed record AppSettings
     public string? CameraDevice { get; init; }
 
     /// <summary>
+    /// 画面从哪来：本机设备，还是网络摄像头（规格 §3.1.7 的设备维）。
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ 默认<see cref="CameraSourceKind.Local"/>，**而且必须**：老设置文件里
+    /// 没有这个字段，反序列化取枚举默认值；而老设置里的摄像头一定是本机设备。
+    /// 默认值换成 Network 的话，升级之后所有人的摄像头都会变成
+    /// 「网络摄像头、地址为空」。
+    /// </remarks>
+    public CameraSourceKind CameraSource { get; init; } = CameraSourceKind.Local;
+
+    /// <summary>
+    /// 网络摄像头地址（规格 §3.1.7；设计图上叫「网络摄像头（手动地址）」）。
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ <b>这里面的凭据是**用户自己的摄像头密码**，不是我们的密钥</b>
+    /// （与百度网盘那组不是一回事）。它必须能存下来才用得起来，
+    /// 所以落盘是明文；但**绝不能进日志**：<see cref="SettingsStore.DescribeChanges"/>
+    /// 对它走的是抹掉凭据的那一份（见 <see cref="CameraSource.Redact"/>），
+    /// 而进索引 / manifest 的是 <see cref="CameraSource.Identity"/>。
+    /// </remarks>
+    public string? CameraNetworkUrl { get; init; }
+
+    /// <summary>
+    /// 摄像头配置（哪一个 + 地址合成一个）。**不落盘**，由上面那两个字段算出来。
+    /// </summary>
+    /// <remarks>
+    /// 与 <see cref="Archive"/> 同一路数：两个字段合成一个判断对象，
+    /// 免得每个调用点各写一遍「到底用哪个」。
+    /// </remarks>
+    [JsonIgnore]
+    public Recording.CameraSource Camera => Recording.CameraSource.FromConfig(
+        CameraSource, CameraDevice, CameraNetworkUrl);
+
+    /// <summary>
     /// 录制声音（规格 §3.1.8）。
     /// </summary>
     /// <remarks>
@@ -349,6 +383,31 @@ public sealed class SettingsStore
             }
         }
 
+        /// <summary>
+        /// 比一个**值里含凭据**的字段：变化照样记一行，但两边的值都先抹掉凭据。
+        /// </summary>
+        /// <remarks>
+        /// ⚠️ 不能用「名字命中就整条不记」（<see cref="Compare{T}"/> 那条路）：
+        /// 这里抹得掉凭据，剩下的主机与路径对排查**有用**
+        /// （「换了哪台摄像头」是很常见的一次改动）。
+        /// 而值整个不记的话，日志上只会写一行「（已修改）」，
+        /// 事后根本分不清是改了地址还是清空了地址。
+        /// </remarks>
+        void CompareRedacted(string name, string? a, string? b)
+        {
+            if (string.Equals(a, b, StringComparison.Ordinal))
+            {
+                return;
+            }
+
+            var from = Recording.CameraSource.Redact(a ?? string.Empty);
+            var to = Recording.CameraSource.Redact(b ?? string.Empty);
+
+            changes.Add($"{name}: {Quote(from)} → {Quote(to)}");
+
+            static string Quote(string value) => value.Length == 0 ? "（空）" : value;
+        }
+
         Compare(nameof(AppSettings.Mode), previous.Mode, next.Mode);
         Compare(nameof(AppSettings.Codec), previous.Codec, next.Codec);
         Compare(nameof(AppSettings.Resolution), previous.Resolution, next.Resolution);
@@ -361,6 +420,15 @@ public sealed class SettingsStore
         Compare(nameof(AppSettings.SegmentMinutes), previous.SegmentMinutes, next.SegmentMinutes);
         Compare(nameof(AppSettings.PlaybackPort), previous.PlaybackPort, next.PlaybackPort);
         Compare(nameof(AppSettings.CameraDevice), previous.CameraDevice, next.CameraDevice);
+        Compare(nameof(AppSettings.CameraSource), previous.CameraSource, next.CameraSource);
+
+        // ⚠️ 网络摄像头地址**必须抹掉凭据再比**：它是用户自己的摄像头密码，
+        // 而 Compare 默认会把两边的值整个写进日志（`X: 旧值 → 新值`）。
+        // `SensitiveName.Is` 按**名字**挡，而 `CameraNetworkUrl` 这个名字
+        // 不含 secret/password/key 任何一个词 —— 靠它挡不住。
+        CompareRedacted(
+            nameof(AppSettings.CameraNetworkUrl), previous.CameraNetworkUrl, next.CameraNetworkUrl);
+
         Compare(nameof(AppSettings.RecordAudio), previous.RecordAudio, next.RecordAudio);
         Compare(nameof(AppSettings.MicrophoneDevice), previous.MicrophoneDevice, next.MicrophoneDevice);
         Compare(nameof(AppSettings.LogRetainDays), previous.LogRetainDays, next.LogRetainDays);

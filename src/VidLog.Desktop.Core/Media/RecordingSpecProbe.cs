@@ -18,7 +18,7 @@ public interface IRecordingSpecProbe
 {
     Task<SpecProbeResult> ProbeAsync(
         RecordingSpec spec,
-        string device,
+        CameraSource source,
         CancellationToken cancellationToken = default);
 }
 
@@ -44,18 +44,36 @@ public interface IRecordingSpecProbe
 /// </remarks>
 public sealed class FfmpegSpecProbe : IRecordingSpecProbe
 {
+    /// <summary>
+    /// 网络摄像头那一档的尝试上限。
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ <b>不设这个上界就是「开机卡住」</b>：2026-09-29 实测，一个连不上的
+    /// RTSP 地址会让 ffmpeg **静默挂住好几分钟**（>180 秒时 stderr 一个字都没有，
+    /// 进程还活着）—— 而这条探测在**启动路径**上，`AppHost.StartAsync` 会一直等它。
+    /// 本机设备那一档不需要它：dshow 打不开是**立刻**返回的。
+    /// </remarks>
+    public static TimeSpan DefaultNetworkTimeout { get; } = TimeSpan.FromSeconds(10);
+
     private readonly string _ffmpegPath;
     private readonly IProcessRunner _runner;
     private readonly DecodeVerifier _verifier;
+    private readonly TimeSpan _networkTimeout;
 
+    /// <param name="networkTimeout">
+    /// 网络那一档的尝试上限；<see langword="null"/> = <see cref="DefaultNetworkTimeout"/>。
+    /// 可注入是为了让「超时真的会生效」能被**验到** —— 否则验一次要等满 10 秒。
+    /// </param>
     public FfmpegSpecProbe(
         string ffmpegPath,
         IProcessRunner runner,
-        DecodeVerifier? verifier = null)
+        DecodeVerifier? verifier = null,
+        TimeSpan? networkTimeout = null)
     {
         _ffmpegPath = ffmpegPath;
         _runner = runner;
         _verifier = verifier ?? new DecodeVerifier(ffmpegPath, runner);
+        _networkTimeout = networkTimeout ?? DefaultNetworkTimeout;
     }
 
     /// <summary>
@@ -69,11 +87,20 @@ public sealed class FfmpegSpecProbe : IRecordingSpecProbe
     /// </remarks>
     public async Task<SpecProbeResult> ProbeAsync(
         RecordingSpec spec,
-        string device,
+        CameraSource source,
         CancellationToken cancellationToken = default)
     {
-        if (string.IsNullOrWhiteSpace(device))
+        // 配不了的那一档**不用真开一次**，直接说清楚：地址没填、或者少了 rtsp://
+        // 这种，让 ffmpeg 去报 `Protocol not found` 对用户没有指向性 ——
+        // 而 RTSP 连不上时还可能等很久（本机没有超时选项可用）。
+        if (source.ConfigurationProblem is { } problem)
         {
+            return new SpecProbeResult(spec, spec.EncoderCandidates[0], false, problem);
+        }
+
+        if (source.IsEmpty)
+        {
+            // 本机设备那一档「没配」的走法（网络那一档上面已经拦掉了）。
             return new SpecProbeResult(spec, spec.EncoderCandidates[0], false, "没有可用的摄像头");
         }
 
@@ -84,7 +111,7 @@ public sealed class FfmpegSpecProbe : IRecordingSpecProbe
         {
             cancellationToken.ThrowIfCancellationRequested();
 
-            var (usable, reason) = await ProbeOneAsync(spec, device, encoder, cancellationToken);
+            var (usable, reason) = await ProbeOneAsync(spec, source, encoder, cancellationToken);
             if (usable)
             {
                 return new SpecProbeResult(spec, encoder, true, null);
@@ -98,7 +125,7 @@ public sealed class FfmpegSpecProbe : IRecordingSpecProbe
 
     private async Task<(bool Usable, string? Reason)> ProbeOneAsync(
         RecordingSpec spec,
-        string device,
+        CameraSource source,
         string encoder,
         CancellationToken cancellationToken)
     {
@@ -119,12 +146,33 @@ public sealed class FfmpegSpecProbe : IRecordingSpecProbe
             // 共用构造器之后，「探测的组合」与「录制的组合」**从形状上就是同一个**，
             // 不可能再走岔。`durationSeconds: 1` 是唯一的差别（规格要求真录 1 秒）。
             var arguments = FfmpegCameraCapture.BuildArguments(
-                device, probeFile, encoder, spec, durationSeconds: 1);
+                source, probeFile, encoder, spec, durationSeconds: 1);
+
+            // 网络那一档自己带上界（见 DefaultNetworkTimeout）。
+            // ⚠️ 用链接令牌而不是「看时间够不够」：必须真把那个 ffmpeg **杀掉** ——
+            // 它是网络读，不会自己超时，留着就是一根一直占着相机的线。
+            using var attempt = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+
+            if (source.IsNetwork)
+            {
+                attempt.CancelAfter(_networkTimeout);
+            }
 
             ProcessResult result;
             try
             {
-                result = await _runner.RunAsync(_ffmpegPath, arguments, cancellationToken);
+                result = await _runner.RunAsync(_ffmpegPath, arguments, attempt.Token);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                // 调用方取消的（关窗 / 收尾）—— 那是**取消**，不是「这个组合不可用」。
+                // 吞掉它会把一次正常收尾变成一条假警告。
+                throw;
+            }
+            catch (OperationCanceledException)
+            {
+                return (false, $"{encoder} 在 {_networkTimeout.TotalSeconds:0} 秒内没能连上"
+                    + "（地址可能不对，或者对端不通）");
             }
             catch (Exception ex)
             {
@@ -195,7 +243,7 @@ public static class SpecSelectionPolicy
 {
     public static async Task<SpecSelection> SelectAsync(
         RecordingSpec wanted,
-        string device,
+        CameraSource source,
         IRecordingSpecProbe probe,
         CancellationToken cancellationToken = default)
     {
@@ -203,7 +251,7 @@ public static class SpecSelectionPolicy
 
         foreach (var candidate in RecordingSpec.FallbacksFrom(wanted))
         {
-            var result = await probe.ProbeAsync(candidate, device, cancellationToken);
+            var result = await probe.ProbeAsync(candidate, source, cancellationToken);
             if (result.Usable)
             {
                 return new SpecSelection(

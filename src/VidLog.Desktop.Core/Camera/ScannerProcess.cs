@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using VidLog.Desktop.Core.Recording;
 
 namespace VidLog.Desktop.Core.Camera;
 
@@ -51,7 +52,7 @@ public sealed class ScannerProcess
     public long FramesRead => _reader.FramesRead;
 
     public static Task<ScannerProcess> StartAsync(
-        string ffmpegPath, string device, SingleSlotFrameSink sink,
+        string ffmpegPath, CameraSource source, SingleSlotFrameSink sink,
         CancellationToken cancellationToken = default)
     {
         var startInfo = new ProcessStartInfo
@@ -65,7 +66,7 @@ public sealed class ScannerProcess
             RedirectStandardInput = true,
         };
 
-        foreach (var argument in BuildArguments(device))
+        foreach (var argument in BuildArguments(source))
         {
             startInfo.ArgumentList.Add(argument);
         }
@@ -99,23 +100,43 @@ public sealed class ScannerProcess
     /// 取景识码的命令。
     /// </summary>
     /// <remarks>
+    /// <para>
     /// 与录制那条路的差别：不编码、不写文件，直接出灰度裸帧。
-    /// <b>几何必须钉住</b> —— 裸帧没有容器告诉读端宽高。
+    /// <b>几何必须钉住</b> —— 裸帧没有容器告诉读端宽高，
+    /// 所以 <see cref="Width"/>×<see cref="Height"/> 是**读端**的硬前提。
+    /// </para>
+    /// <para>
+    /// ⚠️ <b>网络摄像头那一档必须在输出侧缩放</b>：RTSP 没法要求对端按 640×480 发流
+    /// （<c>-video_size</c> 对 rtsp 解复用器来说是不存在的选项），
+    /// 而对端多半是 1080P/4K —— 不缩的话读端按 640×480 去切一路 1920×1080 的裸帧，
+    /// 切出来的是**错位的花屏**，识码永远认不出来（而且不会有任何报错）。
+    /// </para>
     /// </remarks>
-    public static IReadOnlyList<string> BuildArguments(string device) =>
-    [
-        "-hide_banner",
-        "-loglevel", "error",
-        "-f", "dshow",
-        "-rtbufsize", "64M",
-        "-video_size", $"{Width}x{Height}",
-        "-framerate", "30",
-        "-i", $"video={device}",
-        "-vf", $"fps={Fps},format=gray",
-        "-pix_fmt", "gray",
-        "-f", "rawvideo",
-        "pipe:1",
-    ];
+    public static IReadOnlyList<string> BuildArguments(CameraSource source)
+    {
+        var arguments = new List<string>
+        {
+            "-hide_banner",
+            "-loglevel", "error",
+        };
+
+        // 输入参数由源自己给：本机设备带 `-video_size 640x480 -framerate 30`，
+        // 网络地址一个都不带（见 CameraSource.InputArguments）。
+        arguments.AddRange(source.InputArguments("64M", $"{Width}x{Height}"));
+
+        arguments.AddRange(
+        [
+            "-vf", source.IsNetwork
+                // 缩放排在 fps/format **之前**：先归一到读端要的几何，再降频、转灰度。
+                ? $"scale={Width}:{Height},fps={Fps},format=gray"
+                : $"fps={Fps},format=gray",
+            "-pix_fmt", "gray",
+            "-f", "rawvideo",
+            "pipe:1",
+        ]);
+
+        return arguments;
+    }
 
     /// <summary>
     /// 停下并**等到进程真的退出**。
