@@ -310,6 +310,28 @@ public sealed class FfmpegCameraCapture : ICameraCapture
             .Where(line => line.Length > 0)
             .LastOrDefault(line => line.Contains(microphone, StringComparison.OrdinalIgnoreCase));
 
+    /// <summary>
+    /// 麦克风那一路的**输入**参数（<c>-i</c> 以及它之前那些选项）。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// ⚠️ <b>抽出来是因为有两个地方要它</b>：录制时拼采集命令，和配置向导第 5 步
+    /// 「选择麦克风」那条**音量条**（那个要单独开一个 ffmpeg 读电平）。
+    /// 抄两份的话，两份迟早会有一份漏掉 <c>-rtbufsize</c> 之类 ——
+    /// 而漏掉的表现是「偶尔丢样本」，很难查。
+    /// </para>
+    /// <para>
+    /// ⚠️ 麦克风**永远走 dshow**（本机的音频设备），与画面那一路是什么源无关 ——
+    /// 网络摄像头也接本机麦克风。
+    /// </para>
+    /// </remarks>
+    public static IReadOnlyList<string> AudioInputArguments(string microphone, string bufferSize) =>
+    [
+        "-f", "dshow",
+        "-rtbufsize", bufferSize,
+        "-i", $"audio={microphone}",
+    ];
+
     /// <summary>把管道读干。读到流结束为止，异常吞掉（进程退了就是结束，不是错误）。</summary>
     private static async Task DrainAsync(StreamReader reader, BoundedTextTail? sink)
     {
@@ -395,12 +417,7 @@ public sealed class FfmpegCameraCapture : ICameraCapture
 
         if (!string.IsNullOrWhiteSpace(microphone))
         {
-            arguments.AddRange(
-            [
-                "-f", "dshow",
-                "-rtbufsize", BufferSize,
-                "-i", $"audio={microphone}",
-            ]);
+            arguments.AddRange(AudioInputArguments(microphone, BufferSize));
 
             videoInput = 1;
         }
