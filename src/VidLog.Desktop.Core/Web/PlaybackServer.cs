@@ -230,6 +230,17 @@ public sealed class PlaybackServer : IAsyncDisposable
             {
                 // 停不下来不该让调用方卡住 —— 进程退出会收掉它。
             }
+            catch (Exception ex)
+            {
+                // ⚠️ **监听循环自己怎么结束的，不该让「关服务」这件事失败。**
+                // 关停失败比监听循环死掉更糟：调用方（`DesktopServices.DisposeAsync`、
+                // 测试清理）会带着异常走掉，进程可能退不干净。
+                // 但**不许静默**（I3）—— 记一条，让「为什么关的时候报错」查得到。
+                //
+                // 这是第二道：`LoopAsync` 已经把已知的几种竞态都吞了，
+                // 这里兜的是「将来又出现一种没预料到的异常类型」。
+                _logger.Log(LogLevel.Warn, "回放", $"监听循环结束时带出了异常：{ex.Message}");
+            }
         }
     }
 
@@ -243,7 +254,14 @@ public sealed class PlaybackServer : IAsyncDisposable
                 context = await _listener.GetContextAsync().WaitAsync(cancellationToken);
             }
             catch (Exception ex) when (ex is OperationCanceledException or HttpListenerException
-                or ObjectDisposedException or InvalidOperationException)
+                or ObjectDisposedException or InvalidOperationException
+                // ⚠️ 2026-09-29 补第五种表现：`ArgumentException: The handle is invalid`
+                // （参数名 `handle`，抛在 `HttpListenerSession.get_RequestQueueBoundHandle`）。
+                // 与上面几条是**同一条竞态** —— 关停期间 `GetContextAsync` 撞上已失效的句柄。
+                // 漏掉它就会逃出循环 ⇒ `_loopTask` 变成 faulted ⇒ 由 `StopAsync` 抛给
+                // 调用方 ⇒ **关回放服务时报错**，而整套是**随机**红的
+                // （CI 上实测到；本机串行跑不复现，见 docs/实现决策.md §67）。
+                or ArgumentException)
             {
                 // ⚠️ `InvalidOperationException`（"Please call the Start() method before
                 // calling this method"）是 2026-09-27 补进来的，它是一个**真竞态**：
