@@ -73,12 +73,18 @@ jobs:
       # 这台机器上它真跑，CI 上必然跳。把它算成失败，等于要求 CI 有一条它
       # 无论如何都满足不了的规则。
       #
-      # 所以判据改成「**只允许**环境受限的那几条跳；多出任何一条就红」。
-      # 守卫原有的价值一点没丢 —— 比如 FFmpeg 没装导致那十几条静默跳过时，
-      # 跳过的名字不在名单里，照样立刻失败。
+      # ── 判据：按**跳过原因里的标记**，不按类名列名单 ──────────────────
       #
-      # ⚠️ **必须按测试名判，不能按数量**。数量会被别的测试变动带偏，
-      # 而名字能直接指出「跳的是谁」，报错可读。
+      # ⚠️ 2026-09-29 从「类名名单」改成「原因标记」，因为名单**必然会走岔**：
+      # 名单要写在**两个地方**（测试类上的特性 + 这里的字符串），
+      # 而那一天之内就走岔了**两次** —— 都是「新加了一个用 Requires*Fact 的类，
+      # 忘了改名单」，表现都是「测试全过、CI 必红」，排查还挺绕。
+      # 现在新增一条允许项**只改测试自己那一处**（SkipMarker.Allow）。
+      #
+      # ⚠️ 标记只配用在「这台机器**本来就没有**这个设备/服务」上。
+      # **「本该有、但这台机器没配好」的不许打** —— 最典型的是 RequiresFfmpegFact：
+      # CI 会装 FFmpeg，它一旦跳过就说明**环境配错了**，必须红。所以 FFmpeg 那一组
+      # 没有标记，CI 上少了 FFmpeg 照样立刻失败。
       - name: 测试（含打真 FFmpeg 的集成测试）
         run: |
           $output = & dotnet test -c Release --no-build --logger "trx;LogFileName=results.trx" 2>&1 | Out-String
@@ -88,17 +94,6 @@ jobs:
             throw "dotnet test 失败（退出码 $LASTEXITCODE）"
           }
 
-          # 环境受限、允许跳过的测试（按类名前缀匹配）。
-          #
-          # ⚠️ 加新的一条进来，**必须同时说清它为什么在 CI 上跑不了** ——
-          # 这个名单每长一点，守卫就少挡一点。
-          #   ① FfmpegCameraCaptureIntegrationTests：要真摄像头，runner 没有。
-          #   ② NetworkCameraIntegrationTests：要**内网**的 RTSP 源
-          #      （地址走环境变量 VIDLOG_TEST_RTSP_URL，CI 上不设）。
-          #      它的价值在开发机：拿一台 IP 摄像头就能端到端验 RTSP
-          #      （2026-09-29 靠它抓到「录制声音关着却有声音」）。
-          $allowedToSkip = 'FfmpegCameraCaptureIntegrationTests|NetworkCameraIntegrationTests'
-
           $trx = Get-ChildItem -Path . -Recurse -Filter 'results.trx' -ErrorAction SilentlyContinue |
                  Select-Object -First 1
           if (-not $trx) { throw '找不到测试结果文件 results.trx —— 没法判定有没有意外跳过' }
@@ -107,14 +102,24 @@ jobs:
           $skipped = @($results.TestRun.Results.UnitTestResult |
                       Where-Object { $_.outcome -eq 'NotExecuted' })
 
-          $unexpected = @($skipped | Where-Object { $_.testName -notmatch $allowedToSkip })
+          # Skip 的**原因**在 TRX 的 Output/ErrorInfo/Message 里（实测 2026-09-29）。
+          $allowMarker = [regex]::Escape('[允许跳过]')
+
+          $withReason = @($skipped | ForEach-Object {
+            [pscustomobject]@{
+              Name   = $_.testName
+              Reason = "$($_.Output.ErrorInfo.Message)"
+            }
+          })
+
+          $unexpected = @($withReason | Where-Object { $_.Reason -notmatch $allowMarker })
           if ($unexpected.Count -gt 0) {
-            $names = ($unexpected | ForEach-Object { $_.testName }) -join '; '
+            $names = ($unexpected | ForEach-Object { "$($_.Name)（原因：$($_.Reason)）" }) -join '; '
             throw "有 $($unexpected.Count) 个测试被意外跳过：$names —— CI 绿了但那些测试什么都没验，先查为什么跳。"
           }
 
           if ($skipped.Count -gt 0) {
-            Write-Host "说明：$($skipped.Count) 个测试因本机环境限制跳过（CI 无摄像头），已按名单放行。"
+            Write-Host "说明：$($skipped.Count) 个测试因本机环境限制跳过（CI 无摄像头 / 无内网 RTSP 源），已按标记放行。"
           }
 
       - name: 上传测试结果

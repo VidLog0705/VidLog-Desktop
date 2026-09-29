@@ -37,7 +37,9 @@ public sealed class RequiresCameraFactAttribute : FactAttribute
 
         if (devices.Count == 0)
         {
-            Skip = "本机没有可用的视频设备 —— 摄像头集成测试跳过（CI 上通常也没有）";
+            // ⚠️ 这是「这台机器**本来就没有**摄像头」（CI 也没有）⇒ 打标记放行。
+            Skip = SkipMarker.Allow(
+                "本机没有可用的视频设备 —— 摄像头集成测试跳过（CI 上通常也没有）");
         }
     }
 }

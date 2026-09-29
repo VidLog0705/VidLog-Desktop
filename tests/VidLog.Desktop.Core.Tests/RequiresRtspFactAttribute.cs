@@ -34,14 +34,17 @@ public sealed class RequiresRtspFactAttribute : FactAttribute
     {
         if (FfmpegLocator.TryFind() is null)
         {
+            // ⚠️ **不打**「允许跳过」标记：FFmpeg 本该有（CI 会装），
+            // 缺了就说明环境配错了，守卫必须红。
             Skip = "本机没有 FFmpeg —— 网络摄像头集成测试跳过";
             return;
         }
 
         if (string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable(EnvironmentVariable)))
         {
-            Skip = $"没有设置 {EnvironmentVariable} —— 网络摄像头集成测试跳过"
-                + "（本机没有可连的 RTSP 源；要跑就设成 rtsp://账号:密码@主机:端口/路径）";
+            Skip = SkipMarker.Allow(
+                $"没有设置 {EnvironmentVariable} —— 网络摄像头集成测试跳过"
+                + "（本机没有可连的 RTSP 源；要跑就设成 rtsp://账号:密码@主机:端口/路径）");
         }
     }
 }

@@ -140,7 +140,8 @@ if ($LASTEXITCODE -ne 0) { Fail 'dotnet build 失败' } else { Pass 'dotnet buil
 
 if (-not $SkipTests) {
     Info 'test...'
-    $testOutput = & dotnet test $target -c Debug --no-build --nologo 2>&1 | Out-String
+    $testOutput = & dotnet test $target -c Debug --no-build --nologo `
+        --logger "trx;LogFileName=precheck.trx" 2>&1 | Out-String
     Write-Host $testOutput
 
     if ($LASTEXITCODE -ne 0) {
@@ -157,25 +158,34 @@ if (-not $SkipTests) {
         # 一条守卫报错了数，比没有守卫更坏：它让人以为只差一点点。
         #
         # ⚠️ 但也不能按「> 0 就警惕」一刀切：有一类跳过是**这台机器本来就没有**的
-        # 东西（摄像头）。所以按**名字**分开报 —— 名单内的说明一下，
-        # 名单外的才值得查。判据与 CI 那条守卫保持一致（ci.yml）。
-        # ① 要真摄像头；② 要内网 RTSP 源（VIDLOG_TEST_RTSP_URL，设了才有）。
-        $allowedToSkip = 'FfmpegCameraCaptureIntegrationTests|NetworkCameraIntegrationTests'
+        # 东西（摄像头 / 内网 RTSP 源）。所以分开报 —— 允许的说明一下，其余才值得查。
+        #
+        # ⚠️ 判据与 CI **逐字同源**：读 TRX 里被跳过测试的 **Skip 原因**，
+        # 带 `[允许跳过]` 标记的才放行（见 tests/…/SkipMarker.cs）。
+        # 以前这里与 CI 各写一份「按类名列名单」—— 那句「判据与 CI 保持一致」
+        # 其实**名不副实**（两套实现），而 2026-09-29 一天就走岔两次。
+        $trx = Get-ChildItem -Path $root -Recurse -Filter 'precheck.trx' -ErrorAction SilentlyContinue |
+               Select-Object -First 1
+        if (-not $trx) {
+            Warn '找不到 precheck.trx —— 没法判定有没有意外跳过（CI 那边会判）'
+        } else {
+            [xml]$results = Get-Content -LiteralPath $trx.FullName
+            $skipped = @($results.TestRun.Results.UnitTestResult |
+                         Where-Object { $_.outcome -eq 'NotExecuted' })
 
-        if ($testOutput -match '(?:Skipped|已跳过)\s*[:：]\s*(\d+)') {
-            $skipped = [int]$Matches[1]
-            if ($skipped -gt 0) {
-                # 文本里"已跳过 X"的 X 是测试全名，用它判断跳的是不是名单内的那些。
-                $unexpected = @(
-                    [regex]::Matches($testOutput, '(?:Skipped|已跳过)\s+(\S+)') |
-                    ForEach-Object { $_.Groups[1].Value } |
-                    Where-Object { $_ -notmatch $allowedToSkip }
-                )
+            if ($skipped.Count -gt 0) {
+                $allowMarker = [regex]::Escape('[允许跳过]')
+                $unexpected = @($skipped | Where-Object {
+                    "$($_.Output.ErrorInfo.Message)" -notmatch $allowMarker
+                })
 
                 if ($unexpected.Count -gt 0) {
-                    Warn "有 $($unexpected.Count) 个测试被异常跳过：$($unexpected -join '; ')"
+                    # ⚠️ 只 Warn 不 Fail：CI 那一步才是**门**。本机要与 CI 同判据，
+                    # 但没必要因为一条自己已经知道原因的环境跳过挡住推送。
+                    $names = ($unexpected | ForEach-Object { $_.testName }) -join '; '
+                    Warn "有 $($unexpected.Count) 个测试被异常跳过（CI 上会红）：$names"
                 } else {
-                    Info "$skipped 个测试因本机环境限制跳过（无摄像头），已按名单放行"
+                    Info "$($skipped.Count) 个测试因本机环境限制跳过（无摄像头 / 无内网 RTSP 源），已按标记放行"
                 }
             }
         }
