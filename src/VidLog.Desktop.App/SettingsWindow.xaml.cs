@@ -169,7 +169,9 @@ public partial class SettingsWindow : Window
             return;
         }
 
-        var devices = await DshowDevices.ListVideoAsync(_host.Services.FfmpegPath);
+        // ⚠️ logger 要传：那些构造点的 logger 是**可选**参数（默认 `NullLogger`），
+        // 不传就静默不落盘、而编译器不会说 —— 2026-09-29 逐个核对调用点才发现这里漏了。
+        var devices = await DshowDevices.ListVideoAsync(_host.Services.FfmpegPath, _host.Logger);
 
         if (devices.Count == 0)
         {
@@ -258,7 +260,7 @@ public partial class SettingsWindow : Window
             return;
         }
 
-        var devices = await DshowDevices.ListAudioAsync(_host.Services.FfmpegPath);
+        var devices = await DshowDevices.ListAudioAsync(_host.Services.FfmpegPath, _host.Logger);
 
         // ⚠️ 枚举是异步的，而用户完全可能在这期间把开关拨掉 —— 那时这批结果已经作废，
         // 写回去会把刚拨出来的那一档盖掉。开窗时那次枚举要好几秒

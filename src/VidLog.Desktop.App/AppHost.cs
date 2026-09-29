@@ -42,6 +42,16 @@ public sealed class AppHost : IAsyncDisposable
     public void Log(LogLevel level, string category, string message) =>
         _logger.Log(level, category, message);
 
+    /// <summary>
+    /// 界面层要往 Core 的构造点**传** logger 时用它（例：设置窗枚举设备）。
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ 那些构造点的 logger 是**可选**参数（默认 `NullLogger`）⇒ **不传就静默不落盘**，
+    /// 而编译器一个字都不会说。所以宁可多开这一个出口 ——
+    /// 2026-09-29 就是靠「逐个核对调用点」才发现设置窗那两处漏了。
+    /// </remarks>
+    public IAppLogger Logger => _logger;
+
     private AppHost(
         DesktopServices services,
         StartupReport startup,

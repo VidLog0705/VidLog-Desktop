@@ -424,6 +424,51 @@ public class DesktopServicesTests
     }
 
     /// <summary>
+    /// 钉住「界面调 Core 那些 **logger 可选** 的入口时真的传了」。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// ⚠️ 那些构造点的 logger 是**可选**参数（默认 `NullLogger`）⇒
+    /// **不传就静默不落盘**，而编译器一个字都不会说。
+    /// 2026-09-29 需求方问「日志是否是按标准做的」时逐个核对调用点，
+    /// 才发现**设置窗那两处漏了** —— 枚举设备失败时日志里什么都没有。
+    /// </para>
+    /// <para>
+    /// 为什么只能看源码文本：App 层没有测试工程（与上面几条同一条理由）。
+    /// </para>
+    /// <para>
+    /// ⚠️ 天花板同另几条：只挡「删了 / 改了」，挡不住「改成一条不跑的路径」。
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public void 界面调设备枚举时真的把日志器传了()
+    {
+        var app = Path.Combine(RepoRoot(), "src", "VidLog.Desktop.App");
+
+        var settings = File.ReadAllText(Path.Combine(app, "SettingsWindow.xaml.cs"));
+        var host = File.ReadAllText(Path.Combine(app, "AppHost.cs"));
+
+        // ① 出口真的存在（界面层唯一能拿到 logger 的地方）。
+        Assert.Contains("public IAppLogger Logger => _logger;", host, StringComparison.Ordinal);
+
+        // ② 设置窗那两处 —— **2026-09-29 实测漏掉的就是它们**。
+        Assert.Contains(
+            "DshowDevices.ListVideoAsync(_host.Services.FfmpegPath, _host.Logger)",
+            settings, StringComparison.Ordinal);
+        Assert.Contains(
+            "DshowDevices.ListAudioAsync(_host.Services.FfmpegPath, _host.Logger)",
+            settings, StringComparison.Ordinal);
+
+        // ③ 组合根那两处。
+        Assert.Contains(
+            "DshowDevices.ListVideoAsync(services.FfmpegPath, logger, cancellationToken)",
+            host, StringComparison.Ordinal);
+        Assert.Contains(
+            "DshowDevices.ListAudioAsync(services.FfmpegPath, logger, cancellationToken)",
+            host, StringComparison.Ordinal);
+    }
+
+    /// <summary>
     /// 钉住「时长兜底的**询问**在界面上真的有出路」（规格 §3.3.4）。
     /// </summary>
     /// <remarks>
