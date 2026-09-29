@@ -263,32 +263,41 @@ public sealed class FfmpegCameraCapture : ICameraCapture
     /// 而用户会照着它去查一个没坏的东西。
     /// </para>
     /// <para>
-    /// ⚠️ 取「提到设备名的那一行」而不是最后一行：2026-09-29 实测，一次麦克风打不开的
-    /// 输出尾部长这样，最后一行是**通用的包装话**，什么都没说。
+    /// ⚠️ <b>「提到设备名」这个判据仍然要看 ffmpeg 的原话，但原话不进这句话。</b>
+    /// 界面提示必须是中文（需求方 2026-09-29 写死），所以只保留中文结论；
+    /// ffmpeg 的原话进日志与诊断包（<c>SystemProcessRunner</c> 已经记了 stderr）。
+    /// 换句话说 <see cref="PickUsefulLine"/> 从「挑出要展示的那句话」降级成
+    /// **判据**（是不是这一路的锅），输出一个字都不用它。
+    /// </para>
+    /// <para>
+    /// ⚠️ 判据取「提到设备名的那一行」而不是最后一行：2026-09-29 实测，一次麦克风
+    /// 打不开的输出尾部长这样，最后一行是**通用的包装话**，什么都没说。
     /// <code>
     /// [in#0 @ …] Could not enumerate audio only devices (or none found).
     /// [in#0 @ …] Error opening input: I/O error
     /// Error opening input file audio=不存在的麦克风.
     /// Error opening input files: I/O error     ← 最后一行
     /// </code>
-    /// 按名字挑不需要解析 ffmpeg 的措辞（那种解析会随版本失效）。
     /// </para>
     /// </remarks>
     private string Describe(string microphone) =>
-        PickUsefulLine(_errorTail.ToString(), microphone) is { } line
-            ? $"麦克风没能接上（{line}），这一段没有音轨。"
+        PickUsefulLine(_errorTail.ToString(), microphone) is not null
+            ? "麦克风没能接上，这一段没有音轨。"
             // 没提到麦克风 ⇒ 这一路没起来的原因**不是它**（多半是摄像头），
             // 所以只说「没起来」。真正的原因会由重开那一次的退出码报出来。
             : "采集没能起来，这一段改成没有音轨重录了。";
 
     /// <summary>
-    /// 从 stderr 尾部里挑出**提到这个设备**的那一行；没有这样的行就返回
-    /// <see langword="null"/>。
+    /// ffmpeg 的输出里有没有**提到这个设备**的那一行。
     /// </summary>
     /// <remarks>
     /// 抽成静态的纯函数、并跟着 <see cref="BuildArguments"/> 一起 <c>public</c>，
-    /// 只为一件事：让「挑得对不对」**不依赖麦克风**被断言到 ——
+    /// 只为一件事：让「判得对不对」**不依赖麦克风**被断言到 ——
     /// 本机一台 dshow 设备都没有（实测 2026-09-29），拆不开就没法验。
+    /// <para>
+    /// 返回**那一行文本**而不是 <c>bool</c>：判据是「有没有」，但调用方想知道的是
+    /// 「是哪一句」的时候（诊断、日志）也能用；而 <see cref="Describe"/> 只用它判空。
+    /// </para>
     /// </remarks>
     public static string? PickUsefulLine(string errorTail, string microphone) =>
         errorTail

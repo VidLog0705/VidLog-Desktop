@@ -95,12 +95,17 @@ public sealed class SystemProcessRunner : IProcessRunner
             _logger.Log(LogLevel.Warn, "外部进程", $"{System.IO.Path.GetFileName(executable)} 以 {result.ExitCode} 退出",
                 new Dictionary<string, object?>
                 {
-                    // ⚠️ **逐条抹掉 URL 里的凭据再拼**：网络摄像头的地址
-                    // （`rtsp://账号:密码@主机/流`）就在 argv 里，而落败的 RTSP 连接
+                    // ⚠️ **参数与 stderr 两边都要抹凭据**：网络摄像头的地址
+                    // （`rtsp://账号:密码@主机/流`）在 argv 里，而落败的 RTSP 连接
                     // 正是最常走到这一行的情况 —— 不抹的话，用户改错一次密码，
                     // 密码就进了日志文件，而诊断包会把整个 logs/ 打包外发。
+                    //
+                    // ⚠️ stderr 那一路**必须单独抹**：2026-09-29 实测，ffmpeg 自己会把
+                    // 带凭据的地址打出来 ——
+                    //   Input #0, rtsp, from 'rtsp://admin:admin@192.168.101.55:8554/live':
+                    // 只抹 argv 的话，凭据从这一路照样落盘。
                     ["参数"] = string.Join(' ', arguments.Select(Diagnostics.UrlCredentials.Strip)),
-                    ["stderr"] = Tail(result.StandardError),
+                    ["stderr"] = Diagnostics.UrlCredentials.StripIn(Tail(result.StandardError)),
                 });
         }
 

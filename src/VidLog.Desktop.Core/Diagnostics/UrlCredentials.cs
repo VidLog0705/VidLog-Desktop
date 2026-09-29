@@ -68,4 +68,46 @@ public static class UrlCredentials
             authority.AsSpan(at + 1),
             url.AsSpan(authorityEnd));
     }
+
+    /// <summary>
+    /// 把**一段文本里所有**带凭据的 URL 抹掉。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// ⚠️ 有它是因为 2026-09-29 实测到的**第四条外泄路**：ffmpeg **自己**会把
+    /// 带凭据的输入地址打在 stderr 上 ——
+    /// </para>
+    /// <code>
+    /// Input #0, rtsp, from 'rtsp://admin:admin@192.168.101.55:8554/live':
+    /// </code>
+    /// <para>
+    /// 而 <c>SystemProcessRunner</c> 在失败时**记的正是 stderr**（那条日志是排障的
+    /// 主要依据，不能删）。所以只抹 argv 是不够的：凭据会从 stderr 那一路照样落盘，
+    /// 而诊断包会把整个 <c>logs/</c> 打包外发。
+    /// </para>
+    /// <para>
+    /// ⚠️ 一条都认不出来时**原样返回**（幂等）：正常的日志不该被这个函数改动。
+    /// </para>
+    /// </remarks>
+    public static string StripIn(string text)
+    {
+        if (string.IsNullOrEmpty(text))
+        {
+            return text;
+        }
+
+        return UrlPattern.Replace(text, match => Strip(match.Value));
+    }
+
+    /// <summary>
+    /// 文本里「像 URL」的那些片段。
+    /// </summary>
+    /// <remarks>
+    /// 停在空白与引号处：ffmpeg 那行的形状是 <c>from 'rtsp://…':</c>，
+    /// 正好被单引号夹住。而 Windows 路径（<c>C:\…</c>）**没有</c> <c>://</c>，
+    /// 所以不会被误伤。
+    /// </remarks>
+    private static readonly System.Text.RegularExpressions.Regex UrlPattern = new(
+        "[A-Za-z][A-Za-z0-9+.-]*://[^\\s'\"]+",
+        System.Text.RegularExpressions.RegexOptions.Compiled);
 }

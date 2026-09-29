@@ -181,7 +181,9 @@ public sealed class FfmpegSpecProbe : IRecordingSpecProbe
 
             if (!result.Succeeded)
             {
-                return (false, $"{encoder} 打不开这个组合（退出码 {result.ExitCode}）：{FirstLine(result.StandardError)}");
+                // ⚠️ 理由走 `CameraErrorText`（中文），**不贴 ffmpeg 的英文原文** ——
+                // 界面提示必须是中文（需求方 2026-09-29 写死）。原文进日志。
+                return (false, $"{encoder} 打不开这个组合：{CameraErrorText.Describe(result.StandardError)}");
             }
 
             if (!File.Exists(probeFile) || new FileInfo(probeFile).Length == 0)
@@ -199,13 +201,6 @@ public sealed class FfmpegSpecProbe : IRecordingSpecProbe
         {
             TryDelete(probeFile);
         }
-    }
-
-    private static string FirstLine(string text)
-    {
-        var trimmed = text.Trim();
-        var newline = trimmed.IndexOf('\n');
-        return newline < 0 ? trimmed : trimmed[..newline];
     }
 
     private static void TryDelete(string path)

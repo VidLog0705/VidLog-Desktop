@@ -110,4 +110,40 @@ public class SanitizerTests : IDisposable
     {
         Assert.Equal("一行普通的日志", Sanitizer.Sanitize("一行普通的日志"));
     }
+
+    // ─────────────────────────────────────────────
+    // ★ URL 里的凭据（2026-09-29 发现的**第四条**外泄路）
+    // ─────────────────────────────────────────────
+
+    [Fact]
+    public void 日志里的网络摄像头密码要被抹掉()
+    {
+        // ⚠️ 这条守的是实测到的那条路：ffmpeg **自己**会把带凭据的输入地址打在
+        // stderr 上 ——
+        //     Input #0, rtsp, from 'rtsp://admin:hunter2@192.168.101.55:8554/live':
+        // 而 `SystemProcessRunner` 失败时记的正是 stderr。
+        //
+        // ⚠️ 它**不靠登记**（没人会去登记用户的摄像头密码），而是**从形状上认出来**
+        // ⇒ 所以放在 `Sanitize` 里就**一处覆盖了所有调用点**，包括将来新写的。
+        var text = Sanitizer.Sanitize(
+            "Input #0, rtsp, from 'rtsp://admin:hunter2@192.168.101.55:8554/live':");
+
+        Assert.DoesNotContain("hunter2", text, StringComparison.Ordinal);
+
+        // ⚠️ 但**主机与路径要留着**：那条日志的用处就是回答「它在连哪一台」。
+        Assert.Contains("192.168.101.55", text, StringComparison.Ordinal);
+        Assert.Contains("/live", text, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void 没有凭据的URL与普通路径都不许被改动()
+    {
+        // 幂等：正常的日志一个字节都不该变。
+        Assert.Equal(
+            "'rtsp://192.168.101.55:8554/live'",
+            Sanitizer.Sanitize("'rtsp://192.168.101.55:8554/live'"));
+
+        // ⚠️ Windows 路径没有 `://`，不该被误伤。
+        Assert.Equal(@"抽帧 C:\work\segment-000.mkv 完", Sanitizer.Sanitize(@"抽帧 C:\work\segment-000.mkv 完"));
+    }
 }

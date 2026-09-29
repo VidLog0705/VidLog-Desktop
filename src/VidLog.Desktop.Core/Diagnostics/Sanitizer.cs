@@ -21,7 +21,9 @@ namespace VidLog.Desktop.Core.Diagnostics;
 /// 的凭据原样写出去，而这里根本不认识对象图。</item>
 /// <item><b>键名层</b>：<see cref="SensitiveName.Is"/> —— 与配置变更留痕
 /// 用的是同一份判据（<c>AGENTS.md</c> §6）。</item>
-/// <item><b>值层（本类）</b>：登记过的密钥值，以及 <c>Authorization: Bearer …</c>。</item>
+/// <item><b>值层（本类）</b>：登记过的密钥值、<c>Authorization: Bearer …</c>，
+/// 以及 <b>URL 里的凭据</b>（<see cref="UrlCredentials"/> ——
+/// 那一种不靠登记，靠从形状上认出来，所以它<b>一处覆盖所有调用点</b>）。</item>
 /// </list>
 /// <para>
 /// ⚠️ <b>天花板（诚实说清楚）</b>：值层只挡得住**登记过的**那一个。
@@ -95,6 +97,17 @@ public static class Sanitizer
         }
 
         var result = BearerPattern.Replace(text, "Bearer " + Mask);
+
+        // ⚠️ 2026-09-29 补：**URL 里的凭据**（`rtsp://账号:密码@主机/流`）。
+        //
+        // 它不靠「登记过的值」，而是**从形状上认得出来** —— 所以放在这里
+        // **一处覆盖所有调用点**：`FileLogger` 的 msg 与 data 字符串都过本方法，
+        // 于是不管将来谁在哪儿拼了一句带 URL 的日志，凭据都落不了盘。
+        //
+        // 为什么必须补：实测过 ffmpeg **自己**会把带凭据的输入地址打在 stderr 上
+        // （`Input #0, rtsp, from 'rtsp://admin:admin@…'`），而记 stderr 是排障的
+        // 主要依据。只抹 argv 的话，凭据从 stderr 那一路照样进去。
+        result = UrlCredentials.StripIn(result);
 
         string[] secrets;
         lock (Gate)
