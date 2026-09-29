@@ -696,6 +696,58 @@ public class FfmpegCameraCaptureIntegrationTests
         Assert.Equal(observed, await MeasureAsync(runner, mkv));
     }
 
+    [RequiresCameraFact]
+    public async Task 真相机上四档方向_产物的宽高各是它该有的那一对()
+    {
+        // 交接单 §2.4：滤镜语义与「宽高交换」在**合成源**上验过，
+        // 而「真机上录一段、再量产物」没有过。
+        //
+        // ⚠️ 人眼那一半（**画面转对了没有**）这里验不了 —— 那要对着实景看。
+        // 能自动验的是**宽高真的换了没有**，而这一条恰恰是最难发现的：
+        // 转了 90° 却没换宽高，表现是画面被压扁，而它**有画面**、不报错。
+        using var dir = new TempDir();
+        var video = (await DshowDevices.ListVideoAsync(Ffmpeg))[0];
+        var runner = new SystemProcessRunner();
+        var encoder = await PickEncoderAsync(runner);
+
+        // 期望值由**原生档实测的那一对**推出来，不写死 640×480 ——
+        // 换一台相机这条用例照样成立。
+        var native = RecordingSpec.Default with { NativeCaptureSize = true };
+        var nativeResult = await new FfmpegSpecProbe(Ffmpeg, runner)
+            .ProbeAsync(native, CameraSource.Local(video));
+
+        Assert.True(nativeResult.Usable, nativeResult.FailureReason);
+        var (width, height) = nativeResult.ObservedSize!.Value;
+
+        foreach (var rotation in new[]
+                 {
+                     CameraRotation.None,
+                     CameraRotation.Left90,
+                     CameraRotation.Right90,
+                     CameraRotation.UpsideDown,
+                 })
+        {
+            var spec = native.WithObservedSize(width, height) with { Rotation = rotation };
+            var mkv = dir.File($"rot-{rotation}.mkv");
+
+            var capture = new FfmpegCameraCapture(Ffmpeg, spec);
+            var process = await capture.StartAsync(CameraSource.Local(video), mkv, encoder);
+
+            await Task.Delay(TimeSpan.FromSeconds(2));
+            var exit = await process.StopAsync(TimeSpan.FromSeconds(20));
+
+            Assert.Equal(0, exit);
+
+            // 转 90° 的那两档**交换宽高**（`RecordingSpec.Size` 的说明），
+            // 转 180° 与不转都不换。
+            var expected = rotation is CameraRotation.Left90 or CameraRotation.Right90
+                ? (Width: height, Height: width)
+                : (Width: width, Height: height);
+
+            Assert.Equal(expected, await MeasureAsync(runner, mkv));
+        }
+    }
+
     /// <summary>从产物里读它**实际**的尺寸（独立于探测那一路，用来交叉核对）。</summary>
     private static async Task<(int Width, int Height)?> MeasureAsync(IProcessRunner runner, string path)
     {
