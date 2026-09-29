@@ -159,7 +159,8 @@ if (-not $SkipTests) {
         # ⚠️ 但也不能按「> 0 就警惕」一刀切：有一类跳过是**这台机器本来就没有**的
         # 东西（摄像头）。所以按**名字**分开报 —— 名单内的说明一下，
         # 名单外的才值得查。判据与 CI 那条守卫保持一致（ci.yml）。
-        $allowedToSkip = 'FfmpegCameraCaptureIntegrationTests'
+        # ① 要真摄像头；② 要内网 RTSP 源（VIDLOG_TEST_RTSP_URL，设了才有）。
+        $allowedToSkip = 'FfmpegCameraCaptureIntegrationTests|NetworkCameraIntegrationTests'
 
         if ($testOutput -match '(?:Skipped|已跳过)\s*[:：]\s*(\d+)') {
             $skipped = [int]$Matches[1]

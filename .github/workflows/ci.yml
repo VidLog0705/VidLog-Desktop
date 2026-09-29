@@ -89,8 +89,15 @@ jobs:
           }
 
           # 环境受限、允许跳过的测试（按类名前缀匹配）。
-          # 目前只有一组：需要真摄像头的采集集成测试。
-          $allowedToSkip = 'FfmpegCameraCaptureIntegrationTests'
+          #
+          # ⚠️ 加新的一条进来，**必须同时说清它为什么在 CI 上跑不了** ——
+          # 这个名单每长一点，守卫就少挡一点。
+          #   ① FfmpegCameraCaptureIntegrationTests：要真摄像头，runner 没有。
+          #   ② NetworkCameraIntegrationTests：要**内网**的 RTSP 源
+          #      （地址走环境变量 VIDLOG_TEST_RTSP_URL，CI 上不设）。
+          #      它的价值在开发机：拿一台 IP 摄像头就能端到端验 RTSP
+          #      （2026-09-29 靠它抓到「录制声音关着却有声音」）。
+          $allowedToSkip = 'FfmpegCameraCaptureIntegrationTests|NetworkCameraIntegrationTests'
 
           $trx = Get-ChildItem -Path . -Recurse -Filter 'results.trx' -ErrorAction SilentlyContinue |
                  Select-Object -First 1
