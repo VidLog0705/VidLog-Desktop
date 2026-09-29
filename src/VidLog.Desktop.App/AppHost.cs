@@ -24,6 +24,24 @@ public sealed class AppHost : IAsyncDisposable
 {
     private readonly FileLogger _logger;
 
+    /// <summary>
+    /// 界面层记一条（`AGENTS.md` §6：**状态变更要留痕**）。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// ⚠️ <b>为什么要有这个出口</b>：窗口拿不到 logger，而有些动作是**界面独有的**
+    /// —— 最典型的是检索窗里那个「锁定」（规格 §3.6.5）：它写一个标签，
+    /// 而那个标签直接决定**那条录像会不会被清理**。事后没人能回答
+    /// 「这条是谁、什么时候锁的」（2026-09-29 审计查出来的缺口）。
+    /// </para>
+    /// <para>
+    /// 替代方案是让每个窗口自己持一个 logger，但那要改一串构造函数，
+    /// 而 **App 层没有测试工程** —— 改错一个就是启动即崩。
+    /// </para>
+    /// </remarks>
+    public void Log(LogLevel level, string category, string message) =>
+        _logger.Log(level, category, message);
+
     private AppHost(
         DesktopServices services,
         StartupReport startup,
@@ -235,12 +253,12 @@ public sealed class AppHost : IAsyncDisposable
             warnings.Add("本机没有任何可用的 H.264 编码器，无法录制。");
         }
 
-        var camera = await ResolveCameraAsync(services, settings, warnings, cancellationToken);
+        var camera = await ResolveCameraAsync(services, settings, warnings, logger, cancellationToken);
 
         // 麦克风（规格 §3.1.8）。⚠️ 与摄像头同一个时机解析：都在**启动时**一次，
         // 而「改了下次开始工作才生效」是靠 `SessionOptions.Microphone` 在
         // 每次开始工作时整份交给会话保证的（见 ApplySettingsAsync）。
-        var microphone = await ResolveMicrophoneAsync(services, settings, warnings, cancellationToken);
+        var microphone = await ResolveMicrophoneAsync(services, settings, warnings, logger, cancellationToken);
 
         // ── 录制规格：**真实**的可用性检查（规格 §3.1.7）──────────────────
         //
@@ -496,7 +514,7 @@ public sealed class AppHost : IAsyncDisposable
         // 每次存设置都起一次 ffmpeg 枚举设备是白花 0.3 秒。
         if (audioChanged)
         {
-            var picked = await ResolveMicrophoneAsync(Services, next, [], CancellationToken.None);
+            var picked = await ResolveMicrophoneAsync(Services, next, [], _logger, CancellationToken.None);
             options = options.WithMicrophone(picked);
 
             // ⚠️ 开着却一个麦克风都没有时要**说出来**：否则用户以为声音打开了，
@@ -524,7 +542,7 @@ public sealed class AppHost : IAsyncDisposable
 
     private static async Task<CameraSource> ResolveCameraAsync(
         DesktopServices services, AppSettings settings, List<string> warnings,
-        CancellationToken cancellationToken)
+        IAppLogger logger, CancellationToken cancellationToken)
     {
         // ⚠️ 网络摄像头**不枚举本机设备**：地址是用户手填的，
         // 与「本机有几台 USB 摄像头」完全无关。反过来也一样 ——
@@ -544,7 +562,7 @@ public sealed class AppHost : IAsyncDisposable
             return CameraSource.Local(settings.CameraDevice);
         }
 
-        var devices = await DshowDevices.ListVideoAsync(services.FfmpegPath, cancellationToken);
+        var devices = await DshowDevices.ListVideoAsync(services.FfmpegPath, logger, cancellationToken);
 
         if (devices.Count == 0)
         {
@@ -578,7 +596,7 @@ public sealed class AppHost : IAsyncDisposable
     /// </remarks>
     private static async Task<string?> ResolveMicrophoneAsync(
         DesktopServices services, AppSettings settings, List<string> warnings,
-        CancellationToken cancellationToken)
+        IAppLogger logger, CancellationToken cancellationToken)
     {
         if (!settings.RecordAudio)
         {
@@ -590,7 +608,7 @@ public sealed class AppHost : IAsyncDisposable
             return null;
         }
 
-        var devices = await DshowDevices.ListAudioAsync(services.FfmpegPath, cancellationToken);
+        var devices = await DshowDevices.ListAudioAsync(services.FfmpegPath, logger, cancellationToken);
 
         if (devices.Count == 0)
         {

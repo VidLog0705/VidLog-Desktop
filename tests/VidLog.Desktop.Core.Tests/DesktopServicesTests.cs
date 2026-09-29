@@ -317,7 +317,7 @@ public class DesktopServicesTests
     }
 
     /// <summary>
-    /// 钉住「组合根真的把日志器递下去了」—— 三处边界都得拿到它。
+    /// 钉住「组合根真的把日志器递下去了」—— **每一个边界**都得拿到它。
     /// </summary>
     /// <remarks>
     /// <para>
@@ -336,7 +336,7 @@ public class DesktopServicesTests
     /// </para>
     /// </remarks>
     [Fact]
-    public void 组合根把日志器递给了三处边界()
+    public void 组合根把日志器递给了每个边界()
     {
         var path = Path.Combine(
             RepoRoot(), "src", "VidLog.Desktop.Core", "Configuration", "DesktopServices.cs");
@@ -370,7 +370,57 @@ public class DesktopServicesTests
         // ④ 另一个发布点：接收远端上传之后也要发一份到归档层。
         // 少这一处的话，「电脑端自己录的」会发到 NAS，而**手机传上来的**不会 ——
         // 一半有、一半没有，比两条都不发更难发现。
-        Assert.Contains("relay: relay);", code, StringComparison.Ordinal);
+        //
+        // ⚠️ 判据**只到 `relay: relay,`**，不带结尾那个 `)` ——
+        // 2026-09-29 给它后面补了 `logger:` 之后，原来那句（含 `)`）
+        // 就不再匹配、这条绊线**红了**。绊线本身是对的（说明它真的在挡），
+        // 但它该挡的是「relay 这根线被摘掉」，不是「末尾多了一个参数」。
+        Assert.Contains("relay: relay,", code, StringComparison.Ordinal);
+
+        // ⑤ 接收上传那一处也要拿 logger —— 它里面有一次**删目录**
+        // （`CleanupIncomingAsync`），而删不掉时原来一个字都不留。
+        Assert.Contains("logger: logger);", code, StringComparison.Ordinal);
+
+        // ⑥ 工作区（`RecordingWorkspace`）。⚠️ 这一处最要紧：
+        // 「读不出来的会话」是本仓**唯一会丢证据**的方向，而它是唯一的留痕出口。
+        // 2026-09-29 审计查出来：那条路原来一声不吭。
+        Assert.Contains("new RecordingWorkspace(layout.WorkspaceRoot, logger)", code, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// 钉住「界面上那些**改用户数据**的动作也留痕」（`AGENTS.md` §6 + §6.1）。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// ⚠️ 2026-09-29 审计查出来的缺口：检索窗里那个「锁定」写一个标签，
+    /// 而那个标签**直接决定那条录像会不会被清理**（§3.5.3② 的硬豁免）——
+    /// 而成功路径只改了一行界面文案，事后没人能回答「这条是谁、什么时候锁的」。
+    /// </para>
+    /// <para>
+    /// 为什么只能看源码文本：App 层没有测试工程（与上面那几条同一条理由）。
+    /// </para>
+    /// <para>
+    /// ⚠️ 天花板同另几条：只挡「删了 / 改了」，挡不住「改成一条不跑的路径」。
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public void 界面上的锁定动作也留痕()
+    {
+        var app = Path.Combine(RepoRoot(), "src", "VidLog.Desktop.App");
+
+        var host = File.ReadAllText(Path.Combine(app, "AppHost.cs"));
+        var window = File.ReadAllText(Path.Combine(app, "SearchWindow.xaml.cs"));
+
+        // ① 窗口拿得到那个出口（它是界面层唯一能记日志的通道）。
+        Assert.Contains(
+            "public void Log(LogLevel level, string category, string message)",
+            host, StringComparison.Ordinal);
+
+        // ② 锁定那一步真的记了，而且**成功与失败各一条** ——
+        //    失败只留在界面上会被用户划走，而那次锁定其实没生效。
+        Assert.Contains("_host.Log(", window, StringComparison.Ordinal);
+        Assert.Contains("\"锁定\"", window, StringComparison.Ordinal);
+        Assert.Equal(2, System.Text.RegularExpressions.Regex.Matches(window, @"_host\.Log\(").Count);
     }
 
     /// <summary>

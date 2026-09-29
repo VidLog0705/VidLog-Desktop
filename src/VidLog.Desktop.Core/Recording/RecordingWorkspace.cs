@@ -51,10 +51,16 @@ public sealed class RecordingWorkspace
     private static readonly JsonSerializerOptions SerializerOptions = new() { WriteIndented = false };
 
     private readonly string _root;
+    private readonly Diagnostics.IAppLogger _logger;
 
-    public RecordingWorkspace(string root)
+    /// <param name="logger">
+    /// 记「读不出来的会话」用。⚠️ 这一条**必须有**：它是本仓**唯一会丢证据的方向**
+    /// （I2/I9），而在 2026-09-29 之前它一声不吭（见 <see cref="ReadManifestAsync"/>）。
+    /// </param>
+    public RecordingWorkspace(string root, Diagnostics.IAppLogger? logger = null)
     {
         _root = root;
+        _logger = logger ?? Diagnostics.NullLogger.Instance;
     }
 
     public string SessionDirectory(string sessionId) => Path.Combine(_root, sessionId);
@@ -119,6 +125,7 @@ public sealed class RecordingWorkspace
                 continue;
             }
 
+
             var segments = manifest.Segments
                 .Select(s => new SegmentProduct(
                     s.Sequence,
@@ -145,7 +152,7 @@ public sealed class RecordingWorkspace
         return orphans;
     }
 
-    private static async Task<SessionManifest?> ReadManifestAsync(
+    private async Task<SessionManifest?> ReadManifestAsync(
         string path,
         CancellationToken cancellationToken)
     {
@@ -157,7 +164,14 @@ public sealed class RecordingWorkspace
         catch (Exception ex) when (ex is IOException or JsonException or UnauthorizedAccessException)
         {
             // 半个 JSON（正是原子写要防的情况，但历史遗留文件可能长这样）。
-            // 读不出来的会话没法收尾，跳过并留给上层记录。
+            //
+            // ⚠️ **这里必须记一条**：读不出来的会话**永远收不了尾** —— 它的分段
+            // 既不会 remux、也不会进索引，而调用方只会静默 `continue`。
+            // 2026-09-29 之前那句注释写的是「留给上层记录」，而**上层根本没记**：
+            // 这是本仓唯一会**丢证据**的方向（I2/I9），却唯一没有留痕的地方。
+            _logger.Log(Diagnostics.LogLevel.Error, "录制",
+                $"会话元数据读不出来，这一场的分段收不了尾（{path}）：{ex.Message}");
+
             return null;
         }
     }

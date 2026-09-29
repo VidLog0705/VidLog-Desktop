@@ -14,6 +14,7 @@ using MessageBoxImage = System.Windows.MessageBoxImage;
 using SelectionChangedEventArgs = System.Windows.Controls.SelectionChangedEventArgs;
 using VidLog.Desktop.App.Platform;
 using VidLog.Desktop.Core.Cleanup;
+using VidLog.Desktop.Core.Diagnostics;
 using VidLog.Desktop.Core.Labels;
 using VidLog.Desktop.Core.Search;
 
@@ -408,6 +409,13 @@ public partial class SearchWindow : Window
             await _host.Services.Labels.SetAsync(
                 evidenceId, LabelKeys.Locked, locked ? "false" : "true");
 
+            // ⚠️ **留痕**（`AGENTS.md` §6「状态变更」）：这一个标签直接决定
+            // 那条录像**会不会被清理**（§3.5.3② 的硬豁免），而在这之前
+            // 成功路径只改了一行界面文案 —— 事后没人能回答「这条是谁、什么时候锁的」。
+            _host.Log(
+                LogLevel.Info, "锁定",
+                $"{(locked ? "解除锁定" : "锁定")} {evidenceId}");
+
             // 重检索一遍，那一格（以及「已锁定 / 锁定」）才会跟着变。
             await SearchAsync();
 
@@ -420,6 +428,9 @@ public partial class SearchWindow : Window
             // I3：写不进去要说出来 —— 用户以为锁上了而其实没锁，
             // 那条录像会在保留期到的时候被清掉。
             CountText.Text = $"锁定没能保存：{ex.Message}";
+
+            // ⚠️ 失败也要留痕：这句话只留在界面上，而用户多半已经把它划走了。
+            _host.Log(LogLevel.Warn, "锁定", $"锁定没能保存（{evidenceId}）：{ex.Message}");
         }
     }
 

@@ -6,6 +6,7 @@ using System.Text;
 using System.Text.Json;
 using VidLog.Desktop.Core.Cleanup;
 using VidLog.Desktop.Core.Configuration;
+using VidLog.Desktop.Core.Diagnostics;
 using VidLog.Desktop.Core.Index;
 using VidLog.Desktop.Core.Labels;
 using VidLog.Desktop.Core.Media;
@@ -114,6 +115,9 @@ public sealed class UploadReceiver
     private readonly string _deviceName;
     private readonly Func<DateTimeOffset> _now;
 
+    /// <summary>异常留痕用（`AGENTS.md` §6）。</summary>
+    private readonly IAppLogger _logger;
+
     /// <summary>提交串行闸。发布是「先落盘后入索引」两步，不许交叉。</summary>
     private readonly SemaphoreSlim _gate = new(1, 1);
 
@@ -125,7 +129,8 @@ public sealed class UploadReceiver
         DecodeVerifier verifier,
         string deviceName,
         Func<DateTimeOffset>? now = null,
-        ArchiveRelay? relay = null)
+        ArchiveRelay? relay = null,
+        IAppLogger? logger = null)
     {
         _layout = layout;
         _index = index;
@@ -136,6 +141,7 @@ public sealed class UploadReceiver
         _now = now ?? (() => DateTimeOffset.UtcNow);
         _receipts = new ReceiptStore(layout.ReceiptsPath);
         _relay = relay;
+        _logger = logger ?? NullLogger.Instance;
     }
 
     /// <summary>
@@ -527,7 +533,7 @@ public sealed class UploadReceiver
     /// 这是**唯一**可以删 <c>incoming/</c> 的时机：此刻成品已在归档层、已在索引里、
     /// 回执也已落盘。提前删就等于把续传的能力毁掉（§3.4.2 要的正是能续传）。
     /// </remarks>
-    private static async Task CleanupIncomingAsync(string directory, CancellationToken cancellationToken)
+    private async Task CleanupIncomingAsync(string directory, CancellationToken cancellationToken)
     {
         try
         {
@@ -536,6 +542,13 @@ public sealed class UploadReceiver
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
             // 留给人工/将来的清理。不在这里抛 —— 这次上传是成功的。
+            //
+            // ⚠️ 但**必须记一条**（`AGENTS.md` §6「异常」+「不可逆动作」）：
+            // 删不掉就会**永远留在盘上**（这个目录只在这一处被清），而它的体积
+            // 是整份录像的原始分片 —— 盘满时用户查不到是谁占的。
+            // 2026-09-29 审计查出来的缺口：这里原来一个字都不留。
+            _logger.Log(LogLevel.Warn, "上传",
+                $"暂存分片删不掉，会一直占着盘（{directory}）：{ex.Message}");
         }
     }
 

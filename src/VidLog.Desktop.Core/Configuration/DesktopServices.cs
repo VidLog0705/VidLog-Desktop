@@ -281,7 +281,9 @@ public sealed class DesktopServices : IAsyncDisposable
             logger,
             relay);
 
-        var workspace = new RecordingWorkspace(layout.WorkspaceRoot);
+        // ⚠️ logger 一定要传：工作区是「读不出来的会话」唯一的留痕出口，
+        // 而那一条正是本仓**唯一会丢证据**的方向（见 `ReadManifestAsync`）。
+        var workspace = new RecordingWorkspace(layout.WorkspaceRoot, logger);
         var orphanRecovery = new OrphanRecovery(workspace, finalizer);
 
         var search = new RecordingSearch(index, labels);
@@ -307,7 +309,10 @@ public sealed class DesktopServices : IAsyncDisposable
             new DecodeVerifier(toolPath, runner),
             resolvedDeviceName,
             now: null,
-            relay: relay);
+            relay: relay,
+            // ⚠️ 传 logger：「清掉暂存区」那一步删的是目录，而失败时原来**没人知道**
+            // （见 `CleanupIncomingAsync` 的说明）。
+            logger: logger);
 
         PlaybackServer? server = null;
         if (playbackPort is not null)

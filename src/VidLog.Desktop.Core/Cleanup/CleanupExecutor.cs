@@ -140,6 +140,13 @@ public sealed class CleanupExecutor
 
                 await _audit.AppendAsync(new CleanupAuditRecord(
                     candidate.Entry.EvidenceId, "failed", candidate.Why, ex.Message));
+
+                // ⚠️ 日志也要记一条（`AGENTS.md` §6「清理动作」）——
+                // 上面那两处（拒绝清理 :107、删除成功 :132）都记了，只有这里没记，
+                // 而「**该删的删不掉**」恰恰是最该被人看见的一种：磁盘会一直满着，
+                // 而审计表在 `%LOCALAPPDATA%` 里，没人在事故现场会去翻它。
+                _logger.Log(LogLevel.Warn, "清理",
+                    $"删不掉 {candidate.Entry.Waybill.Value}（{candidate.Why}）：{ex.Message}");
             }
         }
 

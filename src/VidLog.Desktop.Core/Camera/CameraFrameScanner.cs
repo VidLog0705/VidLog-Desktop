@@ -74,8 +74,10 @@ public sealed class CameraFrameScanner : IAsyncDisposable
         try
         {
             _gate.Reset();
+            // ⚠️ 把 logger 传下去：识码进程起来之后死掉的原因（`device in use`、
+            // 地址打不开）只在它的 stderr 里，而它一死外面只看到「没有新帧」。
             _process = await ScannerProcess.StartAsync(
-                _ffmpegPath, _source, _sink, Rotation, cancellationToken);
+                _ffmpegPath, _source, _sink, Rotation, _logger, cancellationToken);
 
             _loop = new CancellationTokenSource();
             _ = Task.Run(() => DecodeLoopAsync(_loop.Token), CancellationToken.None);

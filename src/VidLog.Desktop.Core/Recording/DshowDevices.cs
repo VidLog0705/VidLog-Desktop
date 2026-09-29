@@ -28,22 +28,32 @@ public static class DshowDevices
     /// <summary>列出可用的**视频**设备名。返回空列表 = 没有摄像头（或 ffmpeg 跑不起来）。</summary>
     public static async Task<IReadOnlyList<string>> ListVideoAsync(
         string ffmpegPath,
+        Diagnostics.IAppLogger? logger = null,
         CancellationToken cancellationToken = default) =>
-        ParseVideoDevices(await ListAllAsync(ffmpegPath, cancellationToken));
+        ParseVideoDevices(await ListAllAsync(ffmpegPath, logger, cancellationToken));
 
     /// <summary>列出可用的**音频**设备名（规格 §3.1.8）。返回空列表 = 没有麦克风。</summary>
     public static async Task<IReadOnlyList<string>> ListAudioAsync(
         string ffmpegPath,
+        Diagnostics.IAppLogger? logger = null,
         CancellationToken cancellationToken = default) =>
-        ParseAudioDevices(await ListAllAsync(ffmpegPath, cancellationToken));
+        ParseAudioDevices(await ListAllAsync(ffmpegPath, logger, cancellationToken));
 
     /// <summary>跑一次 <c>-list_devices</c>，把 stderr 原样拿回来。</summary>
     /// <remarks>
+    /// <para>
     /// 失败时返回空串而不是抛：调用方拿到空串，解析出来就是空表 ——
     /// 与「本机没这个设备」同一条路（上层已经有一条「找不到 FFmpeg」的警告了，
     /// 这里再抛一次只会变成重复噪声）。
+    /// </para>
+    /// <para>
+    /// ⚠️ 但**空表与「ffmpeg 起不来」是两件事**，界面只能给出一句
+    /// 「没有找到摄像头」—— 而那一句对这两种处境都成立。所以这里**记一条**
+    /// （`AGENTS.md` §6「异常」）：出事时日志里要能分出是哪一种。
+    /// </para>
     /// </remarks>
-    private static async Task<string> ListAllAsync(string ffmpegPath, CancellationToken cancellationToken)
+    private static async Task<string> ListAllAsync(
+        string ffmpegPath, Diagnostics.IAppLogger? logger, CancellationToken cancellationToken)
     {
         var startInfo = new ProcessStartInfo
         {
@@ -74,6 +84,12 @@ public static class DshowDevices
         }
         catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or InvalidOperationException)
         {
+            // ⚠️ 这一路返回空串，调用方据此说「没有找到摄像头」——
+            // 而那正是**「本机真的没有设备」**与**「ffmpeg 根本没起来」**共用的那句话。
+            // 不记这一条的话，事后分不清是哪一种（2026-09-29 审计查出来的缺口）。
+            logger?.Log(Diagnostics.LogLevel.Warn, "设备",
+                $"跑不了 ffmpeg 的 -list_devices（{ffmpegPath}）：{ex.Message}");
+
             return string.Empty;
         }
     }

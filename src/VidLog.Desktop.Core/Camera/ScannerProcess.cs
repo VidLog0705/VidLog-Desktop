@@ -41,12 +41,18 @@ public sealed class ScannerProcess
     private readonly Process _process;
     private readonly RawGrayFrameReader _reader;
     private readonly Task _readLoop;
+    private readonly BoundedTextTail _errors;
+    private readonly Diagnostics.IAppLogger? _logger;
 
-    private ScannerProcess(Process process, RawGrayFrameReader reader, Task readLoop)
+    private ScannerProcess(
+        Process process, RawGrayFrameReader reader, Task readLoop,
+        BoundedTextTail errors, Diagnostics.IAppLogger? logger)
     {
         _process = process;
         _reader = reader;
         _readLoop = readLoop;
+        _errors = errors;
+        _logger = logger;
     }
 
     /// <summary>读到过多少帧（诊断用）。</summary>
@@ -54,7 +60,9 @@ public sealed class ScannerProcess
 
     public static Task<ScannerProcess> StartAsync(
         string ffmpegPath, CameraSource source, SingleSlotFrameSink sink,
-        CameraRotation rotation = CameraRotation.None, CancellationToken cancellationToken = default)
+        CameraRotation rotation = CameraRotation.None,
+        Diagnostics.IAppLogger? logger = null,
+        CancellationToken cancellationToken = default)
     {
         var startInfo = new ProcessStartInfo
         {
@@ -76,25 +84,22 @@ public sealed class ScannerProcess
         process.Start();
 
         // stderr 必须排空，否则一次刷屏就能把管道灌满、把进程顶住。
-        // 内容有用（`device in use` 这类判定），所以留尾部而不是丢。
-        _ = Task.Run(async () =>
-        {
-            try
-            {
-                await process.StandardError.ReadToEndAsync();
-            }
-            catch (Exception)
-            {
-                // 进程退了就是结束，不是错误。
-            }
-        });
+        //
+        // ⚠️ **而且内容要留下来**（2026-09-29 审计查出来的缺口）：原来这里是
+        // `ReadToEndAsync()` 把结果**丢掉**，于是识码进程起来之后死掉
+        // （`device in use`、地址打不开）时，`_process` 不动声色地跑完，
+        // `CameraFrameScanner` 只看到「没有新帧」—— **日志与 `Failed` 事件都不响**。
+        // 它的两个兄弟（`PreviewProcess` / `MicrophoneLevelMonitor`）都是留尾部的，
+        // 只有它没有。
+        var errors = new BoundedTextTail();
+        _ = Task.Run(() => DrainAsync(process.StandardError, errors));
 
         var reader = new RawGrayFrameReader(process.StandardOutput.BaseStream, sink, Width, Height);
         var readLoop = Task.Run(reader.RunAsync);
 
         cancellationToken.ThrowIfCancellationRequested();
 
-        return Task.FromResult(new ScannerProcess(process, reader, readLoop));
+        return Task.FromResult(new ScannerProcess(process, reader, readLoop, errors, logger));
     }
 
     /// <summary>
@@ -213,6 +218,33 @@ public sealed class ScannerProcess
         // 读循环会在管道断开后自己结束。
         await Task.WhenAny(_readLoop, Task.Delay(TimeSpan.FromSeconds(2)));
 
+        // ⚠️ ffmpeg 说过话就记一条：识码进程起来之后死掉的原因
+        // （`device in use`、地址打不开）**只在它那儿** —— 而它一死，
+        // 外面只看到「没有新帧」，那与「画面里就是没有码」长得一模一样。
+        // 空的时候不记（正常停下来没有话说）。
+        if (_errors.ToString().Trim() is { Length: > 0 } said)
+        {
+            _logger?.Log(Diagnostics.LogLevel.Warn, "识码", $"取景进程说过：{said}");
+        }
+
         _process.Dispose();
+    }
+
+    /// <summary>把管道读干，尾部留下（照 <see cref="PreviewProcess"/> 的兄弟做法）。</summary>
+    private static async Task DrainAsync(StreamReader reader, BoundedTextTail sink)
+    {
+        try
+        {
+            var buffer = new char[4096];
+            int read;
+            while ((read = await reader.ReadAsync(buffer).ConfigureAwait(false)) > 0)
+            {
+                sink.Append(buffer, read);
+            }
+        }
+        catch (Exception ex) when (ex is IOException or ObjectDisposedException or InvalidOperationException)
+        {
+            // 进程退了就是结束，不是错误。
+        }
     }
 }
