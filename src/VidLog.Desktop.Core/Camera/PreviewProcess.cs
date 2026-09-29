@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using VidLog.Desktop.Core.Diagnostics;
 using VidLog.Desktop.Core.Media;
 using VidLog.Desktop.Core.Recording;
 
@@ -109,15 +110,18 @@ public sealed class PreviewProcess : IAsyncDisposable
     private readonly Process _process;
     private readonly BoundedTextTail _errors;
     private readonly Task _readLoop;
+    private readonly IAppLogger? _logger;
 
     /// <summary>0 = 还没停过，1 = 已经停过（见 <see cref="StopAsync"/> 的幂等说明）。</summary>
     private int _stopped;
 
-    private PreviewProcess(Process process, BoundedTextTail errors, Task readLoop)
+    private PreviewProcess(
+        Process process, BoundedTextTail errors, Task readLoop, IAppLogger? logger)
     {
         _process = process;
         _errors = errors;
         _readLoop = readLoop;
+        _logger = logger;
     }
 
     /// <summary>ffmpeg 说的最后一句话（起不来时用它给用户一个原因，I3）。</summary>
@@ -133,6 +137,7 @@ public sealed class PreviewProcess : IAsyncDisposable
         CameraSource source,
         SingleSlotPreviewSink sink,
         CameraRotation rotation = CameraRotation.None,
+        IAppLogger? logger = null,
         CancellationToken cancellationToken = default)
     {
         var startInfo = new ProcessStartInfo
@@ -163,7 +168,11 @@ public sealed class PreviewProcess : IAsyncDisposable
 
         cancellationToken.ThrowIfCancellationRequested();
 
-        return Task.FromResult(new PreviewProcess(process, errors, readLoop));
+        // ⚠️ `AGENTS.md` §6「异常必须留痕」。地址带上 **Identity**（凭据已抹掉）——
+        // 网络摄像头那一路的 `Address` 里带着密码。
+        logger?.Log(LogLevel.Info, "预览", $"开始预览（{source.Identity}）");
+
+        return Task.FromResult(new PreviewProcess(process, errors, readLoop, logger));
     }
 
     /// <summary>预览的命令。单独抽出来是为了让参数能被断言。</summary>
@@ -268,6 +277,15 @@ public sealed class PreviewProcess : IAsyncDisposable
 
         // 读循环会在管道断开后自己结束。
         await Task.WhenAny(_readLoop, Task.Delay(TimeSpan.FromSeconds(2)));
+
+        // ⚠️ ffmpeg 说过话就记一条（「设备被占用」「地址打不开」这类原因**只在它那儿**）。
+        // 空的时候不记 —— 正常停下来的预览没有话说，记一条只会把日志灌满。
+        if (ErrorTail.Trim() is { Length: > 0 } said)
+        {
+            _logger?.Log(LogLevel.Warn, "预览", $"预览进程说过：{said}");
+        }
+
+        _logger?.Log(LogLevel.Info, "预览", "预览已停，相机已释放");
 
         _process.Dispose();
     }

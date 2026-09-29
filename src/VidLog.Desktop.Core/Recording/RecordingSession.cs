@@ -237,6 +237,9 @@ public sealed class RecordingSession : IAsyncDisposable
     /// <summary>该问了 —— 由协调器接到之后去发语音与界面两键。</summary>
     private readonly Action? _durationPrompted;
 
+    /// <summary>这一段遇到了问题 —— 由协调器接到之后**记进日志**（见 <see cref="LastProblem"/>）。</summary>
+    private readonly Action<string>? _problemReported;
+
     /// <param name="clock">
     /// 单调时钟读数（默认 <c>Stopwatch.GetElapsedTime</c>）。
     /// 测试传可控读数，就能不靠等待验证分段滚动与时长兜底。
@@ -259,7 +262,8 @@ public sealed class RecordingSession : IAsyncDisposable
         Func<TimeSpan>? clock = null,
         Func<TimeSpan, CancellationToken, Task>? delay = null,
         ITrustedClock? trustedClock = null,
-        Action? durationPrompted = null)
+        Action? durationPrompted = null,
+        Action<string>? problemReported = null)
     {
         _workspace = workspace;
         _capture = capture;
@@ -271,6 +275,7 @@ public sealed class RecordingSession : IAsyncDisposable
         _delay = delay ?? Task.Delay;
         _trustedClock = trustedClock;
         _durationPrompted = durationPrompted;
+        _problemReported = problemReported;
 
         SourceDeviceId = sourceDeviceId;
         SessionId = NewSessionId();
@@ -356,7 +361,36 @@ public sealed class RecordingSession : IAsyncDisposable
     /// <summary>
     /// 录制中遇到的、需要让用户看见的问题（I3：不存在静默失败）。
     /// </summary>
-    public string? LastProblem { get; private set; }
+    /// <remarks>
+    /// ⚠️ <b>设值时会回调 <see cref="_problemReported"/></b>（只在**变了**的时候），
+    /// 让调用方把它**记进日志**。`AGENTS.md` §6 要求「异常必须留痕」——
+    /// 而 2026-09-29 查出来：这一类问题（音轨没接上、水印写不出来）
+    /// **一次都没进过日志**，因为它只到界面。
+    /// <para>
+    /// ⚠️ 去重放在**这里**而不是回调方：同一个问题每段都会重新设一次，
+    /// 不去重的话长期录制会把日志刷满 —— 而**被刷满的日志等于没有日志**。
+    /// </para>
+    /// </remarks>
+    public string? LastProblem
+    {
+        get => _lastProblem;
+        private set
+        {
+            if (string.Equals(value, _lastProblem, StringComparison.Ordinal))
+            {
+                return;
+            }
+
+            _lastProblem = value;
+
+            if (value is { Length: > 0 })
+            {
+                _problemReported?.Invoke(value);
+            }
+        }
+    }
+
+    private string? _lastProblem;
 
     /// <summary>
     /// 本次会话最终由哪个原因结束。收尾前为 <see langword="null"/>。

@@ -575,7 +575,12 @@ public sealed class RecordingCoordinator : IAsyncDisposable
             durationPrompted: () => Raise(
                 CoordinatorNoticeKind.DurationPrompt,
                 waybill,
-                "录制时间即将超时，是否需要停止录制？"));
+                "录制时间即将超时，是否需要停止录制？"),
+            // ⚠️ **异常必须留痕**（`AGENTS.md` §6）。会话把问题放在 `LastProblem`
+            // 给界面看，而在这之前它**一次都没进过日志** —— 音轨没接上、
+            // 水印写不出来这一类，查日志的时候什么都看不到。
+            problemReported: problem =>
+                _logger.Log(LogLevel.Warn, "录制", $"{waybill.Value}：{problem}"));
 
         await session.StartAsync(waybill, _options.Encoder, cancellationToken);
         _current = session;

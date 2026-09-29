@@ -135,11 +135,22 @@ public sealed class CleanupService
         var labels = await _labels.LoadAllAsync(cancellationToken);
         var anchors = await _receipts.LoadAnchorMapAsync(cancellationToken);
 
-        return new CleanupPlanner().Plan(
+        var plan = new CleanupPlanner().Plan(
             entries, labels, anchors,
             new RetentionPolicy(RetentionMode.BySpace, MinFreeBytes: minFreeBytes),
             now,
             freeBytes);
+
+        // ⚠️ **预告也要留痕**（`AGENTS.md` §6 的「清理动作」）。
+        // `RunAsync` 那边已经记了「真删了什么」，而这一步记的是
+        // 「**为什么要删**」—— 事后只看删除记录的话，分不清那次清理是
+        // 按时间到期还是盘快满了（两者的处置与责任完全不同）。
+        _logger.Log(LogLevel.Info, "清理", $"按空间释放的预告：剩余 {freeBytes / 1024 / 1024} MB、"
+            + $"要留 {minFreeBytes / 1024 / 1024} MB ⇒ 拟删 {plan.Candidates.Count} 条"
+            + $"（约 {plan.Candidates.Sum(c => c.SizeBytes) / 1024 / 1024} MB），"
+            + $"豁免 {plan.Exempted.Count} 条");
+
+        return plan;
     }
 
     /// <summary>按计划真删。逐条回查归档层，查不到或查不了都**不删**（I8）。</summary>

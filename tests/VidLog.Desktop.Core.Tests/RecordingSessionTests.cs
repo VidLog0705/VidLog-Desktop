@@ -84,6 +84,63 @@ public class RecordingSessionTests
     }
 
     [Fact]
+    public async Task 段的问题必须同时走日志_不能只到界面()
+    {
+        // ⚠️ `AGENTS.md` §6：「**异常必须留痕**」。2026-09-29 查出来：
+        // 这一类问题（音轨没接上、水印写不出来）在协调器那边**一次都没进过日志** ——
+        // `LastProblem` 只到界面，而查日志的时候什么都看不到。
+        using var dir = new TempDir();
+        var capture = new FakeCapture { StartupWarning = "麦克风没能接上，这一段没有音轨。" };
+
+        var reported = new List<string>();
+
+        await using var session = Build(
+            dir, capture,
+            options: RecordingSessionOptions.Default.WithMicrophone("话筒"),
+            problemReported: reported.Add);
+
+        await session.StartAsync(WaybillNumber.Parse("SF1"), "libx264");
+        await session.ReleaseCaptureAsync();
+
+        // 界面那一份（`LastProblem`）与日志那一份都要有。
+        Assert.Equal("麦克风没能接上，这一段没有音轨。", session.LastProblem);
+        Assert.Equal(["麦克风没能接上，这一段没有音轨。"], reported);
+    }
+
+    [Fact]
+    public async Task 同一个问题重复出现时只回调一次()
+    {
+        // ⚠️ 不去重的话，长期录制里每段都会重设一次同一句话 ——
+        // 而**被刷满的日志等于没有日志**（与 `SystemProcessRunner`
+        // 「只在失败时记」是同一条理由）。
+        //
+        // 判据要**真的滚出两段**才算数（每段开头都会重新设一次那个问题）——
+        // 参数照本文件那条滚段用例。
+        using var dir = new TempDir();
+        var capture = new FakeCapture { StartupWarning = "麦克风没能接上，这一段没有音轨。" };
+        var clock = new FakeClock();
+
+        var reported = new List<string>();
+
+        await using var session = Build(
+            dir, capture, clock: clock,
+            options: new RecordingSessionOptions(
+                SegmentDuration: TimeSpan.FromMinutes(2),
+                MaxDuration: TimeSpan.FromMinutes(5),
+                StopGracePeriod: TimeSpan.FromSeconds(1),
+                PollInterval: TimeSpan.FromMinutes(1)).WithMicrophone("话筒"),
+            problemReported: reported.Add);
+
+        await session.StartAsync(WaybillNumber.Parse("SF1"), "libx264");
+        await session.RunAsync("libx264");
+
+        // 先证明这条路上**真的滚过段**（否则「只回调一次」可能只是因为只有一段）。
+        Assert.True(session.ClosedSegmentCount >= 2, $"应当滚过段，实际 {session.ClosedSegmentCount} 段");
+
+        Assert.Single(reported);
+    }
+
+    [Fact]
     public async Task 音频降级的那句话必须让用户看见()
     {
         // 规格 §3.1.8：麦克风接不上 ⇒ 照常录视频、只是这一段没有音轨。
@@ -673,7 +730,8 @@ public class RecordingSessionTests
         IProcessRunner? runner = null,
         RecordingIndexSpy? index = null,
         RecordingSessionOptions? options = null,
-        Action? onPrompt = null)
+        Action? onPrompt = null,
+        Action<string>? problemReported = null)
     {
         // 方法组不能直接配合 ?. —— 显式判空，让类型明确是 Func<TimeSpan>?。
         Func<TimeSpan>? effectiveClock = clock is null ? null : clock.Read;
@@ -688,7 +746,8 @@ public class RecordingSessionTests
             options ?? DefaultOptions,
             effectiveClock,
             AdvancingDelay(clock),
-            durationPrompted: onPrompt);
+            durationPrompted: onPrompt,
+            problemReported: problemReported);
     }
 
     /// <summary>

@@ -55,15 +55,19 @@ public sealed class MicrophoneLevelMonitor : IAsyncDisposable
     /// <summary>与读循环共享的那一格（见 <see cref="MonitorState"/>）。</summary>
     private readonly MonitorState _state;
 
+    private readonly IAppLogger? _logger;
+
     private int _stopped;
 
     private MicrophoneLevelMonitor(
-        Process process, BoundedTextTail errors, Task readLoop, MonitorState state)
+        Process process, BoundedTextTail errors, Task readLoop, MonitorState state,
+        IAppLogger? logger)
     {
         _process = process;
         _errors = errors;
         _readLoop = readLoop;
         _state = state;
+        _logger = logger;
     }
 
     /// <summary>最近的电平，<c>0.0</c–<c>1.0</c>。</summary>
@@ -74,7 +78,9 @@ public sealed class MicrophoneLevelMonitor : IAsyncDisposable
 
     /// <summary>起一个电平监视进程。</summary>
     public static Task<MicrophoneLevelMonitor> StartAsync(
-        string ffmpegPath, string microphone, CancellationToken cancellationToken = default)
+        string ffmpegPath, string microphone,
+        IAppLogger? logger = null,
+        CancellationToken cancellationToken = default)
     {
         var startInfo = new ProcessStartInfo
         {
@@ -110,7 +116,9 @@ public sealed class MicrophoneLevelMonitor : IAsyncDisposable
 
         cancellationToken.ThrowIfCancellationRequested();
 
-        return Task.FromResult(new MicrophoneLevelMonitor(process, errors, readLoop, state));
+        logger?.Log(LogLevel.Info, "音量", $"开始监听 {microphone}");
+
+        return Task.FromResult(new MicrophoneLevelMonitor(process, errors, readLoop, state, logger));
     }
 
     /// <summary>监视的命令。单独抽出来是为了让参数能被断言。</summary>
@@ -180,6 +188,13 @@ public sealed class MicrophoneLevelMonitor : IAsyncDisposable
         }
 
         await Task.WhenAny(_readLoop, Task.Delay(TimeSpan.FromSeconds(2)));
+
+        // ⚠️ ffmpeg 说过话就记一条：麦克风打不开的原因（被占用、名字不对）
+        // **只在它那儿**。空的时候不记（正常停下来没有话说）。
+        if (ErrorTail.Trim() is { Length: > 0 } said)
+        {
+            _logger?.Log(LogLevel.Warn, "音量", $"电平监视说过：{said}");
+        }
 
         _process.Dispose();
     }
