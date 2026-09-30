@@ -693,7 +693,26 @@ public class FfmpegCameraCaptureIntegrationTests
         // ★ 交叉核对：产物**实际的**尺寸要等于探测报出来的那一对。
         // 分开量是因为两者走的是不同的文件（探测的那份已删），
         // 等于说「探测说的」与「真录出来的」是同一个数。
-        Assert.Equal(observed, await MeasureAsync(runner, mkv));
+        Assert.Equal(observed, (await MeasureAsync(runner, mkv)).Size);
+
+        // ★ 帧率也要**真量到**（需求方 2026-09-30 裁决：补测帧率、照图印）。
+        // 量到的那个值会被印进「已采用可用的原生配置（640×480 @ 30 FPS）」那句话里，
+        // 所以「量不到」这条路上界面只能印尺寸 —— 而那是**这台相机的实际行为**，
+        // 不该在这里偷偷放过：量不到就是这句设计图上的话印不全。
+        var fps = result.ObservedFrameRate;
+        Assert.NotNull(fps);
+        Assert.True(fps > 0, $"帧率必须是正数，实际是 {fps}");
+
+        // 与产物实际那一份交叉核对（分开量，理由同上）。
+        Assert.Equal(result.ObservedFrameRate, (await MeasureAsync(runner, mkv)).FrameRate);
+
+        // ★ 那句话在**这台相机上真的印得出帧率**（逐字那一半由单元测试钉住，
+        // 这条钉的是「真机量得到」——量不到的话设计图上那句话就印不全）。
+        var applied = native.WithObservedSize(
+            observed.Value.Width, observed.Value.Height, result.ObservedFrameRate);
+
+        Assert.Contains(" @ ", applied.ObservedDescription);
+        Assert.EndsWith(" FPS", applied.ObservedDescription);
     }
 
     [RequiresCameraFact]
@@ -744,26 +763,29 @@ public class FfmpegCameraCaptureIntegrationTests
                 ? (Width: height, Height: width)
                 : (Width: width, Height: height);
 
-            Assert.Equal(expected, await MeasureAsync(runner, mkv));
+            var measured = await MeasureAsync(runner, mkv);
+
+            Assert.Equal(expected, measured.Size);
         }
     }
 
-    /// <summary>从产物里读它**实际**的尺寸（独立于探测那一路，用来交叉核对）。</summary>
-    private static async Task<(int Width, int Height)?> MeasureAsync(IProcessRunner runner, string path)
+    /// <summary>从产物里读它**实际**的尺寸与帧率（独立于探测那一路，用来交叉核对）。</summary>
+    /// <remarks>
+    /// ⚠️ argv 走 <see cref="FfmpegSpecProbe.ReadBackArguments"/>（生产那一份）——
+    /// 自己拼一份的话，两份一旦走岔，这里测的就不是生产真正用的读法了。
+    /// </remarks>
+    private static async Task<((int Width, int Height)? Size, double? FrameRate)> MeasureAsync(
+        IProcessRunner runner, string path)
     {
-        var result = await runner.RunAsync(Ffmpeg,
-        [
-            "-hide_banner",
-            // ⚠️ 不能压成 `-v error`：尺寸是 info 级别打出来的。
-            "-v", "info",
-            "-i", path, "-frames:v", "1", "-f", "null", "-",
-        ]);
+        var result = await runner.RunAsync(Ffmpeg, FfmpegSpecProbe.ReadBackArguments(path));
 
         var streams = FfmpegNetworkCameraProbe.ParseStreams(result.StandardError);
 
-        return streams is { Width: > 0, Height: > 0 }
-            ? (streams.Width.Value, streams.Height.Value)
-            : null;
+        return (
+            streams is { Width: > 0, Height: > 0 }
+                ? (streams.Width.Value, streams.Height.Value)
+                : null,
+            streams.FrameRate);
     }
 
     private static async Task<string> PickEncoderAsync(IProcessRunner runner)

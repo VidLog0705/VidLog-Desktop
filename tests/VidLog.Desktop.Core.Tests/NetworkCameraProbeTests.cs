@@ -41,6 +41,61 @@ public class NetworkCameraProbeTests
         // ⚠️ 这一条有实际用途：对端自带音轨时，「录制声音」关着也不能让它混进来
         // （见 docs/实现决策.md §66.9）。
         Assert.True(streams.HasAudio);
+
+        // ⚠️ 这一路**没有** `fps` 那个字段（只有 `29.97 tbr`）⇒ 帧率读不出来。
+        // 这不是缺陷：`tbr` 是时间基，RTSP 上常是 `90k tbr` 这种根本不是帧率的数
+        // —— 所以宁可不认。它只影响「原生档那句话印不印帧率」。
+        Assert.Null(streams.FrameRate);
+    }
+
+    [Fact]
+    public void 从读回的成品里读出帧率()
+    {
+        // 2026-09-30 本机实测：把录好的 MKV 读回来（`-v info -i x.mkv -frames:v 1 -f null -`），
+        // ffmpeg 在流信息那一行**会**印帧率。这正是原生档问「多少帧」的路子
+        // （`FfmpegSpecProbe.MeasureObservedAsync`）—— 所以这条解析必须有。
+        const string ReadBack = """
+            Input #0, matroska,webm, from 'C:\Temp\vidlog-spec-probe-abc.mkv':
+              Stream #0:0: Video: h264 (High), yuv420p(tv, progressive), 640x480 [SAR 1:1 DAR 4:3], 30 fps, 30 tbr, 1k tbn
+            """;
+
+        var streams = FfmpegNetworkCameraProbe.ParseStreams(ReadBack);
+
+        Assert.Equal(640, streams.Width);
+        Assert.Equal(480, streams.Height);
+        Assert.Equal(30, streams.FrameRate);
+    }
+
+    [Fact]
+    public void 帧率带小数也读得出来()
+    {
+        var streams = FfmpegNetworkCameraProbe.ParseStreams(
+            "  Stream #0:0: Video: h264, yuv420p, 1920x1080, 29.97 fps, 30k tbr, 90k tbn");
+
+        Assert.Equal(29.97, streams.FrameRate);
+    }
+
+    [Fact]
+    public void 不许把tbr当成帧率()
+    {
+        // ⚠️ 这条是防「认出一个错的帧率」——`90k tbr` 里的 90 显然不是帧率，
+        // 而 `(?<![\d.])` 那个前视也挡着 `1k tbn` 这类邻近字段。
+        // 「读不出来」是可接受的，「读出一个错的」不行。
+        var streams = FfmpegNetworkCameraProbe.ParseStreams(
+            "  Stream #0:0: Video: h264, yuv420p, 1920x1080, 90k tbr, 90k tbn");
+
+        Assert.Null(streams.FrameRate);
+    }
+
+    [Fact]
+    public void 帧率读不出来时是null_不猜()
+    {
+        var streams = FfmpegNetworkCameraProbe.ParseStreams(
+            "  Stream #0:0: Video: h264, yuv420p, 640x480, 0 fps, 30 tbr");
+
+        // `0 fps` 明显不是帧率（ffmpeg 表达「不知道」时会这么打）⇒ 不许当 0 收下，
+        // 那样界面会印出「@ 0 FPS」。
+        Assert.Null(streams.FrameRate);
     }
 
     [Fact]

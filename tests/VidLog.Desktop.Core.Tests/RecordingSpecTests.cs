@@ -1,3 +1,4 @@
+using System.Globalization;
 using VidLog.Desktop.Core.Cleanup;
 using VidLog.Desktop.Core.Index;
 using VidLog.Desktop.Core.Media;
@@ -269,6 +270,15 @@ public class RecordingSpecTests
         /// </remarks>
         public (int Width, int Height)? ObservedOnSuccess { get; init; }
 
+        /// <summary>
+        /// 探测成功时报出来的帧率。
+        /// </summary>
+        /// <remarks>
+        /// ⚠️ 生产里它是**独立**量出来的（与尺寸同一次读回，但键不同）——
+        /// 所以「尺寸量到了、帧率没量到」是正常结果，这里的两个属性也各自独立。
+        /// </remarks>
+        public double? ObservedFrameRateOnSuccess { get; init; }
+
         public Task<SpecProbeResult> ProbeAsync(
             RecordingSpec spec, CameraSource source, CancellationToken cancellationToken = default)
         {
@@ -277,7 +287,8 @@ public class RecordingSpecTests
             return Task.FromResult(usable.Contains(spec)
                 ? new SpecProbeResult(
                     spec, spec.EncoderCandidates[0], true, null,
-                    spec.NativeCaptureSize ? ObservedOnSuccess : null)
+                    spec.NativeCaptureSize ? ObservedOnSuccess : null,
+                    spec.NativeCaptureSize ? ObservedFrameRateOnSuccess : null)
                 : new SpecProbeResult(spec, spec.EncoderCandidates[0], false, "这个组合打不开"));
         }
     }
@@ -433,22 +444,53 @@ public class RecordingSpecTests
     }
 
     [Fact]
-    public async Task 原生档那句话要说出实测尺寸_而且不许印没测过的帧率()
+    public async Task 原生档那句话量到帧率时_与设计图逐字一致()
     {
+        // 需求方 2026-09-30 裁决：**补测帧率、照图印**。
+        // 设计图步 4 未完成态的原话就是这一句，所以这里断言的是**逐字**相等
+        // 的片段 —— 少一个空格、把「×」写成「x」、把「FPS」写成「fps」都要红。
         var wanted = new RecordingSpec(VideoCodec.H265, VideoResolution.Uhd4K);
         var native = RecordingSpec.Default with { NativeCaptureSize = true };
+        var probe = new FakeSpecProbe(native)
+        {
+            ObservedOnSuccess = (640, 480),
+            ObservedFrameRateOnSuccess = 30,
+        };
+
+        var selection = await SpecSelectionPolicy.SelectAsync(wanted, CameraSource.Local("Camera"), probe);
+        var text = SpecSelectionPolicy.Describe(selection, wanted);
+
+        Assert.Contains("已采用可用的原生配置（640×480 @ 30 FPS）", text);
+        Assert.Contains("该配置来自摄像头原生模式，仅作为安全兜底", text);
+        Assert.Contains(selection.Reason!, text);
+
+        // 索引/日志那一句（Label）也必须带上实测的帧率。
+        Assert.Contains("640×480 @ 30 FPS", selection.Spec.Label);
+    }
+
+    [Fact]
+    public async Task 原生档那句话没量到帧率时_不许出现FPS这个字()
+    {
+        // ⚠️ 这一条是上面那条的**另一半**，别当成重复删掉：
+        // 帧率是**独立**量出来的，量不到时**不许印**（§13.1：只展示磁盘上真实可测的内容）。
+        // 印一个没测过的帧率，与印一个没测过的分辨率是同一件事。
+        var wanted = new RecordingSpec(VideoCodec.H265, VideoResolution.Uhd4K);
+        var native = RecordingSpec.Default with { NativeCaptureSize = true };
+
+        // 尺寸量到了、帧率没量到 —— 这是真机会出现的组合。
         var probe = new FakeSpecProbe(native) { ObservedOnSuccess = (640, 480) };
 
         var selection = await SpecSelectionPolicy.SelectAsync(wanted, CameraSource.Local("Camera"), probe);
         var text = SpecSelectionPolicy.Describe(selection, wanted);
 
-        Assert.Contains("640×480", text);
+        Assert.Contains("已采用可用的原生配置（640×480）", text);
         Assert.Contains("原生", text);
         Assert.Contains(selection.Reason!, text);
 
-        // ⚠️ 帧率**不印数字**：设计图上那句是「@ 30 FPS」，而我们没测过帧率 ——
-        // 原生档的帧率是相机自己定的。宁可少一句，不写一句没测过的话。
-        Assert.DoesNotContain("30 FPS", text);
+        // 「@」也不能留 —— 留一个孤零零的「@」比不印更怪。
+        Assert.DoesNotContain("FPS", text);
+        Assert.DoesNotContain("FPS", selection.Spec.Label);
+        Assert.DoesNotContain("@", text);
     }
 
     [Fact]
@@ -465,6 +507,30 @@ public class RecordingSpecTests
 
         // 测出来之后，Label 说的是实测的那一对。
         Assert.Contains("640×480", native.WithObservedSize(640, 480).Label);
+
+        // 带上帧率时那句话的形状（设计图上那一格）。
+        Assert.Contains("640×480 @ 30 FPS", native.WithObservedSize(640, 480, 30).Label);
+    }
+
+    [Fact]
+    public void 原生档那句帧率按不变文化印_不会变成逗号小数点()
+    {
+        // ⚠️ 那句话是要与设计图**逐字**对上的，所以它不能受这台机器的小数点设置影响。
+        // 这条用例**真的把文化切成逗号那一档**再断言 —— 否则它只是个摆设
+        // （本机的 zh-CN 本来也是点，切不切都过）。
+        var spec = RecordingSpec.Default.WithObservedSize(640, 480, 29.97);
+
+        var original = CultureInfo.CurrentCulture;
+        try
+        {
+            CultureInfo.CurrentCulture = new CultureInfo("de-DE");
+
+            Assert.Equal("640×480 @ 29.97 FPS", spec.ObservedDescription);
+        }
+        finally
+        {
+            CultureInfo.CurrentCulture = original;
+        }
     }
 
 

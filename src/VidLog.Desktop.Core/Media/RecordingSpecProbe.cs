@@ -11,12 +11,17 @@ namespace VidLog.Desktop.Core.Media;
 /// **实测出来的**尺寸；只有原生档（<see cref="RecordingSpec.NativeCaptureSize"/>）
 /// 会填它，其余档是我们钉的尺寸、本来就已知。
 /// </param>
+/// <param name="ObservedFrameRate">
+/// **实测出来的**帧率；同 <paramref name="ObservedSize"/>，只有原生档会填。
+/// 量不到时是 <see langword="null"/> —— 那只是少印一个数字，**不判失败**。
+/// </param>
 public sealed record SpecProbeResult(
     RecordingSpec Spec,
     string EncoderName,
     bool Usable,
     string? FailureReason,
-    (int Width, int Height)? ObservedSize = null);
+    (int Width, int Height)? ObservedSize = null,
+    double? ObservedFrameRate = null);
 
 /// <summary>录制规格的可用性检查（规格 §3.1.7）。</summary>
 public interface IRecordingSpecProbe
@@ -116,10 +121,11 @@ public sealed class FfmpegSpecProbe : IRecordingSpecProbe
         {
             cancellationToken.ThrowIfCancellationRequested();
 
-            var (usable, reason, observed) = await ProbeOneAsync(spec, source, encoder, cancellationToken);
+            var (usable, reason, observed, observedRate) =
+                await ProbeOneAsync(spec, source, encoder, cancellationToken);
             if (usable)
             {
-                return new SpecProbeResult(spec, encoder, true, null, observed);
+                return new SpecProbeResult(spec, encoder, true, null, observed, observedRate);
             }
 
             firstFailure ??= reason;
@@ -128,7 +134,8 @@ public sealed class FfmpegSpecProbe : IRecordingSpecProbe
         return new SpecProbeResult(spec, firstEncoder, false, firstFailure);
     }
 
-    private async Task<(bool Usable, string? Reason, (int Width, int Height)? Observed)> ProbeOneAsync(
+    private async Task<(bool Usable, string? Reason, (int Width, int Height)? Observed, double? FrameRate)>
+        ProbeOneAsync(
         RecordingSpec spec,
         CameraSource source,
         string encoder,
@@ -177,40 +184,41 @@ public sealed class FfmpegSpecProbe : IRecordingSpecProbe
             catch (OperationCanceledException)
             {
                 return (false, $"{encoder} 在 {_networkTimeout.TotalSeconds:0} 秒内没能连上"
-                    + "（地址可能不对，或者对端不通）", null);
+                    + "（地址可能不对，或者对端不通）", null, null);
             }
             catch (Exception ex)
             {
-                return (false, $"调用 FFmpeg 失败：{ex.Message}", null);
+                return (false, $"调用 FFmpeg 失败：{ex.Message}", null, null);
             }
 
             if (!result.Succeeded)
             {
                 // ⚠️ 理由走 `CameraErrorText`（中文），**不贴 ffmpeg 的英文原文** ——
                 // 界面提示必须是中文（需求方 2026-09-29 写死）。原文进日志。
-                return (false, $"{encoder} 打不开这个组合：{CameraErrorText.Describe(result.StandardError)}", null);
+                return (false,
+                    $"{encoder} 打不开这个组合：{CameraErrorText.Describe(result.StandardError)}", null, null);
             }
 
             if (!File.Exists(probeFile) || new FileInfo(probeFile).Length == 0)
             {
                 // 退出码 0 却没有产物 —— 与编码器探测同一条规矩：**必须验产物**。
-                return (false, $"{encoder} 退出码为 0 但没有产物", null);
+                return (false, $"{encoder} 退出码为 0 但没有产物", null, null);
             }
 
             var verification = await _verifier.VerifyAsync(probeFile, cancellationToken);
             if (!verification.IsPlayable)
             {
-                return (false, $"{encoder} 产出的文件解不开：{verification.FailureReason}", null);
+                return (false, $"{encoder} 产出的文件解不开：{verification.FailureReason}", null, null);
             }
 
-            // ★ 原生档的尺寸**只能在这里问出来**（我们没钉，是相机自己出的）。
-            // 设计图上那句「当前采用：640×480 @ 30 FPS」就是这个值；
+            // ★ 原生档的尺寸与帧率**只能在这里问出来**（我们没钉，是相机自己出的）。
+            // 设计图上那句「当前采用：640×480 @ 30 FPS」就是这两个值；
             // 拿不到的话界面只能说「相机原生档」，而索引里会缺一个真尺寸。
-            var observed = spec.NativeCaptureSize
-                ? await MeasureSizeAsync(probeFile, cancellationToken)
-                : null;
+            ((int Width, int Height)? Size, double? FrameRate) observed = spec.NativeCaptureSize
+                ? await MeasureObservedAsync(probeFile, cancellationToken)
+                : (null, null);
 
-            return (true, null, observed);
+            return (true, null, observed.Size, observed.FrameRate);
         }
         finally
         {
@@ -219,7 +227,30 @@ public sealed class FfmpegSpecProbe : IRecordingSpecProbe
     }
 
     /// <summary>
-    /// 从一个已经录好的文件里问出**它到底是什么尺寸**。
+    /// 「把录好的成品读回来，问它的尺寸与帧率」用的那段 argv。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// `public` 是为了**测试能拿同一份**：真机上那条「四档方向的宽高」用例
+    /// 要**独立地**量一遍产物（用作交叉核对），而它自己拼一份的话，
+    /// 两份一旦走岔，测的就不是生产真正用的那个读法了
+    /// （与 <see cref="FfmpegCameraCapture.BuildArguments"/> 同一条理由）。
+    /// </para>
+    /// <para>
+    /// ⚠️ **不能**用 `-v error`：编码、尺寸与帧率都是 ffmpeg 在 **info** 级别打的。
+    /// </para>
+    /// </remarks>
+    public static IReadOnlyList<string> ReadBackArguments(string path) =>
+    [
+        "-hide_banner",
+        "-v", "info",
+        "-i", path,
+        "-frames:v", "1",
+        "-f", "null", "-",
+    ];
+
+    /// <summary>
+    /// 从一个已经录好的文件里问出**它到底是什么尺寸、多少帧**。
     /// </summary>
     /// <remarks>
     /// <para>
@@ -228,32 +259,34 @@ public sealed class FfmpegSpecProbe : IRecordingSpecProbe
     /// 而漏掉的那一处会**静默**读不到尺寸（拿到的不是错误，是 null）。
     /// </para>
     /// <para>
-    /// ⚠️ 这里**不能**用 `-v error`：编码与尺寸是 ffmpeg 在 **info** 级别打出来的。
+    /// ⚠️ 这里**不能**用 `-v error`：编码、尺寸与帧率都是 ffmpeg 在 **info** 级别打出来的。
     /// </para>
     /// <para>
     /// ⚠️ 量不到**不让这次探测失败**：这个组合已经验过「真能录出可解码的成品」了，
     /// 缺的只是「界面上那句具体尺寸」。少一句说明，不该把一次成功的探测判成失败。
+    /// 尺寸与帧率分别独立 —— **一个量到一个没量到**是正常结果（那一句就只印量到的那个）。
+    /// </para>
+    /// <para>
+    /// ⚠️ 读的是**录回来的成品**，不是探测那一次 ffmpeg 的 stderr。理由是这条：
+    /// 成品是**真落盘的东西**（尺寸与帧率是它自己带的），而 stderr 里那句是
+    /// ffmpeg **打算**怎么开设备 —— 两者不一致时，该信的是成品。
     /// </para>
     /// </remarks>
-    private async Task<(int Width, int Height)?> MeasureSizeAsync(
+    private async Task<((int Width, int Height)? Size, double? FrameRate)> MeasureObservedAsync(
         string path, CancellationToken cancellationToken)
     {
         try
         {
-            var result = await _runner.RunAsync(_ffmpegPath,
-            [
-                "-hide_banner",
-                "-v", "info",
-                "-i", path,
-                "-frames:v", "1",
-                "-f", "null", "-",
-            ], cancellationToken);
+            var result = await _runner.RunAsync(
+                _ffmpegPath, ReadBackArguments(path), cancellationToken);
 
             var streams = FfmpegNetworkCameraProbe.ParseStreams(result.StandardError);
 
-            return streams is { Width: > 0, Height: > 0 }
+            var size = streams is { Width: > 0, Height: > 0 }
                 ? (streams.Width.Value, streams.Height.Value)
-                : null;
+                : ((int Width, int Height)?)null;
+
+            return (size, streams.FrameRate);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -262,7 +295,7 @@ public sealed class FfmpegSpecProbe : IRecordingSpecProbe
         }
         catch (Exception)
         {
-            return null;
+            return (null, null);
         }
     }
 
@@ -391,18 +424,13 @@ public static class SpecSelectionPolicy
     {
         if (selection.NativeFallback)
         {
-            // 落点就是设计图步 4 那句未完成态：「已采用可用的原生配置（…）」
+            // 落点就是设计图步 4 那句未完成态：「已采用可用的原生配置（640×480 @ 30 FPS）」
             // 「该配置来自摄像头原生模式，仅作为安全兜底」。
             //
-            // ⚠️ 尺寸只印**实测过的**那一个：量不到时说「相机自己那一档」，
+            // ⚠️ 只印**实测过的**那些：量不到尺寸时说「相机自己那一档」，
+            // 量不到帧率时那句里连「@」都不出现（`ObservedDescription` 一处决定）。
             // 不印一个我们没测过的标称值（§13.1：只展示磁盘上真实可测的内容）。
-            //
-            // ⚠️ **帧率不印数字** —— 图上写的是「@ 30 FPS」，而帧率我们没测过：
-            // 原生档的帧率是相机自己定的。这一处与图上不同是**有意的**：
-            // 宁可少一句，不写一句没测过的话。要用图上的措辞，得先真把帧率测出来。
-            var size = selection.Spec.ObservedSize is { } observed
-                ? $"{observed.Width}×{observed.Height}"
-                : "相机自己那一档";
+            var size = selection.Spec.ObservedDescription ?? "相机自己那一档";
 
             return $"三档分辨率都没能在这台摄像头上跑通 —— 已采用可用的原生配置（{size}）。"
                 + $"该配置来自摄像头原生模式，仅作为安全兜底。"
@@ -416,11 +444,19 @@ public static class SpecSelectionPolicy
               + $"原因：{selection.Reason}";
     }
 
-    /// <summary>把探测**实测**出来的尺寸贴到规格上（只有原生档会真的带值）。</summary>
+    /// <summary>把探测**实测**出来的尺寸与帧率贴到规格上（只有原生档会真的带值）。</summary>
     /// <remarks>
+    /// <para>
     /// 单独一处是为了让「贴尺寸」这件事**不可能被漏掉**：漏掉的话
     /// 索引里会写一个标称的分辨率（见 <see cref="RecordingSpec.ObservedSize"/>）。
+    /// </para>
+    /// <para>
+    /// ⚠️ 只量到尺寸也要贴（<c>frameRate: null</c>）：那一档下
+    /// 「640×480」已经比「相机原生档」有用，不该因为帧率没量到就整块丢掉。
+    /// </para>
     /// </remarks>
     private static RecordingSpec WithMeasured(RecordingSpec spec, SpecProbeResult result) =>
-        result.ObservedSize is { } size ? spec.WithObservedSize(size.Width, size.Height) : spec;
+        result.ObservedSize is { } size
+            ? spec.WithObservedSize(size.Width, size.Height, result.ObservedFrameRate)
+            : spec;
 }

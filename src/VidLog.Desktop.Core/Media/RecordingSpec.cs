@@ -1,3 +1,5 @@
+using System.Globalization;
+
 namespace VidLog.Desktop.Core.Media;
 
 /// <summary>
@@ -225,9 +227,66 @@ public sealed record RecordingSpec(
     /// </remarks>
     public (int Width, int Height)? ObservedSize { get; init; }
 
-    /// <summary>带上实测出来的采集尺寸（原生档用）。</summary>
-    public RecordingSpec WithObservedSize(int width, int height) =>
-        this with { ObservedSize = (width, height) };
+    /// <summary>
+    /// **实测出来的**采集帧率（帧/秒）；没测过就是 <see langword="null"/>。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// ⚠️ 与 <see cref="ObservedSize"/> 同一条理由：原生档的帧率是**相机自己定的**，
+    /// 我们既不钉也不猜。设计图上那句「640×480 <b>@ 30 FPS</b>」里，
+    /// 尺寸与帧率**都要真开一次相机**才问得出来（2026-09-30 实测：录回来的成品里
+    /// 那一行印着 `640x480 …, 30 fps, 30 tbr`）。
+    /// </para>
+    /// <para>
+    /// ⚠️ 量不到就**不印**（<see cref="ObservedDescription"/> 会退成只印尺寸）——
+    /// 印一个没测过的帧率与印一个没测过的分辨率是同一件事。
+    /// </para>
+    /// </remarks>
+    public double? ObservedFrameRate { get; init; }
+
+    /// <summary>
+    /// 实测到的采集参数那句话：「640×480 @ 30 FPS」。**唯一一处产出**。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// 设计图步 4 的原话是「当前采用：640×480 @ 30 FPS」，所以这句话要**逐字**对得上
+    /// （需求方 2026-09-30 裁决：补测帧率、照图印）。而它同时出现在日志、
+    /// 回落提示与（批次 3 的）向导界面上 —— 各写一份的话迟早有一处印成
+    /// `640x480` 或 `30fps` 这种不像图的形状。
+    /// </para>
+    /// <para>
+    /// ⚠️ 尺寸还没测出来时是 <see langword="null"/>（**不是**退回标称值）：
+    /// 调用方各有各的说法（界面说「相机原生档」，回落提示说「相机自己那一档」），
+    /// 在这里统一编一句反而会逼着其中一处说假话。
+    /// </para>
+    /// <para>⚠️ 帧率没测出来时**只印尺寸**（连「@」都不出现）：宁可少一句，不写没测过的。</para>
+    /// </remarks>
+    public string? ObservedDescription
+    {
+        get
+        {
+            if (ObservedSize is not { } observed)
+            {
+                return null;
+            }
+
+            var size = $"{observed.Width}×{observed.Height}";
+
+            // ⚠️ 帧率按不变文化印：`30` 不能因为机器的小数点设置变成 `30,00`
+            // （那句话是要与设计图逐字对上的）。
+            return ObservedFrameRate is { } fps and > 0
+                ? $"{size} @ {fps.ToString("0.##", CultureInfo.InvariantCulture)} FPS"
+                : size;
+        }
+    }
+
+    /// <summary>带上实测出来的采集尺寸与帧率（原生档用）。</summary>
+    /// <remarks>
+    /// 帧率是**可选**的：量不到尺寸也要贴上去（「相机原生档（640×480）」比
+    /// 「相机原生档」有用），所以它不该和尺寸绑成「要么都有、要么都没有」。
+    /// </remarks>
+    public RecordingSpec WithObservedSize(int width, int height, double? frameRate = null) =>
+        this with { ObservedSize = (width, height), ObservedFrameRate = frameRate };
 
     /// <summary>界面上写的方向名（**唯一一处产出**，与 <see cref="CodecLabel"/> 同一条规矩）。</summary>
     public string RotationLabel => Rotation switch
@@ -284,8 +343,8 @@ public sealed record RecordingSpec(
         get
         {
             var size = NativeCaptureSize
-                ? ObservedSize is { } observed
-                    ? $"{observed.Width}×{observed.Height}（相机原生档）"
+                ? ObservedDescription is { } measured
+                    ? $"{measured}（相机原生档）"
                     : "相机原生档"
                 : ResolutionLabel;
 

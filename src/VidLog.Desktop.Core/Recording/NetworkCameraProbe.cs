@@ -165,12 +165,17 @@ public sealed class FfmpegNetworkCameraProbe : INetworkCameraProbe
     /// <param name="HasVideo">有没有视频那一路。</param>
     /// <param name="Width">宽；读不出来时是 <see langword="null"/>。</param>
     /// <param name="HasAudio">对端自带音轨没有。</param>
+    /// <param name="FrameRate">
+    /// 帧率（帧/秒）；读不出来时是 <see langword="null"/>。
+    /// ⚠️ 与尺寸一样：**读不出来不判失败**，只是少印一个数字。
+    /// </param>
     public sealed record ParsedStreams(
         bool HasVideo,
         string? VideoCodec,
         int? Width,
         int? Height,
-        bool HasAudio);
+        bool HasAudio,
+        double? FrameRate = null);
 
     /// <summary>
     /// 从 ffmpeg 的输出里挑出视频那一路的编码与尺寸，以及有没有音频。
@@ -205,6 +210,7 @@ public sealed class FfmpegNetworkCameraProbe : INetworkCameraProbe
         string? codec = null;
         int? width = null;
         int? height = null;
+        double? frameRate = null;
 
         foreach (var raw in output.Split('\n'))
         {
@@ -240,10 +246,24 @@ public sealed class FfmpegNetworkCameraProbe : INetworkCameraProbe
             {
                 codec = match.Groups[1].Value;
             }
+
+            // 帧率：`640x480 …, 30 fps, 30 tbr` 里的那个 `30 fps`（2026-09-30 实测，
+            // 读回的 MKV 与 dshow 输入两种行都是这个形状）。
+            var rate = FrameRatePattern.Match(line);
+            if (rate.Success
+                && double.TryParse(
+                    rate.Groups[1].Value, NumberStyles.Float, CultureInfo.InvariantCulture, out var parsed)
+                && parsed is > 0 and < MaxPlausibleFrameRate)
+            {
+                frameRate = parsed;
+            }
         }
 
-        return new ParsedStreams(hasVideo, codec, width, height, hasAudio);
+        return new ParsedStreams(hasVideo, codec, width, height, hasAudio, frameRate);
     }
+
+    /// <summary>帧率的合理上界 —— 超过它的数一定是认错了东西，不是真相机在拍的。</summary>
+    private const double MaxPlausibleFrameRate = 1000;
 
     /// <summary>`1920x1080` 这种形状。两侧的前后视防的是把别的数字对认成尺寸。</summary>
     private static readonly Regex SizePattern = new(
@@ -252,4 +272,16 @@ public sealed class FfmpegNetworkCameraProbe : INetworkCameraProbe
     /// <summary>`Video: h264` 里那个编码名。</summary>
     private static readonly Regex CodecPattern = new(
         @"Video:\s*([A-Za-z0-9_]+)", RegexOptions.Compiled);
+
+    /// <summary>
+    /// `30 fps` / `29.97 fps` 这种形状（帧率）。
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ 与尺寸同一条规矩：**只认这个形状，不认任何措辞**。
+    /// 前视防的是把 `1k tbn` 之类的邻近字段认成帧率；
+    /// 后视防的是把 `fps` 当别的词的尾巴（例如 `avgfps`）。
+    /// 认不出来就是 null，**不猜** —— 印一个猜的帧率与印一个没测过的分辨率是同一件事。
+    /// </remarks>
+    private static readonly Regex FrameRatePattern = new(
+        @"(?<![\d.])(\d+(?:\.\d+)?)\s*fps(?![\w])", RegexOptions.Compiled);
 }
