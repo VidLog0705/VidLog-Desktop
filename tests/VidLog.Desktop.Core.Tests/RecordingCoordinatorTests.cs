@@ -520,6 +520,56 @@ public class RecordingCoordinatorTests
     }
 
     // ─────────────────────────────────────────────
+    // 开段之前的准备（规格 §3.1.7：改了下次开始工作生效）
+    // ─────────────────────────────────────────────
+
+    /// <summary>
+    /// **准备钩子在开段之前跑，换掉的采集与编码器就是真用的那两个。**
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// 规格 §3.1.7：编码 / 分辨率改了「**下次开始工作**才生效」，判据明写**不用重启**。
+    /// 2026-09-30 之前那是句假话 —— 规格钉在构造协调器那一刻，改完还是老样子（§80）。
+    /// </para>
+    /// <para>
+    /// ⚠️ <b>编码器也必须在这一次换掉</b>：录制那一侧原来自己另挑过一次编码器，
+    /// 而那份候选表**全是 H.264** —— 于是「选 H.265、界面与索引都说 H.265、
+    /// 录出来是 H.264」（§79）。所以这条同时守着那两件事。
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task 开段前跑准备钩子_换掉的采集与编码器才是真用的那两个()
+    {
+        using var dir = new TempDir();
+        var before = new SpyCapture();
+        var after = new SpyCapture();
+        var order = new List<string>();
+
+        await using var coordinator = Build(
+            dir, WorkMode.StopOnSameWaybill, new FakePunchLog(), capture: before);
+
+        coordinator.PrepareCaptureAsync = _ =>
+        {
+            order.Add("prepare");
+            coordinator.Capture = after;
+            coordinator.Encoder = "hevc_nvenc";
+            return Task.CompletedTask;
+        };
+
+        before.OnStart = () => order.Add("use-before");
+        after.OnStart = () => order.Add("use-after");
+
+        await coordinator.SubmitAsync(A, PunchSource.KeyboardScanner);
+
+        // 钩子先跑、采集后起 —— 那是它能真开一次相机重探的前提（相机那一刻必然是空的）。
+        Assert.Equal(["prepare", "use-after"], order);
+
+        // ⚠️ 编码器跟着换了：不换就是 §79（选 H.265、录出来是 H.264）。
+        Assert.Equal("hevc_nvenc", Assert.Single(after.Encoders));
+        Assert.Empty(before.Encoders);
+    }
+
+    // ─────────────────────────────────────────────
     // 编排循环：滚段与时长兜底（规格 §3.1.1 / §3.3.4）
     // ─────────────────────────────────────────────
 
@@ -819,14 +869,15 @@ public class RecordingCoordinatorTests
         Func<TimeSpan, CancellationToken, Task>? delay = null,
         ITrustedClock? trustedClock = null,
         Func<WaybillNumber, CancellationToken, Task<IReadOnlyList<RecordingEntry>>>? duplicateProbe = null,
-        int duplicateCheckDays = 0)
+        int duplicateCheckDays = 0,
+        ICameraCapture? capture = null)
     {
         var ffmpeg = FfmpegLocator.TryFind() ?? "ffmpeg";
         var effectiveRunner = runner ?? new SucceedingRunner();
 
         return new RecordingCoordinator(
             new RecordingWorkspace(dir.WorkspaceRoot),
-            new FakeCapture(),
+            capture ?? new FakeCapture(),
             new SessionFinalizer(
                 new RemuxPipeline(ffmpeg, effectiveRunner),
                 new DecodeVerifier(ffmpeg, effectiveRunner),
@@ -855,6 +906,23 @@ public class RecordingCoordinatorTests
             CameraSource source, string outputPath, string encoder, string? microphone = null,
             CancellationToken cancellationToken = default) =>
             Task.FromResult<ICaptureProcess>(new FakeProcess(outputPath));
+    }
+
+    /// <summary>记下「被叫开录时用的是什么编码器」的假采集。</summary>
+    private sealed class SpyCapture : ICameraCapture
+    {
+        public List<string> Encoders { get; } = [];
+
+        public Action? OnStart { get; set; }
+
+        public Task<ICaptureProcess> StartAsync(
+            CameraSource source, string outputPath, string encoder, string? microphone = null,
+            CancellationToken cancellationToken = default)
+        {
+            Encoders.Add(encoder);
+            OnStart?.Invoke();
+            return Task.FromResult<ICaptureProcess>(new FakeProcess(outputPath));
+        }
     }
 
     private sealed class FakeProcess(string outputPath) : ICaptureProcess

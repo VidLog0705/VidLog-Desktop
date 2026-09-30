@@ -88,19 +88,33 @@ public sealed class AppHost : IAsyncDisposable
     public RecordingCoordinator Coordinator { get; }
 
     /// <summary>
-    /// **实际会用**的录制规格（启动时那次真开相机的探测结果）。
+    /// **实际会用**的录制规格 —— **最近一次**真开相机探测的结论。
     /// </summary>
     /// <remarks>
+    /// <para>
     /// ⚠️ 它与 <see cref="Settings"/> 里用户选的那两档**可能不一样** ——
     /// 规格 §3.1.7 要求「**回落必须可见**……**不得静默回落**」，
     /// 所以界面必须显示这一个，而不是用户选的那个。
+    /// </para>
+    /// <para>
+    /// ⚠️ 它是**最近一次探测**的结论，不一定是「用户现在选的那一档」的结论：
+    /// 探测发生在启动时、以及每一次改了编码 / 分辨率之后的开段之前
+    /// （<see cref="PrepareCaptureAsync"/>）。要判断这两者是不是同一件事，
+    /// 拿 <see cref="ProbedSpec"/> 比（界面就是这么做的）。
+    /// </para>
     /// </remarks>
     public RecordingSpec EffectiveSpec { get; private set; } = RecordingSpec.Default;
 
     /// <summary>回落的原因；没回落过时为 <see langword="null"/>。</summary>
     public string? SpecFallbackReason { get; private set; }
 
-    /// <summary>开录时用的编码器名（探测挑出来的那个）。</summary>
+    /// <summary>
+    /// 开录时用的编码器名（`-c:v` 要的值）。
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ 它是**实测编出过片子**的那个（<see cref="SpecSelection.EncoderName"/>），
+    /// 不是「这台机器上存在的编码器」里挑的一个。见 §79。
+    /// </remarks>
     public string EncoderName { get; private set; } = "libx264";
 
     /// <summary>
@@ -119,6 +133,25 @@ public sealed class AppHost : IAsyncDisposable
 
     /// <summary>本次运行真正在用的摄像头名字（已抹掉凭据）—— 界面上直接显示这个。</summary>
     public string DeviceName => Camera.Identity;
+
+    /// <summary>
+    /// 上一次**真探过**的那一对（编码 + 分辨率）—— 用户改的就是它、
+    /// 没改就<b>不重探</b>。见 <see cref="PrepareCaptureAsync"/>。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// ⚠️ 缓存键是**编码 + 分辨率**，**不含方向**：方向是滤镜，与「这台机器
+    /// 编不编得动这个组合」无关（`RecordingSpec.FallbacksFrom` 也保方向），
+    /// 改方向不该真开一次相机。而重探一次的代价是几秒（要真录 1 秒再解码验）。
+    /// </para>
+    /// <para>
+    /// ⚠️ 界面**要拿它来判断「<see cref="EffectiveSpec"/> 是不是已经过期了」**：
+    /// 用户刚把编码改掉、但还没开始工作时，<see cref="EffectiveSpec"/> 说的仍然是
+    /// **上一次**探测的结论。拿它去跟用户新选的比，会得到一句「这台电脑跑不通」的
+    /// **假话** —— 而那一档根本还没测过。见 `SettingsWindow.ShowEffectiveSpec`。
+    /// </para>
+    /// </remarks>
+    public RecordingSpec ProbedSpec { get; private set; } = RecordingSpec.Default;
 
     public TrayIcon? Tray { get; private set; }
 
@@ -257,6 +290,10 @@ public sealed class AppHost : IAsyncDisposable
         warnings.AddRange(startup.Warnings);
 
         // 编码器：规格 §3.1.5 要求实测，不假定。
+        //
+        // ⚠️ 这一次探的是**合成源上的 H.264 编码器**（`EncoderProbe` 的候选表全是 H.264），
+        // 它只答「这台机器有没有能用的编码器」——**不是**录制要用的那个。
+        // 录制要用的编码器是下面按规格探出来的（`selection.EncoderName`），见 §79。
         var encoder = EncoderSelection.Select(await services.EncoderProbe.ProbeAsync(cancellationToken));
         if (encoder is null)
         {
@@ -277,7 +314,12 @@ public sealed class AppHost : IAsyncDisposable
         // 而不是假定『列出来了就能用』」。合成源什么尺寸都收，只有真相机能说话。
         //
         // ⚠️ 回落的结论**必须说出来**：规格「**不得静默回落**」。
-        var wantedSpec = new RecordingSpec(settings.Codec, settings.Resolution);
+        //
+        // ⚠️ **方向要一起塞进来**：它也在 spec 里，而下面那条 `With(selection.Spec)`
+        // 与采集对象读的都是 spec 上的方向。不塞的话，**每次刚启动时方向都是「不转」**
+        // —— 一直要等用户在设置里点一次【应用】才会被 `SaveSettingsAsync` 补上。
+        // 2026-09-30 实测撞到的正是这个（`docs/实现决策.md` §80 同一批）。
+        var wantedSpec = new RecordingSpec(settings.Codec, settings.Resolution, settings.Rotation);
         var selection = services.FfmpegPath is null
             ? new SpecSelection(wantedSpec, false, null)
             : await SpecSelectionPolicy.SelectAsync(
@@ -298,6 +340,12 @@ public sealed class AppHost : IAsyncDisposable
             ["回落"] = selection.ChangedFromRequested,
         });
 
+        // ⚠️ **开录要用的编码器是规格探测的结论**，不是上面那个 H.264-only 的
+        // `EncoderSelection` —— 那个只用来答「这台机器有没有能用的编码器」
+        // （没有就警告一声），拿它当 `-c:v` 正是 §79「选 H.265、录出 H.264」的根因。
+        // 只有连规格都一个都没探通时（`EncoderName` 为 null）才退回它。
+        var chosenEncoder = selection.EncoderName ?? encoder ?? "libx264";
+
         var coordinator = new RecordingCoordinator(
             services.Workspace,
             services.FfmpegPath is null
@@ -314,7 +362,7 @@ public sealed class AppHost : IAsyncDisposable
                 // 它说的是「这段录像是哪台机器录的」，与摄像头无关，所以是机器名。
                 // **不要**换成摄像头的地址：那个带凭据。
                 Environment.MachineName,
-                encoder ?? "libx264",
+                chosenEncoder,
                 // 重复单号检测回看几天（规格 §3.2.5 的「N 可配置」，0 = 关闭）。
                 settings.DuplicateCheckDays),
             // 错误扫描（规格 §6.1「必须保存的事实」）。
@@ -368,9 +416,17 @@ public sealed class AppHost : IAsyncDisposable
             Warnings = warnings,
             EffectiveSpec = selection.Spec,
             SpecFallbackReason = selection.Reason,
-            EncoderName = encoder ?? "libx264",
+            EncoderName = chosenEncoder,
             Camera = camera,
+            // 重探的**基准**：启动时已经真探过 `wantedSpec` 了，
+            // 别让第一次开段白探一遍（那是真开一次相机、几秒钟）。
+            ProbedSpec = wantedSpec,
         };
+
+        // §79 + §80 的落点：编码 / 分辨率改了 ⇒ **开段之前**重探一次
+        // （那一刻相机必然是空的，见 `RecordingCoordinator.PrepareCaptureAsync`）。
+        // ⚠️ 必须在 `host` 建好之后挂 —— 重探要把结论写回 host 的那几个属性。
+        coordinator.PrepareCaptureAsync = host.PrepareCaptureAsync;
 
         // 清理也留痕（AGENTS.md §6「关键操作必须留痕」）——
         // 一条日志都没有的清理，出事时说不清它到底跑没跑。
@@ -504,9 +560,10 @@ public sealed class AppHost : IAsyncDisposable
         // 旋转是滤镜，与「这台机器能不能编这个组合」无关（回落表也保方向，
         // 见 `RecordingSpec.FallbacksFrom`）。所以它在这里直接改掉即可。
         //
-        // ⚠️ 编码 / 分辨率**不能**照这样改：那两个变了要**重探**（真开一次相机），
-        // 而这里不重探 ⇒ 它们其实要**重启**才生效。那是既有的行为
-        // （界面上的措辞与此不一致，见 docs/实现决策.md §70）。
+        // ⚠️ 编码 / 分辨率**不能**照这样改：那两个变了得**重探**（真开一次相机），
+        // 而这里不能探 —— 相机是独占的，此刻多半正被取景识码占着，那时候探
+        // 会把能用的组合**误判成跑不通**。所以它们在**开段之前**改，
+        // 见 `PrepareCaptureAsync`（§79 / §80 的落点）。
         if (options.Spec is { } spec)
         {
             options = options.With(spec with { Rotation = next.Rotation });
@@ -547,6 +604,95 @@ public sealed class AppHost : IAsyncDisposable
             // AGENTS.md §6：配置变更要留痕，密钥类字段只记「已修改」。
             _logger.Log(LogLevel.Info, "设置", "设置已变更",
                 new Dictionary<string, object?> { ["变更"] = string.Join("；", changes) });
+        }
+    }
+
+    /// <summary>
+    /// **开段之前**把用户现在选的编码 / 分辨率落实下去 —— 改了就在这里重探一次。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// 规格 §3.1.7 的原话是「录制前可选、录制中不可改、**改了下次开始工作**才生效」，
+    /// 而且判据里明写**不用重启程序**。2026-09-30 之前这句话是假的：规格在构造
+    /// 协调器那一刻就定死了，改设置只写穿方向 ⇒ 「改成 4K 录出来还是 1080P」。
+    /// 见 <c>docs/实现决策.md</c> §80。
+    /// </para>
+    /// <para>
+    /// ⚠️ <b>为什么重探挂在这儿、不挂在保存设置那一刻</b>：重探要**真开一次相机**
+    /// （<see cref="FfmpegSpecProbe"/> 真录 1 秒再解码验产物），而相机是独占的、
+    /// 保存设置那一刻多半正被取景识码占着 —— 那时候探会把**能用的组合误判成跑不通**，
+    /// 那比不探更坏。协调器保证调用这一刻相机是空的（它刚把取景放掉）。
+    /// </para>
+    /// <para>
+    /// ⚠️ <b>三样东西必须一起换</b>，少换一样就是 §79 / §80 那两种毛病：
+    /// 采集对象（规格钉在它里面，决定输入侧的 <c>-video_size</c> / <c>-framerate</c>）、
+    /// 编码器（按编码选出来的，换了编码不换它就是「选 H.265 录 H.264」）、
+    /// 会话选项里的 spec（决定索引里记的编码分辨率与水印尺寸）。
+    /// </para>
+    /// <para>
+    /// ⚠️ 这个方法是**每次开段**都会走的（每一次扫码），所以「没改就立刻返回」
+    /// 那一条不是优化，是前提。
+    /// </para>
+    /// </remarks>
+    private async Task PrepareCaptureAsync(CancellationToken cancellationToken)
+    {
+        var wanted = new RecordingSpec(Settings.Codec, Settings.Resolution, Settings.Rotation);
+
+        // 没改就立刻返回 —— 见上面最后一条备注。比的是编码 + 分辨率，不含方向。
+        if (wanted.Codec == ProbedSpec.Codec && wanted.Resolution == ProbedSpec.Resolution)
+        {
+            return;
+        }
+
+        // 启动那次探测没跑的前提（没有 FFmpeg、或者一台摄像头都没有）在这里是同一件事：
+        // 没什么可探的，别白开一次相机（那还会白等几秒）。
+        if (Services.FfmpegPath is not { } ffmpegPath || Camera.IsEmpty)
+        {
+            return;
+        }
+
+        var selection = await SpecSelectionPolicy.SelectAsync(
+            wanted, Camera, new FfmpegSpecProbe(ffmpegPath, new SystemProcessRunner(_logger)),
+            cancellationToken);
+
+        // ⚠️ 探完了才记基准：探的过程抛异常（取消、进程起不来）时基准不动，
+        // 下次开段会重来一遍 —— 而「记下了却没换上去」会让用户永远停在旧规格上。
+        ProbedSpec = wanted;
+
+        Coordinator.Capture = new FfmpegCameraCapture(ffmpegPath, selection.Spec);
+        Coordinator.Encoder = selection.EncoderName ?? EncoderName;
+
+        // ⚠️ 方向取**此刻**的设置，不取探测开始时读的那一份：这个方法跑在后台线程上，
+        // 而改方向走的是 `SaveSettingsAsync`（UI 线程）**直接写穿**这一条路。
+        // 用户恰好在重探这几秒里点了【应用】的话，拿旧方向上写会把刚存的那个抹掉。
+        // （方向不参与探测，所以这里换掉它不影响上面刚验过的结论。）
+        Coordinator.SessionOptions = Coordinator.SessionOptions
+            .With(selection.Spec with { Rotation = Settings.Rotation });
+
+        // 设置窗里那句「你选的是 X，实际按 Y 录」靠的就是这两个属性。
+        EffectiveSpec = selection.Spec;
+        SpecFallbackReason = selection.Reason;
+        if (selection.EncoderName is { } probed)
+        {
+            EncoderName = probed;
+        }
+
+        _logger.Log(LogLevel.Info, "录制", $"录制规格已改为 {selection.Spec.Label}",
+            new Dictionary<string, object?>
+            {
+                ["用户选的"] = wanted.Label,
+                ["回落"] = selection.ChangedFromRequested,
+                ["编码器"] = Coordinator.Encoder,
+            });
+
+        // 规格 §3.1.7：「**不得静默回落**」—— 改完设置探出来的组合与用户选的
+        // 不一样，必须**当场**说出来，而不是等他下次开设置窗才看见。
+        // 说法在 Core 那边收口（`SpecSelectionPolicy.Describe`）：与启动时那句是同一份。
+        if (selection.ChangedFromRequested)
+        {
+            Notice?.Invoke(new CoordinatorNotice(
+                CoordinatorNoticeKind.FinalizeFailed, null,
+                SpecSelectionPolicy.Describe(selection, wanted)));
         }
     }
 

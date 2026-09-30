@@ -44,8 +44,19 @@ public interface IRecordingSpecProbe
 /// </para>
 /// <para>
 /// 代价是每次探测要开一次相机、录 1 秒（独占：跑的时候别的取景进程必须停）。
-/// 所以它只在**启动时**跑一次，结果管一次运行 —— 与规格「录制前可选、录制中不可改、
-/// 改了下次开始工作才生效」是同一个口径。
+/// 所以它跑的时机只有两个，都在**录制开始之前**，与规格「录制前可选、录制中不可改、
+/// 改了**下次开始工作**才生效」是同一个口径：
+/// </para>
+/// <list type="number">
+/// <item><b>启动时一次</b>，结果管到用户下次改规格为止。</item>
+/// <item><b>改过编码 / 分辨率之后的、每一次开段之前</b> —— 那一刻相机必然是空的
+/// （取景刚被放掉、采集还没起），所以开这一次相机是安全的。
+/// 落点在 `RecordingCoordinator.PrepareCaptureAsync`，装配见 `AppHost`。</item>
+/// </list>
+/// <para>
+/// ⚠️ <b>改设置那一刻**不能**探</b>：那时候取景识码多半正占着相机，
+/// 探测会拿到「设备被占用」并把它**误判成这个组合跑不通** ——
+/// 把能用的说成不能用，比不探更坏。
 /// </para>
 /// <para>
 /// ⚠️ <b>argv 走 <see cref="FfmpegCameraCapture.BuildArguments"/></b>，本类不自己拼 ——
@@ -319,11 +330,29 @@ public sealed class FfmpegSpecProbe : IRecordingSpecProbe
 /// <param name="Spec">实际要用的规格。全都不可用时是默认档。</param>
 /// <param name="ChangedFromRequested">用户选的那个跑不通、已经回落过。</param>
 /// <param name="Reason">回落的原因（要显示给用户）。</param>
+/// <param name="NativeFallback">回落到相机原生档了（设计图步 4 的未完成态）。</param>
+/// <param name="EncoderName">
+/// **实测编出过片子的那个编码器名**（`-c:v` 要的值）。
+/// </param>
+/// <remarks>
+/// ⚠️ <b>`EncoderName` 是这一路探测真正的产出物，别只把它当诊断信息。</b>
+/// 它答的是「这台机器 + 这个相机 + 这个尺寸 + 这个编码，**用哪个编码器真编得出来**」——
+/// 那正是录制要问的问题。2026-09-30 之前它没被带出来，于是录制那一侧
+/// 只能自己另挑一次（`EncoderSelection` + 一份 **H.264-only** 的候选表），
+/// 结果是「选 H.265 录出来是 H.264」而界面与索引都说 H.265。
+/// 见 <c>docs/实现决策.md</c> §79。
+/// <para>
+/// 为 <see langword="null"/> 有两种情形，都要调用方自己兜底：
+/// **一个组合都没探**（连 FFmpeg 都没有），或者**探过的全都没通过** ——
+/// 那时没有任何一个编码器是被证明可用过的，随便挑一个都是在猜。
+/// </para>
+/// </remarks>
 public sealed record SpecSelection(
     RecordingSpec Spec,
     bool ChangedFromRequested,
     string? Reason,
-    bool NativeFallback = false);
+    bool NativeFallback = false,
+    string? EncoderName = null);
 
 /// <summary>选规格：按回落顺序试，取第一个真跑得通的。</summary>
 /// <remarks>
@@ -349,7 +378,10 @@ public static class SpecSelectionPolicy
                 return new SpecSelection(
                     WithMeasured(candidate, result),
                     ChangedFromRequested: candidate != wanted,
-                    Reason: candidate == wanted ? null : firstReason);
+                    Reason: candidate == wanted ? null : firstReason,
+                    // ⚠️ 这个编码器**真编出过片子**（`ProbeOneAsync` 验过产物能解码）——
+                    // 录制要用的就是它，不是另一份候选表挑出来的那个。见 §79。
+                    EncoderName: result.EncoderName);
             }
 
             firstReason ??= result.FailureReason;
@@ -383,7 +415,8 @@ public static class SpecSelectionPolicy
                     WithMeasured(native, result),
                     ChangedFromRequested: true,
                     Reason: firstReason,
-                    NativeFallback: true);
+                    NativeFallback: true,
+                    EncoderName: result.EncoderName);
             }
 
             firstReason ??= result.FailureReason;

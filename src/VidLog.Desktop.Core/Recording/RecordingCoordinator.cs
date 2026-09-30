@@ -96,7 +96,6 @@ public sealed record CoordinatorOptions(
 public sealed class RecordingCoordinator : IAsyncDisposable
 {
     private readonly RecordingWorkspace _workspace;
-    private readonly ICameraCapture _capture;
     private readonly SessionFinalizer _finalizer;
     private readonly DiskSpaceGuard _diskGuard;
     private readonly IPunchLog _punches;
@@ -173,7 +172,8 @@ public sealed class RecordingCoordinator : IAsyncDisposable
         _clock = clock ?? NewDefaultClock();
         _delay = delay ?? Task.Delay;
         _workspace = workspace;
-        _capture = capture;
+        Capture = capture;
+        Encoder = options.Encoder;
         _finalizer = finalizer;
         _diskGuard = diskGuard;
         _punches = punches;
@@ -234,6 +234,48 @@ public sealed class RecordingCoordinator : IAsyncDisposable
     /// 装上了的话，<see cref="StartWork"/> 会开始取景，扫到单号自动开录。
     /// </remarks>
     public Camera.CameraFrameScanner? Scanner { get; set; }
+
+    /// <summary>采集那一层。**可替换** —— 见 <see cref="PrepareCaptureAsync"/>。</summary>
+    /// <remarks>
+    /// ⚠️ 做成可写属性而不是构造参数是因为**录制规格能在运行中改**（规格 §3.1.7
+    /// 「改了下次开始工作生效」）。而规格本身钉在采集对象里
+    /// （`FfmpegCameraCapture._spec`，决定输入侧的 `-video_size` / `-framerate`），
+    /// 所以换规格就**必须换掉这个对象**。2026-09-30 之前它是 `readonly` 字段，
+    /// 后果是「改完规格录出来还是上一档」—— 见 <c>docs/实现决策.md</c> §80。
+    /// </remarks>
+    public ICameraCapture Capture { get; set; }
+
+    /// <summary>
+    /// 开段时喂给 ffmpeg `-c:v` 的那个编码器名。**可替换**。
+    /// </summary>
+    /// <remarks>
+    /// 与 <see cref="Capture"/> 同一条理由，而且要**一起换**：规格探测出来的
+    /// 「哪个编码器真编得出来」是按编码选的（`RecordingSpec.EncoderCandidates`），
+    /// 换了编码不换它就会「选 H.265、录 H.264」——
+    /// 见 <c>docs/实现决策.md</c> §79。
+    /// </remarks>
+    public string Encoder { get; set; }
+
+    /// <summary>
+    /// 开一段**之前**的准备动作（装配层挂：规格改了就在这里重探并换掉
+    /// <see cref="Capture"/> / <see cref="Encoder"/> / <see cref="SessionOptions"/>）。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// ⚠️ <b>为什么挂在「开段前」而不是「改设置时」</b>：
+    /// 规格 §3.1.7 的生效时机是「**改了下次开始工作才生效**」，而重探
+    /// **要真开一次相机**（`FfmpegSpecProbe`：真录一小段再验解码）。
+    /// 改设置时相机可能正被取景识码占着（相机是独占的，实测）——
+    /// 那时重探会**误判成跑不通**，把能用的组合说成不能用，那是比不做更坏的结果。
+    /// 而这一刻（取景已按下面那行停掉、采集还没起）相机必然是空的。
+    /// </para>
+    /// <para>
+    /// 没挂它 = 不重探（测试与不在乎规格热改的装配）。挂了的话，
+    /// **规格没变时它必须立刻返回** —— 它在每一次开段（也就是每一次扫码）的路径上，
+    /// 白花的时间是用户站在那里等的。
+    /// </para>
+    /// </remarks>
+    public Func<CancellationToken, Task>? PrepareCaptureAsync { get; set; }
 
     /// <summary>
     /// 会话参数：分段时长与时长兜底（规格 §3.1.1 / §3.3.4）。
@@ -560,8 +602,16 @@ public sealed class RecordingCoordinator : IAsyncDisposable
             await Scanner.StopAsync(cancellationToken);
         }
 
+        // ⚠️ **重探规格的最后机会** —— 相机已空（上一行刚把取景放掉）、
+        // 采集还没起（下一行才建会话），这一刻换 `Capture` / `Encoder` 是安全的。
+        // 挂上这个钩子的人负责「规格没变就立刻返回」，见 `PrepareCaptureAsync` 的注释。
+        if (PrepareCaptureAsync is not null)
+        {
+            await PrepareCaptureAsync(cancellationToken).ConfigureAwait(false);
+        }
+
         var session = new RecordingSession(
-            _workspace, _capture, _finalizer, _diskGuard,
+            _workspace, Capture, _finalizer, _diskGuard,
             _options.Source, _options.SourceDeviceId, SessionOptions,
             trustedClock: _trustedClock,
             // 时长兜底的询问（规格 §3.3.4）。
@@ -582,7 +632,7 @@ public sealed class RecordingCoordinator : IAsyncDisposable
             problemReported: problem =>
                 _logger.Log(LogLevel.Warn, "录制", $"{waybill.Value}：{problem}"));
 
-        await session.StartAsync(waybill, _options.Encoder, cancellationToken);
+        await session.StartAsync(waybill, Encoder, cancellationToken);
         _current = session;
 
         // ── 起编排循环：到点滚段、到时长上限或磁盘将满就自动收尾 ──────────
@@ -758,7 +808,7 @@ public sealed class RecordingCoordinator : IAsyncDisposable
     {
         try
         {
-            await session.RunAsync(_options.Encoder).ConfigureAwait(false);
+            await session.RunAsync(Encoder).ConfigureAwait(false);
         }
         catch (Exception ex)
         {

@@ -445,8 +445,13 @@ public partial class SettingsWindow : Window
 
         // 逐项说清楚，别笼统写「下次生效」——
         // 笼统的话就有一半是假的，而用户没法知道是哪一半。
+        //
+        // ⚠️ 编码 / 分辨率**不再要重启**（2026-09-30 修，见 §80），但也**不是**立即生效：
+        // 它们要真开一次相机重探，而那只在**下次开始工作**时做。少写这一句，
+        // 用户改完直接按【开始工作】之外的方式（比如扫码）开录时会以为改了没生效。
         SettingsStatus.Text =
-            "已保存。工作模式立即生效；时长兜底、分段时长与录制声音下次开始工作生效；摄像头与端口要重启。";
+            "已保存。工作模式立即生效；时长兜底、分段时长与录制声音下次开始工作生效；"
+            + "编码与分辨率下次开始工作会重新实测（不用重启）；摄像头与端口要重启。";
 
         // 保存之后再刷一遍：实际规格那句依赖刚存下的编码/分辨率，
         // 不刷的话它会一直说上一次的那个组合。
@@ -466,10 +471,26 @@ public partial class SettingsWindow : Window
     /// 显示**实际会用**的录制规格。
     /// </summary>
     /// <remarks>
+    /// <para>
     /// 规格 §3.1.7：「**回落必须可见**……**不得静默回落**」。
-    /// 取值来自启动时那次**真开相机**的探测（<c>AppHost.EffectiveSpec</c>）。
+    /// 取值来自**最近一次**真开相机的探测（<c>AppHost.EffectiveSpec</c>）。
     /// 与用户选的不一样时把原因也说出来 —— 只说「实际是 H.264」而不说为什么，
     /// 用户会以为自己选错了。
+    /// </para>
+    /// <para>
+    /// ⚠️ <b>三档情形，别用一句话糊过去</b>（2026-09-30 实测撞到过下面第二种）：
+    /// </para>
+    /// <list type="number">
+    /// <item>用户选的那一对**就是**上次探过的那一对 ⇒ 说结论。</item>
+    /// <item>用户刚改过、那一对**还没探过** ⇒ <c>EffectiveSpec</c> 说的是
+    /// **上一次**的结论。拿它去跟新选的比会印出一句「这台电脑跑不通」的**假话**
+    /// （那一档根本还没测），所以要说清「下次开始工作时才实测」。</item>
+    /// <item>探过且回落了 ⇒ 说结论 + 原因（§3.1.7 的「回落必须可见」）。</item>
+    /// </list>
+    /// <para>
+    /// ⚠️ 方向**要一起比**：它也在 spec 里，不带上它的话，一个方向设成「转 180°」的
+    /// 机器每次开这一页都会看到那句回落警告（两个 spec 的 `Rotation` 不一样）。
+    /// </para>
     /// <para>
     /// ⚠️ 这一句在**主窗口上看不见**（设计图的录制台上没有这个位置）——
     /// 它挪进了设置里。规格要的是「可见」，不是「必须印在首页」，
@@ -479,18 +500,35 @@ public partial class SettingsWindow : Window
     private void ShowEffectiveSpec()
     {
         var effective = _host.EffectiveSpec;
-        var wanted = new RecordingSpec(_host.Settings.Codec, _host.Settings.Resolution);
+        var wanted = new RecordingSpec(
+            _host.Settings.Codec, _host.Settings.Resolution, _host.Settings.Rotation);
+        var probed = _host.ProbedSpec;
 
-        EffectiveSpecText.Text = effective == wanted
-            ? $"这台电脑按 {effective.Label} 录制。"
-            : $"⚠️ 你选的是 {wanted.Label}，但这台电脑跑不通 —— 实际按 {effective.Label} 录制。"
-              + (string.IsNullOrWhiteSpace(_host.SpecFallbackReason)
-                  ? string.Empty
-                  : $"原因：{_host.SpecFallbackReason}");
+        EffectiveSpecText.Foreground = (System.Windows.Media.Brush)FindResource("TextSecondary");
 
-        EffectiveSpecText.Foreground = effective == wanted
-            ? (System.Windows.Media.Brush)FindResource("TextSecondary")
-            : (System.Windows.Media.Brush)FindResource("Warning");
+        // 情形 2：用户刚改的这一对还没实测过。**先判它**，否则会拿旧结论说新组合的不是。
+        if (wanted.Codec != probed.Codec || wanted.Resolution != probed.Resolution)
+        {
+            EffectiveSpecText.Text =
+                $"「{wanted.Label}」还没实测过 —— 下次开始工作时会真开一次相机验一遍，"
+                + $"验不过会自动回落并当场告诉你。"
+                + $"当前按 {effective.Label} 录制（那是上一次实测的结论）。";
+            return;
+        }
+
+        if (effective == wanted)
+        {
+            EffectiveSpecText.Text = $"这台电脑按 {effective.Label} 录制。";
+            return;
+        }
+
+        // 情形 3：探过，回落了。
+        EffectiveSpecText.Text =
+            $"⚠️ 你选的是 {wanted.Label}，这台电脑实际按 {effective.Label} 录制。"
+            + (string.IsNullOrWhiteSpace(_host.SpecFallbackReason)
+                ? string.Empty
+                : $"原因：{_host.SpecFallbackReason}");
+        EffectiveSpecText.Foreground = (System.Windows.Media.Brush)FindResource("Warning");
     }
 
     // ─────────────────────────────────────────────

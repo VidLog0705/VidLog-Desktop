@@ -279,6 +279,15 @@ public class RecordingSpecTests
         /// </remarks>
         public double? ObservedFrameRateOnSuccess { get; init; }
 
+        /// <summary>
+        /// 探测成功时报出来的编码器名；不填就是这一档候选表里的第一个。
+        /// </summary>
+        /// <remarks>
+        /// ⚠️ 真机上成功的那一个**未必是第一个**（`hevc_nvenc` 排在最前、却常常编不了），
+        /// 所以它得能单独指定 —— 不然「带出来的是哪一个」这件事根本测不出来。
+        /// </remarks>
+        public string? EncoderOnSuccess { get; init; }
+
         public Task<SpecProbeResult> ProbeAsync(
             RecordingSpec spec, CameraSource source, CancellationToken cancellationToken = default)
         {
@@ -286,11 +295,64 @@ public class RecordingSpecTests
 
             return Task.FromResult(usable.Contains(spec)
                 ? new SpecProbeResult(
-                    spec, spec.EncoderCandidates[0], true, null,
+                    spec, EncoderOnSuccess ?? spec.EncoderCandidates[0], true, null,
                     spec.NativeCaptureSize ? ObservedOnSuccess : null,
                     spec.NativeCaptureSize ? ObservedFrameRateOnSuccess : null)
                 : new SpecProbeResult(spec, spec.EncoderCandidates[0], false, "这个组合打不开"));
         }
+    }
+
+    // ─────────────────────────────────────────────
+    // ★ 编码器：探测的结论**就是**录制要用的那个（§79）
+    // ─────────────────────────────────────────────
+
+    /// <summary>
+    /// **选规格这一路把「实测编出过片子的编码器」带出来了。**
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// 2026-09-30 真机实测：选 H.265，界面说「按 H.265 4K 录制」、索引里也记
+    /// <c>"Codec":"H265"</c>，而**产物是 <c>h264 (High)</c>**。
+    /// 根因是两份候选表：探测走 <see cref="RecordingSpec.EncoderCandidates"/>（认编码），
+    /// 录制却走另一份**全是 H.264** 的表。对取证产品最坏的一点是
+    /// **索引里的编码字段是假的**。
+    /// </para>
+    /// <para>
+    /// 所以这条守的是：带出来的那个必须属于**实际录的那一档**的候选表。
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task 带出来的是实测通过那一档的编码器_不是用户选那一档的()
+    {
+        // 用户要 H.265 4K，只有 H.264 1080P 跑得通（真机上 hevc_* 常常全编不了）。
+        var wanted = new RecordingSpec(VideoCodec.H265, VideoResolution.Uhd4K);
+        var onlyH264 = new RecordingSpec(VideoCodec.H264, VideoResolution.P1080);
+
+        var probe = new FakeSpecProbe(onlyH264) { EncoderOnSuccess = "libx264" };
+        var selection = await SpecSelectionPolicy.SelectAsync(wanted, CameraSource.Local("Camera"), probe);
+
+        Assert.Equal(onlyH264, selection.Spec);
+        Assert.Equal("libx264", selection.EncoderName);
+
+        // ⚠️ 必须是**它自己那一档**那一组里的名字。
+        // 带回一个 hevc_* 的话，录制那边会拿着 H.265 的编码器去编 H.264 的规格。
+        Assert.Contains(selection.EncoderName!, selection.Spec.EncoderCandidates);
+        Assert.DoesNotContain(selection.EncoderName!, wanted.EncoderCandidates);
+    }
+
+    /// <summary>
+    /// **一个组合都没探通时不给编码器**（<see langword="null"/>）——
+    /// 那时没有任何一个编码器是被证明可用过的，随便挑一个都是在猜。
+    /// </summary>
+    [Fact]
+    public async Task 一个组合都没探通时不硬给一个编码器()
+    {
+        var selection = await SpecSelectionPolicy.SelectAsync(
+            new RecordingSpec(VideoCodec.H265, VideoResolution.Uhd4K),
+            CameraSource.Local("Camera"),
+            new FakeSpecProbe());   // 什么都不认
+
+        Assert.Null(selection.EncoderName);
     }
 
     [Fact]
