@@ -259,6 +259,32 @@ public class SettingsStoreTests
     }
 
     [Fact]
+    public async Task 老设置文件里没有摄像头识别那个键_读回来是开的()
+    {
+        // ⚠️ 默认值**只能是 true**：文件里没这个键时，`init` 的默认值就是
+        // **老用户升级后**的行为 —— 默认 false 会让所有老用户**静默丢掉摄像头识别**
+        // （`实现决策.md` §81.3）。别顺手把它改成 false。
+        using var dir = new TempDir();
+        var path = dir.File("settings.json");
+        await File.WriteAllTextAsync(path, """{"SegmentMinutes":3}""");
+
+        var result = await new SettingsStore(path).LoadAsync();
+
+        Assert.True(result.Settings.CameraRecognition);
+
+        // 反过来也要成立：用户关掉它是**存得下来**的（别让默认值把用户的选择吃掉）。
+        await new SettingsStore(path).SaveAsync(result.Settings with { CameraRecognition = false });
+        var off = await new SettingsStore(path).LoadAsync();
+        Assert.False(off.Settings.CameraRecognition);
+
+        // 而且这一项改了要在差量里留痕 —— 向导改完写盘，日志上得看得出来（§6.1）。
+        Assert.Contains(
+            SettingsStore.DescribeChanges(
+                AppSettings.Default, AppSettings.Default with { CameraRecognition = false }),
+            line => line.StartsWith(nameof(AppSettings.CameraRecognition), StringComparison.Ordinal));
+    }
+
+    [Fact]
     public async Task 闲置提醒的档位存在老键名下_老配置读得回来()
     {
         // 属性叫 IdleReminder，而 JSON 键仍是 `StaticStop`（历史名）——

@@ -88,6 +88,29 @@ public sealed class AppHost : IAsyncDisposable
     public RecordingCoordinator Coordinator { get; }
 
     /// <summary>
+    /// 暂停「把扫码当成工作事件」（开录 / 换段）。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// ⚠️ 配置向导第 6 步有一个测试扫码枪的输入框，而扫码枪的按键**不被拦截**
+    /// （<see cref="KeyboardScanBridge"/> 明写「不做任何按键抑制」）——
+    /// 用户在那儿扫一下，字既落进测试框、又走全局钩子到这里。
+    /// 而 <c>WorkModePolicy.OnScan</c> 在没开录时返回 <c>StartSegment</c>：
+    /// 于是「测一下扫码枪」会**当场开录并抢走相机**，正好撞上向导自己在跑的那路预览。
+    /// </para>
+    /// <para>
+    /// ⚠️ 那颗测试条码印的是 <c>TEST20260928181639</c>，它**长得就是一个真单号**
+    /// （<c>WaybillNumber.TryParse</c> 只要求归一化后非空），所以挡不住的话
+    /// 它 100% 会被当成一次真扫码。
+    /// </para>
+    /// <para>
+    /// 只挡「当工作事件」这半条：钩子照常收键、<see cref="Bridge"/> 照常解出单号，
+    /// 所以测试框该显示什么还显示什么。
+    /// </para>
+    /// </remarks>
+    public bool SuspendScans { get; set; }
+
+    /// <summary>
     /// **实际会用**的录制规格 —— **最近一次**真开相机探测的结论。
     /// </summary>
     /// <remarks>
@@ -437,7 +460,10 @@ public sealed class AppHost : IAsyncDisposable
 
         // 摄像头识码（规格 §3.2.1 的第二种入口）。装在协调器上，
         // 【开始工作】时会自动开始取景，扫到单号自动开录。
-        if (services.FfmpegPath is { } ffmpegPath && !camera.IsEmpty)
+        // ⚠️ `CameraRecognition` 是配置向导第 3 步那个二选一（照图 `_28`/`_29`）：
+        // 关掉时**整个取景进程都不建** —— 不是「建了不用」，那样它照样占着相机。
+        // 它要重启才生效（与摄像头同一档，界面上写明了）。
+        if (settings.CameraRecognition && services.FfmpegPath is { } ffmpegPath && !camera.IsEmpty)
         {
             var scanner = new CameraFrameScanner(
                 ffmpegPath, camera, new ZXingFrameScanner(), logger)
@@ -489,6 +515,14 @@ public sealed class AppHost : IAsyncDisposable
 
         Bridge.Scanned += outcome =>
         {
+            if (SuspendScans)
+            {
+                // 向导在做扫码枪测试 —— 那一下不是工作事件，不能开录（见 SuspendScans）。
+                _logger.Log(LogLevel.Info, "扫码",
+                    $"（配置向导测试中，不当工作事件）识别到 {outcome.Waybill.Value}");
+                return;
+            }
+
             _logger.Log(LogLevel.Info, "扫码", $"识别到 {outcome.Waybill.Value}",
                 new Dictionary<string, object?> { ["原始"] = outcome.Raw });
 

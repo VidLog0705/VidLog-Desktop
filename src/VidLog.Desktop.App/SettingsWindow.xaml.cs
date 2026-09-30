@@ -308,6 +308,68 @@ public partial class SettingsWindow : Window
     private void OnCancel(object sender, RoutedEventArgs e) => Close();
 
     /// <summary>
+    /// 打开配置向导（批次 3，照设计图 `_16`–`_34`）。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// ⚠️ <b>先把没保存的改动处理掉</b>：向导是**直接写盘**的
+    /// （<see cref="AppHost.SaveSettingsAsync"/>），而本窗还攥着一份
+    /// 「用户改了但没保存」的界面状态 —— 用户从向导回来再按【确定】，
+    /// 就会用**打开向导之前**那份值把向导刚存的东西盖掉，而且横竖都不报错。
+    /// </para>
+    /// <para>
+    /// ⚠️ 向导存了要 <see cref="LoadSettingsIntoUi"/> 重载一遍：不重载的话
+    /// 这个界面上显示的仍是老值，用户一按【确定】又把它们写回去 —— 同一次覆盖，
+    /// 只是晚了一手。
+    /// </para>
+    /// </remarks>
+    private async void OnOpenWizard(object sender, RoutedEventArgs e)
+    {
+        if (_dirty)
+        {
+            var answer = MessageBox.Show(
+                this,
+                "有改动还没保存，而配置向导会直接写盘。\n\n"
+                + "点【是】先保存再打开向导；点【否】放弃这些改动再打开；点【取消】先不开。",
+                "配置向导", MessageBoxButton.YesNoCancel, MessageBoxImage.Question,
+                // 默认「是」：这里三条路都可逆，而「是」是用户多半想要的那条。
+                MessageBoxResult.Yes);
+
+            if (answer == MessageBoxResult.Cancel)
+            {
+                return;
+            }
+
+            if (answer == MessageBoxResult.Yes)
+            {
+                // ⚠️ 校验没过就别往下走：带着一份半截的界面状态进向导，
+                // 回来时那句「已保存」会是假的。
+                if (!await SaveAsync())
+                {
+                    return;
+                }
+            }
+            else
+            {
+                // 说了「放弃」就得真丢：只开向导的话它们还留在界面上，
+                // 按【确定】照样写回去 —— 那个词就成了假话。
+                LoadSettingsIntoUi();
+            }
+        }
+
+        var wizard = new WizardWindow(_host) { Owner = this };
+        wizard.ShowDialog();
+
+        if (wizard.Completed)
+        {
+            // 向导改的是同一份设置 ⇒ 这里必须重载，不能留着老值。
+            LoadSettingsIntoUi();
+            SettingsStatus.Text =
+                "配置向导已保存。摄像头与「摄像头识别」那两项要重启才生效，其余立即生效。";
+        }
+    }
+
+    /// <summary>
     /// 关窗时若有未保存的改动，问一句。
     /// </summary>
     /// <remarks>

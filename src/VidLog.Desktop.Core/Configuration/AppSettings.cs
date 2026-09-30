@@ -98,6 +98,26 @@ public sealed record AppSettings
     public string? CameraNetworkUrl { get; init; }
 
     /// <summary>
+    /// 用摄像头取景识码（规格 §3.2.1 的第二种入口；配置向导第 3 步那个二选一）。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// 关掉时 <c>AppHost.StartAsync</c> **连取景进程都不建** —— 不是「建了不用」，
+    /// 那样它照样占着相机（dshow 上相机是独占的），会挡住录制。
+    /// </para>
+    /// <para>
+    /// ⚠️ 默认 <see langword="true"/>，**而且必须**：老设置文件里没有这个字段，
+    /// 反序列化取 <see langword="bool"/> 的默认值 —— 而 <see langword="false"/>
+    /// 会让升级之后的机器**全部静默失去**「放进画面就开录」这条入口，
+    /// 用户只会觉得「摄像头识别怎么不好使了」。
+    /// </para>
+    /// <para>
+    /// 改它要重启才生效（与摄像头同一档：两者都在启动装配期定死，界面上写明了）。
+    /// </para>
+    /// </remarks>
+    public bool CameraRecognition { get; init; } = true;
+
+    /// <summary>
     /// 摄像头配置（哪一个 + 地址合成一个）。**不落盘**，由上面那两个字段算出来。
     /// </summary>
     /// <remarks>
@@ -440,6 +460,7 @@ public sealed class SettingsStore
         Compare(nameof(AppSettings.PlaybackPort), previous.PlaybackPort, next.PlaybackPort);
         Compare(nameof(AppSettings.CameraDevice), previous.CameraDevice, next.CameraDevice);
         Compare(nameof(AppSettings.CameraSource), previous.CameraSource, next.CameraSource);
+        Compare(nameof(AppSettings.CameraRecognition), previous.CameraRecognition, next.CameraRecognition);
 
         // ⚠️ 网络摄像头地址**必须抹掉凭据再比**：它是用户自己的摄像头密码，
         // 而 Compare 默认会把两边的值整个写进日志（`X: 旧值 → 新值`）。
