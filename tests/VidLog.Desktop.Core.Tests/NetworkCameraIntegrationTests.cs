@@ -56,6 +56,27 @@ public class NetworkCameraIntegrationTests
     }
 
     [RequiresRtspFact]
+    public async Task 测试连接_对着真源说得对编码与尺寸()
+    {
+        // 「测试连接」按钮跑的就是这一条（`FfmpegNetworkCameraProbe.InspectAsync`）。
+        //
+        // ⚠️ 这条路在 2026-09-30 之前**从来没对着真源跑过** —— 而它恰恰是
+        // http 源上最先坏的那一条：`-rtsp_transport` 是 rtsp 解复用器的**私有**选项，
+        // 加在 http 源上 ffmpeg 直接 `Option rtsp_transport not found`。
+        // 后果是界面上「测试连接」报失败，而**摄像头其实是好的**
+        // （错的是一条我们多加的选项）。见 `CameraSource.IsRtsp`。
+        var info = await new FfmpegNetworkCameraProbe(Ffmpeg, new SystemProcessRunner())
+            .InspectAsync(Source);
+
+        Assert.True(info.Connected, info.FailureReason);
+
+        // ⚠️ 「连上了但读不出尺寸」本身**不算失败**（见 NetworkStreamInfo.SizeKnown）——
+        // 但那说明这台源印的流信息换个形状了，得有人看一眼，所以这里要求它读得出。
+        Assert.True(info.SizeKnown, "连上了却没读出尺寸 —— 看一眼这台源印的流信息是什么形状");
+        Assert.False(string.IsNullOrWhiteSpace(info.VideoCodec));
+    }
+
+    [RequiresRtspFact]
     public async Task 没开声音时_产物里不许有音轨()
     {
         // ⚠️ 这条守的是一件很容易被忽略的事：**网络摄像头自己可能带音轨**。

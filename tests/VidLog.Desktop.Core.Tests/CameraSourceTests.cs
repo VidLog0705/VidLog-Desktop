@@ -48,6 +48,31 @@ public class CameraSourceTests
     }
 
     [Fact]
+    public void http源一个rtsp选项都不许带()
+    {
+        // ⚠️ `-rtsp_transport` 是 **rtsp 解复用器的私有选项**，不是「网络源」的公共选项：
+        // 给 http 源加上它，ffmpeg 直接报 `Option rtsp_transport not found` ——
+        // **起都起不来**（2026-09-30 真机实测：一台手机 IP 摄像头是 `mpjpeg` over HTTP，
+        // 录制退出码非 0、「测试连接」同样失败）。
+        //
+        // ⚠️ 这条尤其要守：`ConfigurationProblem` **本来就收 `http://`**
+        // ⇒ 在修之前，界面说「地址没问题」、而一录就起不来。
+        var arguments = CameraSource.Network("http://192.168.101.66:8081")
+            .InputArguments("256M", "1920x1080");
+
+        Assert.Equal(["-i", "http://192.168.101.66:8081"], arguments);
+
+        // dshow 那几个选项对 http 同样不存在（与 RTSP 那条同一顶帽子）。
+        Assert.DoesNotContain("-video_size", arguments);
+        Assert.DoesNotContain("-framerate", arguments);
+
+        // 而 rtsps（TLS 那一路）**仍然是 RTSP 系** —— 它认这个选项，别一起误伤。
+        Assert.Contains(
+            "-rtsp_transport",
+            CameraSource.Network("rtsps://h/s").InputArguments("256M"));
+    }
+
+    [Fact]
     public void 网络地址走tcp不走udp()
     {
         // UDP 在很多现场网络里被防火墙丢掉，表现是「偶尔能连、多数连不上」——

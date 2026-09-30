@@ -69,6 +69,22 @@ public sealed record CameraSource(CameraSourceKind Kind, string Address)
     /// <summary>这一路是不是网络摄像头。</summary>
     public bool IsNetwork => Kind == CameraSourceKind.Network;
 
+    /// <summary>
+    /// 这一路是不是 RTSP 系（只有它认 <c>-rtsp_transport</c>）。
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ **别拿 <see cref="IsNetwork"/> 代替它**：`-rtsp_transport` 是
+    /// **rtsp 解复用器的私有选项**，不是「网络源」的属性。给 http 源加上它，
+    /// ffmpeg 直接 `Option rtsp_transport not found` —— **起都起不来**
+    /// （2026-09-30 真机实测：一台手机 IP 摄像头是 `mpjpeg` over HTTP，
+    /// 录制退出码非 0、「测试连接」同样失败）。
+    /// 而 <see cref="ConfigurationProblem"/> 本来就收 `http://`，
+    /// 所以「说了支持、实际起不来」这个坑按 scheme 分才堵得住。
+    /// </remarks>
+    private bool IsRtsp =>
+        Address.StartsWith("rtsp://", StringComparison.OrdinalIgnoreCase)
+        || Address.StartsWith("rtsps://", StringComparison.OrdinalIgnoreCase);
+
     /// <summary>没配（或配了个空的）。</summary>
     public bool IsEmpty => string.IsNullOrWhiteSpace(Address);
 
@@ -156,7 +172,13 @@ public sealed record CameraSource(CameraSourceKind Kind, string Address)
     {
         if (IsNetwork)
         {
-            return ["-rtsp_transport", "tcp", "-i", Address];
+            // ⚠️ 只有 RTSP 系才带 `-rtsp_transport tcp`（见 IsRtsp 的说明）。
+            // UDP 在很多现场网络里被防火墙丢掉，表现是「偶尔能连、多数连不上」——
+            // 那种故障极难排查，所以 RTSP 一律走 TCP。而 http 那一路
+            // **一个输入选项都不能带**。
+            return IsRtsp
+                ? ["-rtsp_transport", "tcp", "-i", Address]
+                : ["-i", Address];
         }
 
         var arguments = new List<string> { "-f", "dshow", "-rtbufsize", bufferSize };
