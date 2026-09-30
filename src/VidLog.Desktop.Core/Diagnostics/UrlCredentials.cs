@@ -78,7 +78,7 @@ public static class UrlCredentials
     /// 带凭据的输入地址打在 stderr 上 ——
     /// </para>
     /// <code>
-    /// Input #0, rtsp, from 'rtsp://admin:admin@192.168.101.55:8554/live':
+    /// Input #0, rtsp, from 'rtsp://&lt;账号&gt;:&lt;密码&gt;@192.168.101.55:8554/live':
     /// </code>
     /// <para>
     /// 而 <c>SystemProcessRunner</c> 在失败时**记的正是 stderr**（那条日志是排障的

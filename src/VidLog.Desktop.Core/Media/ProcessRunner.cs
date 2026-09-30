@@ -102,7 +102,7 @@ public sealed class SystemProcessRunner : IProcessRunner
                     //
                     // ⚠️ stderr 那一路**必须单独抹**：2026-09-29 实测，ffmpeg 自己会把
                     // 带凭据的地址打出来 ——
-                    //   Input #0, rtsp, from 'rtsp://admin:admin@192.168.101.55:8554/live':
+                    //   Input #0, rtsp, from 'rtsp://<账号>:<密码>@192.168.101.55:8554/live':
                     // 只抹 argv 的话，凭据从这一路照样落盘。
                     ["参数"] = string.Join(' ', arguments.Select(Diagnostics.UrlCredentials.Strip)),
                     ["stderr"] = Diagnostics.UrlCredentials.StripIn(Tail(result.StandardError)),

@@ -105,7 +105,7 @@ public static class Sanitizer
         // 于是不管将来谁在哪儿拼了一句带 URL 的日志，凭据都落不了盘。
         //
         // 为什么必须补：实测过 ffmpeg **自己**会把带凭据的输入地址打在 stderr 上
-        // （`Input #0, rtsp, from 'rtsp://admin:admin@…'`），而记 stderr 是排障的
+        // （`Input #0, rtsp, from 'rtsp://<账号>:<密码>@…'`），而记 stderr 是排障的
         // 主要依据。只抹 argv 的话，凭据从 stderr 那一路照样进去。
         result = UrlCredentials.StripIn(result);
 
