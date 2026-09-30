@@ -18,18 +18,23 @@ namespace VidLog.Desktop.Core.Cloud;
 /// 所以切与算**只有这一份**。
 /// </para>
 /// <para>
-/// ⚠️ 单次 <c>create</c> 最多 512 片（= 2GB），也就是说更大的文件要**分多次合并**。
-/// 本仓今天的录像单段远小于 2GB，所以超出那一段走 <see cref="MaxSlicesPerCreate"/>
-/// 直接说清楚，而不是硬凑一个半截上传。
+/// ⚠️ <b>一个文件的分片数不得超过 1024</b>（017 能力说明「大小限制」段原文：
+/// 「分片数量不得超过 1024 个」）。4MB × 1024 = 4GB，正好是普通用户单文件的上限，
+/// 两个数在对得上，所以这里就照 1024 写。
+/// </para>
+/// <para>
+/// 会员与超级会员的分片上限分别是 16MB / 32MB，单文件 10GB / 20GB ——
+/// 那两个是**上限**而不是「固定」，所以对所有档位都用 4MB 是安全的
+/// （普通用户那一档 4MB 是「固定」，用别的反而会被 <c>31299</c> 拒）。
 /// </para>
 /// </remarks>
 public static class BaiduPanBlocks
 {
-    /// <summary>一片的大小（网盘那边写死的 4MB）。</summary>
+    /// <summary>一片的大小（普通用户这一档网盘写死 4MB）。</summary>
     public const int SliceSize = 4 * 1024 * 1024;
 
-    /// <summary>一次 <c>create</c> 能吃下的分片数上限。</summary>
-    public const int MaxSlicesPerCreate = 512;
+    /// <summary>一个文件的分片数上限（017 写的 1024，= 4GB）。</summary>
+    public const int MaxSlicesPerCreate = 1024;
 
     /// <summary>一个这么大的文件要切成几片。</summary>
     public static int Count(long size) => (int)((size + SliceSize - 1) / SliceSize);
@@ -105,7 +110,28 @@ public sealed class BaiduPanClient : IBaiduPanApi
     private const string OAuthBase = "https://openapi.baidu.com/oauth/2.0";
     private const string FileBase = "https://pan.baidu.com/rest/2.0/xpan/file";
     private const string NasBase = "https://pan.baidu.com/rest/2.0/xpan/nas";
-    private const string SliceBase = "https://d.pcs.baidu.com/rest/2.0/pcs/superfile2";
+
+    /// <summary>取上传域名的那一个服务（016）。**注意它只负责发域名，不收分片。**</summary>
+    private const string UploadLocateBase = "https://d.pcs.baidu.com/rest/2.0/pcs/file";
+
+    /// <summary>
+    /// 拿不到域名时的兜底。
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ 只在下发列表为空时用（文档的示例响应里 <c>servers</c> 正常是有值的）。
+    /// 特意**不**把它当成「默认上传域名」长期用：016 明说不要固定写死。
+    /// </remarks>
+    private const string UploadHostFallback = "https://d.pcs.baidu.com";
+
+    /// <summary>
+    /// 每个请求都带的 <c>User-Agent</c>。
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ 文档里每一个 cURL / Python 示例都带它，019 下载的 header 表把它标成**必填**，
+    /// 而 <c>31326</c>（命中防盗链）的排查方向写的就是「User-Agent 请求头是否正常」。
+    /// 不带它时不一定报错，但报错时报的是「防盗链」—— 那种错很难联想到「少了个头」。
+    /// </remarks>
+    private const string UserAgent = "pan.baidu.com";
 
     private readonly BaiduPanCredentials _credentials;
     private readonly HttpClient _http;
@@ -129,13 +155,16 @@ public sealed class BaiduPanClient : IBaiduPanApi
 
         var json = await GetJsonAsync(url, cancellationToken);
 
+        // 兜底值照 2026-09-30 打真服务器实测的结果：那一刻网盘回的就是
+        // interval=5、expires_in=300（5 分钟）。写 1800 会让界面说「这串码半小时内有效」，
+        // 而它 5 分钟就作废了 —— 用户按界面上的话去泡杯茶，回来只看到「授权失败」。
         return new BaiduDeviceCode(
             Required(json, "device_code"),
             Required(json, "user_code"),
             Optional(json, "verification_url") ?? "https://openapi.baidu.com/device",
             Optional(json, "qrcode_url") ?? string.Empty,
             json.TryGetProperty("interval", out var interval) ? interval.GetInt32() : 5,
-            json.TryGetProperty("expires_in", out var expires) ? expires.GetInt32() : 1800);
+            json.TryGetProperty("expires_in", out var expires) ? expires.GetInt32() : 300);
     }
 
     public async Task<BaiduToken?> PollDeviceTokenAsync(
@@ -150,6 +179,13 @@ public sealed class BaiduPanClient : IBaiduPanApi
         var json = await GetJsonAsync(url, cancellationToken);
 
         // 「人还没点」与「点得太快」都是**流程里正常的一步**，不是错误。
+        //
+        // ⚠️ 2026-09-30 拿真凭据打过真服务器，还没授权时它回的是
+        //     HTTP 400 + {"error":"authorization_pending","error_description":"..."}
+        // 也就是说这个「正常的一步」是**带着一个 4xx 状态码**回来的。所以
+        // ReadAsync 必须先把带 error 的响应体交回来（它也确实那么做了），
+        // 否则这里根本轮不到 —— 那句话会先被当成 HTTP 失败抛出去，
+        // 而设备码登录的第一次轮询就必然炸。
         if (json.TryGetProperty("error", out var error))
         {
             var code = error.GetString();
@@ -175,7 +211,36 @@ public sealed class BaiduPanClient : IBaiduPanApi
             + $"&client_id={Uri.EscapeDataString(_credentials.AppKey)}"
             + $"&client_secret={Uri.EscapeDataString(_credentials.AppSecret)}";
 
-        return ReadToken(await GetJsonAsync(url, cancellationToken));
+        var json = await GetJsonAsync(url, cancellationToken);
+
+        // ⚠️ 续期被拒时**回的是 error 而不是 errno**（同一个 OAuth 端点）。
+        // 不在这里挡一道的话，`ReadToken` 会因为读不到 access_token 而报
+        // 「回包里没有 access_token」—— 那句话把「授权已经失效了，得重新登录」
+        // 说成了一个像解析 bug 的东西。
+        if (json.TryGetProperty("error", out var error) && error.ValueKind == JsonValueKind.String)
+        {
+            var code = error.GetString() ?? string.Empty;
+            var description = Optional(json, "error_description");
+
+            // ⚠️ 「凭据没了」与「我们配错了」要分开，因为后果差得很远：
+            // 前者该把本机那串令牌丢掉、请用户重新授权；后者丢掉令牌**也解决不了**
+            // （AppKey/Secret 配错了，重新授权多少次都一样），反而把用户
+            // 每次都逼去走一遍授权流程。
+            //
+            // 判据取标准的授权类错误码。文档没有列这张表（接入授权那一页只说
+            // refresh_token 是一次性的、刷新失败旧的那串也一起失效），
+            // 所以这里**只认最保守的三个**，其余一律当「不明原因」照实报。
+            var gone = code is "invalid_grant" or "invalid_token" or "expired_token";
+
+            throw new BaiduPanException(
+                // 20017 = access_token 无效（「可能因用户解绑或授权撤销等原因失效，
+                // 请重新获取 token 或续期 token」）—— 正是眼下这件事。
+                gone ? 20017 : 0,
+                $"百度网盘续期失败：{code} {description}"
+                + (gone ? "（这一串 refresh_token 已经作废了，得重新登录一次）" : string.Empty));
+        }
+
+        return ReadToken(json);
     }
 
     public async Task<string> GetDisplayNameAsync(
@@ -206,30 +271,130 @@ public sealed class BaiduPanClient : IBaiduPanApi
                 ["path"] = remotePath,
                 ["size"] = size.ToString(CultureInfo.InvariantCulture),
                 ["isdir"] = "0",
+                // ⚠️ 归档那条路径（`/apps/<应用名>/2026/09/30/发货/`）**靠这个参数**
+                // 把中间那几层目录一起建出来 —— 代码里没有任何一处显式建目录。
+                // 文档只说它「本接口固定为 1」，**没写它到底做什么**，
+                // 所以这条是**真机必须验**的（`docs/实现决策.md` §87.15 第 3 条）：
+                // 不成立的话，第一次往一个新日期目录里传会整个失败，
+                // 得改成先 `method=create` + `isdir=1` 逐层建（文档 020）。
                 ["autoinit"] = "1",
-                // rtype=3 = 超大文件（superfile），分片走 superfile2。
+                // rtype=3 = 同名时**覆盖**（018/014 的「冲突处理策略」：
+                // 0 冲突失败、1 冲突重命名、2 冲突且 block_list 不同才重命名、3 覆盖）。
+                // 归档要的是幂等：同一条录像重传一次就该落回同一个文件，
+                // 而不是在网盘上堆出 `SF1000000001_ab12_000(1).mp4`。
+                // ⚠️ 文档要求它与 create 那一步**保持一致**（两处都是 3）。
                 ["rtype"] = "3",
                 ["block_list"] = JsonSerializer.Serialize(blockList),
             },
             cancellationToken);
 
-        var already = new HashSet<int>();
+        // ⚠️ 响应里这个**同名**的 block_list 与请求里那个不是一回事：
+        // 请求里是「每片的 MD5」，响应里是「**还需要传**的分片序号」。
+        var pending = new HashSet<int>();
 
-        // ⚠️ 网盘回的是「**已经有**的分片下标」。有的响应里这个字段干脆没有
-        // （全新文件），有的给一个空数组 —— 两种都是「一片都还没有」。
-        if (json.TryGetProperty("block_list", out var present)
-            && present.ValueKind == JsonValueKind.Array)
+        if (json.TryGetProperty("block_list", out var wanted)
+            && wanted.ValueKind == JsonValueKind.Array)
         {
-            foreach (var item in present.EnumerateArray())
+            foreach (var item in wanted.EnumerateArray())
             {
                 if (item.TryGetInt32(out var index))
                 {
-                    already.Add(index);
+                    pending.Add(index);
                 }
+            }
+
+            // 文档：「block_list 为空时等价于 [0]」——
+            // 空数组不是「一片都不用传」，是那个单片的退化写法。
+            if (pending.Count == 0)
+            {
+                pending.Add(0);
+            }
+        }
+        else
+        {
+            // 字段整个缺席时按「解析不出来」处理 ⇒ 全传。
+            // 这一头必须朝「多传」落：朝「少传」落就是在 create 那一步炸，
+            // 而且炸出来的错（分片缺失）指不回这里。
+            for (var index = 0; index < blockList.Count; index++)
+            {
+                pending.Add(index);
             }
         }
 
-        return new BaiduPrecreate(Required(json, "uploadid"), already);
+        return new BaiduPrecreate(Required(json, "uploadid"), pending);
+    }
+
+    public async Task<string> LocateUploadAsync(
+        string accessToken,
+        string remotePath,
+        string uploadId,
+        CancellationToken cancellationToken = default)
+    {
+        var url = $"{UploadLocateBase}?method=locateupload"
+            + "&appid=250528"
+            + $"&access_token={Uri.EscapeDataString(accessToken)}"
+            + $"&path={Uri.EscapeDataString(remotePath)}"
+            + $"&uploadid={Uri.EscapeDataString(uploadId)}"
+            + "&upload_version=2.0";
+
+        var json = await GetJsonAsync(url, cancellationToken);
+
+        // ⚠️ 这一个接口的成功判据是 `error_code`，**不是 `errno`**（016）。
+        // 和获取用户身份信息（058）一样是那两个例外之一。
+        if (json.TryGetProperty("error_code", out var code) && code.GetInt32() != 0)
+        {
+            throw new BaiduPanException(
+                code.GetInt32(),
+                $"百度网盘没给上传域名（error_code={code.GetInt32()}）"
+                + $"：{Optional(json, "error_msg") ?? "没给原因"}");
+        }
+
+        foreach (var name in new[] { "servers", "bak_servers" })
+        {
+            if (PickHost(json, name) is { Length: > 0 } host)
+            {
+                return host;
+            }
+        }
+
+        // 一个都没下发。说清楚，然后退回文档里那个主机名 ——
+        // 退回去有可能传不上去，但比在这里直接失败强（那会把「网盘抽风」变成「这条录像永远传不上去」）。
+        _logger.Log(LogLevel.Warn, "网盘", "百度网盘没下发上传域名，退回默认的那一个");
+
+        return UploadHostFallback;
+    }
+
+    /// <summary>从 <c>servers</c>/<c>bak_servers</c> 里挑一个 **HTTPS** 的地址。</summary>
+    /// <remarks>
+    /// ⚠️ 文档：「从 servers 中选择 HTTPS 地址，并保留协议与主机名」。
+    /// 挑到 http 的会明文传整段录像，而那是隐私画面。
+    /// </remarks>
+    private static string? PickHost(JsonElement json, string name)
+    {
+        if (!json.TryGetProperty(name, out var list) || list.ValueKind != JsonValueKind.Array)
+        {
+            return null;
+        }
+
+        string? plain = null;
+
+        foreach (var entry in list.EnumerateArray())
+        {
+            var server = Optional(entry, "server");
+            if (server is not { Length: > 0 })
+            {
+                continue;
+            }
+
+            if (server.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
+            {
+                return server.TrimEnd('/');
+            }
+
+            plain ??= server.TrimEnd('/');
+        }
+
+        return plain;
     }
 
     public async Task CreateAsync(
@@ -247,6 +412,7 @@ public sealed class BaiduPanClient : IBaiduPanApi
                 ["path"] = remotePath,
                 ["size"] = size.ToString(CultureInfo.InvariantCulture),
                 ["isdir"] = "0",
+                // ⚠️ 必须与 precreate 那一步一致（014 注意事项逐字要求）。
                 ["rtype"] = "3",
                 ["uploadid"] = uploadId,
                 ["block_list"] = JsonSerializer.Serialize(blockList),
@@ -254,15 +420,17 @@ public sealed class BaiduPanClient : IBaiduPanApi
             cancellationToken);
     }
 
-    public async Task UploadSliceAsync(
+    public async Task<string?> UploadSliceAsync(
         string accessToken,
+        string uploadHost,
         string remotePath,
         string uploadId,
         int partSeq,
         Stream content,
         CancellationToken cancellationToken = default)
     {
-        var url = $"{SliceBase}?method=upload"
+        // ⚠️ 域名用 locateupload 给的那一个（016），不写死。
+        var url = $"{uploadHost.TrimEnd('/')}/rest/2.0/pcs/superfile2?method=upload"
             + $"&access_token={Uri.EscapeDataString(accessToken)}"
             + "&type=tmpfile"
             + $"&path={Uri.EscapeDataString(remotePath)}"
@@ -275,22 +443,27 @@ public sealed class BaiduPanClient : IBaiduPanApi
         form.Add(part, "file", "slice");
 
         using var request = new HttpRequestMessage(HttpMethod.Post, url) { Content = form };
-        using var response = await _http.SendAsync(request, cancellationToken);
-        var text = await response.Content.ReadAsStringAsync(cancellationToken);
+        WithHeaders(request);
 
-        // ⚠️ 分片这一条路**不回 JSON，回一个裸的 md5 字符串**（成功时）。
-        // 拿 JSON 去解它会抛，而那个异常会说「报文读不出来」——
-        // 真正的原因是「这里本来就不是 JSON」。
-        if (!response.IsSuccessStatusCode)
-        {
-            throw new BaiduPanException(
-                0, $"传分片 {partSeq} 失败：HTTP {(int)response.StatusCode} {Trim(text)}");
-        }
+        using var response = await _http.SendAsync(request, cancellationToken);
+
+        // ⚠️ 这里回的是 **JSON**（015 响应参数表：md5 / request_id / errno），
+        // 而且**失败时也可能带 200 状态码** —— 光看状态码会把「这片没传上去」
+        // 当成成功，一路走到 create 才炸，报的却是「分片缺失」。
+        var json = await ReadAsync(response, url, cancellationToken);
+
+        return Optional(json, "md5");
     }
 
     public async Task<IReadOnlySet<string>> ListFilesAsync(
         string accessToken, string directory, CancellationToken cancellationToken = default)
     {
+        // ⚠️ 目录还不存在时网盘回 **-9（目录不存在）**，那对一个刚登录、
+        // 一条都还没传过的用户来说是**正常状态**，不是错误。
+        // 它由调用方按 errno 判（`CloudArchiveBackend` / `CloudUploadService` 各有一处），
+        // 因为「不存在的目录」在那两处的含义不一样（一个是「还没归档」，另一个是「这个目录下一份都没有」）。
+        const int Page = 1000;
+
         var names = new HashSet<string>(StringComparer.Ordinal);
         var start = 0;
 
@@ -300,22 +473,19 @@ public sealed class BaiduPanClient : IBaiduPanApi
                 + $"&access_token={Uri.EscapeDataString(accessToken)}"
                 + $"&dir={Uri.EscapeDataString(directory)}"
                 + "&order=name"
-                + "&limit=1000"
+                + "&limit=" + Page.ToString(CultureInfo.InvariantCulture)
                 + "&start=" + start.ToString(CultureInfo.InvariantCulture);
 
             var json = await GetJsonAsync(url, cancellationToken);
 
-            // ⚠️ 目录还不存在时网盘回 **-9（目录不存在）**，那对一个刚登录、
-            // 一条都还没传过的用户来说是**正常状态**，不是错误。
-            if (json.TryGetProperty("errno", out var errno) && errno.GetInt32() == -9)
-            {
-                return names;
-            }
+            var got = 0;
 
             if (json.TryGetProperty("list", out var list) && list.ValueKind == JsonValueKind.Array)
             {
                 foreach (var entry in list.EnumerateArray())
                 {
+                    got++;
+
                     var path = Optional(entry, "path");
                     if (path is { Length: > 0 })
                     {
@@ -324,13 +494,22 @@ public sealed class BaiduPanClient : IBaiduPanApi
                 }
             }
 
-            var more = json.TryGetProperty("has_more", out var hasMore) && hasMore.GetInt32() != 0;
+            // ⚠️ **不能只看 has_more 决定翻不翻页。** 053「获取文件列表」的响应参数表里
+            // 根本没有 has_more 这个字段（有它的是 048 搜索和 057 递归列目录）。
+            // 只信它的话，一个上千条的目录会被**静默**截到第一页 ——
+            // 而回查归档层（I8）会因此说「云端没有这一条」，接着把本机那份重传一遍。
+            //
+            // 判据用「这一页有没有装满」：没装满就是最后一页（053 原文的分页口径
+            // 就是 start + limit）。has_more 只在它出现且说「还有」时额外投一票。
+            var more = got >= Page
+                || (json.TryGetProperty("has_more", out var hasMore) && hasMore.GetInt32() != 0);
+
             if (!more)
             {
                 return names;
             }
 
-            start += 1000;
+            start += Page;
         }
     }
 
@@ -338,20 +517,34 @@ public sealed class BaiduPanClient : IBaiduPanApi
 
     private static BaiduToken ReadToken(JsonElement json) => new(
         Required(json, "access_token"),
-        Required(json, "refresh_token"),
+        // ⚠️ 用 Optional 而不是 Required：文档说每次续期都会回一串新的 refresh_token，
+        // 但**将来万一哪次没回**，`Required` 会在这里抛，于是
+        // `BaiduPanSession` 里那句「没回就沿用旧的」永远轮不到 ——
+        // 一个本来能救回来的续期会变成一个「莫名要重新登录」。
+        Optional(json, "refresh_token") ?? string.Empty,
         json.TryGetProperty("expires_in", out var expires) ? expires.GetInt32() : 0);
 
     private async Task<JsonElement> GetJsonAsync(string url, CancellationToken cancellationToken)
     {
-        using var response = await _http.GetAsync(url, cancellationToken);
+        using var request = new HttpRequestMessage(HttpMethod.Get, url);
+        WithHeaders(request);
+
+        using var response = await _http.SendAsync(request, cancellationToken);
         return await ReadAsync(response, url, cancellationToken);
     }
+
+    /// <summary>每个请求都要带的头。</summary>
+    private static void WithHeaders(HttpRequestMessage request) =>
+        request.Headers.TryAddWithoutValidation("User-Agent", UserAgent);
 
     private async Task<JsonElement> PostFormAsync(
         string url, IReadOnlyDictionary<string, string> fields, CancellationToken cancellationToken)
     {
         using var form = new FormUrlEncodedContent(fields);
-        using var response = await _http.PostAsync(url, form, cancellationToken);
+        using var request = new HttpRequestMessage(HttpMethod.Post, url) { Content = form };
+        WithHeaders(request);
+
+        using var response = await _http.SendAsync(request, cancellationToken);
         return await ReadAsync(response, url, cancellationToken);
     }
 
@@ -371,6 +564,19 @@ public sealed class BaiduPanClient : IBaiduPanApi
                 0, $"百度网盘回了读不懂的内容（HTTP {(int)response.StatusCode}）：{ex.Message} {Trim(text)}");
         }
 
+        // ⚠️ 带 `error` 的响应体**先交回给调用方**，不在这里按 HTTP 状态码判死。
+        //
+        // 理由是一条实测事实（2026-09-30，真凭据、真服务器）：设备码轮询在
+        // 「用户还没点授权」时回的就是 `HTTP 400 + {"error":"authorization_pending"}`。
+        // 那是**流程里正常的一步**。先按状态码抛的话，调用方永远看不到那个 error，
+        // 于是设备码登录的第一次轮询必然失败 —— 而且报出来的是「HTTP 400」，
+        // 看的人只会去查网络，查不到「其实只是还没点」。
+        if (json.ValueKind == JsonValueKind.Object
+            && json.TryGetProperty("error", out var oauth) && oauth.ValueKind == JsonValueKind.String)
+        {
+            return json;
+        }
+
         // ⚠️ 网盘的错误**不一定配 HTTP 状态码**：errno 非 0 的时候 HTTP 可能是 200。
         // 只看状态码的话，「令牌失效」会被当成成功，然后拿一个空 uploadid 去传分片。
         if (json.TryGetProperty("errno", out var errno) && errno.GetInt32() != 0)
@@ -380,7 +586,8 @@ public sealed class BaiduPanClient : IBaiduPanApi
             _logger.Log(LogLevel.Warn, "网盘", $"百度网盘返回 errno={code}（{Path(url)}）");
 
             throw new BaiduPanException(
-                code, $"百度网盘出错 errno={code}（{Optional(json, "errmsg") ?? "没给原因"}）");
+                code,
+                $"百度网盘出错 errno={code}（{Optional(json, "errmsg") ?? "没给原因"}）{Hint(code)}");
         }
 
         if (!response.IsSuccessStatusCode)
@@ -391,6 +598,33 @@ public sealed class BaiduPanClient : IBaiduPanApi
 
         return json;
     }
+
+    /// <summary>
+    /// 几个「用户自己动手才能解决」的错误码，补一句人话。
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ 这几个码的共同点是：**重试一万次也没用**，得去开放平台后台做点什么。
+    /// 光把 <c>errno=20013</c> 抛到界面上，用户（和半年后的我们）都得回来翻文档。
+    /// 文案照 063 公共错误码表的「排查方向」列写。
+    /// </remarks>
+    private static string Hint(int errno) => errno switch
+    {
+        20011 => "（应用还在审核中，只有前 10 个完成授权的用户能用 —— 要放开得先过审）",
+        20012 => "（调用次数已达上限被限流了：应用过审之前只能用于测试开发，也可能就是调得太密）",
+        20013 => "（这个应用没有该接口的权限 —— 要过审，且在审核时申请过这个接口）",
+        20015 => "（这个应用已经失效了，检查一下后台是不是被删了）",
+        20020 => "（路径不在应用允许访问的范围内，只能动 /apps/<应用名>/ 底下）",
+        31023 or 2 => "（参数不对：检查必填项、以及每个参数该放 URL 还是放 body）",
+        31034 => "（请求太频繁，命中频控了 —— 缓一缓再来）",
+        31064 => "（上传路径不对，必须是 /apps/<申请接入时填的那个产品名称>/…）",
+        31066 => "（文件不存在，检查路径）",
+        31190 or 31363 => "（分片缺失：某个分片没传上去，或者 size 与实际文件对不上）",
+        31299 => "（第一个分片小于 4MB —— 非最后一片都必须满 4MB）",
+        31364 => "（分片超过大小上限）",
+        31365 => "（文件太大：普通用户单文件 4GB、会员 10GB、超级会员 20GB）",
+        -6 or 20016 or 20017 or 31045 => "（授权不管用了，重新登录一次百度网盘）",
+        _ => string.Empty,
+    };
 
     /// <summary>日志里只留路径，**查询串一律丢掉**（令牌在里面）。</summary>
     private static string Path(string url)

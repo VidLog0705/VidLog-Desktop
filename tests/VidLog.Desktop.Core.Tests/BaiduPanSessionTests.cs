@@ -178,7 +178,15 @@ public class BaiduPanSessionTests
             long size,
             IReadOnlyList<string> blockList,
             CancellationToken cancellationToken = default) =>
-            Task.FromResult(new BaiduPrecreate("upload-1", new HashSet<int>()));
+            Task.FromResult(new BaiduPrecreate(
+                "upload-1", new HashSet<int>(Enumerable.Range(0, blockList.Count))));
+
+        public Task<string> LocateUploadAsync(
+            string accessToken,
+            string remotePath,
+            string uploadId,
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult("https://c3.pcs.baidu.com");
 
         public Task CreateAsync(
             string accessToken,
@@ -188,13 +196,14 @@ public class BaiduPanSessionTests
             string uploadId,
             CancellationToken cancellationToken = default) => Task.CompletedTask;
 
-        public Task UploadSliceAsync(
+        public Task<string?> UploadSliceAsync(
             string accessToken,
+            string uploadHost,
             string remotePath,
             string uploadId,
             int partSeq,
             Stream content,
-            CancellationToken cancellationToken = default) => Task.CompletedTask;
+            CancellationToken cancellationToken = default) => Task.FromResult<string?>(null);
 
         public Task<IReadOnlySet<string>> ListFilesAsync(
             string accessToken, string directory, CancellationToken cancellationToken = default) =>

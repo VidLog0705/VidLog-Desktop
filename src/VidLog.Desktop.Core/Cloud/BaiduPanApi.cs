@@ -25,15 +25,29 @@ public sealed record BaiduToken(string AccessToken, string RefreshToken, int Exp
 
 /// <summary>预创建的结果。</summary>
 /// <param name="UploadId">这次上传的会话号。</param>
-/// <param name="AlreadyThere">
-/// 网盘上**已经有**的分片下标。
+/// <param name="Pending">
+/// **要传的分片序号**（索引从 0 起）。
 /// </param>
 /// <remarks>
-/// ⚠️ 这个字段是网盘「秒传」的来源，也是**重传时的省力点**：
-/// 上一次传到一半断了，这一次要跳过网盘已经收下的那些分片。
-/// 忽略它会让每次重传都从头传一遍 —— 一条 4GB 的录像重传三次就是 12GB 上行。
+/// <para>
+/// ⚠️ <b>这个字段的语义照文档是「还需要传的」，不是「已经有了的」</b>
+/// （018 预上传，响应参数表原文：「需要上传的分片序号列表，索引从 0 开始」）。
+/// 反着读的后果**不是慢一点，是整个传不上去**：一个全新的 3 片文件网盘回的正是
+/// <c>[0,1,2]</c>，把它当成「这三片它都有了」就会一片都不传，
+/// 接着 <c>create</c> 去合并一份一个分片都没收到的文件 —— 报的是
+/// <c>31190</c> / <c>31363</c>（文件不存在 / 分片缺失），
+/// 而真正的原因（我们一片都没传）在报错里一个字都看不出来。
+/// </para>
+/// <para>
+/// ⚠️ 文档另有一句「<c>block_list</c> 为空时等价于 <c>[0]</c>」——
+/// 空数组不是「一片都不用传」，这一条由 <c>BaiduPanClient</c> 负责落。
+/// </para>
+/// <para>
+/// 它仍然是断点续传的省力点：带着同一个 <c>uploadid</c> 重开一次预创建时，
+/// 网盘把**还缺的那几片**列在这里，于是补传只传缺的，不必把 4GB 重来一遍。
+/// </para>
 /// </remarks>
-public sealed record BaiduPrecreate(string UploadId, IReadOnlySet<int> AlreadyThere);
+public sealed record BaiduPrecreate(string UploadId, IReadOnlySet<int> Pending);
 
 /// <summary>网盘那边报错。</summary>
 /// <remarks>
@@ -54,15 +68,26 @@ public sealed class BaiduPanException : Exception
     /// 这个错是不是「凭据不管用了」。
     /// </summary>
     /// <remarks>
-    /// ⚠️ 判据**只认这两个码**：网盘的 <c>errno</c> 是一个很大的整数空间，
-    /// 把「文件不存在」（31066）也当成凭据问题，会让界面反复提示用户重新登录，
-    /// 而他真正该做的是别的。
+    /// <para>
+    /// ⚠️ 判据**只认这四个码**，照平台简介 &gt; 错误码（063）的公共错误码表：
+    /// </para>
     /// <list type="bullet">
-    /// <item><c>111</c> —— access token 失效。</item>
-    /// <item><c>-6</c> —— 身份验证失败。</item>
+    /// <item><c>-6</c> —— 身份验证失败（「access_token 是否有效 / 授权是否成功」）。</item>
+    /// <item><c>20016</c> —— access_token 已过期。</item>
+    /// <item><c>20017</c> —— access_token 无效，**可能因用户解绑或授权撤销**。</item>
+    /// <item><c>31045</c> —— access_token 验证未通过。</item>
     /// </list>
+    /// <para>
+    /// ⚠️ <b><c>111</c> 不在里面。</b>它在这套文档里是「有其他异步任务正在执行」，
+    /// 文档给的处置是「稍后，可重新请求」—— 把它当成掉线会让一个**好端端的**
+    /// 登录被界面提示去重新授权，而用户照做之后问题还在（因为问题本来就不在那）。
+    /// </para>
+    /// <para>
+    /// 同理，「文件不存在」（<c>-9</c>/<c>31066</c>）、「路径不对」（<c>31064</c>）、
+    /// 限流（<c>31034</c>）都不是凭据问题，全部排除在外。
+    /// </para>
     /// </remarks>
-    public bool IsCredentialProblem => Errno is 111 or -6;
+    public bool IsCredentialProblem => Errno is -6 or 20016 or 20017 or 31045;
 }
 
 /// <summary>
@@ -111,6 +136,22 @@ public interface IBaiduPanApi
         IReadOnlyList<string> blockList,
         CancellationToken cancellationToken = default);
 
+    /// <summary>
+    /// 问网盘要一个**这次能用的上传域名**（016「获取上传域名」）。
+    /// </summary>
+    /// <returns>上传服务地址，形如 <c>https://c3.pcs.baidu.com</c>（带协议）。</returns>
+    /// <remarks>
+    /// ⚠️ <b>这一步不能省，也不能固定写死一个域名。</b>016 原话：
+    /// 「分片上传和单步上传请求必须使用接口返回的域名，不应在客户端固定写死上传服务器地址」，
+    /// 「上传文件数据前必须调用本接口」。固定的那个域名是**取域名的那个服务**，
+    /// 不是收分片的服务 —— 拿它去传分片正是那种「上线才发现」的错。
+    /// </remarks>
+    Task<string> LocateUploadAsync(
+        string accessToken,
+        string remotePath,
+        string uploadId,
+        CancellationToken cancellationToken = default);
+
     /// <summary>合并分片，这一步之后网盘上才真的出现那个文件。</summary>
     Task CreateAsync(
         string accessToken,
@@ -121,8 +162,20 @@ public interface IBaiduPanApi
         CancellationToken cancellationToken = default);
 
     /// <summary>传一个分片。</summary>
-    Task UploadSliceAsync(
+    /// <param name="uploadHost">
+    /// <see cref="LocateUploadAsync"/> 给的那个域名。⚠️ 每个分片用**同一个**。
+    /// </param>
+    /// <returns>
+    /// 网盘回显的该分片 MD5；它没给就是 <see langword="null"/>。
+    /// </returns>
+    /// <remarks>
+    /// ⚠️ 回显的 MD5 是**唯一能证明「网盘收下的就是我发的这一片」的东西**。
+    /// 不看它的话，一片传歪了的表现是「网盘上文件在那儿、大小也对，播出来是坏的」——
+    /// 而那时本机那一份已经因为「云端有了」被允许清理（I8）。
+    /// </remarks>
+    Task<string?> UploadSliceAsync(
         string accessToken,
+        string uploadHost,
         string remotePath,
         string uploadId,
         int partSeq,

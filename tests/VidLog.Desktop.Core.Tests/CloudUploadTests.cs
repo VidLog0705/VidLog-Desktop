@@ -314,19 +314,21 @@ public class CloudUploadTests
     }
 
     // ─────────────────────────────────────────────
-    // 分片：跳过网盘已有的那些（秒传 / 断点续传）
+    // 分片：照预创建说的那几片传（断点续传 / 秒传）
     // ─────────────────────────────────────────────
 
     [Fact]
-    public async Task 网盘说它已经有那几片了_就跳过不传()
+    public async Task 预创建说要传哪几片就传哪几片()
     {
-        // ⚠️ 这是断点续传的省力点：上一次传到一半断了，这一次从头再传一遍
-        // 会让一条 4GB 的录像重传三次就是 12GB 上行，而用户看到的只是「怎么这么慢」。
+        // ⚠️ 判据是文档 018 那句原话：「需要上传的分片序号列表，索引从 0 开始」。
+        // 反着读（当成「已经有了的」）的后果不是慢一点：全新的文件网盘回的正是
+        // [0,1,2]，当成「它都有了」就会**一片都不传**，接着 create 去合并
+        // 一份空的分片集，报 31190/31363 —— 错指不回这里。
         using var dir = new TempDir();
         var api = new FakeApi();
 
-        // 3 片：第 0、1 片网盘已经有了。
-        api.AlreadyThere = new HashSet<int> { 0, 1 };
+        // 3 片，网盘说只缺第 2 片（前两片上一轮已经收下了）。
+        api.PendingSlices = new HashSet<int> { 2 };
 
         var path = dir.Write("大文件.mp4", BaiduPanBlocks.SliceSize * 3 - 1);
 
@@ -340,6 +342,59 @@ public class CloudUploadTests
 
         // 摘要算的是**每一片各自的 MD5**，最后一片按实际长度算。
         Assert.Equal(3, api.BlockListSizes.Single());
+    }
+
+    [Fact]
+    public async Task 全新的文件_网盘说要传全部就一片不少地传()
+    {
+        // 这一条钉的是「反着读」那个 bug 的具体形态：全新的 3 片文件。
+        using var dir = new TempDir();
+        var api = new FakeApi(); // PendingSlices = null ⇒ 网盘要全部
+
+        var path = dir.Write("大文件.mp4", BaiduPanBlocks.SliceSize * 3 - 1);
+
+        await new BaiduPanUploader(api).UploadAsync("token", "/apps/VidLog/a.mp4", path);
+
+        Assert.Equal(new[] { 0, 1, 2 }, api.UploadedSlices);
+        Assert.Single(api.Created);
+    }
+
+    [Fact]
+    public async Task 上传前要先问上传域名_而且整条文件只问一次()
+    {
+        // 016 原话：「上传文件数据前必须调用本接口」「不应在客户端固定写死上传服务器地址」。
+        // 一个文件问一次（不是一片一次）：未过审的应用每小时只有 10 次调用。
+        using var dir = new TempDir();
+        var api = new FakeApi();
+
+        var path = dir.Write("大文件.mp4", BaiduPanBlocks.SliceSize * 3 - 1);
+
+        await new BaiduPanUploader(api).UploadAsync("token", "/apps/VidLog/a.mp4", path);
+
+        Assert.Equal(1, api.LocatedUploads);
+
+        // 每一片用的都是问回来的那个域名。
+        Assert.All(api.UploadedHosts, host => Assert.Equal("https://c3.pcs.baidu.com", host));
+    }
+
+    [Fact]
+    public async Task 网盘回显的分片摘要对不上就不合并()
+    {
+        // ⚠️ 这一片传歪了。create 只看分片齐不齐、不看内容，它会成功 ——
+        // 于是网盘上出现一个大小对、播出来是坏的文件，而本机那一份
+        // 已经因为「云端有了」被允许清理（I8）。
+        using var dir = new TempDir();
+        var api = new FakeApi { EchoSliceMd5 = _ => new string('f', 32) };
+
+        var path = dir.Write("大文件.mp4", BaiduPanBlocks.SliceSize + 1);
+
+        var error = await Assert.ThrowsAsync<BaiduPanException>(
+            () => new BaiduPanUploader(api).UploadAsync("token", "/apps/VidLog/a.mp4", path));
+
+        Assert.Contains("摘要对不上", error.Message);
+
+        // 而且**没有**去合并。
+        Assert.Empty(api.Created);
     }
 
     [Fact]
@@ -503,8 +558,23 @@ public class CloudUploadTests
 
         public List<string> Created { get; } = [];
 
-        /// <summary>预创建时网盘说「这几片我已经有了」。</summary>
-        public IReadOnlySet<int> AlreadyThere { get; set; } = new HashSet<int>();
+        /// <summary>每一片用的上传域名（验「问回来那个」而不是写死的）。</summary>
+        public List<string> UploadedHosts { get; } = [];
+
+        /// <summary>问了上传域名几次。</summary>
+        public int LocatedUploads { get; private set; }
+
+        /// <summary>
+        /// 预创建时网盘说「**还要传**这几片」。
+        /// </summary>
+        /// <remarks>
+        /// ⚠️ 为 <see langword="null"/> 时按「全都要传」—— 那就是真网盘对
+        /// 一个全新文件的回法（018 的示例：3 片时回 <c>[0,1,2]</c>）。
+        /// </remarks>
+        public IReadOnlySet<int>? PendingSlices { get; set; }
+
+        /// <summary>传分片时网盘回显的 MD5。<see langword="null"/> = 不回显。</summary>
+        public Func<int, string?> EchoSliceMd5 { get; set; } = _ => null;
 
         /// <summary>合并时收到的摘要个数（验「最后一片按实际长度算」）。</summary>
         public List<int> BlockListSizes { get; } = [];
@@ -553,7 +623,21 @@ public class CloudUploadTests
         {
             BlockListSizes.Add(blockList.Count);
 
-            return Task.FromResult(new BaiduPrecreate("upload-1", AlreadyThere));
+            var pending = PendingSlices
+                ?? new HashSet<int>(Enumerable.Range(0, blockList.Count));
+
+            return Task.FromResult(new BaiduPrecreate("upload-1", pending));
+        }
+
+        public Task<string> LocateUploadAsync(
+            string accessToken,
+            string remotePath,
+            string uploadId,
+            CancellationToken cancellationToken = default)
+        {
+            LocatedUploads++;
+
+            return Task.FromResult("https://c3.pcs.baidu.com");
         }
 
         public Task CreateAsync(
@@ -570,8 +654,9 @@ public class CloudUploadTests
             return Task.CompletedTask;
         }
 
-        public Task UploadSliceAsync(
+        public Task<string?> UploadSliceAsync(
             string accessToken,
+            string uploadHost,
             string remotePath,
             string uploadId,
             int partSeq,
@@ -584,8 +669,9 @@ public class CloudUploadTests
             }
 
             UploadedSlices.Add(partSeq);
+            UploadedHosts.Add(uploadHost);
 
-            return Task.CompletedTask;
+            return Task.FromResult(EchoSliceMd5(partSeq));
         }
 
         public Task<IReadOnlySet<string>> ListFilesAsync(

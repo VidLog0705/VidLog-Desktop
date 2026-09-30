@@ -3,7 +3,7 @@ namespace VidLog.Desktop.Core.Cloud;
 /// <summary>一次上传的进度（给队列界面用）。</summary>
 /// <param name="Slice">第几片（从 1 数起）。</param>
 /// <param name="Slices">一共几片。</param>
-/// <param name="Skipped">有几片是网盘已经有了、没传的。</param>
+/// <param name="Skipped">有几片是网盘说它已经收下了、不用再传的。</param>
 public sealed record UploadProgress(int Slice, int Slices, int Skipped)
 {
     /// <summary>完成比例（0–1）。一片都没有时为 1。</summary>
@@ -15,13 +15,17 @@ public sealed record UploadProgress(int Slice, int Slices, int Skipped)
 /// </summary>
 /// <remarks>
 /// <para>
-/// 流程照开放平台文档：<c>precreate</c>（报大小与分片摘要，拿 uploadid 与「已有分片」）
+/// 流程照开放平台文档，四步一步不能少：
+/// <c>precreate</c>（报大小与分片摘要，拿 <c>uploadid</c> 与**还要传哪几片**）
+/// → <c>locateupload</c>（拿这次能用的上传域名，016 明说「上传文件数据前必须调用本接口」）
 /// → 逐片 <c>superfile2</c> → <c>create</c>（合并，这一步之后网盘上才真的出现文件）。
 /// </para>
 /// <para>
-/// ⚠️ <b>必须跳过网盘说它已经有了的那些分片。</b>那是「秒传」的来源，
-/// 也是断点重传的省力点 —— 上一次传到一半断了，这一次从头再传一遍
-/// 会让一条 4GB 的录像重传三次就是 12GB 上行，而用户看到的只是「怎么这么慢」。
+/// ⚠️ <b>预创建回来的那串序号是「还要传的」，不是「已经有了的」。</b>
+/// 文档 018 的响应参数表写的原话是「需要上传的分片序号列表，索引从 0 开始」。
+/// 反着读的后果不是慢一点，是**整个传不上去**：全新的 3 片文件网盘回的正是
+/// <c>[0,1,2]</c>，当成「它都有了」就会一片都不传，接着 <c>create</c>
+/// 去合并一份空的分片集，报的是 <c>31190</c>/<c>31363</c>。
 /// </para>
 /// <para>
 /// ⚠️ <b>重试在上一层（队列），不在这一层。</b>这里失败就抛，抛出去的错
@@ -63,8 +67,9 @@ public sealed class BaiduPanUploader
 
         if (slices > BaiduPanBlocks.MaxSlicesPerCreate)
         {
-            // 512 片 × 4MB = 2GB。本仓今天的单段远小于它，真撞上说明该做分段合并了，
-            // 那时**把话说明白**比硬传一个半截文件强。
+            // 1024 片 × 4MB = 4GB = 普通用户单文件的上限（017）。
+            // 本仓今天单段远小于它；真撞上说明要么该做分段合并、
+            // 要么用户的账号档位不够 —— 两种都**把话说明白**，不硬传一个半截文件。
             throw new BaiduPanException(
                 0,
                 $"这个文件有 {Size(info.Length)}，超过单次上传的上限 {Size(BaiduPanBlocks.SliceSize * (long)BaiduPanBlocks.MaxSlicesPerCreate)}。");
@@ -73,6 +78,11 @@ public sealed class BaiduPanUploader
         var blockList = await BaiduPanBlocks.ComputeAsync(localPath, cancellationToken);
         var precreate = await _api.PrecreateAsync(
             accessToken, remotePath, info.Length, blockList, cancellationToken);
+
+        // ⚠️ 域名要先问（016：「上传文件数据前必须调用本接口」），而且**一个文件问一次**、
+        // 所有分片共用同一个 —— 每个分片问一次的话，一次「立即对比同步」能把账号问进限流。
+        var host = await _api.LocateUploadAsync(
+            accessToken, remotePath, precreate.UploadId, cancellationToken);
 
         var skipped = 0;
 
@@ -83,7 +93,9 @@ public sealed class BaiduPanUploader
             {
                 cancellationToken.ThrowIfCancellationRequested();
 
-                if (precreate.AlreadyThere.Contains(index))
+                // 网盘说要传的才传（`Pending`）。不在里面的那些它已经收下了 ——
+                // 那是带着同一个 uploadid 重开预创建时的情形，也就是断点续传。
+                if (!precreate.Pending.Contains(index))
                 {
                     skipped++;
                     progress?.Report(new UploadProgress(index + 1, slices, skipped));
@@ -95,9 +107,25 @@ public sealed class BaiduPanUploader
 
                 stream.Seek(offset, SeekOrigin.Begin);
 
-                await _api.UploadSliceAsync(
-                    accessToken, remotePath, precreate.UploadId, index,
+                var echoed = await _api.UploadSliceAsync(
+                    accessToken, host, remotePath, precreate.UploadId, index,
                     new SliceStream(stream, length), cancellationToken);
+
+                // ⚠️ 网盘回显的 MD5 与本机算的那一片对不上 ⇒ **这一片传歪了**。
+                // 必须在这里就断，不能等 create：create 只看分片齐不齐、不看内容，
+                // 它会成功，于是网盘上出现一个大小对、播出来是坏的文件 ——
+                // 而那时本机那一份已经因为「云端有了」被允许清理（I8）。
+                //
+                // 它没回显 MD5 时（字段缺席）不判定 —— 拿「没给」当「不匹配」会误杀。
+                if (echoed is { Length: > 0 }
+                    && !string.Equals(
+                        echoed, blockList[index], StringComparison.OrdinalIgnoreCase))
+                {
+                    throw new BaiduPanException(
+                        0,
+                        $"第 {index + 1} 片传上去之后网盘回的摘要对不上（它回的 {echoed}，本机算的是 {blockList[index]}）。"
+                        + "这一片的内容在传输中变了，不能就这么合上去。");
+                }
 
                 progress?.Report(new UploadProgress(index + 1, slices, skipped));
             }

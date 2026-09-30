@@ -229,7 +229,28 @@ public sealed class BaiduPanSession
                 return _login.AccessToken;
             }
 
-            var token = await _api.RefreshAsync(_login.RefreshToken, cancellationToken);
+            BaiduToken token;
+
+            try
+            {
+                token = await _api.RefreshAsync(_login.RefreshToken, cancellationToken);
+            }
+            catch (BaiduPanException ex) when (ex.IsCredentialProblem)
+            {
+                // ⚠️ 授权**真的**没了（不是网断了、不是限流）：文档说 refresh_token
+                // 是一次性的，且刷新失败时旧的那串**一起失效**，所以重试是没用的。
+                //
+                // 不在这里丢掉本机那串令牌的话，后果是两件都在悄悄发生的事：
+                // ① 界面上一直写着「已登录」，用户以为自己登着，而实际上什么都传不上去；
+                // ② 定时检查每一分钟拿同一串死掉的 refresh_token 再问一次 ——
+                //    未过审的应用每小时只有 10 次调用（权限与配额），全喂给这个循环了。
+                _logger.Log(
+                    LogLevel.Warn, "网盘", $"续期被拒，本机登录信息作废、需要重新授权：{ex.Message}");
+
+                await LogoutAsync();
+
+                throw;
+            }
 
             // ⚠️ 网盘**有时不回新的 refresh_token**（沿用旧的那个）。
             // 拿空串去覆盖会让下一次续期彻底失败 —— 而那时用户看到的是
