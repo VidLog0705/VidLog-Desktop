@@ -15,8 +15,10 @@ namespace VidLog.Desktop.Core.Tests;
 /// 本地全都验得到；**验不了的只有「那个目录真的在网络那头」**。
 /// </para>
 /// <para>
-/// ⚠️ 百度网盘那一档（<see cref="ArchiveBackendKind.Cloud"/>）**没有实现** ——
-/// 它要走真接口、要真账号，本地一行都验不了。见 `docs/实现决策.md`。
+/// ⚠️ 百度网盘那一档（<see cref="ArchiveBackendKind.Cloud"/>）的**发布与回查**
+/// 从 2026-09-30 起有实现了（<c>CloudArchiveBackend</c>），但它的测试在
+/// <c>CloudUploadTests</c> 里 —— 那边用假网盘把 HTTP 那一层换掉，因为
+/// 真接口要真账号、真网络，本地一行都验不了。见 `docs/实现决策.md` §87。
 /// </para>
 /// </remarks>
 public class ArchiveBackendTests
@@ -252,6 +254,153 @@ public class ArchiveBackendTests
         var entry = Assert.Single(logger.Entries);
         Assert.Equal(LogLevel.Warn, entry.Level);
         Assert.Contains("NAS", entry.Message);
+    }
+
+    // ─────────────────────────────────────────────
+    // 多根：一个满了就换下一个（设计图 `_43` 的「录像备份位置」表）
+    // ─────────────────────────────────────────────
+
+    [Fact]
+    public async Task 回查认得出第二档上的那一份()
+    {
+        // ⚠️ 这条有**真后果**：只看第一个根的话，用户换过一次 NAS 之后
+        // 老录像的回查会一路说「找不到」—— 而裁判断它「找不到 ⇒ 不删」（I8），
+        // 于是清理**永远清不掉任何东西**，盘一直满着，用户完全不知道为什么。
+        using var dir = new TempDir();
+        var old = System.IO.Path.Combine(dir.Path, "老NAS");
+        var current = System.IO.Path.Combine(dir.Path, "新NAS");
+        Directory.CreateDirectory(old);
+        Directory.CreateDirectory(current);
+
+        var location = Where("2026/09/30/SF1/e-000.mp4");
+        var onOld = System.IO.Path.Combine(old, location.Value);
+        Directory.CreateDirectory(System.IO.Path.GetDirectoryName(onOld)!);
+        await File.WriteAllBytesAsync(onOld, [1, 2, 3]);
+
+        var backend = new DirectoryArchiveBackend([current, old], ArchiveBackendKind.Nas);
+
+        var verify = await backend.VerifyAsync(location);
+
+        Assert.True(verify.Exists, "第二个根上有就算有");
+        Assert.False(verify.CouldNotVerify);
+
+        // 首选仍是第一个（新录像该发到那儿去），只是**回查**要挨个试。
+        Assert.Equal(current, backend.Root);
+        Assert.Equal<string>([current, old], backend.Roots);
+    }
+
+    [Fact]
+    public async Task 摸得到目录但那一份不在才算不存在_一个根都摸不到是查不了()
+    {
+        using var dir = new TempDir();
+        var reachable = System.IO.Path.Combine(dir.Path, "nas");
+        Directory.CreateDirectory(reachable);
+        var gone = System.IO.Path.Combine(dir.Path, "没插的盘", "nas");
+        var location = Where("2026/09/30/e-000.mp4");
+
+        // 有一个根摸得到、只是那一份不在 ⇒ 「不存在」（可以走「唯一副本」那段判定）。
+        var partial = await new DirectoryArchiveBackend([gone, reachable], ArchiveBackendKind.Nas)
+            .VerifyAsync(location);
+
+        Assert.False(partial.Exists);
+        Assert.False(partial.CouldNotVerify, "目录摸得到、文件不在 —— 这才是「不存在」");
+
+        // 一个根都摸不到 ⇒ 「查不了」。把这种情况当成「不存在」会删掉唯一一份。
+        var none = await new DirectoryArchiveBackend(
+            [gone, System.IO.Path.Combine(dir.Path, "也没有", "nas")],
+            ArchiveBackendKind.Nas).VerifyAsync(location);
+
+        Assert.False(none.Exists);
+        Assert.True(none.CouldNotVerify);
+    }
+
+    [Fact]
+    public async Task 发布按顺序试_第一档写不进去就用下一档()
+    {
+        // 图上原话「NAS 满时自动切换到下一个」。只试第一个的话，一个满了的
+        // NAS 会让**所有**后续录像都发不出去，而那时本机那一份就再也不能被清理 ——
+        // 盘只会越来越满。
+        using var dir = new TempDir();
+        var local = System.IO.Path.Combine(dir.Path, "local.mp4");
+        await File.WriteAllBytesAsync(local, [1, 2, 3, 4]);
+
+        // 「写不进去」用**同名文件**造：目标根那儿躺着个文件，
+        // `Directory.CreateDirectory` 就过不去（真盘满了是同样的失败路径）。
+        var blocked = System.IO.Path.Combine(dir.Path, "满NAS");
+        var ok = System.IO.Path.Combine(dir.Path, "空NAS");
+        await File.WriteAllTextAsync(blocked, "这里不是目录");
+
+        var location = Where("2026/09/30/e-000.mp4");
+        var result = await new DirectoryArchiveBackend([blocked, ok], ArchiveBackendKind.Nas)
+            .PublishAsync(location, local);
+
+        Assert.True(result.Published, result.FailureReason);
+        Assert.True(File.Exists(System.IO.Path.Combine(ok, location.Value)), "落到下一档上");
+    }
+
+    [Fact]
+    public async Task 每一档都写不进去时_发布失败_但绝不动本机那一份()
+    {
+        using var dir = new TempDir();
+        var local = System.IO.Path.Combine(dir.Path, "local.mp4");
+        await File.WriteAllBytesAsync(local, [1, 2, 3, 4]);
+
+        var a = System.IO.Path.Combine(dir.Path, "满A");
+        var b = System.IO.Path.Combine(dir.Path, "满B");
+        await File.WriteAllTextAsync(a, "x");
+        await File.WriteAllTextAsync(b, "x");
+
+        var result = await new DirectoryArchiveBackend([a, b], ArchiveBackendKind.Nas)
+            .PublishAsync(Where("2026/09/30/e-000.mp4"), local);
+
+        Assert.False(result.Published);
+
+        // 两档**分别**说了原因 —— 合成一句「发布失败」的话，
+        // 用户不知道是 NAS 满了、还是两台都掉线了。
+        Assert.Contains("满A", result.FailureReason);
+        Assert.Contains("满B", result.FailureReason);
+
+        // ⚠️ 发不出去**绝不能**动本机那一份：它现在是唯一副本（I8 的前提）。
+        Assert.True(File.Exists(local));
+        Assert.Equal(4, (await File.ReadAllBytesAsync(local)).Length);
+    }
+
+    [Fact]
+    public async Task 归档层是本机磁盘时_发布是空操作()
+    {
+        // 本机那一份**就是**归档层那一份（它在 `<root>\archive` 里），没什么可发的。
+        using var dir = new TempDir();
+        var local = System.IO.Path.Combine(dir.Path, "local.mp4");
+        await File.WriteAllBytesAsync(local, [1]);
+
+        var result = await new DirectoryArchiveBackend(dir.Path, ArchiveBackendKind.LocalDisk)
+            .PublishAsync(Where("2026/09/30/e-000.mp4"), local);
+
+        Assert.True(result.Published);
+        Assert.False(
+            File.Exists(System.IO.Path.Combine(dir.Path, "2026", "09", "30", "e-000.mp4")),
+            "本机这一档不该真的去拷一份到归档根下");
+    }
+
+    [Fact]
+    public async Task 一个根都没配时发布说的是没有可写的目录()
+    {
+        using var dir = new TempDir();
+        var local = System.IO.Path.Combine(dir.Path, "local.mp4");
+        await File.WriteAllBytesAsync(local, [1]);
+
+        // 设置页每敲一个字符都会重算一次后端对象 —— 那时可能一个路径都还没有。
+        var result = await new DirectoryArchiveBackend(Array.Empty<string>(), ArchiveBackendKind.Nas)
+            .PublishAsync(Where("2026/09/30/e-000.mp4"), local);
+
+        Assert.False(result.Published);
+        Assert.Contains("没有配置可写的目录", result.FailureReason);
+
+        // ⚠️ 而且**不许崩**：这个对象在「归档层配了一半」的时候就会被建出来，
+        // 抛的话界面还没画出来就先没了。
+        Assert.Equal(
+            string.Empty,
+            new DirectoryArchiveBackend(Array.Empty<string>(), ArchiveBackendKind.Nas).Root);
     }
 
     /// <summary>把日志收进内存，供断言。</summary>

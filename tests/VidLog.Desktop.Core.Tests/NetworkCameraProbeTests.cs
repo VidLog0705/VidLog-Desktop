@@ -46,6 +46,51 @@ public class NetworkCameraProbeTests
         // 这不是缺陷：`tbr` 是时间基，RTSP 上常是 `90k tbr` 这种根本不是帧率的数
         // —— 所以宁可不认。它只影响「原生档那句话印不印帧率」。
         Assert.Null(streams.FrameRate);
+
+        // ⚠️ 实时流的容器头写的是 `Duration: N/A` ⇒ 时长读不出来。
+        // 这条有实际用途：【导入录像】靠它决定要不要说「没量出时长」，
+        // 而把 N/A 读成某个数会让界面替用户认一个假的时长。
+        Assert.Null(streams.Duration);
+    }
+
+    [Fact]
+    public void 从读回的成品里读得出时长()
+    {
+        // 2026-09-30：读回一个录好的文件时，容器那一段会印
+        //   Duration: 00:01:23.45, start: 0.000000, bitrate: 1234 kb/s
+        // 「导入录像」（`RecordingImporter.InspectAsync`）量的就是它。
+        const string ReadBack = """
+            Input #0, mov,mp4,m4a,3gp,3g2,mj2, from 'C:\Temp\SF1000000001.mp4':
+              Duration: 00:01:23.45, start: 0.000000, bitrate: 1234 kb/s
+              Stream #0:0: Video: h264 (High), yuv420p(progressive), 1920x1080, 30 fps, 30 tbr, 90k tbn
+            """;
+
+        var streams = FfmpegNetworkCameraProbe.ParseStreams(ReadBack);
+
+        Assert.Equal(TimeSpan.FromSeconds(83.45), streams.Duration);
+    }
+
+    [Fact]
+    public void 时长为零时当作读不出来()
+    {
+        // `Duration: 00:00:00.00` 在实时流与坏容器上都会出现。收下它的话，
+        // 一段真实录像会被记成 0 秒 —— 而且 `ImportResult.Duration` 会是 0
+        // 而不是 null，界面就不会说「没量出时长」，用户以为这段录像真的只有 0 秒。
+        var streams = FfmpegNetworkCameraProbe.ParseStreams(
+            "  Duration: 00:00:00.00, start: 0.000000, bitrate: 0 kb/s");
+
+        Assert.Null(streams.Duration);
+    }
+
+    [Fact]
+    public void 前面那行是N_A也不挡住后面认得出的那一行()
+    {
+        var streams = FfmpegNetworkCameraProbe.ParseStreams("""
+              Duration: N/A, start: 0.000000, bitrate: N/A
+              Duration: 00:00:12.00, start: 0.000000, bitrate: 900 kb/s
+            """);
+
+        Assert.Equal(TimeSpan.FromSeconds(12), streams.Duration);
     }
 
     [Fact]

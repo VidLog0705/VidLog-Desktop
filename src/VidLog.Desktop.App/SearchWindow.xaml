@@ -23,6 +23,12 @@
             保留期一到必被清掉。
         它们都塞进了左边那一栏，因为图上那一栏本来就是筛选区。
 
+        ⚠️ 图上**有**、2026-09-30 补上的：单号框里那个 ✕（清空）、
+        单号框正下方并排的【导出单号】与【导入录像】。
+        · 【导出单号】导的是**当前检索出来的这一批**，不是整个库。
+          ⚠️ 检索到 0 条时它是禁用的（导一张空表没有意义），悬停写明原因。
+        · 【导入录像】走 `ImportWindow`（挑文件、核单号、定录制时间）。
+
         ⚠️ **没有任何许可门控**（`04-许可设计.md` L8）：未激活照样检索、
         照样回放、照样导出。拆窗时最容易顺手加一句「未激活先激活」，别加。
 
@@ -63,11 +69,69 @@
                             <DatePicker x:Name="ToDate" Width="132"/>
                         </StackPanel>
 
-                        <TextBlock Style="{StaticResource Body}" Text="单号搜索："
+                        <TextBlock Style="{StaticResource Body}" Text="单号精准搜索："
                                    Margin="0,14,0,6"/>
-                        <TextBox x:Name="SearchBox" KeyDown="OnSearchKeyDown"/>
+                        <!-- 单号框里的那个 ✕（图上有一个）：框右端收窄一点给它腾位置 -->
+                        <Grid>
+                            <TextBox x:Name="SearchBox" KeyDown="OnSearchKeyDown"
+                                     Padding="6,4,28,4"/>
+                            <Button x:Name="ClearSearchButton" Style="{StaticResource IconButton}"
+                                    HorizontalAlignment="Right" VerticalAlignment="Center"
+                                    Margin="0,0,5,0" Click="OnClearSearch"
+                                    ToolTip="清空单号搜索框">
+                                <Path Data="M 0,0 L 8,8 M 8,0 L 0,8"
+                                      Stroke="{StaticResource TextDisabled}" StrokeThickness="1.4"/>
+                            </Button>
+                        </Grid>
 
-                        <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
+                        <!--
+                            照图 `_41`：单号框正下方并排两颗按钮。
+
+                            ⚠️ 左【导出单号】= 把**当前检索出来的这一批**写成 CSV；
+                            右【导入录像】= 把外面录来的一个视频文件收进库里。
+                            两者**不是一对**：导出的东西不是录像（I7，不进索引），
+                            而导入进来的就是录像，与本机录的走同一套检索与清理。
+                        -->
+                        <Grid Margin="0,10,0,0">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+
+                            <Button x:Name="ExportWaybillsButton" Grid.Column="0"
+                                    Style="{StaticResource SecondaryButton}"
+                                    Padding="8,6" HorizontalAlignment="Stretch"
+                                    IsEnabled="False" Click="OnExportWaybills"
+                                    ToolTip="先检索出结果，再导出单号。">
+                                <StackPanel Orientation="Horizontal"
+                                            HorizontalAlignment="Center">
+                                    <!-- 清单一枚：内联矢量，不引任何图片资源 -->
+                                    <Path Data="M 1,1 L 13,1 L 13,13 L 1,13 Z M 4,4.5 L 10,4.5 M 4,7 L 10,7 M 4,9.5 L 8,9.5"
+                                          Stroke="{StaticResource TextPrimary}" StrokeThickness="1.2"
+                                          VerticalAlignment="Center"/>
+                                    <TextBlock Text="导出单号" Margin="7,0,0,0"
+                                               VerticalAlignment="Center"/>
+                                </StackPanel>
+                            </Button>
+
+                            <Button x:Name="ImportRecordingButton" Grid.Column="1"
+                                    Style="{StaticResource SecondaryButton}"
+                                    Padding="8,6" Margin="8,0,0,0"
+                                    HorizontalAlignment="Stretch" Click="OnImport"
+                                    ToolTip="把外面录来的视频文件收进本机录像库。">
+                                <StackPanel Orientation="Horizontal"
+                                            HorizontalAlignment="Center">
+                                    <!-- 文件夹一枚 -->
+                                    <Path Data="M 1,12.5 L 1,3.5 L 5.5,3.5 L 7.5,5.5 L 13,5.5 L 13,12.5 Z"
+                                          Stroke="{StaticResource TextPrimary}" StrokeThickness="1.2"
+                                          VerticalAlignment="Center"/>
+                                    <TextBlock Text="导入录像" Margin="7,0,0,0"
+                                               VerticalAlignment="Center"/>
+                                </StackPanel>
+                            </Button>
+                        </Grid>
+
+                        <StackPanel Orientation="Horizontal" Margin="0,12,0,0">
                             <ComboBox x:Name="MatchCombo" Width="96" SelectedIndex="0">
                                 <ComboBoxItem Tag="Exact">精确</ComboBoxItem>
                                 <ComboBoxItem Tag="Prefix">前缀</ComboBoxItem>

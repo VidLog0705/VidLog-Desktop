@@ -24,6 +24,40 @@ namespace VidLog.Desktop.Core.Configuration;
 /// </remarks>
 public sealed record AppSettings
 {
+    /// <summary>
+    /// 这台电脑的用途（设计图 `_11`–`_15`「选择这台电脑的用途」）。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// ⚠️ <b>默认 <see cref="StationRole.RecordAndKeep"/>，而且必须</b>：
+    /// 老设置文件里没有这个键，反序列化取枚举默认值 —— 而老机器装的都是
+    /// 完整 VidLog（既录也存）。默认值换成别的，升级之后所有工位都会
+    /// 突然不再录像，而界面上不会有任何迹象。
+    /// </para>
+    /// <para>
+    /// ⚠️ 它决定**启动时装不装录像设备**：不要录像的两档
+    /// （<see cref="StationRole.BackupHost"/> / <see cref="StationRole.ViewerOnly"/>）
+    /// 连摄像头都不解析 —— 设计图卡片原文就是「**不初始化本机录像设备**」，
+    /// 而那也正是把相机让出来的做法（dshow 上相机是独占的）。
+    /// </para>
+    /// <para>
+    /// ⚠️ 改它**要重启才生效**，与摄像头、<see cref="CameraRecognition"/> 同一档：
+    /// 三者都在 <c>AppHost.StartAsync</c> 的装配期定死，界面上写明了。
+    /// </para>
+    /// </remarks>
+    public StationRole StationRole { get; init; } = StationRole.RecordAndKeep;
+
+    /// <summary>
+    /// 用途展开成的两个答案。**不落盘**，由 <see cref="StationRole"/> 算出来。
+    /// </summary>
+    /// <remarks>
+    /// 与 <see cref="Camera"/> / <see cref="Archive"/> 同一路数：落盘存**一个**
+    /// 枚举（好读好改），而装配期要问的是「录不录」「存不存」这两个问题 ——
+    /// 由这一处换算，免得每个调用点各写一遍四分支的映射。
+    /// </remarks>
+    [JsonIgnore]
+    public StationRoleChoice Role => StationRoleChoice.Of(StationRole);
+
     /// <summary>工作模式（规格 §3.3.1）。</summary>
     /// <remarks>
     /// 默认取<see cref="WorkMode.StopOnSameWaybill"/>，是三者里最保守的：
@@ -170,6 +204,51 @@ public sealed record AppSettings
     public int LogRetainDays { get; init; } = 14;
 
     /// <summary>
+    /// 开机自启动（设计图 `_49`「高级设置」第一行）。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// ⚠️ <b>默认必须是 <see langword="false"/></b>：这一项的真身是往
+    /// <c>HKCU\Software\Microsoft\Windows\CurrentVersion\Run</c> 里写一条。
+    /// 装完就往那儿写一条自动启动，是**没经用户同意**就改变他的机器
+    /// （与「清理必须是用户主动开的」是同一条道理，§6.2）。
+    /// </para>
+    /// <para>
+    /// ⚠️ 这个字段是**意图**（用户勾没勾），注册表是**机制**。两者可能不一致
+    /// （用户在任务管理器的「启动」页里禁用了它）—— 保存时按字段把注册表
+    /// 重写一遍，让机制追上意图。见 <c>Platform/StartupRegistration</c>。
+    /// </para>
+    /// </remarks>
+    public bool RunAtStartup { get; init; }
+
+    /// <summary>关窗口时怎么办（设计图 `_49`「高级设置」第二行）。</summary>
+    /// <remarks>
+    /// 默认 <see cref="CloseWindowAction.MinimizeToTray"/> = 今天的行为，
+    /// 而且那条枚举显式写了 0 —— 老设置文件里没有这个键时取到的正是它。
+    /// </remarks>
+    public CloseWindowAction CloseWindowAction { get; init; } = CloseWindowAction.MinimizeToTray;
+
+    /// <summary>
+    /// 启动后自动检查有没有新版本（设计图 `_49`「高级设置」第三行）。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// ⚠️ <b>只做「检查 + 提示」，绝不下载、绝不替换自己</b> ——
+    /// 需求方 2026-09-30 裁决原话：「只做检查 + 提示」（不做启动器 exe、不自替换）。
+    /// 所以这一项**不落任何可执行文件**，只在 <c>关于</c> 页与托盘气泡上说一句。
+    /// </para>
+    /// <para>
+    /// ⚠️ 默认 <see langword="true"/>（图上那个开关就是开的）。检查失败
+    /// **绝不能**影响任何事 —— 它连录制都不该碰（I4），更不该挡启动。
+    /// </para>
+    /// <para>
+    /// ⚠️ 它与许可（L8）**没有关系**：拿不到更新信息不是「验证失败」，
+    /// 不许因此锁任何东西。见 <c>UpdateChecker</c>。
+    /// </para>
+    /// </remarks>
+    public bool CheckForUpdates { get; init; } = true;
+
+    /// <summary>
     /// 归档层是本机磁盘、NAS、挂载盘、还是网盘（规格 §3.4.6 / §3.5.1）。
     /// </summary>
     /// <remarks>
@@ -196,7 +275,72 @@ public sealed record AppSettings
 
     /// <summary>归档层配置（枚举 + 目录合成一个）。**不落盘**，它是由那两个字段算出来的。</summary>
     [JsonIgnore]
-    public ArchiveTarget Archive => ArchiveTarget.FromConfig(ArchiveBackend, ArchiveDirectory);
+    public ArchiveTarget Archive => ArchiveTarget.FromConfig(ArchiveBackend, ArchiveDirectories.FirstOrDefault());
+
+    /// <summary>
+    /// 归档层要落的那几个目录，**有序**（设计图 `_43` 的「录像备份位置」表）。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// ⚠️ <b>它是从两个字段算出来的，自己不落盘</b>：新配置写
+    /// <see cref="BackupDisks"/>，而老的 <see cref="ArchiveDirectory"/>
+    /// 仍然算数（那时列表里就是它一个）。这样**老设置文件一个字节都不用改**，
+    /// 也不会出现「迁移写坏了、归档层没了」那类事。
+    /// </para>
+    /// <para>
+    /// ⚠️ 第一个是**首选**：前一个写不进去时落下一下，
+    /// 与保存位置那张表同一个规矩（图上原话「NAS 满时自动切换到下一个」）。
+    /// </para>
+    /// </remarks>
+    [JsonIgnore]
+    public IReadOnlyList<string> ArchiveDirectories =>
+        BackupDisks.Count > 0
+            ? [.. BackupDisks.Select(s => s.Path)]
+            : ArchiveDirectory is { Length: > 0 } legacy
+                ? [legacy]
+                : [];
+
+    /// <summary>
+    /// 录像保存位置（设计图 `_43`）—— 本机磁盘，**有序**，按顺序用、满了换下一个。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// ⚠️ 空列表 = 老行为：成品写在 <c>DataLayout.ArchiveRoot</c>
+    /// （<c>%LOCALAPPDATA%\VidLog\archive</c>）。**这个默认值不是保守起见，
+    /// 是"什么都没配过"时的真实处境**，而且它保证升级过的机器一条录像都不会丢。
+    /// </para>
+    /// <para>
+    /// ⚠️ 落盘的是**完整路径**（盘符或 UNC）。相对路径在这里没有意义 ——
+    /// 工作目录是会变的，而录像必须落在用户指定的那块盘上。
+    /// </para>
+    /// </remarks>
+    public IReadOnlyList<DiskSlot> SaveDisks { get; init; } = [];
+
+    /// <summary>
+    /// 录像备份位置（设计图 `_43`）—— NAS / 挂载盘这一档要落的目录，**有序**。
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ 它与 <see cref="ArchiveBackend"/> 分工：**枚举说这是哪一档**
+    /// （决定允不允许开本地清理，规格 §3.5.1），**这个列表说落在哪儿**。
+    /// 网盘那一档（<see cref="ArchiveBackendKind.Cloud"/>）不用它 ——
+    /// 网盘没有「本地路径」这个概念。
+    /// </remarks>
+    public IReadOnlyList<DiskSlot> BackupDisks { get; init; } = [];
+
+    /// <summary>
+    /// 百度网盘上传（设计图 `_45` / `_46`）。
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ <b>整组都是「什么都没配过」时的真实处境</b>：一个开关都不开。
+    /// 打开「启用自动上传」意味着这台机器上的录像会开始往公网上传 ——
+    /// 那是用户必须自己做的决定，装完就默默传起来是绝对不能接受的
+    /// （与清理、开机自启同一条道理）。
+    /// <para>
+    /// ⚠️ <b>这里头没有任何凭据。</b>AppKey / AppSecret 走环境变量，
+    /// 用户的令牌走应用数据目录里的单独文件。
+    /// </para>
+    /// </remarks>
+    public CloudUploadSettings Cloud { get; init; } = CloudUploadSettings.Default;
 
     /// <summary>
     /// 保留期**四个数**：发货 / 退货 × 已备份 / 未备份（规格 §3.5.2.1）。
@@ -235,7 +379,10 @@ public sealed record AppSettings
     /// 那比拒绝更糟。
     /// </remarks>
     public static bool IsPlausible(AppSettings s) =>
-        Enum.IsDefined(s.Codec)
+        // ⚠️ 认不出的用途**整体回落默认值**，而不是猜一个 —— 猜错的后果是
+        // 「这台机器突然不录像了」或「备份主机突然开始抢摄像头」，两种都很难查。
+        Enum.IsDefined(s.StationRole)
+        && Enum.IsDefined(s.Codec)
         && Enum.IsDefined(s.Resolution)
         && s.SegmentMinutes is >= 1 and <= 10
         && s.PlaybackPort is >= 1024 and <= 65535
@@ -252,7 +399,16 @@ public sealed record AppSettings
         && PlausibleDays(s.Retention.ArchivedOutbound)
         && PlausibleDays(s.Retention.ArchivedReturn)
         && PlausibleDays(s.Retention.UnarchivedOutbound)
-        && PlausibleDays(s.Retention.UnarchivedReturn);
+        && PlausibleDays(s.Retention.UnarchivedReturn)
+        && PlausibleSlots(s.SaveDisks)
+        && PlausibleSlots(s.BackupDisks)
+        // 关窗口时那三档（设计图 `_49`）。认不出的值会让 `OnClosing` 落到
+        // 哪个分支上全靠命令行 switch 的兜底 —— 而那里兜底错了的后果是
+        // 「关不掉的窗口」或者「一不小心就退出了」。
+        && Enum.IsDefined(s.CloseWindowAction)
+        // 百度网盘那一组（设计图 `_45`/`_46`）。越界即整体回落默认值 ——
+        // 「同时上传数」被手改成 100 的后果不是慢一点，而是**整个应用被风控限流**。
+        && CloudUploadSettings.IsPlausible(s.Cloud);
 
     /// <summary>
     /// 一个保留期档位自洽吗。
@@ -270,6 +426,44 @@ public sealed record AppSettings
     /// </remarks>
     private static bool PlausibleDays(RetentionSetting setting) =>
         setting.Days is null or (>= 0 and <= 3650);
+
+    /// <summary>
+    /// 那两张「录像保存 / 备份位置」的表自洽吗。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// ⚠️ <b>判据是"这个路径能不能当根用"，不是"这个目录在不在"</b>：
+    /// 目录在不在是 I/O，而配置校验是纯函数（设置页每敲一个字符都会问一次），
+    /// 而且**盘没插、NAS 没开**都是正常状态 —— 那时该说的话在归档层回查那里
+    /// （「查不了 ≠ 不存在」，见 <c>ArchiveTarget.ConfigurationProblem</c>）。
+    /// </para>
+    /// <para>
+    /// ⚠️ 列表长度也要拦：一个无限长的列表不会报错，只会让每次选盘都要
+    /// 挨个探一遍，而那是录制的热路径。
+    /// </para>
+    /// </remarks>
+    private static bool PlausibleSlots(IReadOnlyList<DiskSlot>? slots)
+    {
+        if (slots is null || slots.Count > 32)
+        {
+            return false;
+        }
+
+        foreach (var slot in slots)
+        {
+            if (slot is null
+                || string.IsNullOrWhiteSpace(slot.Path)
+                || slot.Path.Length > 1024
+                || !Path.IsPathFullyQualified(slot.Path)
+                // 0 是允许的（「这块盘不预留」是用户的正当选择），负数不是。
+                || slot.ReservedGb is < 0 or > 1_000_000)
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
 }
 
 /// <summary>设置读取的结果。</summary>
@@ -447,6 +641,16 @@ public sealed class SettingsStore
             static string Quote(string value) => value.Length == 0 ? "（空）" : value;
         }
 
+        // ⚠️ 用途排在最前：它一变，整台机器的行为都变（录不录、存不存），
+        // 而日志是按写入顺序读的，把它埋在中间会让人先看到一堆次要改动。
+        Compare(nameof(AppSettings.StationRole), previous.StationRole, next.StationRole);
+
+        // 高级设置那三行（设计图 `_49`）。⚠️ 开机自启动尤其要留痕：
+        // 它改了**操作系统**上的东西（Run 键），事后要能回答「这台机器是什么时候
+        // 开始自己启动的、谁开的」。
+        Compare(nameof(AppSettings.RunAtStartup), previous.RunAtStartup, next.RunAtStartup);
+        Compare(nameof(AppSettings.CloseWindowAction), previous.CloseWindowAction, next.CloseWindowAction);
+        Compare(nameof(AppSettings.CheckForUpdates), previous.CheckForUpdates, next.CheckForUpdates);
         Compare(nameof(AppSettings.Mode), previous.Mode, next.Mode);
         Compare(nameof(AppSettings.Codec), previous.Codec, next.Codec);
         Compare(nameof(AppSettings.Resolution), previous.Resolution, next.Resolution);
@@ -476,6 +680,12 @@ public sealed class SettingsStore
         Compare(nameof(AppSettings.ArchiveBackend), previous.ArchiveBackend, next.ArchiveBackend);
         Compare(nameof(AppSettings.ArchiveDirectory), previous.ArchiveDirectory, next.ArchiveDirectory);
 
+        // 两张磁盘表（设计图 `_43`）。⚠️ 记的是**合起来的一句话**，不是逐行比 ——
+        // 上移/下移会让每一行的序号都变，逐行比会把一次「换个顺序」写成十几行噪音，
+        // 而真正要看的是「从哪一串变成了哪一串」。
+        Compare("录像保存位置", DescribeSlots(previous.SaveDisks), DescribeSlots(next.SaveDisks));
+        Compare("录像备份位置", DescribeSlots(previous.BackupDisks), DescribeSlots(next.BackupDisks));
+
         // 四个数**各记一行** —— 合成一行的话，看日志的人分不清是哪一份动了。
         // 名字用「已备份 / 未备份」而不是属性名：日志是给人看的，
         // 而这两列的语义相反正是这一节最要紧的一句话（§3.5.2.1）。
@@ -484,8 +694,32 @@ public sealed class SettingsStore
         Compare("保留期.发货.未备份", previous.Retention.UnarchivedOutbound, next.Retention.UnarchivedOutbound);
         Compare("保留期.退货.未备份", previous.Retention.UnarchivedReturn, next.Retention.UnarchivedReturn);
 
+        // 百度网盘那一组（设计图 `_45`/`_46`）。
+        // ⚠️ 「启用自动上传」尤其要留痕：打开它的那一刻起，**这台机器上的录像
+        // 会开始往公网上传**。事后一定要能回答「这是谁在什么时候开的」
+        // —— 与开机自启动同一档（那一项改的是操作系统，这一项改的是数据出不出机器）。
+        // ⚠️ 记的是中文字段名，因为看日志的人是用户，不是读代码的人。
+        Compare("百度网盘.启用自动上传", previous.Cloud.AutoUpload, next.Cloud.AutoUpload);
+        Compare("百度网盘.自动对比补传", previous.Cloud.CompareAndBackfill, next.Cloud.CompareAndBackfill);
+        Compare("百度网盘.补传范围", previous.Cloud.BackfillScope, next.Cloud.BackfillScope);
+        Compare("百度网盘.补传起始日", previous.Cloud.BackfillFrom, next.Cloud.BackfillFrom);
+        Compare("百度网盘.同时上传数", previous.Cloud.ParallelUploads, next.Cloud.ParallelUploads);
+        // 网盘目录名不是凭据（AppKey 才是，而它根本不在这里），可以照记。
+        Compare("百度网盘.目录名", previous.Cloud.AppName, next.Cloud.AppName);
+
         return changes;
     }
+
+    /// <summary>把一串磁盘槽位写成给人看的一行（留痕用）。</summary>
+    /// <remarks>
+    /// ⚠️ 路径**不脱敏**：它是用户自己选的目录名，不是凭据 ——
+    /// 而留痕的意义正是「哪块盘被换掉了」，抹掉就白记了。
+    /// （与 <c>CameraNetworkUrl</c> 不同，那个里面带着摄像头密码。）
+    /// </remarks>
+    private static string DescribeSlots(IReadOnlyList<DiskSlot>? slots) =>
+        slots is null or { Count: 0 }
+            ? "（默认目录）"
+            : string.Join(" → ", slots.Select(s => $"{s.Path}[预留 {s.ReservedGb?.ToString() ?? "默认"}GB]"));
 
     /// <remarks>
     /// 判据搬到了 <see cref="SensitiveName.Is"/>（日志落盘前脱敏要用同一套）。

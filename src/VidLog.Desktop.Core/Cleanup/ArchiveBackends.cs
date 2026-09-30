@@ -163,37 +163,77 @@ public interface IArchivePublisher
 /// </remarks>
 public sealed class DirectoryArchiveBackend : IArchiveBackend, IArchivePublisher
 {
-    private readonly string _root;
+    private readonly string[] _roots;
 
     /// <param name="root">归档层的根目录（本机时是 <c>&lt;root&gt;\archive</c>）。</param>
     /// <param name="kind">它算哪一种后端 —— 决定「能不能开清理」。</param>
     public DirectoryArchiveBackend(string root, ArchiveBackendKind kind)
+        : this([root], kind)
     {
-        _root = root;
+    }
+
+    /// <param name="roots">
+    /// 归档层的根，**有序**（设计图 `_43` 的「录像备份位置」表：一个 NAS 满了
+    /// 就换下一个）。第一个是首选。
+    /// </param>
+    /// <param name="kind">它算哪一种后端 —— 决定「能不能开清理」。</param>
+    public DirectoryArchiveBackend(IReadOnlyList<string> roots, ArchiveBackendKind kind)
+    {
+        ArgumentNullException.ThrowIfNull(roots);
+
+        // ⚠️ 空列表落回一个占位路径而不是抛：这个对象在「归档层配了一半」
+        // 的时候也会被建出来（设置页每敲一个字符都会重算一次），
+        // 而那时**报错的话界面还没画出来就先崩了**。
+        // 真的没配好由 `ArchiveTarget.ConfigurationProblem` 说，那是它该说的地方。
+        _roots = roots.Count > 0 ? [.. roots] : [string.Empty];
         Kind = kind;
     }
 
     public ArchiveBackendKind Kind { get; }
 
     /// <summary>归档层的根。**不进索引**，只在拼绝对路径时用。</summary>
-    public string Root => _root;
+    public string Root => _roots[0];
+
+    /// <summary>归档层所有的根，有序。<b>回查要挨个试</b>。</summary>
+    public IReadOnlyList<string> Roots => _roots;
 
     /// <summary>归档层就是本机那一份（发布是空操作）。</summary>
     private bool IsSelf => Kind == ArchiveBackendKind.LocalDisk;
 
+    /// <remarks>
+    /// ⚠️ <b>在**任一**根上找到就算有</b>，这是这个类支持多根之后最要紧的一句话。
+    /// 只看第一个的话，用户换过一次 NAS 之后，老录像的回查会一路说「找不到」——
+    /// 而裁判断它「找不到 ⇒ 不删」（I8），于是清理**永远清不掉任何东西**，
+    /// 磁盘一直满着，用户完全不知道为什么。
+    /// </remarks>
     public async Task<ArchiveVerifyResult> VerifyAsync(
         RelativePath location, CancellationToken cancellationToken = default)
     {
         try
         {
-            if (!Directory.Exists(_root))
+            var reachable = 0;
+
+            foreach (var root in _roots)
             {
-                // 归档目录整个不见了：这**不是**「这一条不存在」，是「查不了」——
-                // 两者都导致不删，但说给用户的话不一样（I8）。
-                return new ArchiveVerifyResult(false, $"归档目录访问不了：{_root}");
+                if (!Directory.Exists(root))
+                {
+                    continue;
+                }
+
+                reachable++;
+
+                if (File.Exists(Path.Combine(root, location.Value)))
+                {
+                    return await Task.FromResult(new ArchiveVerifyResult(true, null));
+                }
             }
 
-            var path = Path.Combine(_root, location.Value);
+            if (reachable == 0)
+            {
+                // 一个根都访问不了：这**不是**「这一条不存在」，是「查不了」——
+                // 两者都导致不删，但说给用户的话不一样（I8）。
+                return new ArchiveVerifyResult(false, $"归档目录访问不了：{string.Join("、", _roots)}");
+            }
 
             // ⚠️ 「找不到」要给 **null** 原因，不能给一句话。
             // `ArchiveVerifyResult.CouldNotVerify` 的判据就是「原因非空」——
@@ -201,7 +241,7 @@ public sealed class DirectoryArchiveBackend : IArchiveBackend, IArchivePublisher
             // 而**两者都导致不删**，但说给用户的话不一样。
             // 所以「找不到这一份了，它现在是唯一副本」那句话由**调用方**说
             // （它才知道自己在做的是一次删除判定，见 §3.5.6③）。
-            return await Task.FromResult(new ArchiveVerifyResult(File.Exists(path), null));
+            return await Task.FromResult(new ArchiveVerifyResult(false, null));
         }
         catch (Exception ex)
         {
@@ -210,6 +250,11 @@ public sealed class DirectoryArchiveBackend : IArchiveBackend, IArchivePublisher
         }
     }
 
+    /// <remarks>
+    /// ⚠️ <b>按列表顺序挨个试，直到有一个写成功</b>（图上的「NAS 满时自动切换到下一个」）。
+    /// 只试第一个的话，一个满了的 NAS 会让**所有**后续录像都发不出去，
+    /// 而那时本机那一份就再也不能被清理 —— 磁盘只会越来越满。
+    /// </remarks>
     public async Task<ArchivePublishResult> PublishAsync(
         RelativePath location, string localPath, CancellationToken cancellationToken = default)
     {
@@ -219,39 +264,77 @@ public sealed class DirectoryArchiveBackend : IArchiveBackend, IArchivePublisher
             return ArchivePublishResult.Ok;
         }
 
-        try
+        if (!File.Exists(localPath))
         {
-            if (!File.Exists(localPath))
+            return ArchivePublishResult.Failed($"本机这一份不在了：{localPath}");
+        }
+
+        var failures = new List<string>();
+
+        foreach (var root in _roots)
+        {
+            if (string.IsNullOrWhiteSpace(root))
             {
-                return ArchivePublishResult.Failed($"本机这一份不在了：{localPath}");
+                continue;
             }
 
-            var destination = Path.Combine(_root, location.Value);
-            var parent = Path.GetDirectoryName(destination);
-            if (!string.IsNullOrEmpty(parent))
-            {
-                Directory.CreateDirectory(parent);
-            }
+            var destination = Path.Combine(root, location.Value);
 
-            if (File.Exists(destination))
+            try
             {
-                // 已经有一份了。**名字就是内容的身份**（归档路径由单号 + 会话 + 序号 +
-                // 时间推出来），所以同名 = 同一条录像，不必重发。
+                var parent = Path.GetDirectoryName(destination);
+                if (!string.IsNullOrEmpty(parent))
+                {
+                    Directory.CreateDirectory(parent);
+                }
+
+                if (File.Exists(destination))
+                {
+                    // 已经有一份了。**名字就是内容的身份**（归档路径由单号 + 会话 +
+                    // 序号 + 时间推出来），所以同名 = 同一条录像，不必重发。
+                    return ArchivePublishResult.Ok;
+                }
+
+                // 先写临时名再改名：发到一半断网/掉盘时，归档层上留下的是一个
+                // **半截文件**而不是一个看着完好的坏文件。半截文件的扩展名不是 .mp4，
+                // 回查时那一份仍算「不存在」，下次会重发。
+                var staging = destination + ".part";
+                await CopyAsync(localPath, staging, cancellationToken);
+                File.Move(staging, destination, overwrite: false);
+
                 return ArchivePublishResult.Ok;
             }
+            catch (Exception ex)
+            {
+                // 这一档写不进去（满了 / 掉线了 / 没权限）⇒ **试下一个**。
+                failures.Add($"{root}：{ex.Message}");
 
-            // 先写临时名再改名：发到一半断网/掉盘时，归档层上留下的是一个
-            // **半截文件**而不是一个看着完好的坏文件。半截文件的扩展名不是 .mp4，
-            // 回查时那一份仍算「不存在」，下次会重发。
-            var staging = destination + ".part";
-            await CopyAsync(localPath, staging, cancellationToken);
-            File.Move(staging, destination, overwrite: false);
-
-            return ArchivePublishResult.Ok;
+                // 半截文件留在那儿的后果是「下次回查以为有」—— 得清掉。
+                TryCleanStaging(destination);
+            }
         }
-        catch (Exception ex)
+
+        return ArchivePublishResult.Failed(
+            failures.Count == 0
+                ? $"{Label}没有配置可写的目录。"
+                : $"{Label}上都没写成功 —— {string.Join("；", failures)}");
+    }
+
+    /// <summary>把写了一半的 <c>.part</c> 清掉。清不掉也不影响别的（它不算一条录像）。</summary>
+    private static void TryCleanStaging(string destination)
+    {
+        try
         {
-            return ArchivePublishResult.Failed($"{Label}上没写成功：{ex.Message}");
+            var staging = destination + ".part";
+
+            if (File.Exists(staging))
+            {
+                File.Delete(staging);
+            }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            // 删不掉就留着：它以 `.part` 结尾，回查判它「不存在」，不会冒充一条录像。
         }
     }
 

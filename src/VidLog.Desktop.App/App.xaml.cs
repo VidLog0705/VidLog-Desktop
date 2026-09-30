@@ -1,4 +1,8 @@
+using System.IO;
 using System.Windows;
+
+using VidLog.Desktop.Core.Configuration;
+using VidLog.Desktop.Core.Diagnostics;
 using VidLog.Desktop.Core.Recording;
 
 // 本工程同时开了 UseWPF 与 UseWindowsForms，ImplicitUsings 会把两边的同名类型
@@ -34,6 +38,10 @@ public partial class App : System.Windows.Application
 
         try
         {
+            // ⚠️ 必须在 `AppHost.StartAsync` **之前**：用途决定装不装摄像头与麦克风、
+            // 探不探录制规格，而那些全发生在装配期。装配完再问等于没问。
+            await AskStationRoleOnFirstRunAsync(logger);
+
             _host = await AppHost.StartAsync(logger);
 
             _window = new MainWindow(_host);
@@ -42,6 +50,10 @@ public partial class App : System.Windows.Application
             // 关窗口只是收进托盘，退出走托盘菜单 —— 有在录的段时先问一句。
             _host.ConfirmExitWhileRecording = ConfirmExitWhileRecording;
 
+            // 「关闭窗口时」那三档里的两档（直接退出 / 每次询问里选的那一下）
+            // 要走**同一条**退出路：托盘菜单那一条（见 `AppHost.RequestExit`）。
+            _host.RequestExit = () => _ = ExitAsync();
+
             _host.AttachTray(
                 showWindow: ShowWindow,
                 exitApplication: () => _ = ExitAsync());
@@ -49,6 +61,23 @@ public partial class App : System.Windows.Application
             _host.Notice += OnNotice;
 
             _window.Show();
+
+            // 开机自启动：**每次启动都把注册表重写一遍**。
+            // ⚠️ 理由是路径会漂移 —— 程序被搬到别的目录之后，注册表里那条指向的是
+            // 已经不存在的 exe，而重写是唯一能让它追上来的办法（几毫秒的事）。
+            // ⚠️ 只在「用户开过这一项」时才写；关着的时候**一个字节都不碰注册表**。
+            if (_host.Settings.RunAtStartup)
+            {
+                Platform.StartupRegistration.Apply(wanted: true, logger);
+            }
+
+            // 检查更新（设计图 `_49`）：**后台跑，绝不挡任何东西**。
+            // ⚠️ 不 await：它是可选功能，让一次网络请求把主窗口的显示拖住
+            // 是本末倒置；而它自己也不会抛（`UpdateChecker` 把异常收成结果）。
+            if (_host.Settings.CheckForUpdates)
+            {
+                _ = CheckForUpdatesAsync(logger);
+            }
         }
         catch (Exception ex)
         {
@@ -63,6 +92,98 @@ public partial class App : System.Windows.Application
 
             Shutdown(1);
         }
+    }
+
+    /// <summary>
+    /// 问一次有没有新版本，有就在托盘上说一句（设计图 `_49`「自动检查更新」）。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// ⚠️ <b>只做检查 + 提示</b>（需求方 2026-09-30 裁决）：这里**不下载、
+    /// 不替换自己**，连「要不要现在更新」都不问 —— 结果只写进
+    /// <see cref="AppHost.UpdateStatus"/>，由「关于」那一页显示，
+    /// 有新版时再补一个托盘气泡。
+    /// </para>
+    /// <para>
+    /// ⚠️ <b>它不许挡住任何东西，也不许把异常抛到外面</b>：
+    /// 这个方法是 fire-and-forget 起的，抛出去就是一个未观测的
+    /// <c>Task</c> 异常（<c>CrashGuard</c> 会记，但那是「崩溃」级别的噪音）。
+    /// <c>UpdateChecker</c> 自己已经把所有异常收成结果了。
+    /// </para>
+    /// </remarks>
+    private async Task CheckForUpdatesAsync(FileLogger logger)
+    {
+        var checker = new Core.Update.UpdateChecker(Platform.ReleaseFeed.FetchLatestTagAsync, logger);
+        var result = await checker.CheckAsync();
+
+        if (_host is null)
+        {
+            return;
+        }
+
+        _host.UpdateStatus = result;
+
+        if (!result.SuggestUpdate(_host.CurrentVersion))
+        {
+            return;
+        }
+
+        // ⚠️ 这是**提示**，不是错误：所以用气泡 + 日志，不弹模态框。
+        // 弹框会挡在用户面前，而更新这件事不紧急 —— 更不该在他正要开始干活时挡。
+        _host.Tray?.Notify(
+            "VidLog 有新版本",
+            $"当前 {_host.CurrentVersion}，最新 {result.LatestTag}。到发布页下载。");
+
+        logger.Log(
+            LogLevel.Info, "更新检查",
+            $"发现新版本 {result.LatestTag}（当前 {_host.CurrentVersion}）。");
+    }
+
+    /// <summary>
+    /// 首次运行时先问一句「这台电脑拿来干什么」（设计图 `_11`–`_15`）。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// ⚠️ 判据是<b>设置文件在不在</b>，不是「用途是不是默认值」——
+    /// 后者会把每一个老用户都拦下来问一遍，而他们那台机器早就配好了。
+    /// 文件在 = 这台机器以前跑过 VidLog，跳过。
+    /// </para>
+    /// <para>
+    /// 取消**不挡启动**：按默认的「电脑录像并保存在本机」走，与没有这个概念时一样。
+    /// </para>
+    /// </remarks>
+    private static async Task AskStationRoleOnFirstRunAsync(FileLogger logger)
+    {
+        var layout = DataLayout.Default();
+
+        if (File.Exists(layout.SettingsPath))
+        {
+            return;
+        }
+
+        var dialog = new RoleWindow();
+
+        if (dialog.ShowDialog() != true)
+        {
+            logger.Log(
+                LogLevel.Info, "用途",
+                "首次运行没有选用途，按默认的「电脑录像并保存在本机」启动。");
+            return;
+        }
+
+        await new SettingsStore(layout.SettingsPath)
+            .SaveAsync(AppSettings.Default with { StationRole = dialog.SelectedRole });
+
+        var choice = StationRoleChoice.Of(dialog.SelectedRole);
+
+        logger.Log(
+            LogLevel.Info, "用途",
+            $"首次运行选定了用途：{StationRoles.Describe(dialog.SelectedRole).Title}",
+            new Dictionary<string, object?>
+            {
+                ["是否录像"] = choice.Records,
+                ["是否长期保存"] = choice.Keeps,
+            });
     }
 
     private void ShowWindow()

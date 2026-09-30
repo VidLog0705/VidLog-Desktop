@@ -1,9 +1,11 @@
 using VidLog.Desktop.Core.Clock;
 using VidLog.Desktop.Core.Diagnostics;
 using VidLog.Desktop.Core.Index;
+using VidLog.Desktop.Core.Labels;
 using VidLog.Desktop.Core.Media;
 using VidLog.Desktop.Core.Punches;
 using VidLog.Desktop.Core.Recording;
+using VidLog.Desktop.Core.Scanning;
 
 namespace VidLog.Desktop.Core.Tests;
 
@@ -853,8 +855,178 @@ public class RecordingCoordinatorTests
     }
 
     // ─────────────────────────────────────────────
+    // 发货 / 退货 + 屏幕上那两张命令条码（设计图 `_35`）
+    // ─────────────────────────────────────────────
+
+    [Fact]
+    public async Task 扫到切换那两张码只切档_不开录也不打点()
+    {
+        using var dir = new TempDir();
+        var punches = new FakePunchLog();
+        var index = new RecordingIndexSpy();
+        await using var coordinator = Build(dir, WorkMode.StopOnSameWaybill, punches, index);
+
+        await coordinator.SubmitAsync(WaybillNumber.Parse(ScanCommand.SwitchToReturn),
+            PunchSource.KeyboardScanner);
+
+        Assert.Equal(BusinessType.Return, coordinator.CurrentBusinessType);
+
+        // ⚠️ 这三条才是这一条的要点：扫了一张**码**，不能因此开一段录像、
+        // 也不能落一次打点 —— 那等于「扫了张屏幕上的图，凭空多出一条证据」。
+        Assert.Null(coordinator.CurrentWaybill);
+        Assert.Empty(punches.Written);
+        Assert.Empty(index.Entries);
+    }
+
+    [Fact]
+    public async Task 再扫一次切回发货()
+    {
+        using var dir = new TempDir();
+        await using var coordinator = Build(dir, WorkMode.StopOnSameWaybill, new FakePunchLog());
+
+        await coordinator.SubmitAsync(WaybillNumber.Parse(ScanCommand.SwitchToReturn),
+            PunchSource.KeyboardScanner);
+        await coordinator.SubmitAsync(WaybillNumber.Parse(ScanCommand.SwitchToOutbound),
+            PunchSource.KeyboardScanner);
+
+        Assert.Equal(BusinessType.Outbound, coordinator.CurrentBusinessType);
+    }
+
+    [Fact]
+    public async Task 已经是这一档时不重复报已切换()
+    {
+        // 连着扫两次同一张码是很自然的动作（没看清扫上没有）。
+        // 每次都说一遍「已切到退货」会让人以为它真的切了两下。
+        using var dir = new TempDir();
+        var notices = new List<CoordinatorNotice>();
+        await using var coordinator = Build(dir, WorkMode.StopOnSameWaybill, new FakePunchLog());
+        coordinator.Notice += notices.Add;
+
+        await coordinator.SubmitAsync(WaybillNumber.Parse(ScanCommand.SwitchToReturn),
+            PunchSource.KeyboardScanner);
+        await coordinator.SubmitAsync(WaybillNumber.Parse(ScanCommand.SwitchToReturn),
+            PunchSource.KeyboardScanner);
+
+        Assert.Single(notices, n => n.Kind == CoordinatorNoticeKind.BusinessTypeChanged);
+    }
+
+    [Fact]
+    public async Task 扫到开始录像那张码等于按下开始录制()
+    {
+        using var dir = new TempDir();
+        await using var coordinator = Build(dir, WorkMode.StopOnSameWaybill, new FakePunchLog());
+
+        await coordinator.SubmitAsync(WaybillNumber.Parse(ScanCommand.StartWork),
+            PunchSource.KeyboardScanner);
+
+        Assert.True(coordinator.IsWorking);
+
+        // ⚠️ **只是开始工作** —— 开录仍然要等一张真面单。
+        // 把这条码做成「直接开录」的话，录出来的那一段会挂在一个叫 VLREC 的单号上。
+        Assert.Null(coordinator.CurrentWaybill);
+    }
+
+    [Fact]
+    public async Task 切到退货之后录的那一段带上退货标签()
+    {
+        // ⚠️ 这一条是**端到端**的那条：扫屏幕上的码 → 开段 → 收尾 → 标签落盘。
+        // 中间任何一环断了（档没抄进会话、收尾时读的是当前档、标签写失败被吞），
+        // 表现都是「录像标签是发货」，而那种错在界面上完全看不出来。
+        using var dir = new TempDir();
+        var labels = new SpyLabelStore();
+        await using var coordinator = Build(
+            dir, WorkMode.StopOnSameWaybill, new FakePunchLog(), labels: labels);
+
+        await coordinator.SubmitAsync(WaybillNumber.Parse(ScanCommand.SwitchToReturn),
+            PunchSource.KeyboardScanner);
+        await coordinator.SubmitAsync(A, PunchSource.KeyboardScanner);
+
+        // 同码复扫 ⇒ 停录并**当场**收尾（不是后台）。
+        await coordinator.SubmitAsync(A, PunchSource.KeyboardScanner);
+
+        var written = Assert.Single(labels.Written);
+        Assert.Equal(LabelKeys.BusinessType, written.Key);
+        Assert.Equal(BusinessTypes.ReturnValue, written.Value);
+
+        // 证据 id 是 `{会话}-{段号:000}` —— 标签必须挂在**那条录像**上，
+        // 挂错地方的表现是「检索页按类型筛，这条不见了」。
+        Assert.EndsWith("-000", written.EvidenceId, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task 没切过档就是发货()
+    {
+        using var dir = new TempDir();
+        var labels = new SpyLabelStore();
+        await using var coordinator = Build(
+            dir, WorkMode.StopOnSameWaybill, new FakePunchLog(), labels: labels);
+
+        await coordinator.SubmitAsync(A, PunchSource.KeyboardScanner);
+        await coordinator.SubmitAsync(A, PunchSource.KeyboardScanner);
+
+        Assert.Equal(BusinessTypes.OutboundValue, Assert.Single(labels.Written).Value);
+    }
+
+    [Fact]
+    public async Task 换件时旧段用的是它开始时的档()
+    {
+        // ⚠️ 这一条盯着一个**只有换件路径上才会出**的错：旧段是在后台收尾的，
+        // 那时 `CurrentBusinessType` 可能已经被切过了 —— 收尾若去读「当前档」，
+        // 退回件的旧段会被标成发货，而界面上什么都看不出来。
+        using var dir = new TempDir();
+        var labels = new SpyLabelStore();
+        var index = new RecordingIndexSpy();
+        await using var coordinator = Build(dir, WorkMode.Continuous, new FakePunchLog(), index,
+            labels: labels);
+
+        // 第 1 件：发货。
+        await coordinator.SubmitAsync(A, PunchSource.KeyboardScanner);
+
+        // 换件前切成退货……但 `B` 这一段的档要等下面那次扫码才被读走，
+        // 所以这里换的顺序是：先切档，再扫下一件。
+        await coordinator.SubmitAsync(WaybillNumber.Parse(ScanCommand.SwitchToReturn),
+            PunchSource.KeyboardScanner);
+
+        // 第 2 件：退货；同时第 1 件在后台收尾。
+        await coordinator.SubmitAsync(B, PunchSource.KeyboardScanner);
+        await coordinator.PendingFinalization;
+
+        // 两段各自的标签：A 是发货，B 是退货。
+        // ⚠️ 全部写完要等 B 也收尾 —— 那要等 B 自己停。
+        await coordinator.StopWorkAsync();
+
+        var byEvidence = labels.Written.ToDictionary(l => l.EvidenceId, l => l.Value);
+
+        Assert.Equal(2, byEvidence.Count);
+        Assert.Contains(BusinessTypes.OutboundValue, byEvidence.Values);
+        Assert.Contains(BusinessTypes.ReturnValue, byEvidence.Values);
+    }
+
+    // ─────────────────────────────────────────────
     // 测试脚手架
     // ─────────────────────────────────────────────
+
+    /// <summary>记下每一次写标签（证据 id / 键 / 值）。</summary>
+    private sealed class SpyLabelStore : ILabelStore
+    {
+        public List<(string EvidenceId, string Key, string Value)> Written { get; } = [];
+
+        public Task SetAsync(
+            string evidenceId, string key, string value, CancellationToken cancellationToken = default)
+        {
+            Written.Add((evidenceId, key, value));
+            return Task.CompletedTask;
+        }
+
+        public Task<IReadOnlyDictionary<string, string>> GetForEvidenceAsync(
+            string evidenceId, CancellationToken cancellationToken = default) =>
+            Task.FromResult<IReadOnlyDictionary<string, string>>(new Dictionary<string, string>());
+
+        public Task<IReadOnlyDictionary<string, IReadOnlyDictionary<string, string>>> LoadAllAsync(
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult<IReadOnlyDictionary<string, IReadOnlyDictionary<string, string>>>(
+                new Dictionary<string, IReadOnlyDictionary<string, string>>());
+    }
 
     private static RecordingCoordinator Build(
         TempDir dir,
@@ -870,7 +1042,8 @@ public class RecordingCoordinatorTests
         ITrustedClock? trustedClock = null,
         Func<WaybillNumber, CancellationToken, Task<IReadOnlyList<RecordingEntry>>>? duplicateProbe = null,
         int duplicateCheckDays = 0,
-        ICameraCapture? capture = null)
+        ICameraCapture? capture = null,
+        ILabelStore? labels = null)
     {
         var ffmpeg = FfmpegLocator.TryFind() ?? "ffmpeg";
         var effectiveRunner = runner ?? new SucceedingRunner();
@@ -882,7 +1055,10 @@ public class RecordingCoordinatorTests
                 new RemuxPipeline(ffmpeg, effectiveRunner),
                 new DecodeVerifier(ffmpeg, effectiveRunner),
                 index ?? new RecordingIndexSpy(),
-                Path.Combine(dir.Path, "archive")),
+                Path.Combine(dir.Path, "archive"),
+                logger: null,
+                relay: null,
+                labels: labels),
             new DiskSpaceGuard(new PlentyOfSpaceProbe()),
             punches,
             NullLogger.Instance,

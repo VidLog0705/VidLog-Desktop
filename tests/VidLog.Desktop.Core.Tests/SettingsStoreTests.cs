@@ -74,13 +74,30 @@ public class SettingsStoreTests
             IdleReminder = IdleReminderOption.Off,
             SegmentMinutes = 3,
             PlaybackPort = 9090,
+            // 两张磁盘表（设计图 `_43`）也走这条路 —— 它们是**列表**，
+            // 而列表的序列化最容易在这里悄悄丢掉（见下面那两条断言的说明）。
+            SaveDisks = [new DiskSlot(@"D:\快递打包视频", 28)],
+            BackupDisks = [new DiskSlot(@"\\nas\vidlog"), new DiskSlot(@"Z:\vidlog", 20)],
         };
 
         await new SettingsStore(path).SaveAsync(want);
         var result = await new SettingsStore(path).LoadAsync();
 
         Assert.Empty(result.Warnings);
-        Assert.Equal(want, result.Settings);
+
+        // ⚠️ 两张表**单独逐项比**：`AppSettings` 是 record，而 record 对
+        // 「集合类型的属性」用的是**引用相等**（`IReadOnlyList<T>` 没有结构比较），
+        // 于是 `[]` 与反序列化出来的空 `List<>` 会被判成不相等 —— 与内容无关。
+        // 判据是「内容原样读回」，所以这里逐项比，**不是**把这条绊线放松。
+        // ⚠️ 泛型参数要写出来：`Assert.Equal<T>(T, T)` 比
+        // `Assert.Equal<T>(IEnumerable<T>, IEnumerable<T>)` 更匹配，
+        // 不写的话又落回引用相等，这条断言就成了摆设。
+        Assert.Equal<DiskSlot>(want.SaveDisks, result.Settings.SaveDisks);
+        Assert.Equal<DiskSlot>(want.BackupDisks, result.Settings.BackupDisks);
+
+        Assert.Equal(
+            want with { SaveDisks = [], BackupDisks = [] },
+            result.Settings with { SaveDisks = [], BackupDisks = [] });
     }
 
     [Fact]
@@ -403,6 +420,120 @@ public class SettingsStoreTests
         var line = Assert.Single(SettingsStore.DescribeChanges(previous, next));
 
         Assert.Contains("（空）", line, StringComparison.Ordinal);
+    }
+
+    // ─────────────────────────────────────────────
+    // 外观与启动（批次 9，设计图 `_49`）
+    // ─────────────────────────────────────────────
+
+    [Fact]
+    public async Task 老设置文件里没有关窗口那一档_读回来是收进托盘()
+    {
+        // ⚠️ 这条是**承重**的。枚举里 `MinimizeToTray` 必须是 0，而且这一项
+        // 从没存过时必须落到它 —— 落错档的后果不是「多按一下」，是
+        // **用户按 ✕ 时程序直接退出**（或者反过来弹一个没人要的框），
+        // 而它与拆窗之前的行为不一样，还没有任何毛病能被用户看出来。
+        using var dir = new TempDir();
+        var path = dir.File("settings.json");
+        await File.WriteAllTextAsync(path, """{"SegmentMinutes":3}""");
+
+        var result = await new SettingsStore(path).LoadAsync();
+
+        Assert.Empty(result.Warnings);
+        Assert.Equal(CloseWindowAction.MinimizeToTray, result.Settings.CloseWindowAction);
+    }
+
+    [Fact]
+    public async Task 关窗口那一档存得住()
+    {
+        using var dir = new TempDir();
+        var path = dir.File("settings.json");
+
+        await new SettingsStore(path).SaveAsync(
+            AppSettings.Default with { CloseWindowAction = CloseWindowAction.Exit });
+
+        var result = await new SettingsStore(path).LoadAsync();
+
+        Assert.Empty(result.Warnings);
+        Assert.Equal(CloseWindowAction.Exit, result.Settings.CloseWindowAction);
+    }
+
+    [Fact]
+    public async Task 手改出来的越界档位整体回落()
+    {
+        // 手改成 99 这种：不认它的话，`MainWindow.OnClosing` 里那个 switch
+        // 会掉进兜底分支，而兜底是什么行为取决于写的人当时怎么想。
+        using var dir = new TempDir();
+        var path = dir.File("settings.json");
+        await File.WriteAllTextAsync(path, """{"CloseWindowAction":99}""");
+
+        var result = await new SettingsStore(path).LoadAsync();
+
+        Assert.Equal(AppSettings.Default, result.Settings);
+        Assert.NotEmpty(result.Warnings);
+    }
+
+    [Fact]
+    public async Task 开机自启动与自动检查更新存得住()
+    {
+        using var dir = new TempDir();
+        var path = dir.File("settings.json");
+
+        await new SettingsStore(path).SaveAsync(
+            AppSettings.Default with { RunAtStartup = true, CheckForUpdates = false });
+
+        var result = await new SettingsStore(path).LoadAsync();
+
+        Assert.Empty(result.Warnings);
+        Assert.True(result.Settings.RunAtStartup);
+        Assert.False(result.Settings.CheckForUpdates);
+    }
+
+    [Fact]
+    public void 出厂默认不开机自启动_但会查一次更新()
+    {
+        // 出厂就往注册表里塞一条是不可接受的（装完什么都没做，开机时它自己起来了）；
+        // 而「查一次更新」是一次只读请求，默认开着才不会永远没人知道有新版本。
+        Assert.False(AppSettings.Default.RunAtStartup);
+        Assert.True(AppSettings.Default.CheckForUpdates);
+    }
+
+    [Fact]
+    public void 新加的三项各留一行痕()
+    {
+        var before = AppSettings.Default;
+        var after = before with
+        {
+            RunAtStartup = true,
+            CloseWindowAction = CloseWindowAction.AskEveryTime,
+            CheckForUpdates = false,
+        };
+
+        var changes = SettingsStore.DescribeChanges(before, after);
+
+        Assert.Equal(3, changes.Count);
+        Assert.Contains(changes, c => c.Contains(nameof(AppSettings.RunAtStartup), StringComparison.Ordinal));
+        Assert.Contains(changes, c => c.Contains(nameof(AppSettings.CloseWindowAction), StringComparison.Ordinal));
+        Assert.Contains(changes, c => c.Contains(nameof(AppSettings.CheckForUpdates), StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void 两张偏好表各自恰好只有一档能用()
+    {
+        // ⚠️ 这条是**承重**的。「界面语言」与「外观主题」那两个下拉靠
+        // 「第一档能用的就是选中的那一档」来显示现状 —— 表里一档都不能用的话
+        // 下拉会是空的，而它旁边正写着「中文（简体）」，界面自相矛盾，
+        // 且 App 层没有测试工程，这种事没有任何东西挡得住。
+        Assert.Single(AppPreferences.Languages, o => o.Enabled);
+        Assert.Single(AppPreferences.Themes, o => o.Enabled);
+
+        // 用不了的那几档**必须**说明为什么（踩坑 #13：禁用就得给理由）。
+        Assert.All(
+            AppPreferences.Languages.Where(o => !o.Enabled),
+            o => Assert.False(string.IsNullOrWhiteSpace(o.Hint)));
+        Assert.All(
+            AppPreferences.Themes.Where(o => !o.Enabled),
+            o => Assert.False(string.IsNullOrWhiteSpace(o.Hint)));
     }
 
     private sealed class TempDir : IDisposable

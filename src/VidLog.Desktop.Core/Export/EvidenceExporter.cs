@@ -1,3 +1,4 @@
+using VidLog.Desktop.Core.Configuration;
 using VidLog.Desktop.Core.Diagnostics;
 using VidLog.Desktop.Core.Index;
 
@@ -39,7 +40,7 @@ public sealed record ExportResult(bool Exported, string? TargetPath, string? Fai
 /// </remarks>
 public sealed class EvidenceExporter
 {
-    private readonly string _archiveRoot;
+    private readonly StorageLocations _storage;
     private readonly IAppLogger _logger;
 
     /// <param name="archiveRoot">
@@ -47,8 +48,16 @@ public sealed class EvidenceExporter
     /// <see cref="IsInsideArchiveRoot"/>）。
     /// </param>
     public EvidenceExporter(string archiveRoot, IAppLogger? logger = null)
+        : this(StorageLocations.Single(archiveRoot), logger)
     {
-        _archiveRoot = archiveRoot;
+    }
+
+    /// <param name="storage">
+    /// 录像成品的全部落盘位置（设计图 `_43` 的多磁盘）。
+    /// </param>
+    public EvidenceExporter(StorageLocations storage, IAppLogger? logger = null)
+    {
+        _storage = storage;
         _logger = logger ?? NullLogger.Instance;
     }
 
@@ -69,28 +78,48 @@ public sealed class EvidenceExporter
     /// 挡住 <c>..</c> 与相对路径绕过去。
     /// </para>
     /// </remarks>
+    /// <remarks>
+    /// ⚠️ <b>挨个根都比一遍</b>（多磁盘，设计图 `_43`）：只看一个根的话，
+    /// 用户把导出件放到**第二块**录像盘上时这条判据会放行 ——
+    /// 而放行的后果正是这个类存在的理由（导出件混进录像堆里、被"按空间清理"
+    /// 算进容量、下次同名单号导出时冲突）。
+    /// </remarks>
     public bool IsInsideArchiveRoot(string targetPath)
     {
-        if (string.IsNullOrWhiteSpace(targetPath) || string.IsNullOrWhiteSpace(_archiveRoot))
+        if (string.IsNullOrWhiteSpace(targetPath))
         {
             return false;
         }
 
         try
         {
-            var root = Path.GetFullPath(_archiveRoot);
             var target = Path.GetFullPath(targetPath);
 
-            if (string.Equals(root, target, StringComparison.OrdinalIgnoreCase))
+            foreach (var candidate in _storage.ReadRoots)
             {
-                return true;
+                if (candidate.Length == 0)
+                {
+                    continue;
+                }
+
+                var root = Path.GetFullPath(candidate);
+
+                if (string.Equals(root, target, StringComparison.OrdinalIgnoreCase))
+                {
+                    return true;
+                }
+
+                var rootWithSeparator = root.EndsWith(Path.DirectorySeparatorChar)
+                    ? root
+                    : root + Path.DirectorySeparatorChar;
+
+                if (target.StartsWith(rootWithSeparator, StringComparison.OrdinalIgnoreCase))
+                {
+                    return true;
+                }
             }
 
-            var rootWithSeparator = root.EndsWith(Path.DirectorySeparatorChar)
-                ? root
-                : root + Path.DirectorySeparatorChar;
-
-            return target.StartsWith(rootWithSeparator, StringComparison.OrdinalIgnoreCase);
+            return false;
         }
         catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
         {
@@ -109,11 +138,13 @@ public sealed class EvidenceExporter
     public async Task<ExportResult> ExportAsync(
         RecordingEntry entry, string targetPath, CancellationToken cancellationToken = default)
     {
-        var source = Path.Combine(_archiveRoot, entry.Location.Value);
-
-        if (!File.Exists(source))
+        // ⚠️ 在**每一个**保存位置上找（多磁盘，设计图 `_43`）——
+        // 只知道第一个根的话，另一块盘上的录像一律「已经找不到了」，
+        // 而那条录像明明好好地在盘上。
+        if (_storage.Resolve(entry.Location.Value) is not { } source)
         {
-            return ExportResult.Failed($"这一条在本机归档目录里已经找不到了：{source}");
+            return ExportResult.Failed(
+                $"这一条在本机录像目录里已经找不到了（找过 {_storage.ReadRoots.Count} 个位置）。");
         }
 
         if (IsInsideArchiveRoot(targetPath))

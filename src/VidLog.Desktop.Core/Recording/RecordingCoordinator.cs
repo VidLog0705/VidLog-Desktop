@@ -1,6 +1,8 @@
 using VidLog.Desktop.Core.Clock;
 using VidLog.Desktop.Core.Diagnostics;
+using VidLog.Desktop.Core.Labels;
 using VidLog.Desktop.Core.Punches;
+using VidLog.Desktop.Core.Scanning;
 
 namespace VidLog.Desktop.Core.Recording;
 
@@ -59,6 +61,22 @@ public enum CoordinatorNoticeKind
     /// </para>
     /// </remarks>
     DurationPrompt,
+
+    /// <summary>
+    /// 业务类型（发货 / 退货）换了 —— 设计图 `_35` 顶部的按钮，或扫屏幕上的那张码。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// ⚠️ <b>只对**下一段**生效。</b> 正在录的那一段用的是它开始时的档位
+    /// （见 <see cref="RecordingSession.BusinessType"/>）—— 一件包裹不可能录到一半
+    /// 从发货变成退货，而按当前档去标签会把它标错。
+    /// </para>
+    /// <para>
+    /// 界面上它要做两件事：把按钮文字换成新档，**并把那张码重画**（码的载荷是
+    /// 「切到另一档」，所以两档的码不是同一张）。
+    /// </para>
+    /// </remarks>
+    BusinessTypeChanged,
 }
 
 /// <summary>协调器的可调参数。</summary>
@@ -328,6 +346,65 @@ public sealed class RecordingCoordinator : IAsyncDisposable
     /// <summary>当前段的单号；没有在录时为 <see langword="null"/>。</summary>
     public WaybillNumber? CurrentWaybill => _current?.Waybill;
 
+    /// <summary>
+    /// 当前的业务类型（设计图 `_35` 顶部那个「发货 / 退货」）。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// ⚠️ <b>它不属于某一段录像</b>，只是「下一段按哪个档录」的当前选择 ——
+    /// 每一段在<b>开段那一刻</b>把它抄一份到自己身上
+    /// （<see cref="RecordingSession.BusinessType"/>），
+    /// 因为换件之后旧段还在后台收尾，那时再读这个属性已经可能被切过了。
+    /// </para>
+    /// <para>
+    /// ⚠️ <b>不持久化</b>：每次启动回到「发货」。这是工位上绝大多数时候的档，
+    /// 而把它存起来会让某次切成退货之后**悄悄一直退货** ——
+    /// 那种错在界面上只差一个字，录出来的标签却全反了。
+    /// </para>
+    /// </remarks>
+    public BusinessType CurrentBusinessType { get; private set; } = BusinessType.Outbound;
+
+    /// <summary>切换业务类型（界面上的按钮）。返回切换后的档。</summary>
+    public BusinessType ToggleBusinessType() => SetBusinessType(
+        CurrentBusinessType == BusinessType.Return ? BusinessType.Outbound : BusinessType.Return);
+
+    /// <summary>
+    /// 把业务类型设成这一档。**幂等** —— 已经是这一档就什么都不做、也不报「已切换」。
+    /// </summary>
+    /// <remarks>
+    /// 界面上那个按钮与屏幕上那两张条码都走这里（条码那条路见 <see cref="SubmitAsync"/>）。
+    /// 幂等很重要：连续扫两次同一张码是很自然的动作（没看清扫上没有），
+    /// 每次都说一遍「已切到退货」会让人以为它真的切了两下。
+    /// <para>
+    /// ⚠️ 正在录的那一段**不跟着改** —— 见 <see cref="CurrentBusinessType"/>。
+    /// </para>
+    /// </remarks>
+    public BusinessType SetBusinessType(BusinessType type)
+    {
+        if (CurrentBusinessType == type)
+        {
+            return CurrentBusinessType;
+        }
+
+        var previous = CurrentBusinessType;
+        CurrentBusinessType = type;
+
+        // 留痕（`AGENTS.md` §6.1）：标签是「这条录像到底算发货还是退货」的唯一来源，
+        // 而它是**人在某一刻按下的**——事后要知道那一段为什么被标成退货，只有这条日志。
+        _logger.Log(LogLevel.Info, "工作",
+            $"业务类型：{ScanCommand.Describe(previous)} → {ScanCommand.Describe(type)}",
+            new Dictionary<string, object?>
+            {
+                // 正在录的那一段**不受影响**，但要记下来 —— 这正是事后
+                // 「为什么这一段还是发货」的那个解释。
+                ["正在录"] = _current?.Waybill?.Value,
+            });
+
+        Raise(CoordinatorNoticeKind.BusinessTypeChanged, null, $"已切到{ScanCommand.Describe(type)}。");
+
+        return CurrentBusinessType;
+    }
+
     /// <summary>当前段的已录时长；没有在录时为零。</summary>
     public TimeSpan Elapsed => _current?.Elapsed ?? TimeSpan.Zero;
 
@@ -517,20 +594,36 @@ public sealed class RecordingCoordinator : IAsyncDisposable
     /// 识别到一个单号（扫码枪 / 摄像头 / 手动输入都走这里）。
     /// </summary>
     /// <remarks>
+    /// <para>
     /// 打点在这里落盘：规格 §3.2.4 要求**识别到单号即记录该时刻**，
     /// 且必须立即持久化（掉电会丢）。
+    /// </para>
+    /// <para>
+    /// ⚠️ 扫到的也可能是**命令**而不是单号（屏幕上那两张码，设计图 `_35`）——
+    /// 那种串在<b>这里</b>就被截住，绝不流进状态机。
+    /// 拦在这里而不是拦在装配层，是因为这是**唯一**一个「扫到了」的入口：
+    /// 拦在调用方就得在扫码枪 / 摄像头 / 手打三条路上各写一遍，
+    /// 少写一条的表现是「那张码把 VLOUT 当成一个单号开录了」。
+    /// </para>
     /// </remarks>
     public async Task SubmitAsync(
         WaybillNumber waybill,
         PunchSource source,
         CancellationToken cancellationToken = default)
     {
-        var state = Snapshot();
-        var decision = _policy.OnScan(state, waybill);
-
         // 一次扫码 = 一次活动：闲置计时从这里重算，已响过的提醒也解除。
+        // ⚠️ 命令码也算一次活动 —— 扫它的人正站在工位前，不是闲置。
         _lastActivityAt = _clock();
         _idleReminded = false;
+
+        if (ScanCommand.KindOf(waybill.Value) is var command && command != ScanCommandKind.None)
+        {
+            HandleScanCommand(command);
+            return;
+        }
+
+        var state = Snapshot();
+        var decision = _policy.OnScan(state, waybill);
 
         switch (decision)
         {
@@ -551,6 +644,45 @@ public sealed class RecordingCoordinator : IAsyncDisposable
                 break;
 
             case WorkDecision.Nothing:
+                break;
+        }
+    }
+
+    /// <summary>
+    /// 扫到的是一条命令（不是面单）。见 <see cref="ScanCommand"/>。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// 两个动作都**复用界面上那两条路的同一个方法**（<see cref="SetBusinessType"/> /
+    /// <see cref="StartWork"/>）—— 扫一下屏幕上的码与点一下按钮必须是同一件事，
+    /// 各写一份必然走岔（比如这里漏了校时那道闸）。
+    /// </para>
+    /// <para>
+    /// ⚠️ <b>命令不落打点、不开段、不写错误扫描记录</b>：它不是工作事件。
+    /// </para>
+    /// </remarks>
+    private void HandleScanCommand(ScanCommandKind command)
+    {
+        switch (command)
+        {
+            case ScanCommandKind.SwitchToOutbound:
+                SetBusinessType(BusinessType.Outbound);
+                break;
+
+            case ScanCommandKind.SwitchToReturn:
+                SetBusinessType(BusinessType.Return);
+                break;
+
+            case ScanCommandKind.StartWork:
+                // 【开始录制】那一下。⚠️ 它**只是开始工作** ——
+                // 真正的开录仍要等扫到一张面单，与点按钮完全同一条路。
+                _logger.Log(LogLevel.Info, "扫码", $"扫到开始命令（{ScanCommand.StartWork}）");
+                StartWork();
+                break;
+
+            default:
+                // ScanCommandKind.None **不会走到这里**（调用方已经判过）。
+                // 留着是因为枚举上加了成员就该被处理 —— 空着比编一个动作好。
                 break;
         }
     }
@@ -630,7 +762,11 @@ public sealed class RecordingCoordinator : IAsyncDisposable
             // 给界面看，而在这之前它**一次都没进过日志** —— 音轨没接上、
             // 水印写不出来这一类，查日志的时候什么都看不到。
             problemReported: problem =>
-                _logger.Log(LogLevel.Warn, "录制", $"{waybill.Value}：{problem}"));
+                _logger.Log(LogLevel.Warn, "录制", $"{waybill.Value}：{problem}"),
+            // 发货 / 退货（设计图 `_35`）。⚠️ 传的是**开段这一刻**的档 ——
+            // 会话把它抄在自己身上，收尾时按它写标签。换件之后旧段在后台收尾，
+            // 那时再读 CurrentBusinessType 已经可能被切过了，会把退货的件标成发货。
+            businessType: CurrentBusinessType);
 
         await session.StartAsync(waybill, Encoder, cancellationToken);
         _current = session;

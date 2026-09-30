@@ -109,6 +109,36 @@ public sealed class DataLayout
     /// </remarks>
     public string ReceiptsPath => Path.Combine(RootDirectory, "receipts.jsonl");
 
+    /// <summary>
+    /// 百度网盘的登录令牌（设计图 `_45`「账号与上传状态」）。
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ <b>这个文件是一份 bearer 凭据</b>：拿到它的人可以读写这个账号
+    /// <c>/apps/&lt;应用名&gt;/</c> 下的东西。所以：
+    /// </remarks>
+    /// <list type="bullet">
+    /// <item>它落在**应用自己的数据目录**里（只有本用户能读），不进仓库；</item>
+    /// <item><b>绝不写进 <c>settings.json</c></b> —— 那个文件会被用户复制到别的机器、
+    /// 被贴进工单、被备份工具扫走；</item>
+    /// <item>诊断包**也不含它**（见 <c>DiagnosticsPackage</c>：它只收索引摘要、
+    /// 日志、会话清单，从不整目录打包）。</item>
+    /// </list>
+    /// <para>
+    /// ⚠️ 它是**明文**。理由与代价写在 <c>BaiduPanTokenStore</c> 与
+    /// <c>docs/实现决策.md</c> §87，不藏着。
+    /// </para>
+    /// </remarks>
+    public string CloudTokenPath => Path.Combine(RootDirectory, "baidu-pan-token.json");
+
+    /// <summary>
+    /// 百度网盘的上传队列（设计图 `_45` / `_46` 的「上传队列」卡）。
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ 它**不是证据的一部分**：丢了、读坏了，代价只是「不知道哪条传到哪了」，
+    /// 重扫一遍索引就能重建。所以它与索引、标签那些**同一个根但独立文件**。
+    /// </remarks>
+    public string CloudQueuePath => Path.Combine(RootDirectory, "upload-queue.jsonl");
+
     /// <summary>日志目录。</summary>
     public string LogDirectory => Path.Combine(RootDirectory, "logs");
 

@@ -1,4 +1,5 @@
 using System.IO;
+using System.Text;
 using System.Windows;
 using System.Windows.Controls.Primitives;
 using System.Windows.Threading;
@@ -15,6 +16,7 @@ using SelectionChangedEventArgs = System.Windows.Controls.SelectionChangedEventA
 using VidLog.Desktop.App.Platform;
 using VidLog.Desktop.Core.Cleanup;
 using VidLog.Desktop.Core.Diagnostics;
+using VidLog.Desktop.Core.Export;
 using VidLog.Desktop.Core.Labels;
 using VidLog.Desktop.Core.Search;
 
@@ -187,6 +189,22 @@ public partial class SearchWindow : Window
         NextPageButton.IsEnabled = _page + 1 < PageCount();
 
         ExportButton.IsEnabled = false;
+
+        // 一条都没有时【导出单号】是禁用的 —— 导一张只有表头的空表没有意义，
+        // 而按下去的后果是用户以为「导出来了，只是内容空」，然后去查为什么。
+        ExportWaybillsButton.IsEnabled = _hits.Count > 0;
+    }
+
+    /// <summary>单号框里那个 ✕（图 `_41`）：清空输入框，<b>不动已经列出来的结果</b>。</summary>
+    /// <remarks>
+    /// ⚠️ 刻意**不**顺手把结果也清掉：结果列表是上一次检索的产物，它本身就是一份
+    /// 有用的东西（用户可能正要照着它导出单号）。✕ 的含义到处都只是「清掉这格输入」——
+    /// 在这里多清一样，用户下一次就不敢按它了。
+    /// </remarks>
+    private void OnClearSearch(object sender, RoutedEventArgs e)
+    {
+        SearchBox.Text = string.Empty;
+        SearchBox.Focus();
     }
 
     private int PageCount() => Math.Max(1, (_hits.Count + PageSize - 1) / PageSize);
@@ -235,8 +253,18 @@ public partial class SearchWindow : Window
         return File.Exists(path) ? string.Empty : "⚠️ 成品不在盘上（索引里有，文件没了）";
     }
 
+    /// <remarks>
+    /// ⚠️ 走 <c>Resolve</c> 而**不是**拼某一个根（设计图 `_43` 的多磁盘）：
+    /// 录像可能落在用户配的任意一块盘上，拼第一个根的话另一块盘上的那些
+    /// 会一律显示成「成品不在盘上」—— 而文件明明好好地在盘上。
+    /// <para>
+    /// 找不到时给活动根下的路径（**不是给空串**）：那个路径要拿去 <c>MediaElement</c>
+    /// 与导出对话框用，而「一个不存在的路径」能让它们如实报错，
+    /// 空串只会让它们静默什么都不做。
+    /// </para>
+    /// </remarks>
     private string PathOf(RecordingHit hit) =>
-        Path.Combine(_host.Services.Layout.ArchiveRoot, hit.Entry.Location.Value);
+        _host.Services.Storage.ResolveOrActive(hit.Entry.Location.Value);
 
     // ─────────────────────────────────────────────
     // 选中与播放
@@ -489,6 +517,111 @@ public partial class SearchWindow : Window
 
         // 顺手把它所在的文件夹打开 —— 「交付」这个动作的下一步通常就是把文件发出去。
         ShellOpen.Try(result.TargetPath!);
+    }
+
+    // ─────────────────────────────────────────────
+    // 导出单号（设计图 `_41` 左栏）
+    // ─────────────────────────────────────────────
+
+    /// <summary>
+    /// 把**当前检索出来的这一批**写成一个 CSV 交到用户选的位置。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// ⚠️ 导的是**筛出来的这一批**，不是整个库：这颗按钮就摆在日期范围与单号框底下，
+    /// 「我刚筛出来的这一批」是它唯一说得通的读法。
+    /// </para>
+    /// <para>
+    /// ⚠️ 文件必须带 UTF-8 的 BOM。中文版 Windows 上的 Excel / WPS 打开一个
+    /// <b>没有 BOM</b> 的 UTF-8 CSV 时，会按 GBK 去解 —— 表头「单号」两个字
+    /// 当场变成乱码，而用户只会以为「导出来的东西坏了」。
+    /// </para>
+    /// </remarks>
+    private async void OnExportWaybills(object sender, RoutedEventArgs e)
+    {
+        if (_hits.Count == 0)
+        {
+            CountText.Text = "先检索出结果，再导出单号。";
+            return;
+        }
+
+        var dialog = new Microsoft.Win32.SaveFileDialog
+        {
+            Title = "导出单号（CSV）",
+            FileName = WaybillCsv.DefaultFileName,
+            Filter = "CSV 文件|*.csv|所有文件|*.*",
+            OverwritePrompt = true,
+        };
+
+        if (dialog.ShowDialog(this) != true)
+        {
+            return;
+        }
+
+        try
+        {
+            await File.WriteAllTextAsync(
+                dialog.FileName,
+                WaybillCsv.Build(_hits),
+                new UTF8Encoding(encoderShouldEmitUTF8Identifier: true));
+
+            CountText.Text = $"已导出 {_hits.Count} 条单号到：{dialog.FileName}";
+
+            // 留痕（`AGENTS.md` §6）：这是一次「把库里的一批数据交出去」的动作。
+            _host.Logger.Log(
+                LogLevel.Info, "导出",
+                $"导出了 {_hits.Count} 条单号",
+                new Dictionary<string, object?> { ["目标"] = dialog.FileName });
+
+            ShellOpen.Try(dialog.FileName);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            // I3：写不出去要说出来 —— 用户以为导好了，而那个文件根本不存在。
+            CountText.Text = $"写不出去：{ex.Message}";
+
+            // ⚠️ 与成功那一条**同样带数据**：出事时要答的是「往哪儿写、写了几条」，
+            // 而这两样恰恰只在参数里。
+            _host.Logger.Log(
+                LogLevel.Warn, "导出",
+                $"单号没能导出：{ex.Message}",
+                new Dictionary<string, object?>
+                {
+                    ["目标"] = dialog.FileName,
+                    ["条数"] = _hits.Count,
+                });
+        }
+    }
+
+    // ─────────────────────────────────────────────
+    // 导入录像（设计图 `_41` 左栏）
+    // ─────────────────────────────────────────────
+
+    /// <summary>
+    /// 把外面录来的一个视频文件收进库里。
+    /// </summary>
+    /// <remarks>
+    /// 真正的活在 <c>RecordingImporter</c> 里（Core，可测）；这个窗口只负责
+    /// 问清「哪一段、挂哪个单号、什么时候录的」—— 那三件事**必须由人来定**，
+    /// 猜不得（见 <c>ImportRequest</c> 的说明）。
+    /// </remarks>
+    private async void OnImport(object sender, RoutedEventArgs e)
+    {
+        var dialog = new ImportWindow(_host) { Owner = this };
+
+        if (dialog.ShowDialog() != true)
+        {
+            return;
+        }
+
+        // 导进来一条就该看得见 —— 重搜一遍，它才会出现在列表里。
+        // ⚠️ 当前筛选条件可能筛掉它（日期范围、单号、类型都对不上）：那时列表里
+        // 没有它是**对的**，所以这句话要说清它到底进没进库。
+        await SearchAsync();
+
+        CountText.Text = dialog.ImportedSummary is { Length: > 0 } summary
+            ? summary
+            : "已导入。";
     }
 
     private static string? TagOf(ComboBox combo) => (combo.SelectedItem as ComboBoxItem)?.Tag as string;

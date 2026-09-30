@@ -52,6 +52,18 @@ public sealed record RecordingQuery
     /// <summary>发货 / 退货筛选。为 null 则不限。</summary>
     public BusinessType? BusinessType { get; init; }
 
+    /// <summary>
+    /// 按「录像来源设备」筛选（设计图 `_36` 那个下拉）。为 null 或空则不限。
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ 比的是 <see cref="RecordingEntry.SourceDeviceId"/> 的**原样值、区分大小写**。
+    /// 那个字段的值只有两个来源：本机录的写机器名，外面导进来的写常量
+    /// <c>imported</c>（<c>RecordingImporter.SourceDeviceId</c>）。
+    /// 大小写不敏感地比会把 <c>DESKTOP-A</c> 与 <c>desktop-a</c> 这两台真机器混成一台，
+    /// 而用户看到的是一份**少了半截**的列表。
+    /// </remarks>
+    public string? SourceDevice { get; init; }
+
     /// <summary>最多返回多少条。</summary>
     public int Limit { get; init; } = 200;
 }
@@ -123,6 +135,12 @@ public sealed class RecordingSearch
             }
 
             if (query.To is not null && entry.StartedAt >= query.To.Value)
+            {
+                continue;
+            }
+
+            if (query.SourceDevice is { Length: > 0 } device
+                && !string.Equals(entry.SourceDeviceId, device, StringComparison.Ordinal))
             {
                 continue;
             }

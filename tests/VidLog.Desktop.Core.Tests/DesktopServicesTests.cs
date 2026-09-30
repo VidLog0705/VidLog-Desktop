@@ -352,7 +352,13 @@ public class DesktopServicesTests
         // ⚠️ 2026-09-27 起它还接一个 relay —— 归档层那一份的**发布点就在这条路上**。
         // 只到 `logger);` 的话，把 relay 接掉（改回 `logger);`）这条绊线照样绿，
         // 而表现是「设了 NAS、文件却没发过去」（踩坑 #13 的又一张脸）。
-        Assert.Contains("layout.ArchiveRoot,\n            logger,\n            relay);", code.Replace("\r\n", "\n"),
+        //
+        // ⚠️ 2026-09-30：第一个参数从 `layout.ArchiveRoot`（一个字符串）变成了
+        // `locations`（`StorageLocations`，设计图 `_43` 的多磁盘）——
+        // 录像可能落在用户配的**任意一块盘**上，而收尾得知道往哪块写。
+        // 绊线要挡的**还是同一件事**（relay 这根线不能从收尾那条路上掉），
+        // 所以跟着改文本、不改口径。
+        Assert.Contains("locations,\n            logger,\n            relay);", code.Replace("\r\n", "\n"),
             StringComparison.Ordinal);
 
         // ③ 入网决策（安全事件）+ **机位闸门**（`04-许可设计.md` §5.1）。

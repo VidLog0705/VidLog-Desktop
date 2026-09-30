@@ -105,7 +105,17 @@ public class PlaybackServerTests
     }
 
     /// <param name="logger">请求日志。不传就不记（默认）。</param>
-    private static async Task<Fixture> StartAsync(TempDir dir, IAppLogger? logger = null)
+    /// <param name="lanHost">
+    /// 钉死「用手机打开」那个二维码里的主机名。不传就现挑（真网卡）。
+    /// ⚠️ 绝大多数用例不需要它，而需要它的那一条**必须**钉 ——
+    /// 「挑出来的是这台机器现在的 IP」不是那条要验的东西。
+    /// </param>
+    /// <param name="retentionWindowDays">「预计可保留」按最近多少天估（默认 7）。</param>
+    private static async Task<Fixture> StartAsync(
+        TempDir dir,
+        IAppLogger? logger = null,
+        string? lanHost = null,
+        int retentionWindowDays = 7)
     {
         const string evidenceId = "e1";
         const string relative = "2026/09/16/SF1000000001/e1.mp4";
@@ -174,7 +184,13 @@ public class PlaybackServerTests
         var credential = (await devices.ClaimAsync("device-1", session.Token)).Credential!;
 
         var server = new PlaybackServer(
-            new PlaybackServerOptions { Prefix = baseUrl, ArchiveRoot = archiveRoot },
+            new PlaybackServerOptions
+            {
+                Prefix = baseUrl,
+                ArchiveRoot = archiveRoot,
+                LanHost = lanHost,
+                RetentionEstimateWindowDays = retentionWindowDays,
+            },
             new RecordingSearch(index, labels),
             index,
             new PunchNavigation(index, punchLog),
@@ -758,5 +774,214 @@ public class PlaybackServerTests
         using var client = new HttpClient { BaseAddress = new Uri(url), Timeout = TimeSpan.FromSeconds(5) };
 
         await Assert.ThrowsAnyAsync<Exception>(() => client.GetAsync("/"));
+    }
+
+    // ─────────────────────────────────────────────
+    // 设计图 `_36`：三张统计卡
+    // ─────────────────────────────────────────────
+
+    private static async Task<JsonElement> OverviewAsync(Fixture fixture) =>
+        JsonSerializer.Deserialize<JsonElement>(
+            await (await fixture.Client.GetAsync("/api/overview")).Content.ReadAsStringAsync());
+
+    [Fact]
+    public async Task 统计卡_库里有多少条就报多少条_一个都不编()
+    {
+        // ⚠️ 这一条钉的是**卡片上的数只能来自索引**（规格 §13.1）：
+        // 编一个「上传成功率」或者「今日打包量」出来，用户会拿它当事实做决定。
+        using var dir = new TempDir();
+        await using var fixture = await StartAsync(dir);
+
+        var payload = await OverviewAsync(fixture);
+
+        Assert.Equal(2, payload.GetProperty("count").GetInt32());
+        Assert.Equal(2, payload.GetProperty("waybillCount").GetInt32());
+
+        // 最早那一条 = `e1`（`e2` 比它晚一小时）。
+        Assert.StartsWith("2026-09-16T10:00:00", payload.GetProperty("earliest").GetString());
+
+        // 已用是**录像的估算**占用，不是整块盘已用 —— 所以它必须是个正数
+        // 而不是「盘上用了多少」（那个数在干净机器上会是几十 GB）。
+        Assert.True(payload.GetProperty("estimatedUsedBytes").GetInt64() > 0);
+
+        // 一个归档根。
+        Assert.Equal(1, payload.GetProperty("directoryCount").GetInt32());
+    }
+
+    [Fact]
+    public async Task 统计卡_录像来源按台列出_并且给的是原样值()
+    {
+        // ⚠️ 这两条录像的 `SourceDeviceId` 都是 `device-1`，所以下拉里只该有**一项**。
+        // 而 `id` 必须是索引里那个串（前端拿它当筛选值），不是给人看的那几个字 ——
+        // 拿「外部导入」去比会一条都筛不出来（`source` 那条用例钉的是同一件事）。
+        using var dir = new TempDir();
+        await using var fixture = await StartAsync(dir);
+
+        var sources = (await OverviewAsync(fixture)).GetProperty("sources");
+
+        var only = Assert.Single(sources.EnumerateArray().ToList());
+        Assert.Equal("device-1", only.GetProperty("id").GetString());
+        Assert.Equal(2, only.GetProperty("count").GetInt32());
+    }
+
+    [Fact]
+    public async Task 统计卡_库里那些录像都在估算窗口之外时报暂无法估算()
+    {
+        // 库里最早那条在 2026-09-16，而窗口是「最近 7 天」⇒ 窗口内一条都没有
+        // ⇒ 日均占用算不出来 ⇒ 回 null。页面照设计图上那句话报「暂无法估算」。
+        //
+        // ⚠️ 这里**绝不能编一个数**出来：把全库的量摊到 7 天上会得到一个
+        // 偏大的日均，于是「预计可保留」报得比实际短 —— 用户照着它去加盘。
+        using var dir = new TempDir();
+        await using var fixture = await StartAsync(dir);
+
+        var payload = await OverviewAsync(fixture);
+
+        Assert.Equal(JsonValueKind.Null, payload.GetProperty("retentionDays").ValueKind);
+
+        // 窗口长度也要如实报出来（0 = 「压根没摊到天」）。
+        Assert.Equal(0, payload.GetProperty("retentionWindowDays").GetInt32());
+    }
+
+    [Fact]
+    public async Task 统计卡_窗口盖住库里的录像时给出可保留天数()
+    {
+        // 同一个库，把窗口放到 30 天 —— 那几条就落进窗口了，日均算得出来。
+        // 分母是**真的有录像的那些天**（≈14 天），不是窗口长度 30 天。
+        using var dir = new TempDir();
+        await using var fixture = await StartAsync(dir, retentionWindowDays: 30);
+
+        var payload = await OverviewAsync(fixture);
+
+        Assert.True(payload.GetProperty("retentionDays").GetDouble() > 0);
+        Assert.True(payload.GetProperty("retentionWindowDays").GetInt32() >= 1);
+
+        // ⚠️ 窗口长度**必须小于**配置里的 30 —— 否则分母就被拿成了窗口长度本身，
+        // 而那是把日均算小、把可保留天数算大的那一半。
+        Assert.True(payload.GetProperty("retentionWindowDays").GetInt32() < 30);
+    }
+
+    // ─────────────────────────────────────────────
+    // 设计图 `_36`：录像来源筛选
+    // ─────────────────────────────────────────────
+
+    private static async Task<int> SearchCountAsync(Fixture fixture, string query) =>
+        JsonSerializer.Deserialize<JsonElement>(
+            await (await fixture.Client.GetAsync("/api/search?" + query)).Content.ReadAsStringAsync())
+            .GetArrayLength();
+
+    [Fact]
+    public async Task 按来源筛选_原样值能筛出东西()
+    {
+        using var dir = new TempDir();
+        await using var fixture = await StartAsync(dir);
+
+        Assert.Equal(2, await SearchCountAsync(fixture, "source=device-1"));
+    }
+
+    [Fact]
+    public async Task 按来源筛选_大小写不同就是另一台机器()
+    {
+        // ⚠️ `SourceDeviceId` 存的是**写进去那一刻的机器名**（或常量 `imported`），
+        // 而机器名是区分大小写的两件事：`DESKTOP-A` 与 `desktop-a` 可能是两台真机器。
+        // 大小写不敏感地比会把它们混成一堆，用户看到的是一份少了半截的列表 ——
+        // 而他不知道少了什么。
+        using var dir = new TempDir();
+        await using var fixture = await StartAsync(dir);
+
+        Assert.Equal(0, await SearchCountAsync(fixture, "source=DEVICE-1"));
+    }
+
+    [Fact]
+    public async Task 按来源筛选_认不出的来源回空列表而不是全部()
+    {
+        // ⚠️ 这条是**筛错了比筛不出更糟**的那种：认不出的来源要是被当成「不限」，
+        // 用户以为自己筛出了「外部导入」，看到的却是全库。
+        using var dir = new TempDir();
+        await using var fixture = await StartAsync(dir);
+
+        Assert.Equal(0, await SearchCountAsync(fixture, "source=imported"));
+    }
+
+    [Fact]
+    public async Task 按来源筛选_空串表示全部设备()
+    {
+        // 下拉里「全部设备」那一项的值就是空串。
+        using var dir = new TempDir();
+        await using var fixture = await StartAsync(dir);
+
+        Assert.Equal(2, await SearchCountAsync(fixture, "source="));
+    }
+
+    // ─────────────────────────────────────────────
+    // 设计图 `_38`：用手机打开
+    // ─────────────────────────────────────────────
+
+    [Fact]
+    public async Task 二维码_地址里没有访问密钥()
+    {
+        // ⚠️ 设计图 `_38` 上那一串是 `http://192.168.101.64:5280/?key=4f2af9aee4fc8…`，
+        // 而**本仓的回放页没有密钥** —— 局域网里谁打开这个地址都能看。
+        // 编一个 key 出来显示，用户会以为「有这个 key 才看得到」，
+        // 于是把它当成可以外发的链接。**那是把一句假话印在屏幕上。**
+        using var dir = new TempDir();
+        await using var fixture = await StartAsync(dir, lanHost: "192.168.1.50");
+
+        var payload = JsonSerializer.Deserialize<JsonElement>(
+            await (await fixture.Client.GetAsync("/api/qr")).Content.ReadAsStringAsync());
+
+        var url = payload.GetProperty("url").GetString();
+
+        Assert.Equal($"http://192.168.1.50:{new Uri(fixture.BaseUrl).Port}/", url);
+        Assert.DoesNotContain("?", url);
+        Assert.DoesNotContain("key", url);
+    }
+
+    [Fact]
+    public async Task 二维码_是一张真的码而不是一片空白()
+    {
+        // ⚠️ 一片空白**看起来**也像一张二维码（外面还有静区），但扫不出来。
+        // 所以这里钉三件事：长宽与行数对得上、四周静区是浅色、里面深浅都有。
+        using var dir = new TempDir();
+        await using var fixture = await StartAsync(dir, lanHost: "192.168.1.50");
+
+        var payload = JsonSerializer.Deserialize<JsonElement>(
+            await (await fixture.Client.GetAsync("/api/qr")).Content.ReadAsStringAsync());
+
+        var width = payload.GetProperty("width").GetInt32();
+        var height = payload.GetProperty("height").GetInt32();
+
+        Assert.True(width > 0 && height > 0);
+
+        var rows = payload.GetProperty("rows").EnumerateArray()
+            .Select(r => r.GetString()!).ToList();
+
+        Assert.Equal(height, rows.Count);
+        Assert.All(rows, row => Assert.Equal(width, row.Length));
+
+        // 静区：最上面那几行、最下面那几行全浅色（`EnrollQr.QuietZoneModules` = 4）。
+        // 静区不足的二维码在屏幕上**看着正常、扫不出来**。
+        Assert.All(rows.Take(2), row => Assert.DoesNotContain('1', row));
+        Assert.All(rows.TakeLast(2), row => Assert.DoesNotContain('1', row));
+
+        // 里面深浅都有 —— 全浅是一张白纸。
+        Assert.Contains('1', string.Concat(rows));
+        Assert.Contains('0', string.Concat(rows));
+    }
+
+    [Fact]
+    public async Task 二维码_挑不到局域网地址时说实话而不是画一张假码()
+    {
+        // ⚠️ 一张扫不出来的假码比一句实话糟糕得多：用户会对着它反复扫，
+        // 而问题根本不在这张码上。
+        using var dir = new TempDir();
+        await using var fixture = await StartAsync(dir, lanHost: " ");
+
+        var payload = JsonSerializer.Deserialize<JsonElement>(
+            await (await fixture.Client.GetAsync("/api/qr")).Content.ReadAsStringAsync());
+
+        Assert.Equal(JsonValueKind.Null, payload.GetProperty("url").ValueKind);
+        Assert.Empty(payload.GetProperty("rows").EnumerateArray().ToList());
+        Assert.False(string.IsNullOrWhiteSpace(payload.GetProperty("problem").GetString()));
     }
 }

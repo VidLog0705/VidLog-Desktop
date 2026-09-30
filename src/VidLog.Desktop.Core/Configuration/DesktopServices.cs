@@ -1,5 +1,6 @@
 using VidLog.Desktop.Core.Cleanup;
 using VidLog.Desktop.Core.Clock;
+using VidLog.Desktop.Core.Cloud;
 using VidLog.Desktop.Core.Diagnostics;
 using VidLog.Desktop.Core.Index;
 using VidLog.Desktop.Core.License;
@@ -100,8 +101,32 @@ public sealed class DesktopServices : IAsyncDisposable
     /// <summary>当前用的归档层（规格 §3.4.6）。</summary>
     public ArchiveTarget ArchiveTarget { get; private init; } = ArchiveTarget.Default;
 
+    /// <summary>
+    /// 录像成品的落盘位置（设计图 `_43` 的多磁盘）。
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ 界面要读它：两块表的状态、容量条、以及「这一段写到哪块盘上了」
+    /// 全从这一个对象来。**别再各算一遍** —— 各算一遍就会出现
+    /// 「界面上说 D 盘、实际写在 C 盘」那种没人查得出来的偏差。
+    /// </remarks>
+    public StorageLocations Storage { get; private init; } = null!;
+
     /// <summary>归档层的回查实现（清理的前置 gates 用它）。</summary>
     public IArchiveBackend ArchiveBackend { get; private init; } = null!;
+
+    /// <summary>
+    /// 百度网盘那一套（队列、对比去重、并发）。
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ <b>归档层不是「百度网盘」那一档时它是 <see langword="null"/></b> ——
+    /// 那时设置页上「百度网盘上传」那一整页的东西全都禁用并写明原因，
+    /// 而不是渲染一个按下去没反应的开关（踩坑 #13）。
+    /// <para>
+    /// ⚠️ 另一种 <see langword="null"/> 是「选了网盘但没配凭据」：那时归档层退回
+    /// 目录型那个空根状态（一律拒删），而启动警告把「要配哪两个环境变量」说清楚。
+    /// </para>
+    /// </remarks>
+    public CloudUploadService? CloudUploads { get; private init; }
 
     /// <summary>
     /// 发布到归档层那一步；<b>归档层就是本机时为 <see langword="null"/></b>。
@@ -137,6 +162,15 @@ public sealed class DesktopServices : IAsyncDisposable
     /// ⚠️ 它**不写索引、不写标签、不进检索** —— 导出件不是录像（I7 改写后的落点）。
     /// </remarks>
     public Export.EvidenceExporter Exporter { get; private init; } = null!;
+
+    /// <summary>
+    /// 导入录像（设计图 `_41` 左栏那颗按钮）。
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ 与导出**不是一对**：导出的东西**不是录像**（I7，不进索引），
+    /// 而导入进来的**就是录像**，与本机录的走同一套检索、回放与清理判定。
+    /// </remarks>
+    public Import.RecordingImporter Importer { get; private init; } = null!;
 
     /// <summary>
     /// 许可（`docs/04-许可设计.md`）。为 <see langword="null"/> 表示**软件没配好公钥**。
@@ -190,6 +224,14 @@ public sealed class DesktopServices : IAsyncDisposable
     /// <param name="archive">
     /// 归档层配置（规格 §3.4.6）。不传 = 本机磁盘那一档（出厂默认）。
     /// </param>
+    /// <param name="storage">
+    /// 录像成品的落盘位置（设计图 `_43` 的多磁盘：保存位置 + 备份位置）。
+    /// **不传 = 只有 <c>layout.ArchiveRoot</c> 一个根**，与加多磁盘之前一模一样。
+    /// </param>
+    /// <param name="archiveDirectories">
+    /// 归档层（NAS / 挂载盘）要落的目录，有序。**不传 = 用
+    /// <see cref="ArchiveTarget.DirectoryPath"/> 那一个**（老配置的写法）。
+    /// </param>
     public static DesktopServices Create(
         DataLayout layout,
         string? ffmpegPath = null,
@@ -197,9 +239,23 @@ public sealed class DesktopServices : IAsyncDisposable
         string? deviceName = null,
         IAppLogger? logger = null,
         ArchiveTarget? archive = null,
-        IClockSource? clockSource = null)
+        IClockSource? clockSource = null,
+        StorageLocations? storage = null,
+        IReadOnlyList<string>? archiveDirectories = null,
+        CloudUploadSettings? cloud = null)
     {
         layout.EnsureCreated();
+
+        // ⚠️ 成品落在哪些盘上，**必须由设置说了算**（设计图 `_43`）。
+        // 在它之前这里是一句 `layout.ArchiveRoot`：用户填的「归档目录」
+        // 从头到尾没被用过，而清理却是按「归档层不是本机」放开的 ——
+        // 于是配了 NAS 的机器上，本机那份**唯一副本**会被当成「已经有备份了」删掉。
+        var locations = storage ?? StorageLocations.Single(layout.ArchiveRoot);
+
+        // ⚠️ 不传 = 一个开关都不开的那一组（设计图 `_45` 的「已停用」那一态）。
+        // 默认值必须是它：打开「启用自动上传」意味着这台机器上的录像会开始
+        // 往公网上传，而那是用户必须自己做的决定。
+        var cloudSettings = cloud ?? CloudUploadSettings.Default;
 
         var warnings = new List<string>();
 
@@ -261,10 +317,88 @@ public sealed class DesktopServices : IAsyncDisposable
         // ⚠️ 本机磁盘那一档**不建 relay**：那时本机这一份就是归档层那一份，
         // 发布是空操作，而「发过没有」这个问题在那一档下没有意义。
         var target = archive ?? ArchiveTarget.Default;
-        var archiveBackend = new DirectoryArchiveBackend(layout.ArchiveRoot, target.Kind);
+
+        // ⚠️ 归档层是**本机**那一档时，根只能是 `layout.ArchiveRoot` ——
+        // 那一档的语义就是「本机这一份就是归档层那一份」，用户填的目录在这里没有意义
+        // （`ArchiveTarget.DirectoryPath` 对本机档永远是 null，见 `FromConfig`）。
+        //
+        // ⚠️ 其余三档**必须用用户填的那个目录**。给空列表（配了 NAS 却没填目录）时
+        // 落到一个空列表上 —— 那样 `VerifyAsync` 一律返回「查不了」⇒ 一律拒删。
+        // 那是刻意的：**配了一半的归档层不能反过来变成"可以删"**。
+        var archiveRoots = target.IsOnThisMachine
+            ? new[] { layout.ArchiveRoot }
+            : archiveDirectories is { Count: > 0 }
+                ? [.. archiveDirectories]
+                : target.DirectoryPath is { Length: > 0 } single
+                    ? [single]
+                    : [];
+
+        // ── 百度网盘那一档（设计图 `_45` / `_46`）──────────────────────
+        //
+        // ⚠️ **只有选到网盘那一档才装配它。**凭据（AppKey/AppSecret）走环境变量，
+        // 没配就退回目录型那个「根是空的」状态 —— 那个状态一律回「查不了」⇒
+        // 一律拒删（§3.5.1 那半句话的同一头），而上面那条归档层警告会把
+        // 「这一档要授权」说给用户。**绝不猜一个凭据、也绝不悄悄换成别的档**。
+        CloudUploadService? cloudUploads = null;
+        IArchiveBackend archiveBackend;
+
+        // 归档层的**写入**那一半与回查那一半是两个接口（见 `IArchivePublisher` 的说明），
+        // 所以这里分开存：网盘那一档的实现同时是两个，目录型那一档也是。
+        IArchivePublisher publisher;
+
+        if (target.Kind == ArchiveBackendKind.Cloud)
+        {
+            var credentials = BaiduPanCredentials.FromEnvironment();
+
+            if (credentials is null)
+            {
+                warnings.Add(BaiduPanCredentials.MissingMessage);
+
+                var unreachable = new DirectoryArchiveBackend(archiveRoots, target.Kind);
+                archiveBackend = unreachable;
+                publisher = unreachable;
+            }
+            else
+            {
+                // ⚠️ 超时放大到 10 分钟：默认的 100 秒对一片 4MB 是够的，
+                // 但上行慢的工位（网盘限速、手机热点）传一片就能超，
+                // 而超时的表现是「上传一直失败」，查起来只会怀疑账号不对。
+                var api = new BaiduPanClient(
+                    credentials, new HttpClient { Timeout = TimeSpan.FromMinutes(10) }, logger);
+                var panLayout = new BaiduPanLayout(cloudSettings.AppName);
+                var session = new BaiduPanSession(
+                    api, new BaiduPanTokenStore(layout.CloudTokenPath, logger), logger: logger);
+                var queue = new UploadQueue(layout.CloudQueuePath, logger);
+
+                cloudUploads = new CloudUploadService(
+                    session,
+                    new BaiduPanUploader(api),
+                    api,
+                    panLayout,
+                    queue,
+                    index,
+                    labels,
+                    locations,
+                    cloudSettings,
+                    logger);
+
+                var cloudBackend =
+                    new CloudArchiveBackend(panLayout, api, session, cloudUploads, logger);
+
+                archiveBackend = cloudBackend;
+                publisher = cloudBackend;
+            }
+        }
+        else
+        {
+            var directory = new DirectoryArchiveBackend(archiveRoots, target.Kind);
+            archiveBackend = directory;
+            publisher = directory;
+        }
+
         var relay = target.IsOnThisMachine
             ? null
-            : new ArchiveRelay(archiveBackend, target.Label, logger);
+            : new ArchiveRelay(publisher, target.Label, logger);
 
         if (target.ConfigurationProblem is { } problem)
         {
@@ -277,7 +411,7 @@ public sealed class DesktopServices : IAsyncDisposable
             new RemuxPipeline(toolPath, runner),
             new DecodeVerifier(toolPath, runner),
             index,
-            layout.ArchiveRoot,
+            locations,
             logger,
             relay);
 
@@ -312,7 +446,10 @@ public sealed class DesktopServices : IAsyncDisposable
             relay: relay,
             // ⚠️ 传 logger：「清掉暂存区」那一步删的是目录，而失败时原来**没人知道**
             // （见 `CleanupIncomingAsync` 的说明）。
-            logger: logger);
+            logger: logger,
+            // 手机传上来的录像也落在**用户配的那些盘上**（设计图 `_43`）——
+            // 不传的话它会一直写 <root>\archive，而界面上画的是 D 盘。
+            storage: locations);
 
         PlaybackServer? server = null;
         if (playbackPort is not null)
@@ -324,7 +461,10 @@ public sealed class DesktopServices : IAsyncDisposable
                     // 由 StartAsync 把原因变成一条用户可见的警告。
                     Prefix = $"http://+:{playbackPort.Value}/",
                     FallbackPrefix = $"http://localhost:{playbackPort.Value}/",
-                    ArchiveRoot = layout.ArchiveRoot,
+                    ArchiveRoot = locations.FallbackRoot,
+                    // ⚠️ 回放要**在每一个保存位置上找**（多磁盘，设计图 `_43`）——
+                    // 只看一个根的话，另一块盘上的录像在网页里会「不存在」。
+                    Locations = locations,
                     // 手机端「手动删除」要回查归档层（§3.5.6③）——
                     // 那一份在哪里由归档层配置说了算，不是写死的本机目录。
                     ArchiveBackend = archiveBackend,
@@ -354,7 +494,7 @@ public sealed class DesktopServices : IAsyncDisposable
             new ReceiptStore(layout.ReceiptsPath),
             new CleanupExecutor(
                 archiveBackend,
-                layout.ArchiveRoot,
+                locations,
                 new CleanupAuditLog(layout.CleanupAuditPath),
                 effectiveLogger),
             effectiveLogger);
@@ -373,11 +513,24 @@ public sealed class DesktopServices : IAsyncDisposable
         {
             ArchiveTarget = target,
             ArchiveBackend = archiveBackend,
+            CloudUploads = cloudUploads,
+            Storage = locations,
             ArchiveRelay = relay,
             Cleanup = cleanup,
             TrustedClock = trustedClock,
             ClockSource = clockSource ?? new HttpDateClockSource(),
-            Exporter = new Export.EvidenceExporter(layout.ArchiveRoot, logger),
+            Exporter = new Export.EvidenceExporter(locations, logger),
+            // ⚠️ runner 与解码校验器**与收尾用的是同一套**（同一个 ffmpeg、同一个 logger）——
+            // 另起一份的话，「导入进来的文件验过没有」这件事就要看是谁验的。
+            Importer = new Import.RecordingImporter(
+                locations,
+                index,
+                new DecodeVerifier(toolPath, runner),
+                runner,
+                toolPath,
+                labels,
+                relay,
+                logger),
             License = license,
         };
     }
@@ -478,6 +631,25 @@ public sealed class DesktopServices : IAsyncDisposable
             }
         }
 
+        // ── 百度网盘（设计图 `_45`）────────────────────────────────────
+        //
+        // 先恢复上次的登录（令牌文件在应用数据目录里），再把定时检查起起来。
+        // ⚠️ **恢复失败绝不能挡住启动**（I4 的同一条精神）：读坏了就当没登录，
+        // 用户在设置页点一次「登录百度网盘」就好。所以这里连异常都不往外放。
+        if (CloudUploads is not null)
+        {
+            try
+            {
+                await CloudUploads.Session.RestoreAsync(cancellationToken);
+            }
+            catch (Exception ex)
+            {
+                warnings.Add($"百度网盘的登录信息读不出来，需要重新登录一次（{ex.Message}）。");
+            }
+
+            CloudUploads.Start();
+        }
+
         return new StartupReport(orphanOutcomes, playbackUrl, warnings);
     }
 
@@ -513,6 +685,15 @@ public sealed class DesktopServices : IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
+        // ⚠️ 先停上传再停回放：上传是**往外发数据**的那一个，
+        // 顺序反了的话，关窗的那一瞬间会有一条传到一半的录像 ——
+        // 它下次会重传（分片摘要一样，网盘说「这片我有了」），
+        // 但队列里会留下一条「上传中」，而重启后它才被翻回「等着传」。
+        if (CloudUploads is not null)
+        {
+            await CloudUploads.DisposeAsync();
+        }
+
         if (Server is not null)
         {
             await Server.DisposeAsync();

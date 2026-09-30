@@ -169,13 +169,26 @@ public sealed class FfmpegNetworkCameraProbe : INetworkCameraProbe
     /// 帧率（帧/秒）；读不出来时是 <see langword="null"/>。
     /// ⚠️ 与尺寸一样：**读不出来不判失败**，只是少印一个数字。
     /// </param>
+    /// <param name="Duration">
+    /// 整段的时长；读不出来时是 <see langword="null"/>。
+    /// <para>
+    /// ⚠️ 它是**容器级**的（`Duration:` 那一行不在 `Stream #` 里），
+    /// 而且实时流（RTSP）上通常是 `Duration: N/A` —— 所以它**只对落盘的文件有意义**。
+    /// 现在唯一的用处是「导入录像」量一遍外来文件的时长。
+    /// </para>
+    /// <para>
+    /// ⚠️ 与尺寸、帧率同一条规矩：**读不出来就是 null，不猜**。
+    /// 导入时按 0 记一条时长未知的录像，比编一个数字进证据元数据好得多。
+    /// </para>
+    /// </param>
     public sealed record ParsedStreams(
         bool HasVideo,
         string? VideoCodec,
         int? Width,
         int? Height,
         bool HasAudio,
-        double? FrameRate = null);
+        double? FrameRate = null,
+        TimeSpan? Duration = null);
 
     /// <summary>
     /// 从 ffmpeg 的输出里挑出视频那一路的编码与尺寸，以及有没有音频。
@@ -211,10 +224,24 @@ public sealed class FfmpegNetworkCameraProbe : INetworkCameraProbe
         int? width = null;
         int? height = null;
         double? frameRate = null;
+        TimeSpan? duration = null;
 
         foreach (var raw in output.Split('\n'))
         {
             var line = raw.Trim();
+
+            // 时长那一行**不在 `Stream #` 里**（它是容器级的），所以要在下面那个
+            // continue 之前先看它：
+            //   Duration: 00:01:23.45, start: 0.000000, bitrate: 1234 kb/s
+            // ⚠️ 实时流印的是 `Duration: N/A`，那时正则不匹配 ⇒ 保持 null。
+            if (duration is null
+                && DurationPattern.Match(line) is { Success: true } found
+                && TimeSpan.TryParse(found.Groups[1].Value, CultureInfo.InvariantCulture, out var span)
+                && span > TimeSpan.Zero)
+            {
+                duration = span;
+            }
+
             if (!line.StartsWith("Stream #", StringComparison.Ordinal))
             {
                 continue;
@@ -259,7 +286,7 @@ public sealed class FfmpegNetworkCameraProbe : INetworkCameraProbe
             }
         }
 
-        return new ParsedStreams(hasVideo, codec, width, height, hasAudio, frameRate);
+        return new ParsedStreams(hasVideo, codec, width, height, hasAudio, frameRate, duration);
     }
 
     /// <summary>帧率的合理上界 —— 超过它的数一定是认错了东西，不是真相机在拍的。</summary>
@@ -284,4 +311,15 @@ public sealed class FfmpegNetworkCameraProbe : INetworkCameraProbe
     /// </remarks>
     private static readonly Regex FrameRatePattern = new(
         @"(?<![\d.])(\d+(?:\.\d+)?)\s*fps(?![\w])", RegexOptions.Compiled);
+
+    /// <summary>
+    /// `Duration: 00:01:23.45` 里那个时间（`Duration: N/A` 不匹配 ⇒ 读不出来）。
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ 与上面两条同一条规矩：**只认这个形状，不认措辞**。
+    /// 小时位不钉位数（十几小时的录像会印成 `12:34:56.78` 一样的两段，
+    /// 但理论上可以更长），秒位带可选小数。
+    /// </remarks>
+    private static readonly Regex DurationPattern = new(
+        @"Duration:\s*(\d+:\d{2}:\d{2}(?:\.\d+)?)", RegexOptions.Compiled);
 }

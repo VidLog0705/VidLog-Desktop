@@ -1,5 +1,6 @@
 using System.Text;
 using System.Text.Json;
+using VidLog.Desktop.Core.Configuration;
 using VidLog.Desktop.Core.Diagnostics;
 using VidLog.Desktop.Core.Index;
 
@@ -43,13 +44,23 @@ public sealed class CleanupExecutor
     private readonly IArchiveBackend _archive;
     private readonly CleanupAuditLog _audit;
     private readonly IAppLogger _logger;
-    private readonly string _archiveRoot;
+    private readonly StorageLocations _storage;
 
+    /// <param name="archiveRoot">只认一个根的那种写法（老调用点与测试最常用的那种）。</param>
     public CleanupExecutor(
         IArchiveBackend archive, string archiveRoot, CleanupAuditLog audit, IAppLogger logger)
+        : this(archive, StorageLocations.Single(archiveRoot), audit, logger)
+    {
+    }
+
+    /// <param name="storage">
+    /// 本机这一份散落在哪些根上（设计图 `_43` 的多磁盘）。
+    /// </param>
+    public CleanupExecutor(
+        IArchiveBackend archive, StorageLocations storage, CleanupAuditLog audit, IAppLogger logger)
     {
         _archive = archive;
-        _archiveRoot = archiveRoot;
+        _storage = storage;
         _audit = audit;
         _logger = logger;
     }
@@ -111,7 +122,20 @@ public sealed class CleanupExecutor
                 continue;
             }
 
-            var path = Path.Combine(_archiveRoot, candidate.Location.Value);
+            // ⚠️ 本机这一份可能在**任何一个**保存位置上（多磁盘，设计图 `_43`）。
+            // 拼第一个根而不去找的话，另一块盘上的那些会「删不掉」，
+            // 而报告里写的是「删除失败」—— 用户会以为是权限问题，去查错的方向。
+            if (_storage.Locate(candidate.Location.Value) is not { } found)
+            {
+                refused.Add((candidate.Entry, "本机已经找不到这一份了（可能被手工挪走了）"));
+                _logger.Log(LogLevel.Warn, "清理",
+                    $"跳过 {candidate.Entry.Waybill.Value}：本机找不到这一份");
+
+                continue;
+            }
+
+            var path = found.Path;
+
             try
             {
                 var size = new FileInfo(path).Length;

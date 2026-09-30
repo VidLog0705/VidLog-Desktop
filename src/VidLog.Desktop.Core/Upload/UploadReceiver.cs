@@ -115,6 +115,9 @@ public sealed class UploadReceiver
     private readonly string _deviceName;
     private readonly Func<DateTimeOffset> _now;
 
+    /// <summary>录像成品的落盘位置（设计图 `_43` 的多磁盘）。不传 = 只有 <c>ArchiveRoot</c>。</summary>
+    private readonly StorageLocations? _storage;
+
     /// <summary>异常留痕用（`AGENTS.md` §6）。</summary>
     private readonly IAppLogger _logger;
 
@@ -130,7 +133,8 @@ public sealed class UploadReceiver
         string deviceName,
         Func<DateTimeOffset>? now = null,
         ArchiveRelay? relay = null,
-        IAppLogger? logger = null)
+        IAppLogger? logger = null,
+        StorageLocations? storage = null)
     {
         _layout = layout;
         _index = index;
@@ -142,6 +146,7 @@ public sealed class UploadReceiver
         _receipts = new ReceiptStore(layout.ReceiptsPath);
         _relay = relay;
         _logger = logger ?? NullLogger.Instance;
+        _storage = storage;
     }
 
     /// <summary>
@@ -383,8 +388,15 @@ public sealed class UploadReceiver
         }
 
         // ───────── 原子发布 ─────────
+        //
+        // ⚠️ 多磁盘（设计图 `_43`）：**先看这一条在不在任何一个位置上**
+        // （那是"上一次发布到一半断电了"要处理的那种），不在才按列表挑一块盘写。
+        // 只按活动根拼路径的话，另一块盘上那份同名的会被当成"不存在"而重复写一遍，
+        // 于是同一条录像在盘上有了两份 —— 而它们将来会各自被清理判定一次。
         var location = ArchiveLayout.BuildLocation(waybill, request.SessionId, request.Sequence, request.StartedAt);
-        var destination = Path.Combine(_layout.ArchiveRoot, location.Value);
+        var storage = _storage ?? StorageLocations.Single(_layout.ArchiveRoot);
+        var destination = storage.Resolve(location.Value)
+            ?? Path.Combine(storage.ActiveRoot, location.Value);
 
         if (File.Exists(destination))
         {

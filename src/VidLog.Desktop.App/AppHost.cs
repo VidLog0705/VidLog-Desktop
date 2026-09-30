@@ -1,4 +1,13 @@
+using System.Reflection;
 using System.Windows;
+
+// 本工程同时开了 UseWPF 与 UseWindowsForms（后者只为托盘图标），
+// ImplicitUsings 会把两边的命名空间都带进来，于是 MessageBox 这类同名类型
+// 变成「不明确」。这里用**别名钉死成 WPF 的那套**（与拆窗那几个文件同一条口径）。
+using MessageBox = System.Windows.MessageBox;
+using MessageBoxButton = System.Windows.MessageBoxButton;
+using MessageBoxImage = System.Windows.MessageBoxImage;
+
 using VidLog.Desktop.Core.Camera;
 using VidLog.Desktop.Core.Configuration;
 using VidLog.Desktop.Core.Diagnostics;
@@ -86,6 +95,37 @@ public sealed class AppHost : IAsyncDisposable
     public WindowsKeyboardHook Hook { get; }
     public KeyboardScanBridge Bridge { get; }
     public RecordingCoordinator Coordinator { get; }
+
+    /// <summary>
+    /// 本程序的版本号（给「关于」与更新提示用）。
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ <b>只在这里读一次</b>：更新检查拿它比大小、界面拿它显示。
+    /// 两处各读一次的话，`AssemblyInformationalVersion`（带 <c>+&lt;sha&gt;</c>）
+    /// 可能被两处用不同的方式截断，于是界面说 <c>1.0.0</c>、比大小用的是
+    /// <c>1.0.0+abc123</c> —— 那种不一致没人查得出来。
+    /// </remarks>
+    public string CurrentVersion { get; } = ReadVersion();
+
+    /// <summary>
+    /// 最近一次检查更新的结论；还没查过时为 <see langword="null"/>。
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ 它**只是显示用**的。拿不到更新信息不是「验证失败」，
+    /// 不许因此锁任何东西（L8），也不该影响录制与回放（I4）。
+    /// </remarks>
+    public Core.Update.UpdateCheckResult? UpdateStatus { get; set; }
+
+    private static string ReadVersion()
+    {
+        var assembly = typeof(AppHost).Assembly;
+
+        return assembly
+            .GetCustomAttribute<AssemblyInformationalVersionAttribute>()
+            ?.InformationalVersion
+            ?? assembly.GetName().Version?.ToString()
+            ?? "未知";
+    }
 
     /// <summary>
     /// 暂停「把扫码当成工作事件」（开录 / 换段）。
@@ -183,6 +223,24 @@ public sealed class AppHost : IAsyncDisposable
     /// 不给 AppHost 直接引用窗口：那样两者互相依赖，而装配层不该知道界面长什么样。
     /// </remarks>
     public Func<Task<bool>>? ConfirmExitWhileRecording { get; set; }
+
+    /// <summary>
+    /// 「走一遍完整的退出流程」的钩子 —— 由 <c>App</c> 提供（退出是它的事）。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// 设计图 `_49` 的「关闭窗口时」有三档，其中「直接退出」与「每次询问」里
+    /// 用户选的那一下**必须走这一条路**，不能直接 `Close()`：
+    /// 退出前的收尾（有在录的段时先问一句、收段、拆托盘、释放服务）全在
+    /// <see cref="ShutdownAsync"/> 里，而 `ShutdownMode` 是 `OnExplicitShutdown`
+    /// —— 少了这一步，窗口关了进程还在。
+    /// </para>
+    /// <para>
+    /// 与 <see cref="ConfirmExitWhileRecording"/> 同一个理由不给 AppHost 直接
+    /// 引用 <c>Application</c>：装配层不该知道进程怎么退。
+    /// </para>
+    /// </remarks>
+    public Action? RequestExit { get; set; }
 
     /// <summary>
     /// 建托盘并接上「显示窗口 / 退出」。
@@ -292,6 +350,29 @@ public sealed class AppHost : IAsyncDisposable
 
         var warnings = new List<string>(loaded.Warnings);
 
+        // ── 录像落在哪些盘上（设计图 `_43`）────────────────────────────
+        //
+        // ⚠️ **兜底根永远是 `layout.ArchiveRoot`，而且永远排在最后**：
+        // 一块盘都没配的机器（也就是绝大多数老机器）行为与加多磁盘之前**一模一样**，
+        // 而配过盘的机器仍然找得到配之前录的那些。
+        var storage = new StorageLocations(settings.SaveDisks, layout.ArchiveRoot);
+
+        if (settings.SaveDisks.Count > 0)
+        {
+            // 留痕（`AGENTS.md` §6）：**写到哪块盘上了**是这一批新增的事实。
+            // 不记的话，「昨天的录像怎么在 D 盘、今天的在 C 盘」事后无人能答。
+            logger.Log(
+                LogLevel.Info, "存储",
+                $"录像保存位置有 {settings.SaveDisks.Count} 个，现在写在 "
+                + $"{storage.ActiveRoot}：{storage.ActiveNote}",
+                new Dictionary<string, object?>
+                {
+                    ["位置数"] = settings.SaveDisks.Count,
+                    ["活动位置"] = storage.ActiveRoot,
+                    ["全部位置"] = string.Join(" → ", settings.SaveDisks.Select(s => s.Path)),
+                });
+        }
+
         var services = DesktopServices.Create(
             layout,
             playbackPort: settings.PlaybackPort,
@@ -299,7 +380,13 @@ public sealed class AppHost : IAsyncDisposable
             // 归档层（规格 §3.4.6）。⚠️ 它决定两件事：成品的第二份发到哪儿，
             // 以及**允不允许开本地清理**（§3.5.1）—— 所以必须在装配期就定下来，
             // 而不是等到清理那一刻才读设置。
-            archive: settings.Archive);
+            archive: settings.Archive,
+            storage: storage,
+            archiveDirectories: settings.ArchiveDirectories,
+            // 百度网盘那一组（设计图 `_45` / `_46`）。⚠️ 归档层不是网盘那一档时
+            // 它照样要传进去 —— 「网盘目录应用名」之类的值在用户切档位之前
+            // 就已经在设置页上了，切过去的那一刻要立刻用上，不能等重启。
+            cloud: settings.Cloud);
 
         // ── 装配的最后一跳（曾经漏掉过，别再删）────────────────────────
         // 两件事都发生在这里：收尾上次没走完的孤儿（规格 §3.1.1），
@@ -323,12 +410,35 @@ public sealed class AppHost : IAsyncDisposable
             warnings.Add("本机没有任何可用的 H.264 编码器，无法录制。");
         }
 
-        var camera = await ResolveCameraAsync(services, settings, warnings, logger, cancellationToken);
+        // ── 用途决定「装不装本机录像设备」（设计图 `_11`–`_15`）──────────
+        //
+        // ⚠️ 不录像的两档**连摄像头与麦克风都不解析** —— 设计图卡片原文就是
+        // 「**不初始化本机录像设备**」。这不是偷懒：dshow 上相机是独占的，
+        // 一台被指定成备份主机的机器去占着相机，会让真正要录的那台抢不到；
+        // 而麦克风同理（同一台机器上只有一个能被独占打开）。
+        //
+        // ⚠️ 这里**只跳过设备解析**，不跳过协调器的构造 —— 界面（开始/停止、
+        // 状态、通知）全都挂在协调器上，少建一个它的后果是主窗口起不来。
+        // 真正的「不许录」由 `MainWindow` 把入口禁用掉（禁用 + 悬停写明原因）。
+        var records = settings.Role.Records;
+
+        if (!records)
+        {
+            logger.Log(LogLevel.Info, "启动",
+                $"本机用途是「{StationRoles.Describe(settings.StationRole).Title}」——"
+                + "不初始化本机录像设备，摄像头与麦克风都不解析。");
+        }
+
+        var camera = records
+            ? await ResolveCameraAsync(services, settings, warnings, logger, cancellationToken)
+            : CameraSource.None;
 
         // 麦克风（规格 §3.1.8）。⚠️ 与摄像头同一个时机解析：都在**启动时**一次，
         // 而「改了下次开始工作才生效」是靠 `SessionOptions.Microphone` 在
         // 每次开始工作时整份交给会话保证的（见 ApplySettingsAsync）。
-        var microphone = await ResolveMicrophoneAsync(services, settings, warnings, logger, cancellationToken);
+        var microphone = records
+            ? await ResolveMicrophoneAsync(services, settings, warnings, logger, cancellationToken)
+            : null;
 
         // ── 录制规格：**真实**的可用性检查（规格 §3.1.7）──────────────────
         //
@@ -343,7 +453,11 @@ public sealed class AppHost : IAsyncDisposable
         // —— 一直要等用户在设置里点一次【应用】才会被 `SaveSettingsAsync` 补上。
         // 2026-09-30 实测撞到的正是这个（`docs/实现决策.md` §80 同一批）。
         var wantedSpec = new RecordingSpec(settings.Codec, settings.Resolution, settings.Rotation);
-        var selection = services.FfmpegPath is null
+        // ⚠️ 不录像的用途**不真开相机去探**：探一次要几秒到三分钟，而结论
+        // （这台机器跑不跑得动 4K/H.265）对一台压根不录的机器毫无意义 ——
+        // 更要紧的是那一下会**占住相机**。按用户选的档记着就行，等真要用
+        // （比如切换用途之后）再探。
+        var selection = !records || services.FfmpegPath is null
             ? new SpecSelection(wantedSpec, false, null)
             : await SpecSelectionPolicy.SelectAsync(
                 wantedSpec, camera, new FfmpegSpecProbe(services.FfmpegPath, new SystemProcessRunner(logger)),
@@ -463,7 +577,7 @@ public sealed class AppHost : IAsyncDisposable
         // ⚠️ `CameraRecognition` 是配置向导第 3 步那个二选一（照图 `_28`/`_29`）：
         // 关掉时**整个取景进程都不建** —— 不是「建了不用」，那样它照样占着相机。
         // 它要重启才生效（与摄像头同一档，界面上写明了）。
-        if (settings.CameraRecognition && services.FfmpegPath is { } ffmpegPath && !camera.IsEmpty)
+        if (records && settings.CameraRecognition && services.FfmpegPath is { } ffmpegPath && !camera.IsEmpty)
         {
             var scanner = new CameraFrameScanner(
                 ffmpegPath, camera, new ZXingFrameScanner(), logger)
@@ -476,6 +590,16 @@ public sealed class AppHost : IAsyncDisposable
 
             scanner.Scanned += waybill =>
             {
+                // ⚠️ 取景识码**不认命令码**。它看的是包裹上的面单，而屏幕上那两张码
+                // 一旦被它认出来（相机正对着屏幕），表现就是「没人碰它，
+                // 业务类型自己变了、或者自己开始录像了」—— 这种错在界面上没有原因可查。
+                // 命令只认扫码枪那一路（`Bridge.Scanned`）。
+                if (ScanCommand.KindOf(waybill.Value) != ScanCommandKind.None)
+                {
+                    logger.Log(LogLevel.Info, "识码", $"忽略命令码 {waybill.Value}（只认扫码枪）");
+                    return;
+                }
+
                 logger.Log(LogLevel.Info, "识码", $"取景识别到 {waybill.Value}");
                 _ = coordinator.SubmitAsync(waybill, PunchSource.CameraDecoder);
             };
@@ -493,6 +617,7 @@ public sealed class AppHost : IAsyncDisposable
             {
                 // ⚠️ 取 **Identity**（凭据已抹掉），不是 Address：
                 // 网络摄像头的地址里带**用户自己的密码**，而这里是日志文件。
+                ["用途"] = StationRoles.Describe(settings.StationRole).Title,
                 ["摄像头"] = camera.Identity,
                 ["编码器"] = encoder,
                 ["工作模式"] = settings.Mode,
@@ -525,6 +650,16 @@ public sealed class AppHost : IAsyncDisposable
 
             _logger.Log(LogLevel.Info, "扫码", $"识别到 {outcome.Waybill.Value}",
                 new Dictionary<string, object?> { ["原始"] = outcome.Raw });
+
+            // 屏幕上那两张命令条码（设计图 `_35`：扫码切换退货 / 扫码开始录像）
+            // 扫进来是同一个形状 —— 但它**不是单号**：
+            // 不能填进单号框（用户会看见框里写着「VLRET」），也不该按单号播报。
+            // 处理它的地方只有一个（协调器的 `SubmitAsync`），这里只是绕开界面那一路。
+            if (ScanCommand.KindOf(outcome.Waybill.Value) != ScanCommandKind.None)
+            {
+                _ = SubmitScanAsync(outcome);
+                return;
+            }
 
             Scanned?.Invoke(outcome);
             _ = SubmitScanAsync(outcome);
@@ -569,8 +704,73 @@ public sealed class AppHost : IAsyncDisposable
         return false;
     }
 
+    /// <summary>
+    /// 打开「选择这台电脑的用途」，用户确认后写盘。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// 两个入口（设置窗的「设备与外观」、主窗口备份主机态的【切换用途】）
+    /// **共用这一个方法** —— 否则「确认之后谁来存、谁来提示重启」会在两处各写一遍，
+    /// 而漏掉的那一处表现是「点完没反应」。
+    /// </para>
+    /// <para>
+    /// ⚠️ 换完用途**必须重启才生效**：录不录像是在 <c>StartAsync</c> 的装配期定死的
+    /// （摄像头、麦克风、取景识码全在那里），当场改不了。所以这里**明说**
+    /// （I3：不允许静默失效），而不是让用户自己去发现「换了还是照录」。
+    /// </para>
+    /// </remarks>
+    /// <param name="owner">对话框的属主窗口；<see langword="null"/> 时用主窗口。</param>
+    /// <returns>真的换了返回 true。</returns>
+    public async Task<bool> SwitchRoleAsync(Window? owner = null)
+    {
+        var dialog = new RoleWindow(Settings.StationRole)
+        {
+            // ⚠️ `Application` 必须写全名：本工程同时引了 WinForms 与 WPF，
+            // 裸写它是 CS0104「不明确的引用」（与 `MessageBox` 同一个病）。
+            Owner = owner ?? System.Windows.Application.Current?.MainWindow,
+        };
+
+        if (dialog.ShowDialog() != true || dialog.SelectedRole == Settings.StationRole)
+        {
+            return false;
+        }
+
+        var before = StationRoles.Describe(Settings.StationRole).Title;
+        var after = StationRoles.Describe(dialog.SelectedRole);
+
+        await SaveSettingsAsync(Settings with { StationRole = dialog.SelectedRole });
+
+        _logger.Log(LogLevel.Info, "用途", $"用途已切换：{before} → {after.Title}",
+            new Dictionary<string, object?>
+            {
+                ["是否录像"] = Settings.Role.Records,
+                ["是否长期保存"] = Settings.Role.Keeps,
+                ["生效时机"] = "重启软件",
+            });
+
+        MessageBox.Show(
+            $"用途已切换成「{after.Title}」。\n\n"
+            + "⚠️ 要重启软件才生效 —— 录不录像、装不装摄像头与麦克风，都是在启动时定下的。",
+            "用途已切换", MessageBoxButton.OK, MessageBoxImage.Information);
+
+        return true;
+    }
+
     public async Task SaveSettingsAsync(AppSettings next)
     {
+        // ⚠️ 「启用自动上传」被**拨开**的那一刻要盖章（设计图 `_45` 原话：
+        // 「仅此开关开启后新开始录制的视频会上传」）。没有这个时间戳的话，
+        // 「从现在起」会变成「把库里所有历史录像一次全传上去」——
+        // 而那是往外发几个 GB 的数据，用户完全没同意过。
+        // 盖在这里而不是界面上：无论哪条路径存设置，这一刻都会被记下来。
+        if (next.Cloud.AutoUpload != Settings.Cloud.AutoUpload)
+        {
+            next = next with
+            {
+                Cloud = next.Cloud.WithAutoUpload(next.Cloud.AutoUpload, DateTimeOffset.Now),
+            };
+        }
+
         var changes = SettingsStore.DescribeChanges(Settings, next);
 
         // ⚠️ 必须在 `Settings = next` **之前**算：赋值之后这两个比较就恒为假了。
@@ -580,6 +780,11 @@ public sealed class AppHost : IAsyncDisposable
 
         await new SettingsStore(Services.Layout.SettingsPath).SaveAsync(next);
         Settings = next;
+
+        // 百度网盘那一组立刻生效（下一次 tick、下一次上传就用新值）。
+        // ⚠️ 归档层不是网盘那一档时它是 null —— 那时这一页在界面上整页禁用，
+        // 所以「没有它」是正常的，不是漏接线。
+        Services.CloudUploads?.UpdateSettings(next.Cloud);
 
         // 档位立即生效（下次开段时取值）—— 界面上写着「下次录段生效」，
         // 不跟着更新的话那句话就是假的。
@@ -632,6 +837,23 @@ public sealed class AppHost : IAsyncDisposable
         Coordinator.Mode = next.Mode;
         Coordinator.IdleReminder = next.IdleReminder;
         Coordinator.IdleReminderMinutes = next.IdleReminderMinutes;
+
+        // 开机自启动（设计图 `_49`）：字段是**意图**，注册表是**机制**。
+        // ⚠️ 只在真的变了的时候碰注册表 —— 每次保存都写一遍的话，
+        // 用户在别的行上改一个数就顺手改了他的开机项（那是他没要求的事）。
+        // 路径漂移那一头由**启动时**那一次重写兜住，见 `App.xaml.cs` 的启动那一步。
+        if (next.RunAtStartup != Settings.RunAtStartup)
+        {
+            var problem = Platform.StartupRegistration.Apply(next.RunAtStartup, _logger);
+
+            if (problem is not null)
+            {
+                // I3：不允许静默失效 —— 开关勾上了而注册表没写成，
+                // 用户会以为下次开机会自己起来，而它不会。
+                Notice?.Invoke(new CoordinatorNotice(
+                    CoordinatorNoticeKind.FinalizeFailed, null, problem));
+            }
+        }
 
         if (changes.Count > 0)
         {

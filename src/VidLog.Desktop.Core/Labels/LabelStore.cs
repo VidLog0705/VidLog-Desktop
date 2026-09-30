@@ -97,6 +97,17 @@ public static class BusinessTypes
     public static string ToValue(BusinessType type) =>
         type == BusinessType.Return ? ReturnValue : OutboundValue;
 
+    /// <summary>
+    /// 这一档的中文名。**唯一一处产出**（界面、条码标题、导出单号都取它）。
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ 原来这份映射抄了三处（检索页、条码标题、导出），三处各写一遍的话
+    /// 迟早有一处印成「出库」或「退回」—— 而那种偏差**不会报错**，
+    /// 只会让同一批数据在不同地方看起来不是一回事。
+    /// </remarks>
+    public static string Describe(BusinessType type) =>
+        type == BusinessType.Return ? "退货" : "发货";
+
     public static bool TryParse(string? value, out BusinessType type)
     {
         switch (value)

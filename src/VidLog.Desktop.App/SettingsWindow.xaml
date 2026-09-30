@@ -30,6 +30,86 @@
         本文件的 code-behind 里（`DesktopServicesTests` 那一处断言原文未改）。
         ════════════════════════════════════════════════════════════════
     -->
+    <Window.Resources>
+        <!--
+            表体。两张表（录像保存位置 / 录像备份位置）共用。
+            ⚠️ 选中态是 `AccentWeak`（蓝底）、未选中是白 —— 都是量自设计图 `_43` 的
+            （选中行 #DBEAFE / 普通行 #F8FAFC 表头 #F1F5F9）。
+            ⚠️ 触发器**顺序有意义**：后写的赢，所以 `IsSelected` 必须排在
+            `IsMouseOver` 后面，否则鼠标一划过去选中行就不蓝了。
+        -->
+        <Style x:Key="DiskTable" TargetType="ListBox">
+            <Setter Property="Background" Value="Transparent"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="MaxHeight" Value="170"/>
+            <Setter Property="ScrollViewer.HorizontalScrollBarVisibility" Value="Disabled"/>
+            <Setter Property="ItemContainerStyle">
+                <Setter.Value>
+                    <Style TargetType="ListBoxItem">
+                        <Setter Property="Padding" Value="0"/>
+                        <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
+                        <Setter Property="Template">
+                            <Setter.Value>
+                                <ControlTemplate TargetType="ListBoxItem">
+                                    <Border x:Name="Row" Background="Transparent"
+                                            BorderBrush="{StaticResource CardBorder}"
+                                            BorderThickness="0,0,0,1"
+                                            Padding="12,7" SnapsToDevicePixels="True">
+                                        <ContentPresenter/>
+                                    </Border>
+                                    <ControlTemplate.Triggers>
+                                        <Trigger Property="IsMouseOver" Value="True">
+                                            <Setter TargetName="Row" Property="Background"
+                                                    Value="{StaticResource SurfaceMuted}"/>
+                                        </Trigger>
+                                        <Trigger Property="IsSelected" Value="True">
+                                            <Setter TargetName="Row" Property="Background"
+                                                    Value="{StaticResource AccentWeak}"/>
+                                        </Trigger>
+                                    </ControlTemplate.Triggers>
+                                </ControlTemplate>
+                            </Setter.Value>
+                        </Setter>
+                    </Style>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <!--
+            多磁盘那两张表里的一行（设计图 `_43`）。两张表**同一个模板**：
+            列一样（存储路径 | 预留空间），只有「预留空间」那一格能不能改不同
+            （备份位置那一列是死的，原因写在 `ReserveHint` 里）。
+        -->
+        <DataTemplate x:Key="DiskSlotTemplate">
+            <Grid PreviewMouseLeftButtonDown="OnDiskRowMouseDown">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+
+                <TextBlock Grid.Column="0" Text="{Binding Folder}"
+                           VerticalAlignment="Center" FontSize="13"
+                           TextTrimming="CharacterEllipsis"
+                           Foreground="{StaticResource TextPrimary}"/>
+
+                <StackPanel Grid.Column="1" Orientation="Horizontal"
+                            VerticalAlignment="Center">
+                    <TextBox Width="64" Padding="6,3" TextAlignment="Right"
+                             Background="{StaticResource SurfaceMuted}"
+                             BorderBrush="{StaticResource CardBorder}"
+                             Text="{Binding ReservedGb, UpdateSourceTrigger=PropertyChanged}"
+                             IsEnabled="{Binding ReserveEditable}"
+                             ToolTip="{Binding ReserveHint}"
+                             ToolTipService.ShowOnDisabled="True"
+                             TextChanged="OnDiskEdited"/>
+                    <TextBlock Text="GB" Margin="8,0,0,0" FontSize="13"
+                               FontWeight="SemiBold" VerticalAlignment="Center"
+                               Foreground="{StaticResource TextPrimary}"/>
+                </StackPanel>
+            </Grid>
+        </DataTemplate>
+    </Window.Resources>
+
     <Grid>
         <Grid.ColumnDefinitions>
             <ColumnDefinition Width="180"/>
@@ -57,6 +137,9 @@
                     <RadioButton x:Name="NavStorage" Style="{StaticResource NavItem}"
                                  GroupName="SettingsNav" Tag="Storage"
                                  Content="存储与备份" Checked="OnSectionChanged"/>
+                    <RadioButton x:Name="NavCloud" Style="{StaticResource NavItem}"
+                                 GroupName="SettingsNav" Tag="Cloud"
+                                 Content="百度网盘上传" Checked="OnSectionChanged"/>
                     <RadioButton x:Name="NavNetwork" Style="{StaticResource NavItem}"
                                  GroupName="SettingsNav" Tag="Network"
                                  Content="局域网与网页" Checked="OnSectionChanged"/>
@@ -85,6 +168,72 @@
                          ① 设备与外观
                          ──────────────────────────────────────────────── -->
                     <StackPanel x:Name="DeviceSection">
+                        <!-- ── 电脑用途（批次 4，照设计图 `_42`）─────────────
+                             ⚠️ 图上这一节**只有三行**（电脑用途 / 界面语言 / 外观主题），
+                             而 VidLog 的这一节底下还有摄像头、录制声音、工作模式、
+                             录制规格、连接手机 —— 那几样是真能力（图上是把它们
+                             挪进了配置向导），所以这里是**加在最上面**，
+                             不是把底下那些删掉。
+                             ⚠️ 图上那句副标题写的是「选择这台电脑在 PackingProof
+                             中承担的职责」—— 那是另一个产品的名字，这里换成 VidLog。
+                             这是**全窗口唯一一处刻意改字**，其余每一句都照抄。
+                             ⚠️ 下拉里的四项由 code-behind 从
+                             `StationRoles.Describe` 填 —— 名字只有 Core 那一处产出，
+                             免得这里写一份、结果卡上又写另一份。 -->
+                        <TextBlock Style="{StaticResource SectionTitle}" Text="电脑用途"/>
+                        <TextBlock Style="{StaticResource Caption}" Margin="0,0,0,8"
+                                   Text="选择这台电脑在 VidLog 中承担的职责。这一项要重启软件才生效。"/>
+                        <ComboBox x:Name="RoleCombo" Width="300"
+                                  SelectionChanged="OnRoleChanged"/>
+
+                        <!-- ── 界面语言 / 外观主题（批次 9，照设计图 `_42`）─────
+                             ⚠️ 图上这两行是能点、能改、改完重启生效的真设置，
+                             而 VidLog **两个都只有一档**（界面只有中文、主题只有浅色）。
+                             按裁决「设计图上能点、VidLog 没这功能的按钮 →
+                             **禁用 + 悬停写明原因**」（踩坑 #13）办：唯一可用那一档
+                             正常显示并选中，其余各项**禁用 + 悬停说清为什么**。
+                             ⚠️ 所以这两行**不落盘**：一个只有一种取值的设置是假开关。
+                             选项与那句话都从 `AppPreferences` 取（Core 里，测得到），
+                             这里不写第二份文案。 -->
+                        <Separator Margin="0,18,0,16"/>
+
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+                            <StackPanel Grid.Column="0">
+                                <TextBlock Style="{StaticResource SectionTitle}" Margin="0"
+                                           Text="界面语言"/>
+                                <TextBlock Style="{StaticResource Caption}" Margin="0,2,0,0"
+                                           TextWrapping="Wrap" MaxWidth="380"
+                                           Text="默认跟随 Windows 显示语言，修改后重启生效。"/>
+                            </StackPanel>
+                            <!-- ⚠️ 没有 SelectionChanged：表里只有一档能选（就是已经选中的
+                                 那一档），另两档禁用 —— 挂一个处理器上去是永远不会跑的代码。 -->
+                            <ComboBox Grid.Column="1" x:Name="LanguageCombo" Width="220"
+                                      VerticalAlignment="Center"/>
+                        </Grid>
+
+                        <Grid Margin="0,14,0,0">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+                            <StackPanel Grid.Column="0">
+                                <TextBlock Style="{StaticResource SectionTitle}" Margin="0"
+                                           Text="外观主题"/>
+                                <TextBlock Style="{StaticResource Caption}" Margin="0,2,0,0"
+                                           TextWrapping="Wrap" MaxWidth="380"
+                                           Text="可跟随系统，或固定为浅色 / 深色主题。"/>
+                            </StackPanel>
+                            <!-- 同上：主题也只做了浅色那一档。 -->
+                            <ComboBox Grid.Column="1" x:Name="ThemeCombo" Width="220"
+                                      VerticalAlignment="Center"/>
+                        </Grid>
+
+                        <Separator Margin="0,18,0,16"/>
+
                         <TextBlock Style="{StaticResource SectionTitle}" Text="摄像头"/>
                         <TextBlock Style="{StaticResource Caption}" Margin="0,0,0,8"
                                    Text="录制用哪一路画面。换了要重启才生效。"/>
@@ -244,15 +393,134 @@
 
                     <!-- ────────────────────────────────────────────────
                          ② 存储与备份
-                         ⚠️ 这一节现在是**存量设置搬过来的样子**：设计图上它还有
-                         磁盘配额进度条、多磁盘列表、按时间/按空间清理两个入口
-                         —— 那些要批次 2.4 的 Core 能力（多磁盘 + 预留空间）才画得出来。
+
+                         ⚠️ 这一节整体照设计图 `_43` 重排（批次 4）：顶上一条容量条、
+                         「录像清理」两个入口、两张磁盘表（录像保存位置 / 录像备份位置），
+                         底下才是 VidLog 自己的「归档层」与四档保留期 —— 图上那两样
+                         也在这一节里，只是截图上被折在更下面。
+
+                         图上每一句说明文字**逐字照抄**（含那句
+                         「系统盘默认至少预留 30GB 或 10% …… 以较大值为准」，
+                         它与 `Core/Cleanup/ReservedSpace.cs` 里的常数是同一件事）。
                          ──────────────────────────────────────────────── -->
                     <StackPanel x:Name="StorageSection" Visibility="Collapsed">
-                        <TextBlock Style="{StaticResource SectionTitle}" Text="回放与归档"/>
 
-                        <StackPanel Orientation="Horizontal">
-                            <TextBlock Text="归档层" Style="{StaticResource FieldLabel}" Width="130"/>
+                        <!-- ── ⓪ 容量条（图上最上面那条）──────────────────
+                             ⚠️ 条子的**底色量到的是 #CBD5E1**（`BorderStrong`），
+                             8px 高、圆角。图上写着 `0.0 / 504.4 GB` —— 也就是
+                             **已用为 0**，所以那个颜色是轨道不是填充。
+                             填充色图上没有证据（空的），取设置窗那套蓝 `AccentStrong`；
+                             它是个标定旋钮，见 `docs/实现决策.md`。 -->
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+                            <Border x:Name="CapacityTrack" Grid.Column="0" Height="8"
+                                    CornerRadius="4" Margin="0,0,12,0"
+                                    VerticalAlignment="Center"
+                                    SizeChanged="OnCapacityTrackSized"
+                                    Background="{StaticResource BorderStrong}">
+                                <Border x:Name="CapacityFill" Width="0" CornerRadius="4"
+                                        HorizontalAlignment="Left"
+                                        Background="{StaticResource AccentStrong}"/>
+                            </Border>
+                            <TextBlock Grid.Column="1" x:Name="CapacityText"
+                                       Style="{StaticResource Body}" Text="正在统计…"
+                                       VerticalAlignment="Center"/>
+                        </Grid>
+                        <TextBlock x:Name="CapacityNote" Style="{StaticResource Caption}"
+                                   Margin="0,6,0,0"/>
+
+                        <Separator Margin="0,18,0,16"/>
+
+                        <!-- ── ① 录像清理 ────────────────────────────────
+                             ⚠️ 归档层就是本机磁盘时**整块收掉**（规格 §3.5.1）：
+                             那时盘上这份是唯一副本，摆一个点了就报错的按钮不如不摆。 -->
+                        <Grid x:Name="CleanupRow">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+                            <StackPanel Grid.Column="0" VerticalAlignment="Center">
+                                <TextBlock Style="{StaticResource SectionTitle}"
+                                           Text="录像清理" Margin="0,0,0,4"/>
+                                <TextBlock Style="{StaticResource Caption}"
+                                           Text="清理只影响电脑本地录像，NAS 中已备份的文件不会受到影响"/>
+                            </StackPanel>
+                            <StackPanel Grid.Column="1" Orientation="Horizontal"
+                                        VerticalAlignment="Center">
+                                <Button x:Name="CleanupByTimeButton" Content="按时间清理…"
+                                        Style="{StaticResource SecondaryButton}" Padding="14,7"
+                                        Click="OnCleanupByTime"/>
+                                <Button x:Name="CleanupBySpaceButton" Content="按空间释放…"
+                                        Style="{StaticResource SecondaryButton}" Padding="14,7"
+                                        Margin="8,0,0,0" Click="OnCleanupBySpace"/>
+                            </StackPanel>
+                        </Grid>
+                        <TextBlock x:Name="CleanupNote" Style="{StaticResource Caption}"
+                                   Margin="0,8,0,0"/>
+
+                        <Separator Margin="0,18,0,16"/>
+
+                        <!-- ── ② 录像保存位置（多磁盘，规格 §3.5 的容量侧）── -->
+                        <TextBlock Style="{StaticResource SectionTitle}"
+                                   Text="录像保存位置" Margin="0,0,0,4"/>
+                        <TextBlock Style="{StaticResource Caption}"
+                                   Text="本地磁盘直接保存录像，空间不足时按保护期自动循环清理"/>
+
+                        <Border Background="{StaticResource SurfaceAlt}"
+                                CornerRadius="4,4,0,0" Padding="12,7" Margin="0,10,0,0">
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="110"/>
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Style="{StaticResource Caption}" Text="存储路径"/>
+                                <TextBlock Grid.Column="1" Style="{StaticResource Caption}"
+                                           Text="预留空间" HorizontalAlignment="Right"/>
+                            </Grid>
+                        </Border>
+
+                        <ListBox x:Name="SaveDiskList" Style="{StaticResource DiskTable}"
+                                 ItemTemplate="{StaticResource DiskSlotTemplate}"
+                                 SelectionChanged="OnDiskSelectionChanged"/>
+                        <TextBlock x:Name="SaveDiskEmptyNote" Style="{StaticResource Caption}"
+                                   Margin="12,8,0,0" Visibility="Collapsed"
+                                   Text="还没有配置 —— 录像写在默认目录（数据目录下的 archive）里。"/>
+
+                        <!-- ⚠️ 这一句**逐字照抄**设计图。里面的 30GB/10% 与
+                             20GB/5% 就是 `Core/Cleanup/ReservedSpace.cs` 里那几个常数，
+                             改了一处就必须改另一处。 -->
+                        <TextBlock Style="{StaticResource Caption}" Margin="0,10,0,0"
+                                   Text="录像会按列表顺序保存。每个磁盘只剩下预留空间时，会自动换到下一个磁盘；系统盘默认至少预留 30GB 或 10%，其他磁盘至少预留 20GB 或 5%，以较大值为准"/>
+
+                        <StackPanel Orientation="Horizontal" HorizontalAlignment="Right"
+                                    Margin="0,10,0,0">
+                            <Button Content="添加磁盘" Tag="Save"
+                                    Style="{StaticResource SecondaryButton}" Padding="14,6"
+                                    Click="OnAddDisk"/>
+                            <Button x:Name="SaveRemoveButton" Content="移除选中" Tag="Save"
+                                    Style="{StaticResource SecondaryButton}" Padding="14,6"
+                                    Margin="8,0,0,0" Click="OnRemoveDisk"/>
+                            <Button x:Name="SaveUpButton" Content="上移" Tag="Save"
+                                    Style="{StaticResource SecondaryButton}" Padding="14,6"
+                                    Margin="8,0,0,0" Click="OnMoveDiskUp"/>
+                            <Button x:Name="SaveDownButton" Content="下移" Tag="Save"
+                                    Style="{StaticResource SecondaryButton}" Padding="14,6"
+                                    Margin="8,0,0,0" Click="OnMoveDiskDown"/>
+                        </StackPanel>
+
+                        <Separator Margin="0,18,0,16"/>
+
+                        <!-- ── ③ 录像备份位置（归档层那一份落在哪儿）────── -->
+                        <TextBlock Style="{StaticResource SectionTitle}"
+                                   Text="录像备份位置" Margin="0,0,0,4"/>
+                        <TextBlock Style="{StaticResource Caption}"
+                                   Text="录像会按列表顺序备份到当前可用的位置；NAS 满时自动切换到下一个，NAS 中已备份的文件不会被程序删除"/>
+
+                        <StackPanel Orientation="Horizontal" Margin="0,12,0,0">
+                            <TextBlock Text="归档层" Style="{StaticResource FieldLabel}"/>
                             <ComboBox x:Name="ArchiveCombo" Width="200"
                                       SelectionChanged="OnArchiveChanged">
                                 <ComboBoxItem Tag="LocalDisk">本机磁盘</ComboBoxItem>
@@ -264,23 +532,58 @@
                                            Text="录像备份到哪儿去了。只有在别处还有一份时，清掉盘上这份才是安全的。"/>
                         </StackPanel>
                         <TextBlock x:Name="ArchiveReachNote" Style="{StaticResource Caption}"
-                                   Margin="130,6,0,0"/>
+                                   Margin="0,6,0,0"/>
 
                         <!-- 目录型的路径（NAS / 挂载盘）。这两档**共用一份实现**（规格 §3.4.6），
-                             所以界面上也是同一个输入框 —— 再拆一个只会让两条路慢慢走岔。 -->
+                             所以界面上也是同一张表 —— 再拆一张只会让两条路慢慢走岔。
+                             ⚠️ 表里的路径与原来那个单行输入框是同一份配置
+                             （`ArchiveDirectory`），老配置读进来就是一行。 -->
                         <StackPanel x:Name="ArchivePathPanel" Margin="0,10,0,0"
                                     Visibility="Collapsed">
-                            <TextBlock Text="归档目录" Style="{StaticResource FieldLabel}"
-                                       Width="130" HorizontalAlignment="Left"/>
-                            <TextBox x:Name="ArchivePathBox" Width="360" Margin="130,4,0,0"
-                                     HorizontalAlignment="Left"/>
-                            <TextBlock Style="{StaticResource Caption}" Margin="130,4,0,0"
-                                       Text="填一个可读写的目录，例如 \\nas\vidlog 或 Z:\vidlog。网络那一层（登录、凭据）由你在系统里挂好，我们只当成一个目录用。"/>
-                            <StackPanel Orientation="Horizontal" Margin="130,4,0,0">
+                            <Border Background="{StaticResource SurfaceAlt}"
+                                    CornerRadius="4,4,0,0" Padding="12,7">
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="110"/>
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Style="{StaticResource Caption}" Text="存储路径"/>
+                                    <TextBlock Grid.Column="1" Style="{StaticResource Caption}"
+                                               Text="预留空间" HorizontalAlignment="Right"/>
+                                </Grid>
+                            </Border>
+
+                            <ListBox x:Name="BackupDiskList" Style="{StaticResource DiskTable}"
+                                     ItemTemplate="{StaticResource DiskSlotTemplate}"
+                                     SelectionChanged="OnDiskSelectionChanged"/>
+                            <TextBlock x:Name="BackupDiskEmptyNote"
+                                       Style="{StaticResource Caption}" Margin="12,8,0,0"
+                                       Text="还没有配置 —— 先在【添加磁盘】里选一个可读写的目录，例如 \\nas\vidlog 或 Z:\vidlog。"/>
+
+                            <TextBlock Style="{StaticResource Caption}" Margin="0,10,0,0"
+                                       Text="网络那一层（登录、凭据）由你在系统里挂好，我们只当成一个目录用。"/>
+
+                            <StackPanel Orientation="Horizontal" Margin="0,6,0,0">
                                 <local:HelpTip
                                     Text="⚠️ 这个路径只是「去哪儿找归档层」，不进索引 —— 换台机器挂到别的盘符，录像照样查得到。"/>
                                 <TextBlock Style="{StaticResource Caption}" Margin="6,0,0,0"
                                            Text="换台机器挂到别的盘符会怎样"/>
+                            </StackPanel>
+
+                            <StackPanel Orientation="Horizontal" HorizontalAlignment="Right"
+                                        Margin="0,10,0,0">
+                                <Button Content="添加磁盘" Tag="Backup"
+                                        Style="{StaticResource SecondaryButton}" Padding="14,6"
+                                        Click="OnAddDisk"/>
+                                <Button x:Name="BackupRemoveButton" Content="移除选中" Tag="Backup"
+                                        Style="{StaticResource SecondaryButton}" Padding="14,6"
+                                        Margin="8,0,0,0" Click="OnRemoveDisk"/>
+                                <Button x:Name="BackupUpButton" Content="上移" Tag="Backup"
+                                        Style="{StaticResource SecondaryButton}" Padding="14,6"
+                                        Margin="8,0,0,0" Click="OnMoveDiskUp"/>
+                                <Button x:Name="BackupDownButton" Content="下移" Tag="Backup"
+                                        Style="{StaticResource SecondaryButton}" Padding="14,6"
+                                        Margin="8,0,0,0" Click="OnMoveDiskDown"/>
                             </StackPanel>
                         </StackPanel>
 
@@ -362,7 +665,201 @@
                     </StackPanel>
 
                     <!-- ────────────────────────────────────────────────
-                         ③ 局域网与网页
+                         ③ 百度网盘上传（批次 5，照设计图 `_45` / `_46`）
+                         ──────────────────────────────────────────────── -->
+                    <StackPanel x:Name="CloudSection" Visibility="Collapsed">
+                        <!-- ⚠️ 归档层不是「百度网盘」那一档时，这一整页**全禁用**
+                             并写明原因（踩坑 #13：绝不渲染一个按下去没反应的开关）。
+                             原因由 code-behind 填，因为它是**当下**算出来的：
+                             「档位不对」与「档位对但没配凭据」是两句不同的话。 -->
+                        <TextBlock x:Name="CloudDisabledNote" Style="{StaticResource Caption}"
+                                   Foreground="{StaticResource Warning}" TextWrapping="Wrap"
+                                   MaxWidth="520" Margin="0,0,0,14"
+                                   Visibility="Collapsed"/>
+
+                        <!-- ── 卡 1：账号与上传状态 ────────────────────── -->
+                        <Border x:Name="CloudAccountCard" Style="{StaticResource Card}">
+                            <StackPanel>
+                                <TextBlock Style="{StaticResource SectionTitle}" Text="账号与上传状态"/>
+                                <TextBlock x:Name="CloudAccountNote" Style="{StaticResource Caption}"
+                                           TextWrapping="Wrap" MaxWidth="520"/>
+
+                                <Grid Margin="0,12,0,0">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="Auto"/>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="Auto"/>
+                                        <ColumnDefinition Width="Auto"/>
+                                    </Grid.ColumnDefinitions>
+                                    <Button Grid.Column="0" x:Name="CloudLoginButton"
+                                            Style="{StaticResource PrimaryButton}"
+                                            Content="登录百度网盘" Click="OnCloudLogin"/>
+                                    <Button Grid.Column="1" x:Name="CloudLogoutButton"
+                                            Style="{StaticResource SecondaryButton}"
+                                            HorizontalAlignment="Left" Margin="10,0,0,0"
+                                            Content="退出登录" Click="OnCloudLogout"/>
+                                    <Button Grid.Column="2" x:Name="CloudSyncButton"
+                                            Style="{StaticResource SecondaryButton}"
+                                            Content="立即对比同步" Click="OnCloudSync"/>
+                                    <Button Grid.Column="3" x:Name="CloudRetryButton"
+                                            Style="{StaticResource SecondaryButton}"
+                                            Margin="10,0,0,0"
+                                            Content="立即重试失败上传" Click="OnCloudRetry"/>
+                                </Grid>
+                            </StackPanel>
+                        </Border>
+
+                        <!-- ── 卡 2：上传与补传 ────────────────────────── -->
+                        <Border x:Name="CloudUploadCard" Style="{StaticResource Card}" Margin="0,14,0,0">
+                            <StackPanel>
+                                <TextBlock Style="{StaticResource SectionTitle}" Text="上传与补传"/>
+                                <TextBlock Style="{StaticResource Caption}" TextWrapping="Wrap"
+                                           MaxWidth="520"
+                                           Text="录像上传到百度网盘「我的应用数据/[网盘目录应用名]/(日期)/发货或退货/单号_会话_序号.mp4」，按开录日期与发货退货分类。"/>
+
+                                <Grid Margin="0,14,0,0">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="Auto"/>
+                                    </Grid.ColumnDefinitions>
+                                    <StackPanel Grid.Column="0">
+                                        <TextBlock Style="{StaticResource SectionTitle}" Margin="0"
+                                                   Text="启用自动上传"/>
+                                        <TextBlock Style="{StaticResource Caption}" Margin="0,2,0,0"
+                                                   TextWrapping="Wrap" MaxWidth="420"
+                                                   Text="仅此开关开启后新开始录制的视频会上传。"/>
+                                    </StackPanel>
+                                    <ToggleButton Grid.Column="1" x:Name="CloudAutoUploadToggle"
+                                                  Style="{StaticResource ToggleSwitch}"
+                                                  VerticalAlignment="Center"
+                                                  Checked="OnCloudAutoUploadChanged"
+                                                  Unchecked="OnCloudAutoUploadChanged"/>
+                                </Grid>
+
+                                <Grid Margin="0,14,0,0">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="Auto"/>
+                                    </Grid.ColumnDefinitions>
+                                    <StackPanel Grid.Column="0">
+                                        <TextBlock Style="{StaticResource SectionTitle}" Margin="0"
+                                                   Text="自动对比补传"/>
+                                        <TextBlock Style="{StaticResource Caption}" Margin="0,2,0,0"
+                                                   TextWrapping="Wrap" MaxWidth="420"
+                                                   Text="定期与网盘实际内容对比：网盘已有的单号视频自动去重，只补传网盘上没有的；开启后约每分钟检查一次队列。"/>
+                                    </StackPanel>
+                                    <ToggleButton Grid.Column="1" x:Name="CloudCompareToggle"
+                                                  Style="{StaticResource ToggleSwitch}"
+                                                  VerticalAlignment="Center"
+                                                  Checked="OnCloudCompareChanged"
+                                                  Unchecked="OnCloudCompareChanged"/>
+                                </Grid>
+
+                                <Grid Margin="0,14,0,0">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="Auto"/>
+                                    </Grid.ColumnDefinitions>
+                                    <StackPanel Grid.Column="0">
+                                        <TextBlock Style="{StaticResource SectionTitle}" Margin="0"
+                                                   Text="补传范围"/>
+                                        <TextBlock Style="{StaticResource Caption}" Margin="0,2,0,0"
+                                                   TextWrapping="Wrap" MaxWidth="420"
+                                                   Text="全部=本机所有可上传录像；自定起始日=只补该日及之后开录的（以开录自然日为准）。"/>
+                                    </StackPanel>
+                                    <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                                        <ComboBox x:Name="CloudScopeCombo" Width="220"
+                                                  SelectionChanged="OnCloudScopeChanged"/>
+                                        <DatePicker x:Name="CloudFromDatePicker" Width="220"
+                                                    Margin="0,6,0,0"
+                                                    SelectedDateChanged="OnCloudFromDateChanged"/>
+                                    </StackPanel>
+                                </Grid>
+
+                                <Grid Margin="0,14,0,0">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="Auto"/>
+                                    </Grid.ColumnDefinitions>
+                                    <StackPanel Grid.Column="0">
+                                        <TextBlock Style="{StaticResource SectionTitle}" Margin="0"
+                                                   Text="同时上传数"/>
+                                        <TextBlock Style="{StaticResource Caption}" Margin="0,2,0,0"
+                                                   TextWrapping="Wrap" MaxWidth="420"
+                                                   Text="同一时间并行上传的录像条数，过大可能触发网盘风控。"/>
+                                    </StackPanel>
+                                    <ComboBox Grid.Column="1" x:Name="CloudParallelCombo" Width="220"
+                                              VerticalAlignment="Center"/>
+                                </Grid>
+
+                                <Grid Margin="0,14,0,0">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="Auto"/>
+                                    </Grid.ColumnDefinitions>
+                                    <StackPanel Grid.Column="0">
+                                        <TextBlock Style="{StaticResource SectionTitle}" Margin="0"
+                                                   Text="网盘目录应用名"/>
+                                        <TextBlock Style="{StaticResource Caption}" Margin="0,2,0,0"
+                                                   TextWrapping="Wrap" MaxWidth="420"
+                                                   Text="开放平台后台填写的「产品名称」，远端路径为 /apps/(该名称)/。"/>
+                                    </StackPanel>
+                                    <TextBox Grid.Column="1" x:Name="CloudAppNameBox" Width="220"
+                                             VerticalAlignment="Center"/>
+                                </Grid>
+                            </StackPanel>
+                        </Border>
+
+                        <!-- ── 卡 3：上传队列 ──────────────────────────── -->
+                        <Border Style="{StaticResource Card}" Margin="0,14,0,0">
+                            <StackPanel>
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="Auto"/>
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Grid.Column="0" Style="{StaticResource SectionTitle}"
+                                               Text="上传队列"/>
+                                    <!-- 图上右上角那句状态（「暂无录像」就在这儿）。 -->
+                                    <TextBlock Grid.Column="1" x:Name="CloudQueueNote"
+                                               Style="{StaticResource Caption}"
+                                               VerticalAlignment="Center"/>
+                                </Grid>
+
+                                <ListBox x:Name="CloudQueueList" Margin="0,12,0,0" MaxHeight="280"
+                                         BorderThickness="0" Background="Transparent"
+                                         ScrollViewer.HorizontalScrollBarVisibility="Disabled">
+                                    <ListBox.ItemTemplate>
+                                        <DataTemplate>
+                                            <TextBlock Text="{Binding}" TextWrapping="Wrap" FontSize="13"
+                                                       Foreground="{StaticResource TextPrimary}"/>
+                                        </DataTemplate>
+                                    </ListBox.ItemTemplate>
+                                </ListBox>
+
+                                <StackPanel Orientation="Horizontal" Margin="0,12,0,0">
+                                    <TextBlock Text="筛选" Style="{StaticResource FieldLabel}"
+                                               VerticalAlignment="Center"/>
+                                    <ComboBox x:Name="CloudQueueFilterCombo" Width="140"
+                                              Margin="8,0,0,0"
+                                              SelectionChanged="OnCloudQueueFilterChanged"/>
+                                    <TextBlock Text="每页" Style="{StaticResource FieldLabel}"
+                                               VerticalAlignment="Center" Margin="20,0,0,0"/>
+                                    <TextBox x:Name="CloudQueuePageSizeBox" Width="60"
+                                             Margin="8,0,0,0" Text="10"/>
+                                    <Button x:Name="CloudQueuePrevButton" Style="{StaticResource SecondaryButton}"
+                                            Margin="16,0,0,0" Content="◀" Click="OnCloudQueuePrev"/>
+                                    <TextBlock x:Name="CloudQueuePageText" Style="{StaticResource Caption}"
+                                               VerticalAlignment="Center" Margin="12,0,0,0"/>
+                                    <Button x:Name="CloudQueueNextButton" Style="{StaticResource SecondaryButton}"
+                                            Margin="12,0,0,0" Content="▶" Click="OnCloudQueueNext"/>
+                                </StackPanel>
+                            </StackPanel>
+                        </Border>
+                    </StackPanel>
+
+                    <!-- ────────────────────────────────────────────────
+                         ④ 局域网与网页
                          ──────────────────────────────────────────────── -->
                     <StackPanel x:Name="NetworkSection" Visibility="Collapsed">
                         <TextBlock Style="{StaticResource SectionTitle}" Text="回放服务端口"/>
@@ -383,6 +880,79 @@
                          ④ 高级设置
                          ──────────────────────────────────────────────── -->
                     <StackPanel x:Name="AdvancedSection" Visibility="Collapsed">
+                        <!-- ── 启动与关闭（批次 9，照设计图 `_49`）─────────────
+                             ⚠️ 设计图上这一页**只有这三行**，而 VidLog 的高级设置底下
+                             还有分段、重复检测、时间校准、许可 —— 那几样是真能力
+                             （图上是把它们挪进了配置向导），所以这里是**加在最上面**，
+                             与「设备与外观」那一节同一个处理方式。
+                             ⚠️ 第三行的说明**刻意没有照抄图上那句**
+                             （图上写的是「启动器后台下载增量包，下次启动时自动安装」）：
+                             需求方 2026-09-30 裁决「自动更新 = **只做检查 + 提示**，
+                             不做启动器 exe、不自替换」。照抄那句就等于在界面上
+                             承诺一件本程序**不会做**的事。 -->
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+                            <StackPanel Grid.Column="0">
+                                <TextBlock Style="{StaticResource SectionTitle}" Margin="0"
+                                           Text="开机自启动"/>
+                                <TextBlock Style="{StaticResource Caption}" Margin="0,2,0,0"
+                                           TextWrapping="Wrap" MaxWidth="420"
+                                           Text="电脑开机后自动启动本程序。"/>
+                            </StackPanel>
+                            <ToggleButton Grid.Column="1" x:Name="RunAtStartupToggle"
+                                          Style="{StaticResource ToggleSwitch}"
+                                          VerticalAlignment="Center"
+                                          Checked="OnRunAtStartupChanged"
+                                          Unchecked="OnRunAtStartupChanged"/>
+                        </Grid>
+
+                        <Grid Margin="0,14,0,0">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+                            <StackPanel Grid.Column="0">
+                                <TextBlock Style="{StaticResource SectionTitle}" Margin="0"
+                                           Text="关闭窗口时"/>
+                                <TextBlock Style="{StaticResource Caption}" Margin="0,2,0,0"
+                                           TextWrapping="Wrap" MaxWidth="420"
+                                           Text="可以每次询问、最小化到托盘或直接退出。"/>
+                            </StackPanel>
+                            <ComboBox Grid.Column="1" x:Name="CloseActionCombo" Width="220"
+                                      VerticalAlignment="Center"
+                                      SelectionChanged="OnCloseActionChanged"/>
+                        </Grid>
+                        <!-- ⚠️ 选「直接退出」时**必须**说清「在录的段怎么办」——
+                             这条与托盘那条退出路是同一个行为，用户得知道它不会
+                             悄悄把这一段扔掉。 -->
+                        <TextBlock x:Name="CloseActionNote" Style="{StaticResource Caption}"
+                                   Margin="0,6,0,0" TextWrapping="Wrap" MaxWidth="520"
+                                   Text=""/>
+
+                        <Grid Margin="0,14,0,0">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+                            <StackPanel Grid.Column="0">
+                                <TextBlock Style="{StaticResource SectionTitle}" Margin="0"
+                                           Text="自动检查更新"/>
+                                <TextBlock Style="{StaticResource Caption}" Margin="0,2,0,0"
+                                           TextWrapping="Wrap" MaxWidth="420"
+                                           Text="启动后在后台问一句有没有新版本，有就在托盘上提示一句；不会自动下载、也不会替换本程序。检查结果见「关于」页。"/>
+                            </StackPanel>
+                            <ToggleButton Grid.Column="1" x:Name="CheckUpdateToggle"
+                                          Style="{StaticResource ToggleSwitch}"
+                                          VerticalAlignment="Center"
+                                          Checked="OnCheckUpdateChanged"
+                                          Unchecked="OnCheckUpdateChanged"/>
+                        </Grid>
+
+                        <Separator Margin="0,18,0,16"/>
+
                         <TextBlock Style="{StaticResource SectionTitle}" Text="分段与重复检测"/>
 
                         <StackPanel Orientation="Horizontal">
@@ -495,6 +1065,7 @@
                                 <RowDefinition Height="Auto"/>
                                 <RowDefinition Height="Auto"/>
                                 <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="Auto"/>
                             </Grid.RowDefinitions>
 
                             <TextBlock Grid.Row="0" Grid.Column="0" Style="{StaticResource Caption}"
@@ -520,6 +1091,15 @@
                             <TextBlock Grid.Row="4" Grid.Column="0" Style="{StaticResource Caption}"
                                        Margin="0,6,0,0" Text="数据目录" VerticalAlignment="Center"/>
                             <TextBlock Grid.Row="4" Grid.Column="1" x:Name="AboutDataDirText"
+                                       Style="{StaticResource Body}" Margin="0,6,0,0"
+                                       TextWrapping="Wrap" Text="…"/>
+
+                            <!-- ⚠️ 第 5 行给「检查更新」的结论（设计图 `_49` 那一行的落点）。
+                                 查不到时说「没查到」而**不是**说「已是最新」—— 那两件事
+                                 不一样，混起来会让用户以为自己的版本是最新的。 -->
+                            <TextBlock Grid.Row="5" Grid.Column="0" Style="{StaticResource Caption}"
+                                       Margin="0,6,0,0" Text="更新检查" VerticalAlignment="Center"/>
+                            <TextBlock Grid.Row="5" Grid.Column="1" x:Name="AboutUpdateText"
                                        Style="{StaticResource Body}" Margin="0,6,0,0"
                                        TextWrapping="Wrap" Text="…"/>
                         </Grid>

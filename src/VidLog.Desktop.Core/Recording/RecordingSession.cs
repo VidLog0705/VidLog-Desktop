@@ -263,7 +263,8 @@ public sealed class RecordingSession : IAsyncDisposable
         Func<TimeSpan, CancellationToken, Task>? delay = null,
         ITrustedClock? trustedClock = null,
         Action? durationPrompted = null,
-        Action<string>? problemReported = null)
+        Action<string>? problemReported = null,
+        Labels.BusinessType? businessType = null)
     {
         _workspace = workspace;
         _capture = capture;
@@ -276,10 +277,25 @@ public sealed class RecordingSession : IAsyncDisposable
         _trustedClock = trustedClock;
         _durationPrompted = durationPrompted;
         _problemReported = problemReported;
+        BusinessType = businessType;
 
         SourceDeviceId = sourceDeviceId;
         SessionId = NewSessionId();
     }
+
+    /// <summary>
+    /// 这一段属于发货还是退货（设计图 `_35` 左上角那个【发货/退货】）。
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ <b>在会话建好的那一刻就定下来，收尾时按它写标签</b>，而不是收尾时
+    /// 去问协调器「现在是什么档」：换件之后旧段是在**后台**收尾的，
+    /// 那时操作员完全可能已经把档切到另一边了 —— 现读会把**退货的标签
+    /// 写到发货那一段上**，而那种错在界面上完全看不出来。
+    /// <para>
+    /// 为 <see langword="null"/> = 这次装配不管标签（测试与不关心它的调用点）。
+    /// </para>
+    /// </remarks>
+    public Labels.BusinessType? BusinessType { get; }
 
     /// <summary>
     /// 现在是不是**在问**「要不要停」（规格 §3.3.4）。
@@ -636,7 +652,10 @@ public sealed class RecordingSession : IAsyncDisposable
                 SessionId, WaybillNumber.Parse(manifest.Waybill), SourceDeviceId,
                 segments, reason, cancellationToken,
                 // 规格进索引（§3.1.7 的连带项）—— 由这次会话的选项带过来。
-                spec: _options.Spec);
+                spec: _options.Spec,
+                // 发货/退货的标签（设计图 `_35`）。**在会话建好时就定下来的那个**，
+                // 不是此刻的档位 —— 换件的旧段是在后台收尾的，见 `BusinessType`。
+                businessType: BusinessType);
 
             State = outcome.State;
             Outcome = outcome;

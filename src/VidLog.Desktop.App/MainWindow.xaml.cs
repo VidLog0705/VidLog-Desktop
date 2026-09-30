@@ -1,6 +1,7 @@
 using System.ComponentModel;
 using System.IO;
 using System.Windows;
+using System.Windows.Media.Imaging;
 using System.Windows.Threading;
 
 // 本工程同时开了 UseWPF 与 UseWindowsForms（后者只为托盘图标），
@@ -8,14 +9,23 @@ using System.Windows.Threading;
 // 同名类型变成「不明确」。这里用**别名钉死成 WPF 的那套** ——
 // 这个文件里的控件与画笔全是 WPF 的，WinForms 一个都不该出现。
 using Brush = System.Windows.Media.Brush;
+// ⚠️ 这两个也必须钉死：WinForms 那一侧有 `System.Drawing.Image`，
+// 不钉的话 `Image` 会静默解析成**画图那个**（编译期只报一句「参数不对」，
+// 而真正的问题是类型选错了）。别名块存在的理由就在这里。
+using Image = System.Windows.Controls.Image;
+using PixelFormats = System.Windows.Media.PixelFormats;
+using TextBlock = System.Windows.Controls.TextBlock;
 using MessageBox = System.Windows.MessageBox;
 using MessageBoxImage = System.Windows.MessageBoxImage;
 using MessageBoxResult = System.Windows.MessageBoxResult;
 using TextChangedEventArgs = System.Windows.Controls.TextChangedEventArgs;
 using VidLog.Desktop.App.Platform;
 using VidLog.Desktop.Core;
+using VidLog.Desktop.Core.Configuration;
+using VidLog.Desktop.Core.Labels;
 using VidLog.Desktop.Core.Punches;
 using VidLog.Desktop.Core.Recording;
+using VidLog.Desktop.Core.Rendering;
 using VidLog.Desktop.Core.Scanning;
 using VidLog.Desktop.Core.Search;
 using VidLog.Desktop.Core.Upload;
@@ -64,6 +74,11 @@ public partial class MainWindow : Window
     {
         _host = host;
         InitializeComponent();
+
+        // ⚠️ 在构造里就切好，不在 `OnLoaded` 里 —— 后者会先画一帧录制台再换成
+        // 备份主机面板，看起来像闪了一下。数（备份条数/设备数）要等索引读完，
+        // 那一半在 `RefreshOverviewAsync` 里填。
+        ApplyStationRole();
 
         // 界面上「已录 / 已存」只能靠定时刷新 —— 协调器不推送进度，Elapsed 是拉取式的。
         _ticker = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(500) };
@@ -159,6 +174,11 @@ public partial class MainWindow : Window
         _host.StartKeyboardHook();
 
         ShowStatusSummaries();
+
+        // 右栏那两张命令码（图 `_35`）。**每次开窗都重画一遍** ——
+        // 协调器不持久化这个档，所以启动时它必然是「发货」，
+        // 而按钮文字与那两张码必须跟着它。
+        RenderScanBarcodes();
 
         // 单号框**一直可用**：手动输入单号这件事与摄像头在不在一点关系都没有。
         // （拆窗之前它是跟着摄像头枚举一起解禁的 —— 那是个耦合，顺手拆掉。）
@@ -300,35 +320,18 @@ public partial class MainWindow : Window
             {
                 // **没有候选就不打扰** —— 每次开机弹一个「没什么要清的」是噪音，
                 // 而噪音会把真正该看的那一次淹掉。
+                // （设置页那两颗按钮不一样：那是用户主动点的，没得清也要说一句。）
                 return;
             }
 
-            var megabytes = plan.TotalBytes / 1024 / 1024;
-            var answer = MessageBox.Show(
-                this,
-                $"保留期到了的录像有 {plan.Candidates.Count} 条，约 {megabytes} MB。\n\n"
-                + "要现在清理吗？\n"
-                + "· 清理前会逐条回查归档层，查不到或查不了的那条不会删；\n"
-                + "· 删掉的是本机上这一份，归档层上的那份不动；\n"
-                + "· 已锁定与最近 24 小时内录的一条都不会动。",
-                "清理本地副本",
-                MessageBoxButton.YesNo,
-                MessageBoxImage.Warning,
-                // 默认是「否」——不可逆的动作不该让回车键替用户点头。
-                MessageBoxResult.No);
+            // 预告框与「删了什么」那句话只有一份实现（`CleanupPrompt`）——
+            // 它现在有三个调用点，各写一遍迟早有一处把 I8 那三条说明改漏。
+            var outcome = await CleanupPrompt.AskAndRunAsync(
+                this, _host, plan,
+                $"保留期到了的录像有 {plan.Candidates.Count} 条，"
+                + $"约 {plan.TotalBytes / 1024 / 1024} MB。");
 
-            if (answer != MessageBoxResult.Yes)
-            {
-                NoticesText.Text = $"{DateTime.Now:HH:mm:ss}  这次没清理（{plan.Candidates.Count} 条仍在盘上）。";
-                return;
-            }
-
-            var report = await cleanup.RunAsync(plan);
-
-            NoticesText.Text =
-                $"{DateTime.Now:HH:mm:ss}  清理完成：删了 {report.Deleted.Count} 条"
-                + $"（约 {report.FreedBytes / 1024 / 1024} MB），"
-                + $"回查没通过、因此保留的有 {report.Refused.Count} 条（明细见清理流水）。";
+            NoticesText.Text = $"{DateTime.Now:HH:mm:ss}  {outcome.Message}";
         }
         catch (Exception ex)
         {
@@ -374,7 +377,7 @@ public partial class MainWindow : Window
 
         try
         {
-            var root = _host.Services.Layout.ArchiveRoot;
+            var storage = _host.Services.Storage;
 
             // ── ① 今天（底部统计条 + 右栏）──────────────────────────────
             var today = DateTime.Today;
@@ -403,8 +406,18 @@ public partial class MainWindow : Window
 
             // 录像库总容量：全量遍历目录，几万个文件时是秒级 ⇒ 挪出 UI 线程，
             // 否则大库上窗口会僵住（而这正是用户点【刷新】的那一刻）。
+            //
+            // ⚠️ **每一个保存位置都要量**（多磁盘，设计图 `_43`）：只量第一个根的话
+            // 这个数会**静默偏小**，而用户会拿它判断「盘还够不够用」。
             OvLibraryText.Text = "正在统计…";
-            var footprint = await Task.Run(() => LibraryFootprintProbe.Measure(root));
+            var roots = storage.ReadRoots;
+            var footprint = await Task.Run(() =>
+                roots
+                    .Select(one => LibraryFootprintProbe.Measure(one))
+                    .Aggregate(new LibraryFootprint(0, 0, 0), (sum, one) => new LibraryFootprint(
+                        sum.FileCount + one.FileCount,
+                        sum.TotalBytes + one.TotalBytes,
+                        sum.UnreadableCount + one.UnreadableCount)));
 
             // ⚠️ 读不到的位置**必须说出来**：不说的话那个字节数是**静默偏小**的，
             // 而用户会拿它判断「盘还够用」。
@@ -440,10 +453,31 @@ public partial class MainWindow : Window
                 ? $"⚠️ {archive.Label} —— 没配好：{problem}"
                 : archive.Label;
 
-            OvDiskText.Text = FormatFreeSpace(root);
+            OvDiskText.Text = FormatFreeSpace(storage.ActiveRoot);
 
             var devices = await _host.Services.Devices.DevicesAsync();
             OvDevicesText.Text = devices.Count == 0 ? "还没有手机接进来" : $"{devices.Count} 台";
+
+            // ── ④ 备份主机那一屏的四个数（设计图 `_39`）─────────────────
+            //
+            // ⚠️ 复用上面刚算出来的，**不重算一遍** —— 重算就是又一次
+            // 全量读索引 + 又一次 `SearchAsync`，而数据源明明是同一份。
+            // 两边要是算岔了，同一块屏幕上会出现两个对不上的「今日」。
+            //
+            // ⚠️ 「备份 N 个」数的是**本机索引里的录像段**，不是「收了多少个包裹」。
+            // 托盘列表上写的就是这个数，而它是盘上真能数出来的。
+            if (!_host.Settings.Role.Records)
+            {
+                BackupTodayText.Text = hits.Count.ToString();
+                BackupTotalText.Text = all.Count.ToString();
+
+                BackupDeviceTag.Text = devices.Count == 0 ? "暂无设备" : "已就绪";
+                BackupDeviceTag.Foreground =
+                    (Brush)FindResource(devices.Count == 0 ? "Warning" : "Success");
+                BackupDeviceText.Text = devices.Count == 0
+                    ? "还没有手机或电脑接进来。用上面的【连接电脑/手机】把它们加进来。"
+                    : $"已接入 {devices.Count} 台设备，录像会存到本机。";
+            }
 
             // ── ③ 待办（没有就不出现）─────────────────────────────────
             var cleanupLine = string.Empty;
@@ -517,6 +551,99 @@ public partial class MainWindow : Window
     }
 
     // ─────────────────────────────────────────────
+    // 本机用途（设计图 `_11`–`_15` 的选择窗 → `_39` 的备份主机形态）
+    // ─────────────────────────────────────────────
+
+    /// <summary>
+    /// 按本机用途决定这一屏是录制台还是备份主机面板，并把后者的固定文字填上。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// 判据取 <see cref="StationRoleChoice.Records"/>（「这台电脑录不录像」），
+    /// **不是**「用途等于哪一档」—— 四档里两档录、两档不录，按档位写死的话
+    /// 以后加第五档就会漏掉一处，而漏掉的表现正好是这一屏显示错。
+    /// </para>
+    /// <para>
+    /// ⚠️ 整块**藏起来**而不是禁用：一台不录像的机器上摆着「开始录制」只是噪声，
+    /// 而<b>禁用</b>更坏 —— 它会让人以为「本来能录、只是哪儿没配好」，
+    /// 于是去翻设置找一个根本不存在的毛病。
+    /// </para>
+    /// <para>
+    /// ⚠️ 换用途之后**不重新渲染**（见 <see cref="OnSwitchRole"/>）：录不录像是在
+    /// <c>AppHost.StartAsync</c> 的装配期定死的，当场把录制台亮出来是个谎。
+    /// </para>
+    /// </remarks>
+    private void ApplyStationRole()
+    {
+        var role = _host.Settings.StationRole;
+        var records = _host.Settings.Role.Records;
+
+        RecordingRoot.Visibility = records ? Visibility.Visible : Visibility.Collapsed;
+        BackupRoot.Visibility = records ? Visibility.Collapsed : Visibility.Visible;
+
+        if (records)
+        {
+            return;
+        }
+
+        var described = StationRoles.Describe(role);
+
+        BackupMachineText.Text = Environment.MachineName;
+        BackupRoleText.Text = $"本机用途：{described.Title} —— {described.Summary}";
+
+        // ⚠️ 地址用 `LanAddress`（挑一块**别的设备连得上**的网卡），不用
+        // `Server.BaseUrl` —— 后者是 `http://+:8720/`，那是个通配地址，
+        // 显示出来没人能照着填。
+        BackupAddressText.Text = LanAddress.Discover() is { } address
+            ? $"{address}:{_host.Services.PlaybackPort}"
+            : $"本机地址没读出来（回放端口 {_host.Services.PlaybackPort}）";
+
+        // ⚠️ 订单联动**一个字都不许编**：它要那个至今没开工的服务端接口。
+        // 图上这里是「暂无设备」，而真实原因是这边根本没有能装的东西，
+        // 所以照实写原因 —— 与旁边那两颗按钮的悬停提示是同一句话。
+        BackupOrderText.Text = "订单联动还没开工：要服务端先把订单接口做出来，电脑端这边没有可装的东西。";
+    }
+
+    /// <summary>
+    /// 【⇄ 切换用途】—— 弹出选择窗，选了就存下来。
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ 存完之后**只提示重启，不当场换这一屏**：新用途要等下次启动
+    /// 重新装配（装不装摄像头、起不起回放）才成立，当场把新形态画出来
+    /// 就是在展示一个还没生效的状态。<see cref="AppHost.SwitchRoleAsync"/>
+    /// 里那个弹窗已经说了「要重启软件才生效」。
+    /// </remarks>
+    private async void OnSwitchRole(object sender, RoutedEventArgs e) =>
+        await _host.SwitchRoleAsync(this);
+
+    /// <summary>
+    /// 【网页回放】—— 用系统浏览器打开本机的回放页（设计图 `_39`）。
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ 用 <c>localhost</c> 而**不是** <c>BaseUrl</c>：后者是通配地址，浏览器打不开。
+    /// 别的设备要打开走二维码（<see cref="EnrollWindow"/>，规格 §3.4.5）。
+    /// </remarks>
+    private void OnOpenPlaybackPage(object sender, RoutedEventArgs e)
+    {
+        if (_host.Services.Server is not { } server || server.BaseUrl.Length == 0)
+        {
+            // ⚠️ 这一屏上**没有 `StatusText`**（它在录制台那一层里，这时是藏着的），
+            // 所以失败必须用弹窗说 —— 写进一个看不见的控件等于没说。
+            MessageBox.Show(
+                this,
+                "回放服务没起来，所以没有网页可以打开。原因多半在设置窗的「关于」那一节里。",
+                "网页回放", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        if (ShellOpen.Try($"http://localhost:{_host.Services.PlaybackPort}/") is { } error)
+        {
+            // I3：点了没反应的按钮是最坏的一种 —— 打不开也要说出来。
+            MessageBox.Show(this, error, "网页回放", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+    }
+
+    // ─────────────────────────────────────────────
     // 录制
     // ─────────────────────────────────────────────
 
@@ -581,6 +708,12 @@ public partial class MainWindow : Window
                 HideDurationPrompt();
                 break;
 
+            // 发货 / 退货换了（点按钮，或拿扫码枪扫了屏幕上那张码）。
+            // ⚠️ **必须重画那两张码**，不能只换标题 —— 见 `RenderScanBarcodes`。
+            case CoordinatorNoticeKind.BusinessTypeChanged:
+                RenderScanBarcodes();
+                break;
+
             default:
                 break;
         }
@@ -622,6 +755,67 @@ public partial class MainWindow : Window
     {
         WaybillBox.Clear();
         WaybillBox.Focus();
+    }
+
+    // ─────────────────────────────────────────────
+    // 发货 / 退货 + 屏幕上那两张命令条码（设计图 `_35`）
+    // ─────────────────────────────────────────────
+
+    /// <summary>点顶栏那颗按钮：发货 ⇄ 退货。</summary>
+    /// <remarks>
+    /// ⚠️ 点完**不在这里刷界面** —— 协调器会发一条 `BusinessTypeChanged`，
+    /// 由 <see cref="OnNotice"/> 统一重画。界面上那两个入口（这颗按钮、
+    /// 扫屏幕上的码）走的是同一条回程；各刷一份迟早出现「按钮变了、码没变」。
+    /// </remarks>
+    private void OnToggleBusinessType(object sender, RoutedEventArgs e) =>
+        _host.Coordinator.ToggleBusinessType();
+
+    /// <summary>把顶栏那个档名与右栏那两张码画成**当前档该有的样子**。</summary>
+    /// <remarks>
+    /// <para>
+    /// ⚠️ 「切换退货」那张码的载荷是 <see cref="ScanCommand.For"/>（**切到另一档**），
+    /// 所以每切一次它就得重画一张 —— 两个档的码**不是同一个图形**。
+    /// 只换标题不重画码的话，用户扫下去会切到与标题**相反**的那一档。
+    /// </para>
+    /// <para>
+    /// ⚠️ 码面靠最近邻放大（XAML 里那个 `BitmapScalingMode`），与 `WizardWindow`
+    /// 第 6 步那张测试条码**同一个手法**：一个模块 2 个像素，高度交给最近邻纵向拉。
+    /// 换成插值会把条空边界糊成灰边，表现是「看着像条码、就是扫不出来」。
+    /// </para>
+    /// </remarks>
+    private void RenderScanBarcodes()
+    {
+        var current = _host.Coordinator.CurrentBusinessType;
+        var other = current == BusinessType.Return ? BusinessType.Outbound : BusinessType.Return;
+        var otherName = ScanCommand.Describe(other);
+
+        BusinessLabel.Text = ScanCommand.Describe(current);
+        BusinessBarcodeTitle.Text = $"扫码切换{otherName}";
+        BusinessBarcodeHint.Text = $"拿扫码枪扫下面这张码，业务类型就切到{otherName}。";
+
+        ShowBarcode(BusinessBarcodeImage, BusinessBarcodePayload, ScanCommand.For(current));
+        ShowBarcode(RecordBarcodeImage, RecordBarcodePayload, ScanCommand.StartWork);
+    }
+
+    /// <summary>把一段载荷画成 Code 128 条码，并把载荷原文写在下面。</summary>
+    /// <remarks>
+    /// ⚠️ 载荷照写出来**不是装饰**：码扫不动的时候（枪不认、屏幕反光、
+    /// 窗口被缩得很小），用户还能照着它手敲进单号框 —— 那几条命令码本身就是
+    /// 「认得出的单号形状」，手敲一样会走 <see cref="RecordingCoordinator.SubmitAsync"/>
+    /// 的拦截。
+    /// </remarks>
+    private static void ShowBarcode(Image image, TextBlock caption, string payload)
+    {
+        var modules = Code128.Modules(payload);
+
+        // 一个模块 2 个像素：落在整数边界上（最近邻不会出半像素），
+        // 宽度也够 —— 一维码靠横向的明暗边界定位，印窄了读不出来。
+        image.Width = modules.GetLength(0) * 2;
+        image.Source = BitmapSource.Create(
+            modules.GetLength(0), modules.GetLength(1), 96, 96,
+            PixelFormats.Gray8, null, Code128.Pixels(modules), modules.GetLength(0));
+
+        caption.Text = payload;
     }
 
     /// <summary>
@@ -794,21 +988,97 @@ public partial class MainWindow : Window
     // ─────────────────────────────────────────────
 
     /// <summary>
-    /// 关窗口 = 收进托盘，**不是退出**（规格 §3.2.1：后台仍要收码）。
+    /// 关窗口怎么办 —— 由设置里那三档说了算（设计图 `_49`「关闭窗口时」）。
     /// </summary>
     /// <remarks>
-    /// 真正的退出走托盘菜单的「退出」，由 <see cref="AppHost.ShutdownAsync"/> 收尾。
-    /// 这里无条件取消关闭，是为了不区分「首次关闭」与「真要退出」——
-    /// 那个区分要靠状态位，而状态位最容易写错成「第二次点 X 才退」这种惊喜。
+    /// <para>
+    /// ⚠️ <b>默认仍是「收进托盘，不是退出」</b>（规格 §3.2.1：后台仍要收码）。
+    /// 那一档的注释以前写的是「无条件取消关闭」，2026-09-30 加了另外两档之后
+    /// 它变成**三选一**，但默认那一路一个字节都没变。
+    /// </para>
+    /// <para>
+    /// ⚠️ <b>本方法**不**负责「在录的时候问一句」</b>：那是
+    /// <see cref="AppHost.ShutdownAsync"/> 里 <see cref="AppHost.ConfirmExitWhileRecording"/>
+    /// 的事，走的是托盘菜单退出与这里**同一条**路。在这儿再问一次会变成问两遍。
+    /// </para>
+    /// <para>
+    /// ⚠️ <b>红线（计划 §红线 1）的解释</b>：托盘本体、<c>ShutdownMode</c>、
+    /// <c>CrashGuard</c>、录中确认这四样的接线**一个字没动**；
+    /// 变的只是「关窗」这一个动作按设置走哪一档。
+    /// </para>
     /// </remarks>
     private void OnClosing(object? sender, CancelEventArgs e)
     {
-        e.Cancel = true;
+        switch (_host.Settings.CloseWindowAction)
+        {
+            // ── 直接退出 ────────────────────────────────────────────────
+            //
+            // ⚠️ 仍然 **先取消这一次关闭**，改走 `RequestExit`：那条路会问
+            // 「还在录，要结束它并退出吗」，而且退出前的收尾（收段、拆托盘、
+            // 释放服务）全在它里面。直接放行 `Close()` 的话，`ShutdownMode` 是
+            // `OnExplicitShutdown`，窗口关了进程却还在 —— 那就是「关不掉」。
+            case CloseWindowAction.Exit:
+                e.Cancel = true;
+                _host.RequestExit?.Invoke();
+                return;
 
+            // ── 每次询问 ────────────────────────────────────────────────
+            case CloseWindowAction.AskEveryTime:
+                e.Cancel = true;
+                AskThenClose();
+                return;
+
+            // ── 收进托盘（默认，也是升级后的行为）──────────────────────
+            default:
+                e.Cancel = true;
+                MinimizeToTray();
+                return;
+        }
+    }
+
+    /// <summary>关窗时问一句：收进托盘 / 直接退出 / 取消（设计图 `_49` 的「每次询问」）。</summary>
+    /// <remarks>
+    /// ⚠️ 默认按钮是「取消」：关窗这个动作本身不该被回车键替用户决定，
+    /// 而三选一里点错最贵的是「直接退出」（在录的时候它会结束这一段）。
+    /// </remarks>
+    private void AskThenClose()
+    {
+        var answer = MessageBox.Show(
+            this,
+            "要把窗口收进托盘，还是直接退出？\n\n"
+            + "· 收进托盘：程序继续在后台跑，扫码枪照常可用；\n"
+            + "· 直接退出：结束本次使用（还在录的话会先问你一句）。",
+            "关闭窗口",
+            MessageBoxButton.YesNoCancel,
+            MessageBoxImage.Question,
+            MessageBoxResult.Cancel);
+
+        switch (answer)
+        {
+            case MessageBoxResult.Yes:
+                MinimizeToTray();
+                break;
+
+            case MessageBoxResult.No:
+                _host.RequestExit?.Invoke();
+                break;
+
+            default:
+                // 取消：什么都不做，窗口留在屏幕上（连计时器都不用停）。
+                break;
+        }
+    }
+
+    /// <summary>收进托盘：停掉两个计时器、藏窗口、说一句。</summary>
+    private void MinimizeToTray()
+    {
         _ticker.Stop();
         _clockTicker.Stop();
         Hide();
 
-        _host.Tray?.Notify("VidLog 还在后台", "扫码枪照常可用。要退出请右键托盘图标。");
+        if (_host.Settings.CloseWindowAction == CloseWindowAction.MinimizeToTray)
+        {
+            _host.Tray?.Notify("VidLog 还在后台", "扫码枪照常可用。要退出请右键托盘图标。");
+        }
     }
 }

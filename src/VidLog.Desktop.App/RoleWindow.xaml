@@ -1,0 +1,271 @@
+<Window x:Class="VidLog.Desktop.App.RoleWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        xmlns:local="clr-namespace:VidLog.Desktop.App"
+        mc:Ignorable="d"
+        Title="选择电脑用途"
+        Width="846" SizeToContent="Height"
+        ResizeMode="NoResize"
+        WindowStartupLocation="CenterOwner"
+        FontFamily="{StaticResource UiFont}"
+        Background="{StaticResource PageBackground}">
+    <!--
+        ════════════════════════════════════════════════════════════════
+        「选择这台电脑的用途」—— 照需求方自绘的界面图（`_11`–`_15`）
+
+        ▓▓ 版式 ▓▓
+          H1「选择这台电脑的用途」+ 副标题
+          1. 这台电脑要用来录像吗?          → 两张卡（是非）
+          2. 这台电脑要负责长期保存录像吗?  → 两张卡（是非）
+          结果卡「选择结果 / 将切换到」      → 四个组合各自的用途与能力
+          右下：取消 / 确认用途
+
+        ⚠️ 尺寸不是估的：图上那五张 `_11`–`_15` 的窗口是 **846 宽**，
+        `_11`（两个问题都没答）高 623、`_12`（都答完）高 726 ——
+        所以这里用 `SizeToContent="Height"`，**窗口会随结果卡一起长高**，
+        这正是图上那两张截图高度不同的原因。
+
+        ⚠️ 取色是逐像素采的（不靠肉眼），结论是**不需要任何新 token**：
+          选中卡  = 1px `#3B82F6`（`Accent`）描边 + `#F1F5F9`（`SurfaceAlt`）底
+          未选中卡= 1px `#E2E8F0`（`CardBorder`）描边 + `#FFFFFF`（`Surface`）底
+          单选点  = `#3B82F6`
+          「将切换到」= `#3B82F6`
+          禁用态的主按钮 = `#8EB5F6`（`AccentDisabled`）—— 与 `PrimaryButton` 的禁用态一致
+          结果卡图标底 = `#F1F5F9`，图标本身 = `#3B82F6`
+          页面底 = `#F3F4F6`，H1 与卡内标题 = `#1E293B`
+        ⚠️ 卡片是 `RadioButton` 套一层 `ControlTemplate`，**不是** Border + 手写点击：
+        互斥、键盘可达、读屏可达全都白拿，而手写这些正是最容易漏 accessibility 的地方。
+        ════════════════════════════════════════════════════════════════
+    -->
+    <Window.Resources>
+        <!-- 一张「是非」卡。图上的三种状态全在这里：未选中 / 选中 / 悬停。 -->
+        <Style x:Key="RoleCard" TargetType="RadioButton">
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="Foreground" Value="{StaticResource TextPrimary}"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="RadioButton">
+                        <Border x:Name="Shell" CornerRadius="8"
+                                Background="{StaticResource Surface}"
+                                BorderBrush="{StaticResource CardBorder}"
+                                BorderThickness="1"
+                                Padding="16,14">
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                </Grid.ColumnDefinitions>
+
+                                <ContentPresenter Grid.Column="0" VerticalAlignment="Center"/>
+
+                                <!-- 右上角那个单选点。⚠️ 图上它是**靠上**的，
+                                     不是垂直居中（卡片两行高，点在第一行的高度上）。 -->
+                                <Grid Grid.Column="1" VerticalAlignment="Top"
+                                      Margin="12,1,0,0" Width="17" Height="17">
+                                    <Ellipse x:Name="Ring" StrokeThickness="1.5"
+                                             Stroke="{StaticResource BorderStrong}"/>
+                                    <Ellipse x:Name="Dot" Width="9" Height="9"
+                                             Fill="{StaticResource Accent}"
+                                             Visibility="Collapsed"/>
+                                </Grid>
+                            </Grid>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsChecked" Value="True">
+                                <Setter TargetName="Shell" Property="Background"
+                                        Value="{StaticResource SurfaceAlt}"/>
+                                <Setter TargetName="Shell" Property="BorderBrush"
+                                        Value="{StaticResource Accent}"/>
+                                <Setter TargetName="Ring" Property="Stroke"
+                                        Value="{StaticResource Accent}"/>
+                                <Setter TargetName="Dot" Property="Visibility" Value="Visible"/>
+                            </Trigger>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Shell" Property="BorderBrush"
+                                        Value="{StaticResource Accent}"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <!-- 卡里左边那个 ✓ / ✕。图上是一笔粗线，不是字形。 -->
+        <Style x:Key="RoleGlyph" TargetType="Path">
+            <Setter Property="Width" Value="17"/>
+            <Setter Property="Height" Value="17"/>
+            <Setter Property="Stroke" Value="{StaticResource TextPrimary}"/>
+            <Setter Property="StrokeThickness" Value="1.8"/>
+            <Setter Property="StrokeStartLineCap" Value="Round"/>
+            <Setter Property="StrokeEndLineCap" Value="Round"/>
+            <Setter Property="StrokeLineJoin" Value="Round"/>
+            <Setter Property="VerticalAlignment" Value="Center"/>
+        </Style>
+
+        <!-- 结果卡里「支持的能力」那几条。⚠️ 项目符号是**文本**，不是控件 ——
+             图上是「• 使用完整电脑录像能力」这样一行，用一个圆点字形最省。 -->
+        <DataTemplate x:Key="AbilityTemplate">
+            <StackPanel Orientation="Horizontal" Margin="0,3,0,0">
+                <TextBlock Text="•" Foreground="{StaticResource TextSecondary}"
+                           FontSize="13" Margin="2,0,7,0" VerticalAlignment="Center"/>
+                <TextBlock Text="{Binding}" Style="{StaticResource Body}"/>
+            </StackPanel>
+        </DataTemplate>
+    </Window.Resources>
+
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <StackPanel Grid.Row="0" Margin="34,22,34,0">
+            <TextBlock Style="{StaticResource PageTitle}" FontSize="28"
+                       Text="选择这台电脑的用途"/>
+            <TextBlock Style="{StaticResource Caption}" FontSize="13" Margin="0,8,0,0"
+                       Text="回答两个简单问题，系统会自动组合出合适的用途"/>
+
+            <!-- ══ 问题一 ════════════════════════════════════════════════ -->
+            <TextBlock Style="{StaticResource SectionTitle}" FontSize="15"
+                       Margin="0,22,0,10"
+                       Text="1. 这台电脑要用来录像吗?"/>
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="*"/>
+                </Grid.ColumnDefinitions>
+
+                <RadioButton x:Name="RecordsYes" Grid.Column="0" GroupName="Records"
+                             Style="{StaticResource RoleCard}" Margin="0,0,6,0"
+                             Checked="OnAnswerChanged">
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="*"/>
+                        </Grid.ColumnDefinitions>
+                        <Path Grid.Column="0" Style="{StaticResource RoleGlyph}"
+                              Data="M 12.5,1.5 L 4.5,10 L 0.5,6"/>
+                        <StackPanel Grid.Column="1" Margin="9,0,0,0">
+                            <TextBlock Text="要，使用这台电脑录像"
+                                       FontSize="15" FontWeight="SemiBold"/>
+                            <TextBlock Style="{StaticResource Caption}" Margin="0,5,0,0"
+                                       Text="启用摄像头、麦克风、面单识别、扫码枪、订单联动和语音提醒"/>
+                        </StackPanel>
+                    </Grid>
+                </RadioButton>
+
+                <RadioButton x:Name="RecordsNo" Grid.Column="1" GroupName="Records"
+                             Style="{StaticResource RoleCard}" Margin="6,0,0,0"
+                             Checked="OnAnswerChanged">
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="*"/>
+                        </Grid.ColumnDefinitions>
+                        <Path Grid.Column="0" Style="{StaticResource RoleGlyph}"
+                              Data="M 0.5,0.5 L 13,13 M 13,0.5 L 0.5,13"/>
+                        <StackPanel Grid.Column="1" Margin="9,0,0,0">
+                            <TextBlock Text="不要，这台电脑不录像"
+                                       FontSize="15" FontWeight="SemiBold"/>
+                            <TextBlock Style="{StaticResource Caption}" Margin="0,5,0,0"
+                                       Text="不初始化本机录像设备，仍可保存其他设备录像或只连接主机查看"/>
+                        </StackPanel>
+                    </Grid>
+                </RadioButton>
+            </Grid>
+
+            <!-- ══ 问题二 ════════════════════════════════════════════════ -->
+            <TextBlock Style="{StaticResource SectionTitle}" FontSize="15"
+                       Margin="0,22,0,10"
+                       Text="2. 这台电脑要负责长期保存录像吗?"/>
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="*"/>
+                </Grid.ColumnDefinitions>
+
+                <RadioButton x:Name="KeepsYes" Grid.Column="0" GroupName="Keeps"
+                             Style="{StaticResource RoleCard}" Margin="0,0,6,0"
+                             Checked="OnAnswerChanged">
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="*"/>
+                        </Grid.ColumnDefinitions>
+                        <Path Grid.Column="0" Style="{StaticResource RoleGlyph}"
+                              Data="M 12.5,1.5 L 4.5,10 L 0.5,6"/>
+                        <StackPanel Grid.Column="1" Margin="9,0,0,0">
+                            <TextBlock Text="要，作为保存录像的电脑"
+                                       FontSize="15" FontWeight="SemiBold"/>
+                            <TextBlock Style="{StaticResource Caption}" Margin="0,5,0,0"
+                                       Text="长期保存录像，并可接收和备份手机或其他录制电脑上传的录像"/>
+                        </StackPanel>
+                    </Grid>
+                </RadioButton>
+
+                <RadioButton x:Name="KeepsNo" Grid.Column="1" GroupName="Keeps"
+                             Style="{StaticResource RoleCard}" Margin="6,0,0,0"
+                             Checked="OnAnswerChanged">
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="*"/>
+                        </Grid.ColumnDefinitions>
+                        <Path Grid.Column="0" Style="{StaticResource RoleGlyph}"
+                              Data="M 0.5,0.5 L 13,13 M 13,0.5 L 0.5,13"/>
+                        <StackPanel Grid.Column="1" Margin="9,0,0,0">
+                            <TextBlock Text="不要，由其他电脑负责保存"
+                                       FontSize="15" FontWeight="SemiBold"/>
+                            <TextBlock Style="{StaticResource Caption}" Margin="0,5,0,0"
+                                       Text="本机录像先进入本地缓存，再上传到保存电脑；不录像时则只连接主机查看"/>
+                        </StackPanel>
+                    </Grid>
+                </RadioButton>
+            </Grid>
+
+            <!-- ══ 结果卡 ════════════════════════════════════════════════ -->
+            <Border Style="{StaticResource Card}" Margin="0,20,0,0" Padding="16">
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="*"/>
+                    </Grid.ColumnDefinitions>
+
+                    <Border Grid.Column="0" Width="44" Height="44" CornerRadius="8"
+                            Background="{StaticResource SurfaceAlt}" VerticalAlignment="Top">
+                        <Path x:Name="ResultGlyph" Width="22" Height="22"
+                              Stroke="{StaticResource Accent}" StrokeThickness="1.6"
+                              StrokeStartLineCap="Round" StrokeEndLineCap="Round"
+                              StrokeLineJoin="Round"
+                              Data="M 16.5,2 L 6,13 L 1.5,8"/>
+                    </Border>
+
+                    <StackPanel Grid.Column="1" Margin="15,0,0,0">
+                        <TextBlock x:Name="ResultLabel" FontSize="12"
+                                   Foreground="{StaticResource Accent}" Text="选择结果"/>
+                        <TextBlock x:Name="ResultTitle" Style="{StaticResource PageTitle}"
+                                   FontSize="20" Margin="0,5,0,0"
+                                   Text="请完成上面两个选择"/>
+                        <TextBlock x:Name="ResultSummary" Style="{StaticResource Caption}"
+                                   FontSize="13" Margin="0,6,0,0"
+                                   Text="完成后会在这里显示最终用途和支持的能力"/>
+                        <ItemsControl x:Name="ResultAbilities" Margin="0,10,0,0"
+                                      ItemTemplate="{StaticResource AbilityTemplate}"/>
+                    </StackPanel>
+                </Grid>
+            </Border>
+        </StackPanel>
+
+        <!-- ══ 底部按钮 ════════════════════════════════════════════════ -->
+        <StackPanel Grid.Row="1" Orientation="Horizontal" HorizontalAlignment="Right"
+                    Margin="34,18,34,22">
+            <Button x:Name="CancelButton" Content="取消" Padding="22,8"
+                    Style="{StaticResource SecondaryButton}" Click="OnCancel"/>
+            <Button x:Name="ConfirmButton" Content="确认用途" Padding="22,8" Margin="12,0,0,0"
+                    Style="{StaticResource PrimaryButton}" IsEnabled="False"
+                    Click="OnConfirm"/>
+        </StackPanel>
+    </Grid>
+</Window>

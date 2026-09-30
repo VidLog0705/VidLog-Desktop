@@ -272,6 +272,39 @@
         <Setter Property="Background" Value="{StaticResource Danger}"/>
     </Style>
 
+    <!--
+        无边框的图标按钮（输入框里那个 ✕ 这类）。
+        默认 Button 的 chrome 是系统渐变 + 系统边框，一个透明底的小 ✕ 套上去
+        会变成「灰底方块里一个叉」，与图上的样子差得远。所以这里重写模板，
+        只留内容，悬停时叠一层浅灰。
+    -->
+    <Style x:Key="IconButton" TargetType="Button">
+        <Setter Property="Cursor" Value="Hand"/>
+        <Setter Property="Background" Value="Transparent"/>
+        <Setter Property="Padding" Value="5"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="Button">
+                    <Border x:Name="Bd" Background="{TemplateBinding Background}"
+                            CornerRadius="4" SnapsToDevicePixels="True">
+                        <ContentPresenter Margin="{TemplateBinding Padding}"
+                                          HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                    </Border>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsMouseOver" Value="True">
+                            <Setter TargetName="Bd" Property="Background"
+                                    Value="{StaticResource SurfaceAlt}"/>
+                        </Trigger>
+                        <Trigger Property="IsEnabled" Value="False">
+                            <Setter Property="Opacity" Value="0.4"/>
+                            <Setter Property="Cursor" Value="Arrow"/>
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
     <!-- ── 左侧导航项（设置窗） ──────────────────────────────────── -->
     <!--
         用 RadioButton 而不是 Button/ToggleButton：**互斥是白送的**

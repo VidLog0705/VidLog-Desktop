@@ -23,16 +23,22 @@
         （设置 → `SettingsWindow`，检索与回放 → `SearchWindow`），
         剩下的「概览」收进右侧面板。`docs/实现决策.md` §58 的版式裁决作废。
 
-        ▓▓ 有意与设计图不一样的三处（都不是「偷懒」，是功能不能丢）▓▓
-        ① **顶部那个「发货 / 退货」切换按钮是禁用的**：VidLog 里业务类型是
-           **手机端**扫单号时定的（`LabelKeys.BusinessType` 由上传带过来），
-           电脑端没有「我接下来要录的是发货还是退货」这个概念。
-           照搬它 = 引入一个与架构不符的状态。**这一条要需求方裁决。**
-        ② **编码 / 分辨率不在这一页**：规格 §3.1.7 要求「横排、不用下拉」，
+        ▓▓ 有意与设计图不一样的两处（都不是「偷懒」，是功能不能丢）▓▓
+        ① **编码 / 分辨率不在这一页**：规格 §3.1.7 要求「横排、不用下拉」，
            它们挪进了设置窗的「设备与外观」—— 录制台上摆不下，而图上也没有。
-        ③ **预览区现在没有真画面**：dshow 相机是独占的，录制进程开着的时候
+        ② **预览区现在没有真画面**：dshow 相机是独占的，录制进程开着的时候
            取不到第二路画面（见 `docs/实现决策.md` §25）。真预览要单独验一次
            相机能不能「一路源两路输出」，验过之前这里如实写着「未接入」。
+
+        ⚠️ 顶部那个「发货 / 退货」按钮**曾经是禁用的** —— 当时的理由写在这里：
+        「VidLog 里业务类型是手机端扫单号时定的，电脑端没有这个状态」，
+        并标明**要需求方裁决**。
+        2026-09-30 裁决落地：**设计图优先** —— 图 `_35` 上它就在那儿、
+        右栏还配着两张命令条码（扫码切换退货 / 扫码开始录像），
+        所以电脑端**现在有**这个状态了（`RecordingCoordinator.CurrentBusinessType`），
+        开段那一刻抄进会话、收尾时写成 `LabelKeys.BusinessType` 标签。
+        ⚠️ 与手机端定的那个标签**同一套值**（`BusinessTypes`），不是两套。
+        详见 `docs/实现决策.md` 的「批次 6」一节。
 
         ⚠️ 有四段文字被绊线测试**按文本**盯着（`DesktopServicesTests`），
         必须逐字保留：`x:Name="DurationStopButton"` /
@@ -42,7 +48,14 @@
         随检索页搬去了 `SearchWindow.xaml`，测试跟着改读那个文件。）
         ════════════════════════════════════════════════════════════════
     -->
+    <!--
+        ⚠️ 外面这一层是为了「备份主机」那个形态（设计图 `_39`）新加的：
+        本机用途不录像时，显示的是 `BackupRoot` 而不是录制台。
+        **两层各自完整，靠 Visibility 二选一** —— 不把录制台里那近九十个
+        `x:Name` 搬来搬去（那正是最容易搬崩的地方，而 App 层没有测试挡得住）。
+    -->
     <Grid>
+    <Grid x:Name="RecordingRoot">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="*"/>
@@ -59,21 +72,22 @@
                     <ColumnDefinition Width="Auto"/>
                 </Grid.ColumnDefinitions>
 
-                <!-- ① 当前业务类型。
-                     ⚠️ 禁用是**照裁决**（「禁用 + 悬停写明原因」）——
-                     不是没做完，是 VidLog 里这个状态由手机端定，
-                     电脑端没有它。悬停能看见原因。 -->
+                <!-- ① 当前业务类型（图 `_35` 左上角那颗蓝按钮）。
+                     点一下切换发货 / 退货；**改的只是「下一段按哪个档录」**，
+                     正在录的这一段不跟着变（见 `RecordingCoordinator.CurrentBusinessType`）。
+                     同样的切换也能拿扫码枪扫右栏那张码 —— 对工位上腾不出手的人，
+                     那才是主路径，这颗按钮是给够得着鼠标的人用的。 -->
                 <Button x:Name="BusinessButton" Grid.Column="0"
                         Style="{StaticResource PrimaryButton}"
-                        Padding="20,10" IsEnabled="False"
-                        ToolTipService.ShowOnDisabled="True"
-                        ToolTip="电脑端没有「接下来要录发货还是退货」这个状态 —— 业务类型是手机端扫单号时定的。要按类型筛选，请到【检索与回放】页。">
+                        Padding="20,10" Click="OnToggleBusinessType"
+                        ToolTip="点一下切换「发货 / 退货」。录起来之后改它只对下一段生效 —— 正在录的这一段按开始时的档位。">
                     <StackPanel Orientation="Horizontal">
                         <!-- 包裹盒：内联矢量，不引任何图片资源 -->
                         <Path Data="M 8,0 L 16,4.5 L 16,12 L 8,16.5 L 0,12 L 0,4.5 Z M 8,0 L 8,16.5 M 0,4.5 L 8,8.5 L 16,4.5"
                               Stroke="White" StrokeThickness="1.4"
                               VerticalAlignment="Center"/>
-                        <TextBlock Text="发货" Margin="8,0,0,0" VerticalAlignment="Center"
+                        <TextBlock x:Name="BusinessLabel" Text="发货" Margin="8,0,0,0"
+                                   VerticalAlignment="Center"
                                    FontSize="15" FontWeight="SemiBold"/>
                     </StackPanel>
                 </Button>
@@ -252,6 +266,35 @@
                 <ScrollViewer VerticalScrollBarVisibility="Auto" Padding="16">
                     <StackPanel>
 
+                        <!-- ══ 扫码切换发货 / 退货（图 `_35` 右栏上半）══════════
+                             ⚠️ 载荷由 `ScanCommand.For(当前档)` 一处产出（切到**另一档**），
+                             标题也跟着它变 —— 图上写的是「扫码切换退货」（那一刻录的是发货）。
+                             ⚠️ 画码用 `BitmapScalingMode="NearestNeighbor"`：与
+                             `EnrollWindow` 那张二维码同一条理由，插值会把条空边界糊成灰边，
+                             表现是「看着像条码、扫不出来」。**那个属性别动。** -->
+                        <Border Style="{StaticResource Card}" Padding="12,10" Margin="0,0,0,16">
+                            <StackPanel>
+                                <TextBlock x:Name="BusinessBarcodeTitle"
+                                           Style="{StaticResource SectionTitle}"
+                                           HorizontalAlignment="Center" Text="扫码切换退货"/>
+                                <TextBlock x:Name="BusinessBarcodeHint"
+                                           Style="{StaticResource Caption}" Margin="0,4,0,0"
+                                           HorizontalAlignment="Center" TextAlignment="Center"
+                                           TextWrapping="Wrap"/>
+                                <Border Background="White" Padding="8" Margin="0,8,0,0"
+                                        CornerRadius="6" HorizontalAlignment="Center"
+                                        BorderBrush="{StaticResource CardBorder}"
+                                        BorderThickness="1">
+                                    <Image x:Name="BusinessBarcodeImage" Height="64"
+                                           RenderOptions.BitmapScalingMode="NearestNeighbor"/>
+                                </Border>
+                                <TextBlock x:Name="BusinessBarcodePayload"
+                                           Style="{StaticResource Caption}" Margin="0,6,0,0"
+                                           HorizontalAlignment="Center"
+                                           FontFamily="{StaticResource MonoFont}"/>
+                            </StackPanel>
+                        </Border>
+
                         <!-- 录制状态。⚠️ 它原来在左侧竖导航里，那栏没了之后
                              必须有新家 —— 不然「现在到底在不在录」就没地方看了。 -->
                         <Border Background="{StaticResource SurfaceMuted}"
@@ -405,9 +448,269 @@
                         <TextBlock Style="{StaticResource SectionTitle}" Text="动态"/>
                         <TextBlock x:Name="NoticesText" TextWrapping="Wrap"
                                    Foreground="{StaticResource TextSecondary}"/>
+
+                        <!-- ══ 扫码开始录像（图 `_35` 右栏最底下）══════════════
+                             ⚠️ 它等于按一下顶栏那颗【开始录制】（`StartWork()`），
+                             **不是**直接开录 —— 开录仍然要扫到一张真面单。
+                             ⚠️ 载荷固定（`ScanCommand.StartWork`），不随档位变。 -->
+                        <Border Style="{StaticResource Card}" Padding="12,10" Margin="0,16,0,0">
+                            <StackPanel>
+                                <TextBlock Style="{StaticResource SectionTitle}"
+                                           HorizontalAlignment="Center" Text="扫码开始录像"/>
+                                <TextBlock Style="{StaticResource Caption}" Margin="0,4,0,0"
+                                           HorizontalAlignment="Center" TextAlignment="Center"
+                                           TextWrapping="Wrap"
+                                           Text="等同于按一下上面的【开始录制】；之后扫面单才会开录。"/>
+                                <Border Background="White" Padding="8" Margin="0,8,0,0"
+                                        CornerRadius="6" HorizontalAlignment="Center"
+                                        BorderBrush="{StaticResource CardBorder}"
+                                        BorderThickness="1">
+                                    <Image x:Name="RecordBarcodeImage" Height="64"
+                                           RenderOptions.BitmapScalingMode="NearestNeighbor"/>
+                                </Border>
+                                <TextBlock x:Name="RecordBarcodePayload"
+                                           Style="{StaticResource Caption}" Margin="0,6,0,0"
+                                           HorizontalAlignment="Center"
+                                           FontFamily="{StaticResource MonoFont}"/>
+                            </StackPanel>
+                        </Border>
                     </StackPanel>
                 </ScrollViewer>
             </Border>
         </Grid>
+    </Grid>
+
+    <!-- ══════════════════════════════════════════════════════════════
+         「备份主机」形态 —— 照设计图 `_39`
+
+         ⚠️ 什么时候显示它：`AppSettings.StationRole` 是「不要录像」的那两档
+         （`BackupHost` / `ViewerOnly`）。**录制台整个收起来**，不是禁用 ——
+         一台不录像的机器上摆着「开始录制」只是噪声。
+         ⚠️ 图上那六颗按钮里有三颗（安装订单联动 / 发送测试订单 / 实时多画面）
+         VidLog 没有对应能力，按裁决**禁用 + 悬停写明原因**，不是画个假的。
+         ══════════════════════════════════════════════════════════════ -->
+    <Grid x:Name="BackupRoot" Visibility="Collapsed">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <!-- ── 顶栏：机器名 + 地址 + 切换用途 ───────────────────── -->
+        <Border Grid.Row="0" Background="{StaticResource Surface}"
+                BorderBrush="{StaticResource CardBorder}" BorderThickness="0,0,0,1"
+                Padding="20,16">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+
+                <StackPanel Grid.Column="0">
+                    <StackPanel Orientation="Horizontal">
+                        <TextBlock x:Name="BackupMachineText" FontSize="22"
+                                   FontWeight="Bold"
+                                   Foreground="{StaticResource TextPrimary}" Text="电脑"/>
+                        <!-- 图上是灰字、与机器名同一行的**下沿对齐** -->
+                        <TextBlock x:Name="BackupAddressText" Margin="12,0,0,0"
+                                   VerticalAlignment="Bottom" FontSize="14"
+                                   Foreground="{StaticResource TextSecondary}" Text=""/>
+                    </StackPanel>
+                    <TextBlock x:Name="BackupRoleText" Style="{StaticResource Caption}"
+                               FontSize="13" Margin="0,8,0,0"/>
+                </StackPanel>
+
+                <Button x:Name="SwitchRoleButton" Grid.Column="1"
+                        VerticalAlignment="Top"
+                        Style="{StaticResource SecondaryButton}" Padding="14,7"
+                        Click="OnSwitchRole">
+                    <StackPanel Orientation="Horizontal">
+                        <!-- ⇄：两条带箭头的反向横线，内联矢量 -->
+                        <Path Stroke="{StaticResource TextPrimary}" StrokeThickness="1.5"
+                              StrokeStartLineCap="Round" StrokeEndLineCap="Round"
+                              StrokeLineJoin="Round" VerticalAlignment="Center"
+                              Data="M 0,4.5 L 13,4.5 M 10,1.5 L 13,4.5 L 10,7.5
+                                    M 13,11.5 L 0,11.5 M 3,8.5 L 0,11.5 L 3,14.5"/>
+                        <TextBlock Text="切换用途" Margin="7,0,0,0"/>
+                    </StackPanel>
+                </Button>
+            </Grid>
+        </Border>
+
+        <!-- ── 主体：左边两张状态卡 + 右边六颗按钮 ───────────────── -->
+        <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto" Padding="20">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="1.6*"/>
+                </Grid.ColumnDefinitions>
+
+                <Border Grid.Column="0" Style="{StaticResource Card}"
+                        Padding="16,14" Margin="0,0,10,0" VerticalAlignment="Top">
+                    <StackPanel>
+                        <!-- 手机 / 电脑备份 -->
+                        <Grid>
+                            <StackPanel Orientation="Horizontal">
+                                <Path Stroke="{StaticResource TextSecondary}" StrokeThickness="1.4"
+                                      StrokeStartLineCap="Round" StrokeEndLineCap="Round"
+                                      VerticalAlignment="Center"
+                                      Data="M 0,5.5 A 9,9 0 0 1 14,5.5
+                                            M 2.8,8.5 A 5.5,5.5 0 0 1 11.2,8.5
+                                            M 5.4,11.5 A 2.4,2.4 0 0 1 8.6,11.5
+                                            M 6,14.5 A 1,1 0 1 0 8,14.5 A 1,1 0 1 0 6,14.5 Z"/>
+                                <TextBlock Text="手机/电脑备份" Margin="8,0,0,0"
+                                           FontSize="14" FontWeight="SemiBold"/>
+                            </StackPanel>
+                            <!-- 图上「已就绪」是绿的、右对齐 -->
+                            <TextBlock x:Name="BackupDeviceTag" HorizontalAlignment="Right"
+                                       VerticalAlignment="Center" FontSize="12"
+                                       Foreground="{StaticResource Success}" Text="已就绪"/>
+                        </Grid>
+                        <TextBlock x:Name="BackupDeviceText" Style="{StaticResource Caption}"
+                                   FontSize="13" Margin="0,9,0,0" Text="暂无手机/电脑设备"/>
+
+                        <Separator Margin="0,14,0,12"/>
+
+                        <!-- 订单联动 -->
+                        <Grid>
+                            <StackPanel Orientation="Horizontal">
+                                <Path Stroke="{StaticResource TextSecondary}" StrokeThickness="1.4"
+                                      StrokeStartLineCap="Round" StrokeEndLineCap="Round"
+                                      VerticalAlignment="Center"
+                                      Data="M 2,7 A 5,5 0 1 1 7,12 L 2,12 L 2,7 Z"/>
+                                <TextBlock Text="订单联动" Margin="8,0,0,0"
+                                           FontSize="14" FontWeight="SemiBold"/>
+                            </StackPanel>
+                            <TextBlock x:Name="BackupOrderTag" HorizontalAlignment="Right"
+                                       VerticalAlignment="Center" FontSize="12"
+                                       Foreground="{StaticResource Warning}" Text="暂无设备"/>
+                        </Grid>
+                        <TextBlock x:Name="BackupOrderText" Style="{StaticResource Caption}"
+                                   FontSize="13" Margin="0,9,0,0" Text="暂无订单接收设备"/>
+                    </StackPanel>
+                </Border>
+
+                <Grid Grid.Column="1" Margin="10,0,0,0" VerticalAlignment="Top">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="*"/>
+                    </Grid.ColumnDefinitions>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                    </Grid.RowDefinitions>
+
+                    <Button Grid.Row="0" Grid.Column="0" Margin="0,0,6,10"
+                            Style="{StaticResource SecondaryButton}" Padding="16,12"
+                            Click="OnEnroll">
+                        <StackPanel Orientation="Horizontal">
+                            <Path Stroke="{StaticResource Accent}" StrokeThickness="1.4"
+                                  StrokeStartLineCap="Round" StrokeEndLineCap="Round"
+                                  VerticalAlignment="Center"
+                                  Data="M 0,5.5 A 9,9 0 0 1 14,5.5
+                                        M 2.8,8.5 A 5.5,5.5 0 0 1 11.2,8.5
+                                        M 5.4,11.5 A 2.4,2.4 0 0 1 8.6,11.5
+                                        M 6,14.5 A 1,1 0 1 0 8,14.5 A 1,1 0 1 0 6,14.5 Z"/>
+                            <TextBlock Text="连接电脑/手机" Margin="9,0,0,0"/>
+                        </StackPanel>
+                    </Button>
+
+                    <Button Grid.Row="0" Grid.Column="1" Margin="6,0,0,10"
+                            Style="{StaticResource SecondaryButton}" Padding="16,12"
+                            Click="OnOpenPlaybackPage">
+                        <StackPanel Orientation="Horizontal">
+                            <Path Stroke="{StaticResource Accent}" StrokeThickness="1.4"
+                                  StrokeLineJoin="Round" VerticalAlignment="Center"
+                                  Data="M 2,1 L 13,6.5 L 2,12 Z"/>
+                            <TextBlock Text="网页回放" Margin="9,0,0,0"/>
+                        </StackPanel>
+                    </Button>
+
+                    <!-- ⚠️ 下面两颗禁用是**照裁决**（「设计图上能点、VidLog 没这功能
+                         的按钮 → 禁用 + 悬停写明原因」）。订单联动要一个至今没开工的
+                         服务端（规格记在 M6），不是这边少写了几行。 -->
+                    <Button Grid.Row="1" Grid.Column="0" Margin="0,0,6,10"
+                            Style="{StaticResource SecondaryButton}" Padding="16,12"
+                            IsEnabled="False" ToolTipService.ShowOnDisabled="True"
+                            ToolTip="订单联动要服务端先把订单接口做出来（规格里是还没开工的 M6）—— 电脑端这边没有可装的东西。">
+                        <StackPanel Orientation="Horizontal">
+                            <Path Stroke="{StaticResource TextDisabled}" StrokeThickness="1.4"
+                                  StrokeStartLineCap="Round" StrokeEndLineCap="Round"
+                                  VerticalAlignment="Center"
+                                  Data="M 2,7 A 5,5 0 1 1 7,12 L 2,12 L 2,7 Z"/>
+                            <TextBlock Text="安装订单联动" Margin="9,0,0,0"
+                                       Foreground="{StaticResource TextDisabled}"/>
+                        </StackPanel>
+                    </Button>
+
+                    <Button Grid.Row="1" Grid.Column="1" Margin="6,0,0,10"
+                            Style="{StaticResource SecondaryButton}" Padding="16,12"
+                            IsEnabled="False" ToolTipService.ShowOnDisabled="True"
+                            ToolTip="同上：没有服务端的订单接口，就没有可发的测试订单。">
+                        <StackPanel Orientation="Horizontal">
+                            <Path Stroke="{StaticResource TextDisabled}" StrokeThickness="1.4"
+                                  StrokeStartLineCap="Round" StrokeEndLineCap="Round"
+                                  StrokeLineJoin="Round" VerticalAlignment="Center"
+                                  Data="M 1,7.5 L 12,1.5 L 12,13.5 Z M 1,1.5 L 1,13.5"/>
+                            <TextBlock Text="发送测试订单" Margin="9,0,0,0"
+                                       Foreground="{StaticResource TextDisabled}"/>
+                        </StackPanel>
+                    </Button>
+
+                    <Button Grid.Row="2" Grid.Column="0" Grid.ColumnSpan="2" Margin="0"
+                            Style="{StaticResource SecondaryButton}" Padding="16,12"
+                            IsEnabled="False" ToolTipService.ShowOnDisabled="True"
+                            ToolTip="多画面要等手机端先有实时推流 —— 规格自己写着这一项「需重做传输层」。">
+                        <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
+                            <Path Stroke="{StaticResource TextDisabled}" StrokeThickness="1.4"
+                                  StrokeLineJoin="Round" VerticalAlignment="Center"
+                                  Data="M 0,2 L 7,2 L 7,10 L 0,10 Z M 7,4.5 L 11,2 L 11,10 L 7,7.5 Z"/>
+                            <TextBlock Text="实时多画面" Margin="9,0,0,0"
+                                       Foreground="{StaticResource TextDisabled}"/>
+                        </StackPanel>
+                    </Button>
+                </Grid>
+            </Grid>
+        </ScrollViewer>
+
+        <!-- ── 底栏：两个计数 + 三颗入口 ─────────────────────────── -->
+        <Border Grid.Row="2" Background="{StaticResource Surface}"
+                BorderBrush="{StaticResource CardBorder}" BorderThickness="0,1,0,0"
+                Padding="20,12">
+            <Grid>
+                <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                    <TextBlock Text="今日备份" FontSize="14"
+                               Foreground="{StaticResource TextSecondary}"
+                               VerticalAlignment="Center"/>
+                    <TextBlock x:Name="BackupTodayText" Text="0" Margin="8,0,0,0"
+                               FontSize="22" FontWeight="Bold"
+                               Foreground="{StaticResource Accent}"/>
+                    <TextBlock Text="个" FontSize="14" Margin="4,0,0,0"
+                               Foreground="{StaticResource TextSecondary}"
+                               VerticalAlignment="Center"/>
+
+                    <TextBlock Text="累计备份" FontSize="14" Margin="26,0,0,0"
+                               Foreground="{StaticResource TextSecondary}"
+                               VerticalAlignment="Center"/>
+                    <TextBlock x:Name="BackupTotalText" Text="0" Margin="8,0,0,0"
+                               FontSize="22" FontWeight="Bold"
+                               Foreground="{StaticResource Accent}"/>
+                    <TextBlock Text="个" FontSize="14" Margin="4,0,0,0"
+                               Foreground="{StaticResource TextSecondary}"
+                               VerticalAlignment="Center"/>
+                </StackPanel>
+
+                <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                    <Button Content="数据" Style="{StaticResource SecondaryButton}"
+                            Padding="18,7" Click="OnOpenData"/>
+                    <Button Content="回放" Style="{StaticResource SecondaryButton}"
+                            Padding="18,7" Margin="8,0,0,0" Click="OnOpenSearch"/>
+                    <Button Content="设置" Style="{StaticResource SecondaryButton}"
+                            Padding="18,7" Margin="8,0,0,0" Click="OnOpenSettings"/>
+                </StackPanel>
+            </Grid>
+        </Border>
+    </Grid>
     </Grid>
 </Window>
