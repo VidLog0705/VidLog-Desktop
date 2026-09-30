@@ -1,3 +1,6 @@
+using System.Collections.Concurrent;
+using VidLog.Desktop.Core.Diagnostics;
+
 namespace VidLog.Desktop.Core.Cloud;
 
 /// <summary>一次上传的进度（给队列界面用）。</summary>
@@ -32,12 +35,33 @@ public sealed record UploadProgress(int Slice, int Slices, int Skipped)
 /// 由队列决定「换一片再来」还是「整条记为失败」—— 两层各有一份重试策略
 /// 就会互相打架，而打架的表现是偶发的重复上传。
 /// </para>
+/// <para>
+/// <b>唯一的例外</b>是「路径不对 ⇒ 先把目录建出来再试一次」：那不是重试策略，
+/// 是**修好条件**（文档没写上传会不会自动建父目录，见
+/// <see cref="BaiduPanException.IsPathProblem"/>）。它**只发生一次**，
+/// 再失败就照实抛给队列，不会在这里变成一层隐形的重试循环。
+/// </para>
 /// </remarks>
 public sealed class BaiduPanUploader
 {
     private readonly IBaiduPanApi _api;
+    private readonly IAppLogger _logger;
 
-    public BaiduPanUploader(IBaiduPanApi api) => _api = api;
+    /// <summary>本次运行里已经建过的远端目录。</summary>
+    /// <remarks>
+    /// ⚠️ 用 <see cref="ConcurrentDictionary{TKey,TValue}"/> 而不是 <c>HashSet</c>：
+    /// 上传是并发跑的（同时 8 条），而 <c>HashSet</c> 并发写会**静默丢项**——
+    /// 丢项的表现是多发几次建目录请求，那倒还好；真正糟的是它可能把内部状态写坏，
+    /// 之后 <c>Contains</c> 随机返回错的东西。这里要的正是「同一个键只有一个赢家」，
+    /// <c>TryAdd</c> 给的恰好就是这个。
+    /// </remarks>
+    private readonly ConcurrentDictionary<string, byte> _ensured = new(StringComparer.Ordinal);
+
+    public BaiduPanUploader(IBaiduPanApi api, IAppLogger? logger = null)
+    {
+        _api = api;
+        _logger = logger ?? NullLogger.Instance;
+    }
 
     /// <summary>上传一个文件。</summary>
     /// <exception cref="BaiduPanException">网盘拒绝、或者文件根本传不了。</exception>
@@ -76,14 +100,64 @@ public sealed class BaiduPanUploader
         }
 
         var blockList = await BaiduPanBlocks.ComputeAsync(localPath, cancellationToken);
+
+        try
+        {
+            await UploadOnceAsync(
+                accessToken, remotePath, localPath, info.Length, blockList, progress, cancellationToken);
+        }
+        catch (BaiduPanException ex) when (ex.IsPathProblem)
+        {
+            // ⚠️ 这一段在补一件**文档没写**的事：`precreate` 会不会顺手把中间的父目录
+            // 建出来？018 对 `autoinit` 只有一句「本接口固定为 1」，没说它做什么；
+            // 全套文档里也没有任何一处写「上传会自动建目录」。而 020 专门有建文件夹的
+            // 接口 —— 暗示得自己建，但同样没有正面写。
+            //
+            // 所以这里**不猜**：平时一个目录都不建（正常路径上一次额外请求都不发），
+            // 只有真回了路径类错误时才按 020 把目录补出来，然后**只重试一次**。
+            // 两种可能哪一边是真的，这条路都走得通。
+            // ⚠️ 不这样做的话，风险是**整条归档路径传不上去**：远端落点是
+            // `/apps/<应用名>/2026/09/30/发货/`，而代码里没有任何一处显式建目录。
+            _logger.Log(
+                LogLevel.Warn,
+                "网盘",
+                $"网盘说这个路径有问题（errno {ex.Errno}）。文档没写 precreate 会不会自动建父目录，"
+                + $"先按 020 把目录补出来再试一次：{ex.Message}");
+
+            await EnsureParentDirectoriesAsync(accessToken, remotePath, cancellationToken);
+
+            // 再失败就照实抛 —— 那就不是目录的事了，别把它盖成一个看不懂的错。
+            await UploadOnceAsync(
+                accessToken, remotePath, localPath, info.Length, blockList, progress, cancellationToken);
+        }
+    }
+
+    /// <summary>
+    /// 四步走一遍（预创建 → 问域名 → 逐片 → 合并）。
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ 它**会**被重跑一次（见 <see cref="UploadAsync"/> 里那段），所以不准在这里
+    /// 攒任何「只做一次」的状态。分片摘要 <paramref name="blockList"/> 由调用方算好传进来 ——
+    /// 重跑时再算一遍要把整个文件重读一次（4GB 那个量级），白白多花几分钟。
+    /// </remarks>
+    private async Task UploadOnceAsync(
+        string accessToken,
+        string remotePath,
+        string localPath,
+        long size,
+        IReadOnlyList<string> blockList,
+        IProgress<UploadProgress>? progress,
+        CancellationToken cancellationToken)
+    {
         var precreate = await _api.PrecreateAsync(
-            accessToken, remotePath, info.Length, blockList, cancellationToken);
+            accessToken, remotePath, size, blockList, cancellationToken);
 
         // ⚠️ 域名要先问（016：「上传文件数据前必须调用本接口」），而且**一个文件问一次**、
         // 所有分片共用同一个 —— 每个分片问一次的话，一次「立即对比同步」能把账号问进限流。
         var host = await _api.LocateUploadAsync(
             accessToken, remotePath, precreate.UploadId, cancellationToken);
 
+        var slices = blockList.Count;
         var skipped = 0;
 
         await using (var stream = new FileStream(
@@ -103,7 +177,7 @@ public sealed class BaiduPanUploader
                 }
 
                 var offset = (long)index * BaiduPanBlocks.SliceSize;
-                var length = (int)Math.Min(BaiduPanBlocks.SliceSize, info.Length - offset);
+                var length = (int)Math.Min(BaiduPanBlocks.SliceSize, size - offset);
 
                 stream.Seek(offset, SeekOrigin.Begin);
 
@@ -132,7 +206,56 @@ public sealed class BaiduPanUploader
         }
 
         await _api.CreateAsync(
-            accessToken, remotePath, info.Length, blockList, precreate.UploadId, cancellationToken);
+            accessToken, remotePath, size, blockList, precreate.UploadId, cancellationToken);
+    }
+
+    /// <summary>
+    /// 按 020 把一条远端路径的父目录链补出来（从 <c>/apps/&lt;应用名&gt;/</c> **下面**那一层起）。
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ 逐层建，而不是只建最里面那一层：020 说的是「创建**一个**文件夹」，
+    /// 没有任何一句保证它会连带建出中间的层。
+    /// ⚠️ 也**不去 create** <c>/apps/&lt;应用名&gt;/</c> 本身：那是授权之后就在的应用目录，
+    /// 去建它会被按「无权访问」拒掉（<c>-7</c>），于是兜底还没开始，
+    /// 就先把原来那个错换成了一个更看不懂的错。
+    /// </remarks>
+    private async Task EnsureParentDirectoriesAsync(
+        string accessToken, string remotePath, CancellationToken cancellationToken)
+    {
+        var slash = remotePath.LastIndexOf('/');
+
+        if (slash <= 0)
+        {
+            return;
+        }
+
+        var parent = remotePath[..slash];
+        var segments = parent.Split('/', StringSplitOptions.RemoveEmptyEntries);
+
+        var start = segments.Length >= 2 && segments[0] == "apps" ? 2 : 0;
+        var path = start == 0 ? string.Empty : "/" + segments[0] + "/" + segments[1];
+        var created = 0;
+
+        for (var index = start; index < segments.Length; index++)
+        {
+            path += "/" + segments[index];
+
+            // 本次运行里这一层已经建过就不再问：一条录像 4 层、一个日期目录下几十条录像，
+            // 不去重的话同一条链会被反复建（而未过审的应用每小时只有 10 次调用）。
+            if (!_ensured.TryAdd(path, 0))
+            {
+                continue;
+            }
+
+            await _api.CreateDirectoryAsync(accessToken, path, cancellationToken);
+            created++;
+        }
+
+        if (created > 0)
+        {
+            _logger.Log(LogLevel.Info, "网盘", $"网盘上没有这个目录，已按 020 建出来 {created} 层",
+                new Dictionary<string, object?> { ["dir"] = parent });
+        }
     }
 
     /// <summary>给人看的大小（「12.3MB」）。</summary>

@@ -88,6 +88,33 @@ public sealed class BaiduPanException : Exception
     /// </para>
     /// </remarks>
     public bool IsCredentialProblem => Errno is -6 or 20016 or 20017 or 31045;
+
+    /// <summary>
+    /// 这个错是不是「那个路径有问题」——也就是**可能是父目录还不存在**。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// ⚠️ 有它是因为一件文档**没写**的事：`precreate` 会不会顺手把中间的父目录
+    /// 建出来？018 对 <c>autoinit</c> 只写了「本接口固定为 1」一句，**没说它做什么**；
+    /// 全套文档里也没有任何一处写「上传会自动建目录」。而 020 专门有一个建文件夹
+    /// 的接口 —— 这暗示**得自己建**，但同样没有正面写。
+    /// </para>
+    /// <para>
+    /// 于是这里不猜：**平时一个目录都不建**（一次额外请求都不发），
+    /// 只有真回了一个路径类错误时，才按 020 把目录补出来再试一次
+    /// （<c>BaiduPanUploader</c>）。这样两种可能哪一边是真的都走得通，
+    /// 而且不会在没验证过的情况下先把每个目录都建一遍（未过审的应用
+    /// 每小时只有 10 次调用，浪费不起）。
+    /// </para>
+    /// <para>
+    /// 认的这几个码按 063 表里的**字面描述**挑：<c>-7</c>「文件或目录名错误或
+    /// 无权访问」、<c>-9</c>「文件或目录不存在」、<c>31064</c>「上传路径错误」、
+    /// <c>31066</c>「文件名不存在」、<c>31190</c>「文件不存在」。
+    /// ⚠️ <b>不带 20020 / 20022 / 20023</b>：那三个是「不在授权范围」「参数格式」
+    /// 「漏传参数」，建目录**修不好**它们，带进来只会多几次白发的请求。
+    /// </para>
+    /// </remarks>
+    public bool IsPathProblem => Errno is -7 or -9 or 31064 or 31066 or 31190;
 }
 
 /// <summary>
@@ -159,6 +186,20 @@ public interface IBaiduPanApi
         long size,
         IReadOnlyList<string> blockList,
         string uploadId,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// 建一个文件夹（020）。已经在了**不算失败**。
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ 建目录的冲突策略与建文件**不是一套**（020 的 <c>rtype</c>：目录只有
+    /// 「0 冲突时失败 / 1 冲突时重命名」，**没有覆盖**），所以这里固定 <c>rtype=0</c>
+    /// 并把「已存在」当成功 —— 换成 1 会在网盘上堆出 <c>发货(1)</c>、<c>发货(2)</c>，
+    /// 而回查是按路径找的，那些目录里的文件**永远回查不到**（I8 会说「云端没有」）。
+    /// </remarks>
+    Task CreateDirectoryAsync(
+        string accessToken,
+        string directory,
         CancellationToken cancellationToken = default);
 
     /// <summary>传一个分片。</summary>

@@ -181,6 +181,10 @@ public class BaiduPanSessionTests
             Task.FromResult(new BaiduPrecreate(
                 "upload-1", new HashSet<int>(Enumerable.Range(0, blockList.Count))));
 
+        public Task CreateDirectoryAsync(
+            string accessToken, string directory, CancellationToken cancellationToken = default) =>
+            Task.CompletedTask;
+
         public Task<string> LocateUploadAsync(
             string accessToken,
             string remotePath,

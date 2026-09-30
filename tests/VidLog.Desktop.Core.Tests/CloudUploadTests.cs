@@ -397,6 +397,113 @@ public class CloudUploadTests
         Assert.Empty(api.Created);
     }
 
+    // ─────────────────────────────────────────────
+    // 父目录不存在时的兜底（文档没写的那件事）
+    // ─────────────────────────────────────────────
+
+    [Fact]
+    public async Task 一路顺利时_一个目录都不会去建()
+    {
+        // ⚠️ 这一条是那个兜底的**另一半**，也是它敢加进来的理由：
+        // 正常情况下（上传自动建目录，或者目录早就在）**一次额外请求都不发**。
+        // 未过审的应用每小时只有 10 次调用 —— 一上来就先建 4 层目录，
+        // 等于把用户第一次真机验收的额度直接吃掉一半。
+        using var dir = new TempDir();
+        var api = new FakeApi();
+
+        var path = dir.Write("大文件.mp4", BaiduPanBlocks.SliceSize + 1);
+
+        await new BaiduPanUploader(api)
+            .UploadAsync("token", "/apps/VidLog/2026/09/30/发货/a.mp4", path);
+
+        Assert.Empty(api.CreatedDirectories);
+        Assert.Single(api.Created);
+    }
+
+    [Fact]
+    public async Task 网盘说路径不对时_按文档把目录建出来再试一次()
+    {
+        // ⚠️ 文档**从头到尾没说** precreate 会不会自动建父目录（018 对 autoinit
+        // 只有一句「本接口固定为 1」），所以这条路必须走得通：真回了路径类错误，
+        // 就按 020 把目录补出来，然后再试一次。
+        // 远端落点是 `/apps/<应用名>/2026/09/30/发货/`，而代码里没有任何一处建目录 ——
+        // 这条不成立的话，**整条归档路径第一次往一个新日期目录里传就会全失败**。
+        using var dir = new TempDir();
+        var api = new FakeApi();
+
+        api.PrecreateErrnos.Enqueue(-9); // 「文件或目录不存在」（063）
+
+        var path = dir.Write("大文件.mp4", BaiduPanBlocks.SliceSize + 1);
+
+        await new BaiduPanUploader(api)
+            .UploadAsync("token", "/apps/VidLog/2026/09/30/发货/a.mp4", path);
+
+        // 逐层建，从 `/apps/VidLog` **下面**那一层起 —— 不去 create 应用目录本身，
+        // 那会被按「无权访问」拒掉（-7），兜底还没开始就先换了个更看不懂的错。
+        Assert.Equal(
+            new[]
+            {
+                "/apps/VidLog/2026",
+                "/apps/VidLog/2026/09",
+                "/apps/VidLog/2026/09/30",
+                "/apps/VidLog/2026/09/30/发货",
+            },
+            api.CreatedDirectories);
+
+        // 而且**真的重试了**：文件传上去了。
+        Assert.Single(api.Created);
+    }
+
+    [Fact]
+    public async Task 同一个目录里的第二条_不会再把目录建一遍()
+    {
+        // 一个日期目录下面有几十条录像。不去重的话同一条链会被反复建，
+        // 而未过审的应用每小时只有 10 次调用。
+        using var dir = new TempDir();
+        var api = new FakeApi();
+        var uploader = new BaiduPanUploader(api);
+
+        api.PrecreateErrnos.Enqueue(-9);
+        await uploader.UploadAsync(
+            "token", "/apps/VidLog/2026/09/30/发货/a.mp4",
+            dir.Write("a.mp4", BaiduPanBlocks.SliceSize + 1));
+
+        var first = api.CreatedDirectories.Count;
+        Assert.Equal(4, first);
+
+        api.PrecreateErrnos.Enqueue(-9);
+        await uploader.UploadAsync(
+            "token", "/apps/VidLog/2026/09/30/发货/b.mp4",
+            dir.Write("b.mp4", BaiduPanBlocks.SliceSize + 1));
+
+        Assert.Equal(first, api.CreatedDirectories.Count);
+    }
+
+    [Fact]
+    public async Task 建了目录还是不行_抛的是原来那个错()
+    {
+        // ⚠️ 兜底**不许把真正的错盖掉**。建目录成功、重试仍然失败时，
+        // 抛出去的必须是网盘原本那个 errno —— 否则「授权被撤了」「路径不在
+        // 允许范围内」这类问题会被报成「目录建不出来」，越查越远。
+        using var dir = new TempDir();
+        var api = new FakeApi();
+
+        api.PrecreateErrnos.Enqueue(-9);
+        api.PrecreateErrnos.Enqueue(-9);
+
+        var path = dir.Write("大文件.mp4", BaiduPanBlocks.SliceSize + 1);
+
+        var error = await Assert.ThrowsAsync<BaiduPanException>(
+            () => new BaiduPanUploader(api)
+                .UploadAsync("token", "/apps/VidLog/2026/09/30/发货/a.mp4", path));
+
+        Assert.Equal(-9, error.Errno);
+
+        // 没有第三次：兜底只重试**一次**，再失败就交给队列去决定。
+        Assert.Equal(4, api.CreatedDirectories.Count);
+        Assert.Empty(api.Created);
+    }
+
     [Fact]
     public async Task 空文件被拒()
     {
@@ -582,6 +689,19 @@ public class CloudUploadTests
         /// <summary>非空时每一次传分片都抛它。</summary>
         public Exception? FailUploads { get; set; }
 
+        /// <summary>
+        /// 预创建按顺序回这几个 <c>errno</c>（非 0 就抛），队列空了就正常回。
+        /// </summary>
+        /// <remarks>
+        /// 用来演「父目录还不存在」：文档**没写**网盘回的是哪个码，所以这里
+        /// 拿 063 表里那几个路径类的码来演（<c>-9</c>「文件或目录不存在」最像）。
+        /// ⚠️ 真机上到底是哪一个，仍然是没验过的（<c>docs/实现决策.md</c> §87.15）。
+        /// </remarks>
+        public Queue<int> PrecreateErrnos { get; } = new();
+
+        /// <summary>真去建了哪些目录（按调用顺序，含重复）。</summary>
+        public List<string> CreatedDirectories { get; } = [];
+
         /// <summary>把某个远端路径上的文件摆上去（父目录会一起出现）。</summary>
         public void Put(string remotePath)
         {
@@ -623,10 +743,24 @@ public class CloudUploadTests
         {
             BlockListSizes.Add(blockList.Count);
 
+            if (PrecreateErrnos.Count > 0)
+            {
+                throw new BaiduPanException(PrecreateErrnos.Dequeue(), "网盘说这个路径不对。");
+            }
+
             var pending = PendingSlices
                 ?? new HashSet<int>(Enumerable.Range(0, blockList.Count));
 
             return Task.FromResult(new BaiduPrecreate("upload-1", pending));
+        }
+
+        public Task CreateDirectoryAsync(
+            string accessToken, string directory, CancellationToken cancellationToken = default)
+        {
+            CreatedDirectories.Add(directory);
+            MakeDirectory(directory);
+
+            return Task.CompletedTask;
         }
 
         public Task<string> LocateUploadAsync(

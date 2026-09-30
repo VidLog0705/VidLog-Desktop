@@ -133,6 +133,9 @@ public sealed class BaiduPanClient : IBaiduPanApi
     /// </remarks>
     private const string UserAgent = "pan.baidu.com";
 
+    /// <summary><c>-8</c>「文件或目录已存在」（063）。建目录时它是**成功**。</summary>
+    private const int AlreadyExists = -8;
+
     private readonly BaiduPanCredentials _credentials;
     private readonly HttpClient _http;
     private readonly IAppLogger _logger;
@@ -418,6 +421,39 @@ public sealed class BaiduPanClient : IBaiduPanApi
                 ["block_list"] = JsonSerializer.Serialize(blockList),
             },
             cancellationToken);
+    }
+
+    public async Task CreateDirectoryAsync(
+        string accessToken,
+        string directory,
+        CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            await PostFormAsync(
+                $"{FileBase}?method=create&access_token={Uri.EscapeDataString(accessToken)}",
+                new Dictionary<string, string>
+                {
+                    ["path"] = directory,
+                    ["isdir"] = "1",
+
+                    // ⚠️ 目录的冲突策略与文件**不是一套**（020 的 rtype：目录只有
+                    // 「0 冲突时失败 / 1 冲突时重命名」，没有覆盖这一档）。
+                    // 这里必须是 0：「已经在了」正是我们要的结果，而 1 会在网盘上
+                    // 堆出 `发货(1)`、`发货(2)` —— 回查是按路径找的（I8），
+                    // 那些目录里的文件会被判成「云端没有」，于是本机那份不敢删。
+                    ["rtype"] = "0",
+
+                    // ⚠️ 020 注意事项逐字：创建文件夹**不要传入** size、block_list 和 uploadid。
+                    // 传了不一定会被拒，但那是「照文档写」与「照自己猜的写」的分界。
+                },
+                cancellationToken);
+        }
+        catch (BaiduPanException ex) when (ex.Errno == AlreadyExists)
+        {
+            // -8「文件或目录已存在」—— 建目录是**幂等**的，这不是失败。
+            // 不吞掉的话，往一个已经用过的日期目录里传第二条录像就会整条失败。
+        }
     }
 
     public async Task<string?> UploadSliceAsync(

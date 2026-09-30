@@ -372,7 +372,7 @@ public sealed class DesktopServices : IAsyncDisposable
 
                 cloudUploads = new CloudUploadService(
                     session,
-                    new BaiduPanUploader(api),
+                    new BaiduPanUploader(api, logger),
                     api,
                     panLayout,
                     queue,

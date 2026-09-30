@@ -225,6 +225,43 @@ public class BaiduPanWireTests
     }
 
     // ─────────────────────────────────────────────
+    // 建目录（020）
+    // ─────────────────────────────────────────────
+
+    [Fact]
+    public async Task 建目录照020_isdir为一_不传大小与分片_且已存在算成功()
+    {
+        var stub = new Stub("""{"errno":0,"isdir":1,"path":"/apps/VidLog/2026"}""");
+
+        await Client(stub).CreateDirectoryAsync("t", "/apps/VidLog/2026");
+
+        var body = Assert.Single(stub.FormBodies);
+
+        Assert.Contains("isdir=1", body);
+
+        // ⚠️ 目录的冲突策略与文件**不是一套**（020 vs 018）：目录只有
+        // 「0 冲突时失败 / 1 冲突时重命名」，没有覆盖这一档。
+        // 写成 1 会在网盘上堆出 `发货(1)`、`发货(2)`，而回查是按路径找的（I8）——
+        // 那些目录里的文件会被判成「云端没有」，于是本机那份永远不敢删。
+        Assert.Contains("rtype=0", body);
+
+        // ⚠️ 020 注意事项逐字：创建文件夹**不要传入** size、block_list 和 uploadid。
+        Assert.DoesNotContain("size=", body);
+        Assert.DoesNotContain("block_list", body);
+        Assert.DoesNotContain("uploadid", body);
+    }
+
+    [Fact]
+    public async Task 建目录时撞上已存在不算失败()
+    {
+        // -8「文件或目录已存在」（063/020）。建目录是**幂等**的，这就是要的结果；
+        // 不吞掉的话，往一个用过的日期目录里传第二条录像会整条失败。
+        var stub = new Stub("""{"errno":-8}""");
+
+        await Client(stub).CreateDirectoryAsync("t", "/apps/VidLog/2026");
+    }
+
+    // ─────────────────────────────────────────────
     // 列目录
     // ─────────────────────────────────────────────
 
@@ -307,7 +344,10 @@ public class BaiduPanWireTests
         /// <summary>每个请求带的 User-Agent（请求对象会被释放，所以在这里就抄下来）。</summary>
         public List<string?> UserAgents { get; } = [];
 
-        protected override Task<HttpResponseMessage> SendAsync(
+        /// <summary>表单请求的**原文**（只抄表单那一类，分片是多部分体、不碰它）。</summary>
+        public List<string> FormBodies { get; } = [];
+
+        protected override async Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request, CancellationToken cancellationToken)
         {
             // 读原始值而不是 `Headers.UserAgent`：后者要能被解析成
@@ -317,7 +357,12 @@ public class BaiduPanWireTests
                 ? string.Join(" ", values)
                 : null);
 
-            return Task.FromResult(_respond(request));
+            if (request.Content is FormUrlEncodedContent)
+            {
+                FormBodies.Add(await request.Content.ReadAsStringAsync(cancellationToken));
+            }
+
+            return _respond(request);
         }
     }
 }
