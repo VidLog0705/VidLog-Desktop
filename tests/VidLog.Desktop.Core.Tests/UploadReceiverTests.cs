@@ -19,7 +19,13 @@ namespace VidLog.Desktop.Core.Tests;
 /// 这些测试直接打 <see cref="UploadReceiver"/>，不起 HTTP —— 路由那一层由
 /// <c>PlaybackServerTests</c> 用真 HTTP 覆盖。分在这里是为了让
 /// 「发布是不是原子的」「重发会不会换时间锚」这类断言读起来就是它们说的那件事。
+/// <para>
+/// ⚠️ 它属于 <see cref="SanitizerCollection"/>：`签发出去的凭据会登记给脱敏层`
+/// 那条断言的是**进程级**那张登记表，而 <c>SanitizerTests</c> 每条用例都会清空它
+/// —— 并行跑时一次清空落在中间就红了（2026-10-01 实测撞到）。
+/// </para>
 /// </remarks>
+[Collection(SanitizerCollection.Name)]
 public class UploadReceiverTests
 {
     private const string DeviceName = "测试主机";

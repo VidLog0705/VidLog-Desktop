@@ -518,21 +518,25 @@ public class SettingsStoreTests
     }
 
     [Fact]
-    public void 两张偏好表各自恰好只有一档能用()
+    public void 两张偏好表各自恰好只有一档真做了()
     {
         // ⚠️ 这条是**承重**的。「界面语言」与「外观主题」那两个下拉靠
-        // 「第一档能用的就是选中的那一档」来显示现状 —— 表里一档都不能用的话
+        // 「真做了的那一档就是选中的那一档」来显示现状 —— 表里一档都没有的话
         // 下拉会是空的，而它旁边正写着「中文（简体）」，界面自相矛盾，
         // 且 App 层没有测试工程，这种事没有任何东西挡得住。
-        Assert.Single(AppPreferences.Languages, o => o.Enabled);
-        Assert.Single(AppPreferences.Themes, o => o.Enabled);
+        //
+        // ⚠️ 2026-10-01 改了字段名：`Enabled` → `Implemented`。
+        // 没做的那几档**现在也点得动**（需求方裁决：点开显示「正在开发中」），
+        // 所以「能不能点」不再是这一档的属性 —— 「做没做」才是。
+        Assert.Single(AppPreferences.Languages, o => o.Implemented);
+        Assert.Single(AppPreferences.Themes, o => o.Implemented);
 
-        // 用不了的那几档**必须**说明为什么（踩坑 #13：禁用就得给理由）。
+        // 还没做的那几档**必须**有一句实话可显示（点下去就要用它）。
         Assert.All(
-            AppPreferences.Languages.Where(o => !o.Enabled),
+            AppPreferences.Languages.Where(o => !o.Implemented),
             o => Assert.False(string.IsNullOrWhiteSpace(o.Hint)));
         Assert.All(
-            AppPreferences.Themes.Where(o => !o.Enabled),
+            AppPreferences.Themes.Where(o => !o.Implemented),
             o => Assert.False(string.IsNullOrWhiteSpace(o.Hint)));
     }
 

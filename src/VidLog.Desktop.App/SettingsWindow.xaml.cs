@@ -16,6 +16,7 @@ using MessageBoxImage = System.Windows.MessageBoxImage;
 using MessageBoxResult = System.Windows.MessageBoxResult;
 // ⚠️ 同 MainWindow：`PixelFormats` 两边都有，不钉死会选错那个（画二维码时表现是编不过）。
 using PixelFormats = System.Windows.Media.PixelFormats;
+using TextBlock = System.Windows.Controls.TextBlock;
 using RadioButton = System.Windows.Controls.RadioButton;
 using SelectionChangedEventArgs = System.Windows.Controls.SelectionChangedEventArgs;
 using TextChangedEventArgs = System.Windows.Controls.TextChangedEventArgs;
@@ -173,6 +174,7 @@ public partial class SettingsWindow : Window
         StorageSection.Visibility = target == "Storage" ? Visibility.Visible : Visibility.Collapsed;
         CloudSection.Visibility = target == "Cloud" ? Visibility.Visible : Visibility.Collapsed;
         NetworkSection.Visibility = target == "Network" ? Visibility.Visible : Visibility.Collapsed;
+        ExtensionsSection.Visibility = target == "Extensions" ? Visibility.Visible : Visibility.Collapsed;
         AdvancedSection.Visibility = target == "Advanced" ? Visibility.Visible : Visibility.Collapsed;
         AboutSection.Visibility = target == "About" ? Visibility.Visible : Visibility.Collapsed;
 
@@ -225,6 +227,7 @@ public partial class SettingsWindow : Window
 
             RunAtStartupToggle.IsChecked = _host.Settings.RunAtStartup;
             CheckUpdateToggle.IsChecked = _host.Settings.CheckForUpdates;
+            FillLogging(_host.Settings);
         }
         finally
         {
@@ -1190,6 +1193,9 @@ public partial class SettingsWindow : Window
             CloseWindowAction = Enum.TryParse<CloseWindowAction>(TagOf(CloseActionCombo), out var closeAction)
                 ? closeAction : _host.Settings.CloseWindowAction,
             CheckForUpdates = CheckUpdateToggle.IsChecked == true,
+            // ── 日志（2026-10-01 需求方要「级别可配」）──
+            LogMinLevel = SelectedLogLevel(),
+            LogRetainDays = ParsedLogRetainDays(),
             // ⚠️ 用着网络摄像头时那个下拉是禁用且空的，直接取 SelectedItem
             // 会把记着的本机设备名抹成 null —— 用户哪天切回本机设备就得重选一遍。
             CameraDevice = CameraCombo.SelectedItem as string ?? _host.Settings.CameraDevice,
@@ -1240,6 +1246,11 @@ public partial class SettingsWindow : Window
         try
         {
             await _host.SaveSettingsAsync(next);
+
+            // ⚠️ **改完立刻生效，不必重启** —— 这正是「级别可配」的目的：
+            // 真机上出问题时不用等一个新版本，改一下当场就能看到 DEBUG 那些行。
+            // （开机自启那一项落在注册表里，这一项落在**运行中那个 logger** 上。）
+            _host.ApplyLogLevel(next.LogMinLevel);
         }
         catch (Exception ex)
         {
@@ -1664,10 +1675,13 @@ public partial class SettingsWindow : Window
 
     /// <summary>填「界面语言」与「外观主题」两个下拉。</summary>
     /// <remarks>
-    /// ⚠️ <b>这两行是只读的</b>：需求方 2026-09-30 裁决「只做中文」「主题只做浅色」。
-    /// 用不了的那两档**照设计图填进去、但禁用**（踩坑 #13：不摆一个会做错事的入口，
-    /// 也不假装这一项不存在），鼠标停上去说明为什么 —— 所以这两个下拉
-    /// **没有 `SelectionChanged`**，没有任何一档是选得中的。
+    /// ⚠️ <b>这两行现在是**可点**的</b>（需求方 2026-10-01 裁决：「只留窗口，
+    /// 用户如点开，显示正在开发中」）。先前是「禁用 + 悬停写明原因」，
+    /// 而悬停提示**触屏看不见、不悬停的人也看不见**。
+    /// <para>
+    /// ⚠️ 选了还没做的那一档：**说一句实话，然后退回**。
+    /// 它只有一个真值，而选中的那一档**不会落盘** —— 留在那里就是骗人。
+    /// </para>
     /// </remarks>
     private void LoadPreferences()
     {
@@ -1675,37 +1689,67 @@ public partial class SettingsWindow : Window
         FillPreferenceCombo(ThemeCombo, AppPreferences.Themes);
     }
 
-    private static void FillPreferenceCombo(ComboBox combo, IReadOnlyList<PreferenceOption> options)
+    private void FillPreferenceCombo(ComboBox combo, IReadOnlyList<PreferenceOption> options)
     {
+        combo.Items.Clear();
+
+        // 真做了的那一档（表里只有一档）。
+        var real = 0;
+
         for (var i = 0; i < options.Count; i++)
         {
             var option = options[i];
 
-            var item = new ComboBoxItem
+            combo.Items.Add(new ComboBoxItem
             {
                 Content = option.Label,
                 Tag = option.Label,
-                IsEnabled = option.Enabled,
-            };
+                // ⚠️ **不禁用** —— 每一档都点得动（需求方 2026-10-01 的裁决）。
+                // 悬停那句话说给愿意悬停的人听；点下去那句话**谁都看得见**。
+                ToolTip = option.Hint,
+            });
 
-            if (option.Hint is { Length: > 0 } hint)
+            if (option.Implemented)
             {
-                item.ToolTip = hint;
-
-                // 禁用的控件默认**不弹** ToolTip —— 不打开这个附加属性的话，
-                // 那句「为什么禁用」就等于没写。
-                ToolTipService.SetShowOnDisabled(item, true);
-            }
-
-            combo.Items.Add(item);
-
-            // 选中唯一可用的一档（表里就一档，选中它是「照实显示现状」）。
-            if (option.Enabled && combo.SelectedIndex < 0)
-            {
-                combo.SelectedIndex = i;
+                real = i;
             }
         }
+
+        // 选中真做了的那一档（照实显示现状）。
+        combo.SelectedIndex = real;
+
+        // ⚠️ 挂在**这里**而不是 XAML 上：退回用的是 `real`，而它只有这里知道。
+        combo.SelectionChanged += (_, _) =>
+        {
+            // 退回时又会进来一次 —— 那时索引已经对了，直接放行（不会递归）。
+            if (combo.SelectedIndex < 0 || combo.SelectedIndex == real)
+            {
+                return;
+            }
+
+            var picked = options[combo.SelectedIndex];
+
+            PreferencesNote.Text = $"「{picked.Label}」还在开发中 —— {picked.Hint}";
+            PreferencesNote.Visibility = Visibility.Visible;
+
+            // ⚠️ **退回**：它只有一个真值，而选中的那一档**不落盘** ——
+            // 留在那里就是一个骗人的假开关。
+            combo.SelectedIndex = real;
+        };
     }
+
+    /// <summary>
+    /// 「引导式录像」那个入口（`IMPLEMENTATION.md` M8 一行名字，零规格）。
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ 它和别的占位一样**只留入口**（需求方 2026-10-01）。
+    /// 摆在这一节是**我挑的**（属于录制行为，而这一节就是录制设置所在），设计图上没有它。
+    /// </remarks>
+    private void OnOpenGuidedRecording(object sender, RoutedEventArgs e) =>
+        ShowNotBuilt(
+            PreferencesNote,
+            "引导式录像还在开发中 —— 它会录的时候给软提示、录完再检测一遍，"
+            + "而且只提醒、不打断录制。现在还没有这套逻辑，所以点开只能看到这句话。");
 
     /// <summary>
     /// 「关闭窗口时」三档（设计图 `_49`）。
@@ -1771,6 +1815,110 @@ public partial class SettingsWindow : Window
     private void OnRunAtStartupChanged(object sender, RoutedEventArgs e) => MarkDirty();
 
     private void OnCheckUpdateChanged(object sender, RoutedEventArgs e) => MarkDirty();
+
+    // ── 扩展与联动 / 扩展市场（2026-10-01：**只留入口**）──
+
+    /// <summary>
+    /// 「扩展市场」那颗按钮（设计图 `_45` / `_46` 左下角）。
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ <b>它现在是**可点**的，而不再是灰的。</b>需求方 2026-10-01 裁决：
+    /// 没做的功能留入口、点开**如实说一句** —— 这**推翻了**先前那条
+    /// 「禁用 + 悬停写明原因」（`实时多画面` / `安装订单联动` 是按那一条办的）。
+    /// 两种做法的区别是「点不动」与「点了有实话」，而踩坑 #13 禁的是**第三种**：
+    /// 点了没反应、让用户以为是自己那边坏了。
+    /// </remarks>
+    private void OnOpenExtensionMarket(object sender, RoutedEventArgs e) =>
+        ShowNotBuilt(
+            ExtensionsNote,
+            "扩展市场还在开发中 —— 它会用来浏览和安装别人写好的扩展。"
+            + "现在这里还没有可装的东西，所以点开只能看到这句话。");
+
+    /// <summary>「扩展 API」那个入口。同上：只留入口。</summary>
+    private void OnOpenExtensionApi(object sender, RoutedEventArgs e) =>
+        ShowNotBuilt(
+            ExtensionsNote,
+            "扩展 API 还在开发中 —— 它会让第三方脚本通过接口读取录像与单号。"
+            + "现在还没有这套接口，所以点开只能看到这句话。");
+
+    /// <summary>
+    /// 「还没做」那句话 —— 写在**点击处最近的地方**，不弹模态框。
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ 目标那块字**由调用方给**：这一页有不止一处「还没做」的入口，
+    /// 写死到其中一处的话，另一处点下去那句话会落在**看不见的另一节里** ——
+    /// 表现就是「点了没反应」，正是踩坑 #13 本身。
+    /// <para>
+    /// ⚠️ 不弹模态框：这一页本来就是静态的，一句话放在按钮下面最好找；
+    /// 而模态框会让用户以为「这是个要处理的错」。
+    /// </para>
+    /// </remarks>
+    private static void ShowNotBuilt(TextBlock note, string message)
+    {
+        note.Text = message;
+        note.Visibility = Visibility.Visible;
+    }
+
+    // ── 日志（2026-10-01「级别可配」）──────────────
+
+    private void OnLogLevelChanged(object sender, SelectionChangedEventArgs e) => MarkDirty();
+
+    private void OnLogRetainDaysChanged(object sender, RoutedEventArgs e) => MarkDirty();
+
+    /// <summary>把日志那两项填进界面。</summary>
+    private void FillLogging(AppSettings settings)
+    {
+        LogLevelCombo.Items.Clear();
+
+        foreach (var level in LogLevels)
+        {
+            LogLevelCombo.Items.Add(new ComboBoxItem
+            {
+                Content = DescribeLogLevel(level),
+                Tag = level.ToString(),
+            });
+        }
+
+        // 认不出来的档（手改坏了）就落到「信息」那一档 —— 取保守的那一头。
+        var index = Array.IndexOf(LogLevels, settings.LogMinLevel);
+        LogLevelCombo.SelectedIndex = index >= 0 ? index : Array.IndexOf(LogLevels, LogLevel.Info);
+
+        LogRetainDaysBox.Text = settings.LogRetainDays.ToString();
+    }
+
+    /// <summary>能选的级别。**顺序即下拉里的顺序**（从最啰嗦到最安静）。</summary>
+    private static readonly LogLevel[] LogLevels =
+        [LogLevel.Debug, LogLevel.Info, LogLevel.Warn, LogLevel.Error];
+
+    /// <summary>
+    /// 级别在界面上叫什么。
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ 用中文而不是 `Debug` / `Info` —— 这一格是给用户按的，
+    /// 而这个下拉就在「开机自启动」下面。
+    /// </remarks>
+    private static string DescribeLogLevel(LogLevel level) => level switch
+    {
+        LogLevel.Debug => "调试（最啰嗦，排查用）",
+        LogLevel.Info => "信息（默认）",
+        LogLevel.Warn => "警告",
+        _ => "错误（最安静）",
+    };
+
+    private LogLevel SelectedLogLevel() =>
+        Enum.TryParse<LogLevel>(TagOf(LogLevelCombo), out var level) ? level : LogLevel.Info;
+
+    /// <summary>
+    /// 保留天数。
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ 认不出来、或者越界（`1..365`，与 `AppSettings` 的校验同一个范围）就**退回原值**：
+    /// 写个 0 进去的话，所有日志当场被清掉，而用户只是想改一个数。
+    /// </remarks>
+    private int ParsedLogRetainDays() =>
+        int.TryParse(LogRetainDaysBox.Text.Trim(), out var days) && days is >= 1 and <= 365
+            ? days
+            : _host.Settings.LogRetainDays;
 
     // ─────────────────────────────────────────────
     // 关于

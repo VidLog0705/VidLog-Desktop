@@ -61,11 +61,20 @@ public sealed class NullLogger : IAppLogger
 /// <see cref="LogLevel.Info"/>** —— 生产上开着 DEBUG，日志会被淹掉，
 /// 而淹掉的日志等于没有日志。
 /// </param>
+/// <param name="MaxBytes">
+/// 单个日志文件的上限，超了就换一个新的。
+/// </param>
+/// <remarks>
+/// ⚠️ <b>为什么需要上限</b>：原来只在**进程启动**时换文件，于是长驻的进程里
+/// 那个文件一直涨 —— 一台连续跑几周的打包机，日志能到几百 MB，
+/// 而它同时还会被打包进诊断包**外发**。0 或负数 = 不限（测试要它）。
+/// </remarks>
 public sealed record FileLogOptions(
     string Directory,
     string Prefix = "vidlog",
     int RetainDays = 14,
-    LogLevel MinLevel = LogLevel.Debug)
+    LogLevel MinLevel = LogLevel.Debug,
+    long MaxBytes = 16 * 1024 * 1024)
 {
     public string FileNameFor(DateTimeOffset at) => $"{Prefix}-{at:yyyyMMdd-HHmmss}.log";
 }
@@ -97,7 +106,30 @@ public sealed class FileLogger : IAppLogger, IAsyncDisposable
     private readonly record struct Entry(string? Line, TaskCompletionSource? Barrier);
 
     private readonly FileLogOptions _options;
-    private readonly string _path;
+
+    /// <summary>
+    /// 当前阈值。⚠️ **可以在运行时改**（设置里那个「日志级别」）。
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ 用 <c>volatile</c> 而不是普通字段：写的人在 UI 线程、读的人在
+    /// **每个调用线程**上，而这是个「迟早会被看见」的开关 ——
+    /// 不 volatile 的话，改完之后可能过一会儿才生效（表现是「改了没反应」，最费解的一种）。
+    /// </remarks>
+    private volatile LogLevel _minLevel;
+
+    /// <summary>当前这个文件已经写了多少（按字符算，够用来判上限）。</summary>
+    private long _currentBytes;
+
+    /// <summary>上一次清过期文件是什么时候。</summary>
+    private DateTimeOffset _lastPurge = DateTimeOffset.Now;
+    /// <summary>
+    /// 当前写到哪个文件。
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ 它**不再是只读的**：到上限时要换一个新文件（原来只在进程启动时定一次，
+    /// 于是长驻的进程里那个文件一直涨）。**只在写盘那一趟上改**，别的线程只读。
+    /// </remarks>
+    private string _path;
 
     private readonly System.Threading.Channels.Channel<Entry> _queue =
         System.Threading.Channels.Channel.CreateBounded<Entry>(
@@ -131,6 +163,7 @@ public sealed class FileLogger : IAppLogger, IAsyncDisposable
     public FileLogger(FileLogOptions options)
     {
         _options = options;
+        _minLevel = options.MinLevel;
         _path = System.IO.Path.Combine(options.Directory, options.FileNameFor(DateTimeOffset.Now));
 
         // ⚠️ 这里**不建目录、不开文件**：开不了的时候要能继续跑（见类注释）。
@@ -139,6 +172,34 @@ public sealed class FileLogger : IAppLogger, IAsyncDisposable
     }
 
     public string Path => _path;
+
+    /// <summary>
+    /// 当前的级别阈值。**可以在运行时改** —— 设置里那个「日志级别」用它。
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ <b>改档本身要留痕，而且绕过阈值。</b>把档调高（比如只留 Error）时，
+    /// 用 <see cref="LogLevel.Info"/> 记这一条会被它自己刚设的阈值滤掉 ——
+    /// 而「怎么日志突然少了」恰恰是最需要解释的那一次。
+    /// </remarks>
+    public LogLevel MinLevel
+    {
+        get => _minLevel;
+
+        set
+        {
+            if (_minLevel == value) return;
+
+            var previous = _minLevel;
+            _minLevel = value;
+
+            WriteRaw(LogLevel.Warn, "日志", $"日志级别 {previous} → {value}");
+        }
+    }
+
+    /// <summary>不走阈值、直接排一条（改档那一句用）。</summary>
+    private void WriteRaw(LogLevel level, string category, string message) =>
+        _queue.Writer.TryWrite(new Entry(
+            Format(level, category, message, new Dictionary<string, object?>()), null));
 
     /// <summary>文件名里带时间戳 —— 轮转与保留期都靠它，不靠文件系统的修改时间。</summary>
     public static string FileNameFor(FileLogOptions options, DateTimeOffset at) => options.FileNameFor(at);
@@ -151,7 +212,7 @@ public sealed class FileLogger : IAppLogger, IAsyncDisposable
     {
         // 低于阈值直接丢在调用线程上 —— 生产上开 DEBUG 会把日志淹掉，
         // 而**淹掉的日志等于没有日志**。
-        if (level < _options.MinLevel)
+        if (level < _minLevel)
         {
             return;
         }
@@ -363,8 +424,11 @@ public sealed class FileLogger : IAppLogger, IAsyncDisposable
 
                 if (batch.Length > 0)
                 {
+                    RollIfNeeded(batch.Length);
                     await AppendAsync(batch.ToString());
                 }
+
+                MaybePurge();
 
                 // 屏障在**它前面那些行写完之后**才放行 —— 顺序不能反。
                 if (barriers is not null)
@@ -379,6 +443,49 @@ public sealed class FileLogger : IAppLogger, IAsyncDisposable
         catch (Exception)
         {
             // 读循环本身出问题也不该把进程带下去。
+        }
+    }
+
+    /// <summary>这一批写下去会不会把当前文件撑过上限；会的话先换一个新文件。</summary>
+    /// <remarks>
+    /// ⚠️ 换文件要**留痕**（走正常日志通道）：不然「日志怎么突然分成两个」
+    /// 事后没人解释得了，而看日志的人会以为中间丢了一段。
+    /// </remarks>
+    private void RollIfNeeded(int incomingChars)
+    {
+        if (_options.MaxBytes <= 0) return;
+
+        _currentBytes += incomingChars;
+
+        if (_currentBytes <= _options.MaxBytes) return;
+
+        _currentBytes = 0;
+        _path = System.IO.Path.Combine(
+            _options.Directory, _options.FileNameFor(DateTimeOffset.Now));
+
+        Log(LogLevel.Info, "日志", $"日志文件到 {_options.MaxBytes / (1024 * 1024)} MB 了，换了一个新的");
+    }
+
+    /// <summary>
+    /// 长驻期间也要清过期的（原来只在**启动时**清一次）。
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ 一台连续跑几周的机器，启动时那次清理之后再没清过 ——
+    /// 「保留 N 天」对它等于没有。一小时看一次就够（这是删文件，不是热路径）。
+    /// </remarks>
+    private void MaybePurge()
+    {
+        var now = DateTimeOffset.Now;
+
+        if (now - _lastPurge < TimeSpan.FromHours(1)) return;
+
+        _lastPurge = now;
+
+        var removed = PurgeExpired(_options, now);
+
+        if (removed > 0)
+        {
+            Log(LogLevel.Info, "日志", $"清了 {removed} 个过期的日志文件");
         }
     }
 

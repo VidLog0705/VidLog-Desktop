@@ -1,0 +1,79 @@
+<Window x:Class="VidLog.Desktop.App.MultiViewWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="实时多画面" Width="1200" Height="820"
+        MinWidth="720" MinHeight="520"
+        Background="{StaticResource PageBackground}"
+        WindowStartupLocation="CenterOwner"
+        PreviewKeyDown="OnPreviewKeyDown">
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+        </Grid.RowDefinitions>
+
+        <!-- ══ 工具条 ══════════════════════════════════════════════ -->
+        <Border Grid.Row="0" Background="{StaticResource Surface}"
+                BorderBrush="{StaticResource CardBorder}" BorderThickness="0,0,0,1"
+                Padding="20,12">
+            <Grid>
+                <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                    <TextBlock x:Name="TitleText" Style="{StaticResource SectionTitle}"
+                               Text="实时多画面"/>
+                    <!-- ⚠️ 这句就是设计图上那句：双击进全屏、全屏内可旋转、Esc 返回。 -->
+                    <TextBlock Style="{StaticResource Caption}" Margin="14,0,0,0"
+                               VerticalAlignment="Center" TextWrapping="Wrap" MaxWidth="640"
+                               Text="双击某一格进入全屏（全屏里能换画质），按 Esc 返回；右键选择画面数；每格右上角那颗按钮转 90°。"/>
+                </StackPanel>
+                <Button Grid.Column="0" x:Name="CloseButton" Content="关闭"
+                        Style="{StaticResource SecondaryButton}" MinWidth="88"
+                        HorizontalAlignment="Right" Click="OnClose"/>
+            </Grid>
+        </Border>
+
+        <!-- ══ 画面墙 ══════════════════════════════════════════════ -->
+        <Grid Grid.Row="1" Margin="16">
+            <UniformGrid x:Name="Wall" Rows="3" Columns="3"/>
+
+            <!-- 一台机位都没有时的一句话（设计图原话就是这个意思）。 -->
+            <TextBlock x:Name="EmptyNote" Visibility="Collapsed"
+                       HorizontalAlignment="Center" VerticalAlignment="Center"
+                       TextAlignment="Center" TextWrapping="Wrap" MaxWidth="460"
+                       Foreground="{StaticResource TextSecondary}"
+                       Text="正在查找已开启实时共享的手机…&#x0a;（在手机上打开实时共享之后，这里会出现它的画面。）"/>
+        </Grid>
+
+        <!-- ══ 全屏层 ══════════════════════════════════════════════ -->
+        <!-- ⚠️ 盖住整个窗口（RowSpan=2）：全屏就是「只看这一格」，
+             工具条与别的格子都不该还在。 -->
+        <Grid x:Name="FullscreenLayer" Grid.RowSpan="2" Background="{StaticResource VideoBackground}"
+              Visibility="Collapsed">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="*"/>
+                <RowDefinition Height="Auto"/>
+            </Grid.RowDefinitions>
+
+            <!-- 画面本体由 code-behind 挂进来（同一张 Image 在两个容器间搬，见 .cs） -->
+            <Grid x:Name="FullscreenHost" Grid.Row="0"/>
+
+            <Border Grid.Row="1" Background="{StaticResource Surface}" Padding="20,12">
+                <StackPanel>
+                    <StackPanel Orientation="Horizontal">
+                        <TextBlock x:Name="FullscreenTitle" Style="{StaticResource SectionTitle}"
+                                   VerticalAlignment="Center" Text="全屏"/>
+                        <TextBlock Style="{StaticResource Caption}" Margin="14,0,0,0"
+                                   VerticalAlignment="Center"
+                                   Text="按 Esc 退出全屏。"/>
+                    </StackPanel>
+
+                    <StackPanel x:Name="QualityRow" Orientation="Horizontal" Margin="0,10,0,0"/>
+
+                    <!-- ⚠️ 「好处与坏处」必须写在界面上（需求原话：「但需要告知用户
+                         选择三档时的好处及坏处」）—— 只摆三个没有说明的选项等于没告知。 -->
+                    <TextBlock x:Name="QualityTradeoff" Style="{StaticResource Caption}"
+                               Margin="0,8,0,0" TextWrapping="Wrap" MaxWidth="760"/>
+                </StackPanel>
+            </Border>
+        </Grid>
+    </Grid>
+</Window>

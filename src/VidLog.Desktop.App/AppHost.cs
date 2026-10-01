@@ -61,6 +61,19 @@ public sealed class AppHost : IAsyncDisposable
     /// </remarks>
     public IAppLogger Logger => _logger;
 
+    /// <summary>
+    /// 把日志级别应用到**运行中**那个 logger（设置页保存之后叫它）。
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ 这是「级别可配」这条要求的落点：设置页改完**立刻生效**，
+    /// 不必重启、更不必等一个新版本 —— 而「等一个新版本」等于那条日志永远拿不到。
+    /// <para>
+    /// ⚠️ 改档这件事本身由 <see cref="FileLogger.MinLevel"/> 的 setter 留痕
+    /// （而且**绕过阈值**：把档调高时，用 Info 记这一条会被它自己刚设的阈值滤掉）。
+    /// </para>
+    /// </remarks>
+    public void ApplyLogLevel(LogLevel level) => _logger.MinLevel = level;
+
     private AppHost(
         DesktopServices services,
         StartupReport startup,
@@ -294,19 +307,20 @@ public sealed class AppHost : IAsyncDisposable
 
     /// <summary>日志器的参数：生产 INFO、开发 DEBUG，保留天数取用户设置。</summary>
     /// <remarks>
-    /// 级别用**构建配置**判断 —— 这是「这份二进制是给谁跑的」唯一一个不用猜的信号。
-    /// 生产上开着 DEBUG，日志会被淹掉，而**淹掉的日志等于没有日志**。
+    /// <para>
+    /// ⚠️ <b>级别来自设置（<see cref="AppSettings.LogMinLevel"/>），不再来自构建配置。</b>
+    /// 原来这里是 <c>#if DEBUG</c>，于是 **Release 包没有任何办法开 DEBUG** ——
+    /// 用户在真机上遇到问题，我们只能让他等一个新包，而那等于那条日志永远拿不到。
+    /// 现在设置里能改（默认仍然是 <see cref="LogLevel.Info"/>，生产上开着 DEBUG
+    /// 会被淹掉，而**淹掉的日志等于没有日志**）。
+    /// </para>
+    /// <para>
+    /// ⚠️ 它只是**启动时**的初值：运行中改档走
+    /// <see cref="FileLogger.MinLevel"/> 那个 setter（设置页改完立刻生效，不必重启）。
+    /// </para>
     /// </remarks>
-    private static FileLogOptions LogOptionsFor(DataLayout layout, AppSettings settings)
-    {
-#if DEBUG
-        const LogLevel minLevel = LogLevel.Debug;
-#else
-        const LogLevel minLevel = LogLevel.Info;
-#endif
-
-        return new FileLogOptions(layout.LogDirectory, "vidlog", settings.LogRetainDays, minLevel);
-    }
+    private static FileLogOptions LogOptionsFor(DataLayout layout, AppSettings settings) =>
+        new(layout.LogDirectory, "vidlog", settings.LogRetainDays, settings.LogMinLevel);
 
     /// <summary>
     /// 建一个**先于设置加载**的日志器：崩溃兜底要用它。

@@ -204,6 +204,26 @@ public sealed record AppSettings
     public int LogRetainDays { get; init; } = 14;
 
     /// <summary>
+    /// 日志级别阈值。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// ⚠️ <b>默认 <see cref="Diagnostics.LogLevel.Info"/>，不是 Debug。</b>
+    /// 生产上开着 DEBUG，日志会被淹掉，而**淹掉的日志等于没有日志** ——
+    /// 那时真正要看的那几条（失败、重试、收尾）全被埋了。
+    /// </para>
+    /// <para>
+    /// ⚠️ <b>它存在是为了「真机上出问题时能临时打开 DEBUG」</b>：原来这个档由
+    /// 构建配置写死（`#if DEBUG`），于是 Release 包**没有任何办法**开 DEBUG ——
+    /// 只能等我们发一个新包，而那等于那条日志永远拿不到。
+    /// </para>
+    /// <para>
+    /// 认不出来的值（手改坏了、或者将来改了枚举名）**退回 Info**，取保守的那一头。
+    /// </para>
+    /// </remarks>
+    public Diagnostics.LogLevel LogMinLevel { get; init; } = Diagnostics.LogLevel.Info;
+
+    /// <summary>
     /// 开机自启动（设计图 `_49`「高级设置」第一行）。
     /// </summary>
     /// <remarks>

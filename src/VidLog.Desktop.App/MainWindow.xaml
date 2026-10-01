@@ -238,20 +238,23 @@
                         </StackPanel>
 
                         <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
-                            <!-- ⚠️ 「实时多画面」还禁用着**不是没做完**：它要等手机端
-                                 先有实时推流（规格自己写着「需重做传输层」）。
-                                 悬停能看见原因。 -->
                             <Button x:Name="DataButton" Content="数据"
                                     Style="{StaticResource SecondaryButton}"
                                     Padding="14,6" Click="OnOpenData"/>
                             <Button x:Name="OpenSearchButton" Content="回放"
                                     Style="{StaticResource SecondaryButton}"
                                     Padding="14,6" Margin="8,0,0,0" Click="OnOpenSearch"/>
+                            <!-- ⚠️ **它现在是可以点的**（2026-10-01）。此前一直灰着，
+                                 理由是「还没做」；那一半（窗口 / 取流 / 画质档 / 计数 /
+                                 手机报到）已经做完了。
+                                 ⚠️ **不给它加「有没有机位」的禁用条件**：一架飞机都没有时
+                                 画面上是九格「无信号输入」，而那是设计图里**正常的一种样子**
+                                 （机位不够时空格就画那四个字），不是错误状态。
+                                 悬停说明的是「怎么让它出现」。 -->
                             <Button x:Name="MultiViewButton" Content="实时多画面"
                                     Style="{StaticResource SecondaryButton}"
-                                    Padding="14,6" Margin="8,0,0,0" IsEnabled="False"
-                                    ToolTipService.ShowOnDisabled="True"
-                                    ToolTip="多画面要等手机端先有实时推流 —— 规格自己写着这一项「需重做传输层」。"/>
+                                    Padding="14,6" Margin="8,0,0,0" Click="OnOpenMultiView"
+                                    ToolTip="看每台手机现在的实时画面。手机端在「设置 → 实时共享」里打开之后才会出现在这里。"/>
                             <Button x:Name="OpenSettingsButton" Content="设置"
                                     Style="{StaticResource SecondaryButton}"
                                     Padding="14,6" Margin="8,0,0,0" Click="OnOpenSettings"/>
@@ -627,47 +630,49 @@
                         </StackPanel>
                     </Button>
 
-                    <!-- ⚠️ 下面两颗禁用是**照裁决**（「设计图上能点、VidLog 没这功能
-                         的按钮 → 禁用 + 悬停写明原因」）。订单联动要一个至今没开工的
-                         服务端（规格记在 M6），不是这边少写了几行。 -->
+                    <!-- ⚠️ 这两颗从**禁用**改成**可点**了（需求方 2026-10-01 裁决）：
+                         没做的功能留入口、点开**如实说一句**。这推翻了先前那条
+                         「禁用 + 悬停写明原因」（那一条只有鼠标悬停才看得见，
+                         而触屏 / 不悬停的用户永远不知道它为什么点不动）。
+                         订单联动要一个至今没开工的服务端（规格记在 M6），
+                         不是这边少写了几行。 -->
                     <Button Grid.Row="1" Grid.Column="0" Margin="0,0,6,10"
                             Style="{StaticResource SecondaryButton}" Padding="16,12"
-                            IsEnabled="False" ToolTipService.ShowOnDisabled="True"
-                            ToolTip="订单联动要服务端先把订单接口做出来（规格里是还没开工的 M6）—— 电脑端这边没有可装的东西。">
+                            Click="OnInstallOrderLink">
                         <StackPanel Orientation="Horizontal">
-                            <Path Stroke="{StaticResource TextDisabled}" StrokeThickness="1.4"
+                            <Path Stroke="{StaticResource Accent}" StrokeThickness="1.4"
                                   StrokeStartLineCap="Round" StrokeEndLineCap="Round"
                                   VerticalAlignment="Center"
                                   Data="M 2,7 A 5,5 0 1 1 7,12 L 2,12 L 2,7 Z"/>
-                            <TextBlock Text="安装订单联动" Margin="9,0,0,0"
-                                       Foreground="{StaticResource TextDisabled}"/>
+                            <TextBlock Text="安装订单联动" Margin="9,0,0,0"/>
                         </StackPanel>
                     </Button>
 
                     <Button Grid.Row="1" Grid.Column="1" Margin="6,0,0,10"
                             Style="{StaticResource SecondaryButton}" Padding="16,12"
-                            IsEnabled="False" ToolTipService.ShowOnDisabled="True"
-                            ToolTip="同上：没有服务端的订单接口，就没有可发的测试订单。">
+                            Click="OnSendTestOrder">
                         <StackPanel Orientation="Horizontal">
-                            <Path Stroke="{StaticResource TextDisabled}" StrokeThickness="1.4"
+                            <Path Stroke="{StaticResource Accent}" StrokeThickness="1.4"
                                   StrokeStartLineCap="Round" StrokeEndLineCap="Round"
                                   StrokeLineJoin="Round" VerticalAlignment="Center"
                                   Data="M 1,7.5 L 12,1.5 L 12,13.5 Z M 1,1.5 L 1,13.5"/>
-                            <TextBlock Text="发送测试订单" Margin="9,0,0,0"
-                                       Foreground="{StaticResource TextDisabled}"/>
+                            <TextBlock Text="发送测试订单" Margin="9,0,0,0"/>
                         </StackPanel>
                     </Button>
 
+                    <!-- ⚠️ 这颗原来灰着，理由已经消失（2026-10-01：手机报到那一半做完了）。
+                         与上面那颗是**同一个处理函数**（`OnOpenMultiView`）——
+                         它自己会把已经开着的那一个叫到前面，不会开出第二个来。 -->
+
                     <Button Grid.Row="2" Grid.Column="0" Grid.ColumnSpan="2" Margin="0"
                             Style="{StaticResource SecondaryButton}" Padding="16,12"
-                            IsEnabled="False" ToolTipService.ShowOnDisabled="True"
-                            ToolTip="多画面要等手机端先有实时推流 —— 规格自己写着这一项「需重做传输层」。">
+                            Click="OnOpenMultiView"
+                            ToolTip="看每台手机现在的实时画面。手机端在「设置 → 实时共享」里打开之后才会出现在这里。">
                         <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
-                            <Path Stroke="{StaticResource TextDisabled}" StrokeThickness="1.4"
+                            <Path Stroke="{StaticResource Accent}" StrokeThickness="1.4"
                                   StrokeLineJoin="Round" VerticalAlignment="Center"
                                   Data="M 0,2 L 7,2 L 7,10 L 0,10 Z M 7,4.5 L 11,2 L 11,10 L 7,7.5 Z"/>
-                            <TextBlock Text="实时多画面" Margin="9,0,0,0"
-                                       Foreground="{StaticResource TextDisabled}"/>
+                            <TextBlock Text="实时多画面" Margin="9,0,0,0"/>
                         </StackPanel>
                     </Button>
                 </Grid>

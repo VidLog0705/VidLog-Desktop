@@ -84,6 +84,8 @@
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="*"/>
+            <!-- ⚠️ 多店铺分组那个占位（需求方 2026-10-01：只留入口）。 -->
+            <RowDefinition Height="Auto"/>
         </Grid.RowDefinitions>
 
         <!-- ══ 筛选条 ══════════════════════════════════════════════════ -->
@@ -265,5 +267,31 @@
                            Text="只列出有录像的时间段。存储大小是按录制规格推算的约数，不是实测。"/>
             </Grid>
         </Border>
+
+        <!-- ⚠️ 多店铺分组（`IMPLEMENTATION.md` M8 一行名字，零规格）。
+             需求方 2026-10-01：**只留入口**。摆在这一页是**我挑的**
+             （它是按店铺分组看数据，属于这一页的语义），设计图上没有它 —— 要挪说一声。 -->
+        <Border Grid.Row="3" Style="{StaticResource Card}" Padding="18,14" Margin="0,12,0,0">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+                <StackPanel Grid.Column="0">
+                    <TextBlock Style="{StaticResource SectionTitle}" Margin="0"
+                               Text="多店铺分组"/>
+                    <TextBlock Style="{StaticResource Caption}" Margin="0,2,0,0"
+                               TextWrapping="Wrap" MaxWidth="520"
+                               Text="把录像按店铺分开统计、分开看。"/>
+                </StackPanel>
+                <Button Grid.Column="1" x:Name="ShopGroupingButton" Content="打开"
+                        Style="{StaticResource SecondaryButton}" MinWidth="88"
+                        VerticalAlignment="Center" Click="OnOpenShopGrouping"/>
+            </Grid>
+        </Border>
+
+        <TextBlock Grid.Row="4" x:Name="ShopGroupingNote" Style="{StaticResource Caption}"
+                   Margin="2,8,0,0" TextWrapping="Wrap" MaxWidth="620"
+                   Foreground="{StaticResource Warning}" Visibility="Collapsed"/>
     </Grid>
 </Window>

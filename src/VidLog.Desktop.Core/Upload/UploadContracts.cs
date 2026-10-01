@@ -225,3 +225,33 @@ public sealed record RenameRequestPayload(string DeviceName);
 
 /// <param name="Credential">base64url 的 32 字节。**只在这一次返回**，丢了要重新走一遍入网（不得降级为免凭据）。</param>
 public sealed record EnrollCredentialPayload(string Credential);
+
+/// <summary>
+/// 实时推流的**报到**（规格 §3.8 的机位发现，`POST /api/v1/live/announce`）。
+/// </summary>
+/// <remarks>
+/// <para>
+/// 手机端打开「实时共享」之后会起一路 HTTP 服务（`/live` 出 H.264 裸流），
+/// 然后**每隔一会儿报一次**这个接口 —— 电脑端据此知道「哪台手机、在哪个地址、
+/// 哪个端口」。多画面窗口要连的就是这些。
+/// </para>
+/// <para>
+/// ⚠️ <b>报文里**只有端口**。</b>另外两样都不许客户端自称：
+/// </para>
+/// <list type="bullet">
+/// <item><b>deviceId 取自凭据反查</b>（`Authorization: Bearer`，与 `upload/*` 同一道闸）
+/// —— 让手机自称 deviceId 的话，任何一台已入网设备都能冒充**别人**的机位。</item>
+/// <item><b>地址取自请求的来源地址</b>（`HttpListenerRequest.RemoteEndPoint`）
+/// —— 让手机自报 IP 的话，报一个连不上的地址就成了「这一格永远黑着，
+/// 而电脑端以为它在」，那时两边都没得查。</item>
+/// </list>
+/// <para>
+/// ⚠️ **要凭据**（所以它在那道闸之后）。理由与 `netdisk/token` 那条不同、更轻：
+/// 报到本身不泄露任何东西，但**「哪台手机现在能看」是一份机位名单** ——
+/// 不该对局域网里任何人开放。
+/// </para>
+/// </remarks>
+public sealed record LiveAnnouncePayload(int? Port);
+
+/// <summary>报到的应答。收到就算数了 —— 电脑端不判断这个端口通不通（那是它自己取流时的事）。</summary>
+public sealed record LiveAnnounceAck(bool Ok);

@@ -8,7 +8,14 @@ namespace VidLog.Desktop.Core.Tests;
 /// <remarks>
 /// ⚠️ 这些用例共用一份**进程级**的密钥登记表，所以每条用例都要先清干净 ——
 /// 不然用例之间会互相影响，而那种失败最难查（单跑必过、一起跑才红）。
+/// <para>
+/// ⚠️ 那句「一起跑才红」当初只防了**本类内部**（同类的方法本来就不并行），
+/// 漏了**别的类**：`UploadReceiverTests` 里有一条在注册之后断言同一张表，
+/// 并行时会被这里的清空打断（2026-10-01 实测撞到）。所以本类进
+/// <see cref="SanitizerCollection"/>。
+/// </para>
 /// </remarks>
+[Collection(SanitizerCollection.Name)]
 public class SanitizerTests : IDisposable
 {
     private const string Secret = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8";

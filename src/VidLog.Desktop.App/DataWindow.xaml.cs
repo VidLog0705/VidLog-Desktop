@@ -54,6 +54,21 @@ public partial class DataWindow : Window
     /// </remarks>
     private bool _syncing;
 
+    /// <summary>
+    /// 「多店铺分组」那个入口（`IMPLEMENTATION.md` M8 一行名字，零规格）。
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ 只留入口（需求方 2026-10-01 裁决：没做的功能点开**如实说一句**）。
+    /// 先前那条口径是「禁用 + 悬停写明原因」，而悬停提示**只有鼠标停上去才看得见**。
+    /// </remarks>
+    private void OnOpenShopGrouping(object sender, RoutedEventArgs e)
+    {
+        ShopGroupingNote.Text =
+            "多店铺分组还在开发中 —— 它会按店铺分开统计、分开看。"
+            + "现在这一页统计的是全部录像，所以点开只能看到这句话。";
+        ShopGroupingNote.Visibility = Visibility.Visible;
+    }
+
     public DataWindow(AppHost host)
     {
         _host = host;

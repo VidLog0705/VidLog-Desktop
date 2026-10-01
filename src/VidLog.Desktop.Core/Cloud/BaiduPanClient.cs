@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Globalization;
 using System.Net.Http.Headers;
 using System.Security.Cryptography;
@@ -481,7 +482,7 @@ public sealed class BaiduPanClient : IBaiduPanApi
         using var request = new HttpRequestMessage(HttpMethod.Post, url) { Content = form };
         WithHeaders(request);
 
-        using var response = await _http.SendAsync(request, cancellationToken);
+        using var response = await SendSliceAsync(request, partSeq, cancellationToken);
 
         // ⚠️ 这里回的是 **JSON**（015 响应参数表：md5 / request_id / errno），
         // 而且**失败时也可能带 200 状态码** —— 光看状态码会把「这片没传上去」
@@ -565,7 +566,7 @@ public sealed class BaiduPanClient : IBaiduPanApi
         using var request = new HttpRequestMessage(HttpMethod.Get, url);
         WithHeaders(request);
 
-        using var response = await _http.SendAsync(request, cancellationToken);
+        using var response = await SendTimedAsync(request, url, cancellationToken);
         return await ReadAsync(response, url, cancellationToken);
     }
 
@@ -580,7 +581,7 @@ public sealed class BaiduPanClient : IBaiduPanApi
         using var request = new HttpRequestMessage(HttpMethod.Post, url) { Content = form };
         WithHeaders(request);
 
-        using var response = await _http.SendAsync(request, cancellationToken);
+        using var response = await SendTimedAsync(request, url, cancellationToken);
         return await ReadAsync(response, url, cancellationToken);
     }
 
@@ -661,6 +662,89 @@ public sealed class BaiduPanClient : IBaiduPanApi
         -6 or 20016 or 20017 or 31045 => "（授权不管用了，重新登录一次百度网盘）",
         _ => string.Empty,
     };
+
+    /// <summary>
+    /// 出网那一下 —— 耗时与成败都在这里留痕（§6.1：外部依赖调用要记耗时）。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// ⚠️ 记的是 <see cref="Path"/>（查询串已抹）而**不是整条 URL**：
+    /// <c>access_token</c> 就在查询串里，而 <c>logs/</c> 会整个进诊断包 ——
+    /// 记一条完整 URL 等于把凭据写进要发出去的文件。
+    /// </para>
+    /// <para>
+    /// ⚠️ <b>分片不走这里</b>（见 <c>UploadSliceAsync</c>）：它每 4MB 一次，
+    /// 逐片记会把日志淹掉，而**淹掉的日志等于没有日志** —— 那条路只在失败时记。
+    /// </para>
+    /// </remarks>
+    private async Task<HttpResponseMessage> SendTimedAsync(
+        HttpRequestMessage request, string url, CancellationToken cancellationToken)
+    {
+        var started = Stopwatch.GetTimestamp();
+
+        try
+        {
+            var response = await _http.SendAsync(request, cancellationToken);
+
+            _logger.Log(
+                LogLevel.Debug, "网盘", $"网盘请求 {Path(url)}",
+                new Dictionary<string, object?>
+                {
+                    ["耗时ms"] = ElapsedMs(started),
+                    ["状态"] = (int)response.StatusCode,
+                });
+
+            return response;
+        }
+        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)
+        {
+            // ⚠️ 失败**带耗时**：否则「被拒了」和「慢到超时」分不出来。
+            _logger.Log(
+                LogLevel.Warn, "网盘", $"网盘请求 {Path(url)} 失败",
+                new Dictionary<string, object?>
+                {
+                    ["耗时ms"] = ElapsedMs(started),
+                    ["错误"] = ex.Message,
+                });
+
+            throw;
+        }
+    }
+
+    /// <summary>
+    /// 送一片 —— **只在失败时留痕**。
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ 这一路每 4MB 跑一次（一个 4GB 的文件就是 1024 次），成功也记的话
+    /// 一次上传就能把日志灌满，而**灌满的日志等于没有日志** ——
+    /// 那时真正要看的那几条（失败、重试、收尾）全被埋了。
+    /// 与「起外部进程只在失败时记」同一条规矩。
+    /// </remarks>
+    private async Task<HttpResponseMessage> SendSliceAsync(
+        HttpRequestMessage request, int partSeq, CancellationToken cancellationToken)
+    {
+        var started = Stopwatch.GetTimestamp();
+
+        try
+        {
+            return await _http.SendAsync(request, cancellationToken);
+        }
+        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)
+        {
+            _logger.Log(
+                LogLevel.Warn, "网盘", $"第 {partSeq} 片没送出去",
+                new Dictionary<string, object?>
+                {
+                    ["耗时ms"] = ElapsedMs(started),
+                    ["错误"] = ex.Message,
+                });
+
+            throw;
+        }
+    }
+
+    private static long ElapsedMs(long startedTimestamp) =>
+        (long)Stopwatch.GetElapsedTime(startedTimestamp).TotalMilliseconds;
 
     /// <summary>日志里只留路径，**查询串一律丢掉**（令牌在里面）。</summary>
     private static string Path(string url)

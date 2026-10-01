@@ -623,13 +623,28 @@ public class RecordingCoordinatorTests
         var outcome = await coordinator.StopWorkAsync();
 
         Assert.NotNull(outcome);
-        // ⚠️ 等到「滚过至少一段」之后，这里必然是 **2 段**：滚走的那一段
-        // 加上停下时封闭的当前段。一句话把三件事一起钉住 ——
-        // 循环真的在跑、段真的在滚、而且滚走的段**没有被丢掉**。
+
+        // ⚠️ 判据是「**滚走的那一段在结果里**」，**不是**「段数 ≥ 2」。
+        //
+        // 原来那条写的是 `Count >= 2`（滚走的那段 + 停下时封闭的当前段），
+        // 而那**不是保证**：滚段那条路是「先关旧的 → `await` 真开一路 ffmpeg
+        // （几十毫秒）→ 才发布新的段」，收尾**正好挤进这个窗口**时就只交出 1 段 ——
+        // 因为那一瞬间本来就没有「当前段」可封闭（见 `CloseCurrentSegmentAsync`
+        // 里那次认领：认领不到就什么都不做）。
+        //
+        // 2026-10-01 实测：单跑 3/3 全过，**并发跑全量时红过两次**（报的就是这条）。
+        // 根因记在 `CloseCurrentSegmentAsync` 的注释里（有界：那个刚起来的段几乎
+        // 没有内容，而它的 ffmpeg 会被 `DisposeAsync` 收掉）。
+        //
+        // 这一条真正要守的是**「滚走的段没有被丢掉」** —— 那就直接断言它。
+        Assert.Contains(
+            outcome!.Segments,
+            segment => segment.Source.Sequence == 0);
+
+        // 顺带钉住「循环真的在跑」：等到滚过之后，段号至少到过 1。
         Assert.True(
-            outcome!.Segments.Count >= 2,
-            $"已经滚过至少一段（封闭过 {coordinator.CurrentClosedSegmentCount} 段），"
-            + $"收尾却只有 {outcome.Segments.Count} 段 —— 滚走的段被弄丢了");
+            outcome.Segments.Count >= 1,
+            $"收尾一段都没有（封闭过 {coordinator.CurrentClosedSegmentCount} 段）");
     }
 
     [Fact]

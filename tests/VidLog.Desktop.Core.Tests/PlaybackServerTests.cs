@@ -88,6 +88,9 @@ public class PlaybackServerTests
         /// <summary>归档层里那条录像的相对路径。</summary>
         public required string Location { get; init; }
 
+        /// <summary>机位发现那张表（`/api/v1/live/announce` 写进去的那个）。</summary>
+        public required Core.Live.LiveDirectory Live { get; init; }
+
         public async ValueTask DisposeAsync()
         {
             Client.Dispose();
@@ -111,11 +114,16 @@ public class PlaybackServerTests
     /// 「挑出来的是这台机器现在的 IP」不是那条要验的东西。
     /// </param>
     /// <param name="retentionWindowDays">「预计可保留」按最近多少天估（默认 7）。</param>
+    /// <param name="withLive">
+    /// 接不接机位发现那一档。传 false 是给「没接那一档时如实说不」那一条用的 ——
+    /// 生产组合根**总是**传它（`DesktopServices`）。
+    /// </param>
     private static async Task<Fixture> StartAsync(
         TempDir dir,
         IAppLogger? logger = null,
         string? lanHost = null,
-        int retentionWindowDays = 7)
+        int retentionWindowDays = 7,
+        bool withLive = true)
     {
         const string evidenceId = "e1";
         const string relative = "2026/09/16/SF1000000001/e1.mp4";
@@ -173,6 +181,10 @@ public class PlaybackServerTests
         var port = FreePort();
         var baseUrl = $"http://localhost:{port}/";
 
+        // 机位发现那张表（规格 §3.8）。拨钟用的是默认那个真钟 —— 这些用例
+        // 只验「报到送对了没有」，过期那几条在 `LiveDirectoryTests` 里拨钟验。
+        var live = new Core.Live.LiveDirectory();
+
         var layout = new DataLayout(dir.Path);
         var devices = new DeviceRegistry(layout.DevicesPath);
 
@@ -203,7 +215,9 @@ public class PlaybackServerTests
                 DeviceName),
             devices,
             DeviceName,
-            logger);
+            logger,
+            netdisk: null,
+            live: withLive ? live : null);
 
         await server.StartAsync();
 
@@ -216,6 +230,7 @@ public class PlaybackServerTests
             EvidenceId = evidenceId,
             Credential = credential,
             Location = relative,
+            Live = live,
         };
     }
 
@@ -286,6 +301,48 @@ public class PlaybackServerTests
         var response = await fixture.Client.SendAsync(request);
 
         Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+    }
+
+    // ─────────────────────────────────────────────
+    // 借网盘令牌给手机（`/api/v1/netdisk/token`）
+    // ─────────────────────────────────────────────
+
+    [Fact]
+    public async Task 借网盘令牌_没有凭据一律拒()
+    {
+        // ⚠️ 这一条钉的是**安全边界**：拿到令牌的手机能读写这个账号下
+        // `/apps/<应用名>/` 里的全部东西。它够格拿，是因为入网那一步有人在电脑上
+        // 点过同意 —— 所以这条路由**必须**挂在凭据闸之后。挪到闸前面
+        // 就等于对局域网里任何人开放。
+        using var dir = new TempDir();
+        await using var fixture = await StartAsync(dir);
+
+        var response = await fixture.Client.SendAsync(
+            new HttpRequestMessage(HttpMethod.Post, "/api/v1/netdisk/token"));
+
+        Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task 借网盘令牌_这一档没配时如实说没启用而不是报错()
+    {
+        // ⚠️ 回 **200 + 状态**，不是 4xx —— 与入网、改名那两条同一个口径：
+        // 这不是「你请求错了」，是「这台电脑上这一档没开」，而**用户能去改**。
+        // 报 4xx 的话手机端只能显示一句错误码，用户不知道该去哪儿。
+        using var dir = new TempDir();
+        await using var fixture = await StartAsync(dir);
+
+        var request = new HttpRequestMessage(HttpMethod.Post, "/api/v1/netdisk/token");
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", fixture.Credential);
+
+        var response = await fixture.Client.SendAsync(request);
+        var payload = JsonSerializer.Deserialize<JsonElement>(await response.Content.ReadAsStringAsync());
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal("unavailable", payload.GetProperty("status").GetString());
+        Assert.False(
+            payload.TryGetProperty("accessToken", out var token) && token.ValueKind == JsonValueKind.String,
+            "给不出令牌时不许回一个字符串字段 —— 手机端会拿着它去调网盘");
     }
 
     [Fact]
@@ -983,5 +1040,104 @@ public class PlaybackServerTests
         Assert.Equal(JsonValueKind.Null, payload.GetProperty("url").ValueKind);
         Assert.Empty(payload.GetProperty("rows").EnumerateArray().ToList());
         Assert.False(string.IsNullOrWhiteSpace(payload.GetProperty("problem").GetString()));
+    }
+
+    // ─────────────────────────────────────────────
+    // 机位发现（规格 §3.8）：手机报到它的实时推流地址
+    // ─────────────────────────────────────────────
+
+    /// <remarks>
+    /// ⚠️ 地址**只能照夹具那个 `localhost` 前缀打**：本服务绑的是
+    /// `http://localhost:{port}/`，而 HTTP.SYS 是按前缀匹配的 ——
+    /// 打 `127.0.0.1` 会被**驱动层**直接回 400，根本进不到路由
+    ///（2026-10-01 实测，第一版就是那么写的）。
+    /// 代价是记下来的地址可能是 `127.0.0.1` 也可能是 `[::1]`（看解析到哪一族），
+    /// 所以断言写成「是个回环地址」而不是某一个确切值。
+    /// </remarks>
+    private static HttpRequestMessage AnnounceRequest(Fixture fixture, string? credential, object body)
+    {
+        var request = new HttpRequestMessage(HttpMethod.Post, "api/v1/live/announce")
+        {
+            Content = new StringContent(JsonSerializer.Serialize(body), System.Text.Encoding.UTF8, "application/json"),
+        };
+
+        if (credential is not null)
+        {
+            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", credential);
+        }
+
+        return request;
+    }
+
+    [Fact]
+    public async Task 报到实时推流地址_电脑端就记下了_而且地址取自请求本身()
+    {
+        using var dir = new TempDir();
+        await using var fixture = await StartAsync(dir);
+
+        var response = await fixture.Client.SendAsync(AnnounceRequest(fixture, fixture.Credential, new { port = 8888 }));
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        var endpoint = Assert.Single(fixture.Live.Active());
+
+        // ⚠️ deviceId 是**凭据反查**出来的那台（报文里根本没有这个字段）——
+        // 信自称的话，任何一台已入网设备都能冒充别人的机位。
+        Assert.Equal("device-1", endpoint.DeviceId);
+
+        // ⚠️ 地址取自 `RemoteEndPoint`（手机那边从头到尾没送过地址）。
+        // 回环怎么拼取决于解析到哪一族：
+        //   IPv4 → `127.0.0.1`；IPv6 → `[::1]`（方括号是 `HostOf` 加的，
+        //   不加的话塞进 URL 是个看不懂的错）。
+        Assert.Contains(endpoint.Address, new[] { "127.0.0.1", "[::1]" });
+        Assert.Equal(8888, endpoint.Port);
+        Assert.Equal($"http://{endpoint.Address}:8888", endpoint.BaseUrl);
+    }
+
+    [Fact]
+    public async Task 报到没带凭据_回401而且不许记进去()
+    {
+        using var dir = new TempDir();
+        await using var fixture = await StartAsync(dir);
+
+        var response = await fixture.Client.SendAsync(AnnounceRequest(fixture, credential: null, new { port = 8888 }));
+
+        Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+        Assert.Empty(fixture.Live.Active());
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(-1)]
+    [InlineData(70000)]
+    public async Task 端口越界_回400而且不许记进去(int port)
+    {
+        // ⚠️ 端口越界不当成小事：`http://主机:0/live` 那种地址会让取流那一步
+        // 以一个看不懂的错失败，而那时已经离这里很远了。
+        using var dir = new TempDir();
+        await using var fixture = await StartAsync(dir);
+
+        var response = await fixture.Client.SendAsync(AnnounceRequest(fixture, fixture.Credential, new { port }));
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Empty(fixture.Live.Active());
+    }
+
+    [Fact]
+    public async Task 没接实时推流那一档时_如实说而不是静默收下()
+    {
+        using var dir = new TempDir();
+        await using var fixture = await StartAsync(dir, withLive: false);
+
+        var response = await fixture.Client.SendAsync(AnnounceRequest(fixture, fixture.Credential, new { port = 8888 }));
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+
+        // 判据是**那句实话**，不是状态码本身：手机端会把它记进日志，
+        // 「为什么电脑端一直看不到我」要能从那里读出来。
+        // ⚠️ 不能拿原文找子串：响应体是 JSON，中文在里面是 `\uXXXX` 转义的。
+        var payload = JsonSerializer.Deserialize<JsonElement>(await response.Content.ReadAsStringAsync());
+        Assert.Contains("实时推流这一档没启用", payload.GetProperty("detail").GetString());
+        Assert.Empty(fixture.Live.Active());
     }
 }

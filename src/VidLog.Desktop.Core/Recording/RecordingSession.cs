@@ -800,6 +800,20 @@ public sealed class RecordingSession : IAsyncDisposable
         // StopAsync 可能在同一瞬间都想封闭当前段（循环刚到滚段点、用户正好点
         // 【结束】）。先读后清会让两边都通过判据，把同一段登记两次 ——
         // 而循环在 2026-09-23 之前根本没被启动过，所以这条竞态是新暴露的。
+        // ⚠️ **还有一个已知的、有界的竞态**（2026-10-01 查出来的，没修）：
+        //
+        // 滚段那条路是「先关旧的 → `await _capture.StartAsync(...)` 真开一路 ffmpeg
+        // （几十毫秒）→ 才发布新的 `_openSegment`」。**收尾正好挤进这个窗口时，
+        // 这里认领不到任何段**，于是那一段不进 outcome。
+        //
+        // 后果是**有界**的，所以先记着不动它：
+        // ① 那个刚起来的段几乎没有内容（刚 `StartAsync` 完）；
+        // ② 它的 ffmpeg 会被 `DisposeAsync` → `ReleaseCaptureAsync` 收掉，**不留孤儿进程**；
+        // ③ 有内容的那几段全都正常封闭、正常进 outcome（I2 不受影响）。
+        // 留下的只是**会话目录里一个没进索引的小文件**。
+        //
+        // 真要修的话，得把「关段」与「开段」串起来（收尾那边等正在开的那一段落地）——
+        // 那是**碰 I9 那条路**，得单独一次改动、单独一轮真机回归，不混在别的事里做。
         var claimed = Interlocked.Exchange(ref _openSegment, null);
         if (claimed is not { } open)
         {

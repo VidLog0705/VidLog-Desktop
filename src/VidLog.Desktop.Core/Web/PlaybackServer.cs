@@ -1,11 +1,14 @@
 using System.Net;
+using System.Net.Sockets;
 using System.Text;
 using System.Text.Json;
 using VidLog.Desktop.Core.Cleanup;
+using VidLog.Desktop.Core.Cloud;
 using VidLog.Desktop.Core.Diagnostics;
 using VidLog.Desktop.Core.Import;
 using VidLog.Desktop.Core.Index;
 using VidLog.Desktop.Core.Labels;
+using VidLog.Desktop.Core.Live;
 using VidLog.Desktop.Core.Playback;
 using VidLog.Desktop.Core.Search;
 using VidLog.Desktop.Core.Upload;
@@ -141,6 +144,12 @@ public sealed class PlaybackServer : IAsyncDisposable
     private readonly DeviceRegistry _devices;
     private readonly string _deviceName;
     private readonly IAppLogger _logger;
+
+    /// <summary>借网盘令牌那件事；没配网盘时为 <see langword="null"/>（见构造函数的参数说明）。</summary>
+    private readonly NetdiskTokenSource? _netdisk;
+
+    /// <summary>机位发现那张表；没接实时推流时为 <see langword="null"/>。</summary>
+    private readonly LiveDirectory? _live;
     private HttpListener _listener = new();
 
     private CancellationTokenSource? _loopCancellation;
@@ -150,6 +159,16 @@ public sealed class PlaybackServer : IAsyncDisposable
     /// 请求日志。**可选**（默认不记）—— 加可选参数而不是必填，
     /// 是为了让那几十处测试的构造调用一行都不用改。
     /// </param>
+    /// <param name="netdisk">
+    /// 把网盘令牌借给已入网的手机那一件事（`/api/v1/netdisk/token`）。
+    /// **可选，默认 null** —— 与 <paramref name="logger"/> 同一条理由：
+    /// 那几十处测试的构造调用一行都不用改，而没传时那条路由会如实回
+    /// 「电脑端这边网盘这一档没启用」。
+    /// </param>
+    /// <param name="live">
+    /// 机位发现那张表（`/api/v1/live/announce`）。**可选，默认 null** ——
+    /// 同上一条理由；没传时那条路由会如实回「实时推流这一档没启用」。
+    /// </param>
     public PlaybackServer(
         PlaybackServerOptions options,
         RecordingSearch search,
@@ -158,7 +177,9 @@ public sealed class PlaybackServer : IAsyncDisposable
         UploadReceiver upload,
         DeviceRegistry devices,
         string deviceName,
-        IAppLogger? logger = null)
+        IAppLogger? logger = null,
+        NetdiskTokenSource? netdisk = null,
+        LiveDirectory? live = null)
     {
         _options = options;
         _search = search;
@@ -168,6 +189,8 @@ public sealed class PlaybackServer : IAsyncDisposable
         _devices = devices;
         _deviceName = deviceName;
         _logger = logger ?? NullLogger.Instance;
+        _netdisk = netdisk;
+        _live = live;
     }
 
     /// <summary>实际绑上的地址（可能不是配置里的首选地址 —— 见 <see cref="PlaybackServerOptions.FallbackPrefix"/>）。</summary>
@@ -538,6 +561,36 @@ public sealed class PlaybackServer : IAsyncDisposable
                 await GuardAsync(context, () => HandleRenameAsync(context, deviceId, credential));
                 return;
 
+            case "/api/v1/live/announce":
+                // 手机报到它的实时推流地址（规格 §3.8 的机位发现）。
+                //
+                // ⚠️ `deviceId` 用的是**凭据反查**出来的那个（上面那个局部量），
+                // 地址用的是**请求的来源地址** —— 两样都不许客户端自称，理由见
+                // `LiveAnnouncePayload` 的说明。它在这道闸之后，是因为
+                // 「哪台手机现在能看」本身就是一份机位名单。
+                await GuardAsync(context, () => HandleLiveAnnounceAsync(context, deviceId));
+                return;
+
+            case "/api/v1/netdisk/token":
+                // 把百度网盘的令牌**借**给手机。手机端不自己登录 —— 它拿不到 AppSecret
+                // （见 `NetdiskGrant` 的类注释）。**要凭据**，所以它在这道闸之后。
+                //
+                // ⚠️ 这一条的份量比别的路由重：拿到令牌的手机能读写这个账号下
+                // `/apps/<应用名>/` 里的全部东西。它够格拿，是因为入网那一步
+                // **有人在电脑上点过同意**（规格 §3.4.5 ②）。
+                // ⚠️ 别把这一条挪到凭据闸前面 —— 那等于对局域网里任何人开放。
+                await GuardAsync(context, async () =>
+                {
+                    await WriteJsonAsync(
+                        context,
+                        _netdisk is null
+                            ? NetdiskGrant.Off(
+                                "电脑端这边网盘这一档没启用 —— 归档层不是「百度网盘」，"
+                                + "或者还没配应用凭据。去电脑上「设置 → 存储与备份」看一眼。")
+                            : await _netdisk.GrantAsync());
+                });
+                return;
+
             case "/api/v1/archive/verify":
                 await GuardAsync(context, async () =>
                 {
@@ -851,6 +904,63 @@ public sealed class PlaybackServer : IAsyncDisposable
         var device = await _devices.FindByCredentialAsync(credential);
 
         return device is null ? null : (device, credential);
+    }
+
+    /// <summary>
+    /// 手机报到它的实时推流地址（规格 §3.8 的机位发现）。
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ <b>报到每隔 20 秒来一次，而这里**一条日志都不记**</b> ——
+    /// 记的话是每小时一百八十条。留痕全在 <see cref="LiveDirectory"/>：
+    /// 它只在「第一次来 / 换了地址 / 过期后又回来 / 过期了」这四种**状态变化**时记。
+    /// </remarks>
+    private async Task HandleLiveAnnounceAsync(HttpListenerContext context, string deviceId)
+    {
+        if (_live is not { } live)
+        {
+            await WriteErrorAsync(
+                context, 400, UploadErrors.BadRequest, "电脑端这边实时推流这一档没启用");
+            return;
+        }
+
+        var request = await ReadJsonAsync<LiveAnnouncePayload>(context);
+
+        if (request?.Port is not { } port || port is < 1 or > 65535)
+        {
+            // ⚠️ 端口越界**不当成小事**：`http://主机:0/live` 那种地址会让取流那一步
+            // 以一个看不懂的错失败，而那时已经离这里很远了。
+            await WriteErrorAsync(context, 400, UploadErrors.BadRequest, "port 要在 1..65535 之间");
+            return;
+        }
+
+        var remote = context.Request.RemoteEndPoint?.Address;
+        if (remote is null)
+        {
+            await WriteErrorAsync(context, 400, UploadErrors.BadRequest, "读不到请求的来源地址");
+            return;
+        }
+
+        live.Announce(deviceId, HostOf(remote), port);
+        await WriteJsonAsync(context, new LiveAnnounceAck(true));
+    }
+
+    /// <summary>
+    /// 把请求的来源地址写成能塞进 URL 的样子。
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ 双栈监听时，IPv4 的客户端会显示成**映射地址**（`::ffff:192.168.1.5`）。
+    /// 不映射回去的话，那个地址塞进 `http://…/live` 是 ffmpeg 连不上的 ——
+    /// 而表现只是「这一格黑着」，看不出是地址形状的问题。
+    /// </remarks>
+    private static string HostOf(IPAddress address)
+    {
+        if (address.IsIPv4MappedToIPv6) address = address.MapToIPv4();
+
+        // IPv6 在 URL 里要方括号。⚠️ 链路本地那串 `%scope`（如 `fe80::1%12`）
+        // 是 `ToString()` 自带的，**要留着** —— 去掉它指向的是另一个接口上的同名地址。
+        return address.AddressFamily == AddressFamily.InterNetworkV6
+            ? $"[{address}]"
+            : address.ToString();
     }
 
     private static async Task<T?> ReadJsonAsync<T>(HttpListenerContext context)

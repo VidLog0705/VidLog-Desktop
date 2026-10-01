@@ -5,6 +5,7 @@ using VidLog.Desktop.Core.Diagnostics;
 using VidLog.Desktop.Core.Index;
 using VidLog.Desktop.Core.License;
 using VidLog.Desktop.Core.Labels;
+using VidLog.Desktop.Core.Live;
 using VidLog.Desktop.Core.Media;
 using VidLog.Desktop.Core.Playback;
 using VidLog.Desktop.Core.Punches;
@@ -185,6 +186,16 @@ public sealed class DesktopServices : IAsyncDisposable
     public UploadReceiver Upload { get; }
 
     /// <summary>
+    /// 机位发现：现在哪几台手机能看（规格 §3.8）。
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ 它是**内存里的一张表**，由手机报到喂（`/api/v1/live/announce`），
+    /// 界面只读。空表 = 还没有手机报到 —— 那与「手机没开实时共享」是同一件事，
+    /// 不是错误。
+    /// </remarks>
+    public Live.LiveDirectory Live { get; private init; } = null!;
+
+    /// <summary>
     /// 已入网设备与待批准的入网请求（M5）。
     /// </summary>
     /// <remarks>
@@ -342,6 +353,11 @@ public sealed class DesktopServices : IAsyncDisposable
         CloudUploadService? cloudUploads = null;
         IArchiveBackend archiveBackend;
 
+        // 借网盘令牌给手机那件事（`/api/v1/netdisk/token`）。⚠️ 与 `cloudUploads`
+        // 同进退 —— 没选网盘那一档、或者没配凭据时是 null，那条路由会如实回
+        // 「这一档没启用」，而不是回一个空令牌让手机端自己去猜。
+        NetdiskTokenSource? netdisk = null;
+
         // 归档层的**写入**那一半与回查那一半是两个接口（见 `IArchivePublisher` 的说明），
         // 所以这里分开存：网盘那一档的实现同时是两个，目录型那一档也是。
         IArchivePublisher publisher;
@@ -369,6 +385,8 @@ public sealed class DesktopServices : IAsyncDisposable
                 var session = new BaiduPanSession(
                     api, new BaiduPanTokenStore(layout.CloudTokenPath, logger), logger: logger);
                 var queue = new UploadQueue(layout.CloudQueuePath, logger);
+
+                netdisk = new NetdiskTokenSource(session, panLayout, logger);
 
                 cloudUploads = new CloudUploadService(
                     session,
@@ -451,6 +469,11 @@ public sealed class DesktopServices : IAsyncDisposable
             // 不传的话它会一直写 <root>\archive，而界面上画的是 D 盘。
             storage: locations);
 
+        // 机位发现（规格 §3.8）。⚠️ **无条件建**，即使不起回放服务 ——
+        // 界面上那颗「实时多画面」按钮要读它才知道现在有几台手机能看
+        // （读一个空表与读一个 null 是两种代码，而它们表达的是同一件事）。
+        var live = new LiveDirectory(logger: logger);
+
         PlaybackServer? server = null;
         if (playbackPort is not null)
         {
@@ -481,7 +504,12 @@ public sealed class DesktopServices : IAsyncDisposable
                 upload,
                 devices,
                 resolvedDeviceName,
-                logger);
+                logger,
+                netdisk,
+                // ⚠️ 手机报到的那条路（`/api/v1/live/announce`）挂在**回放服务**上 ——
+                // 那台 HTTP 服务本来就无条件起着（L8：检索回放不看许可），
+                // 不为推流另开一个端口。
+                live);
         }
 
         // 清理链路（规格 §3.5.4 / §3.5.5）—— **第一个生产调用点**。
@@ -516,6 +544,7 @@ public sealed class DesktopServices : IAsyncDisposable
             CloudUploads = cloudUploads,
             Storage = locations,
             ArchiveRelay = relay,
+            Live = live,
             Cleanup = cleanup,
             TrustedClock = trustedClock,
             ClockSource = clockSource ?? new HttpDateClockSource(),

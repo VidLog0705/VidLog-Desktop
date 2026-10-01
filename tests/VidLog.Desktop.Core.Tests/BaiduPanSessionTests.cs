@@ -137,11 +137,88 @@ public class BaiduPanSessionTests
     }
 
     /// <summary>假网盘：只做「翻译」，与真实现同一个约定。</summary>
+    // ─────────────────────────────────────────────
+    // 把令牌借给手机（`/api/v1/netdisk/token` 背后那件事）
+    // ─────────────────────────────────────────────
+
+    /// <summary>四档状态各一条，重点是**状态不对时一个字符都不许漏出去**。</summary>
+    [Fact]
+    public async Task 借令牌_没登录时不给令牌_并说清是没登录()
+    {
+        using var dir = new TempDir();
+        var session = new BaiduPanSession(
+            new FakeApi(), new BaiduPanTokenStore(dir.TokenPath), now: () => Now);
+
+        var grant = await new NetdiskTokenSource(session, new BaiduPanLayout("VidLog")).GrantAsync();
+
+        Assert.Equal(NetdiskGrant.NotLoggedIn, grant.Status);
+
+        // ⚠️ 这一条是重点：给不出令牌时**连一个字符都不许漏**。
+        // 回一个空串会让手机端拿着它去调网盘，报回来的是 31045 —— 查不到这里。
+        Assert.Null(grant.AccessToken);
+        Assert.Null(grant.AppName);
+        Assert.NotNull(grant.Message);
+    }
+
+    [Fact]
+    public async Task 借令牌_授权失效按没登录报_不是这次问不到()
+    {
+        // ⚠️ 两者必须分开：「授权没了」要用户去**重新登录**，「这次问不到」等等就好。
+        // 折成同一句话的话，用户会对着一句「网络错误」反复重试一件永远不成的事。
+        using var dir = new TempDir();
+        var api = new FakeApi { RefreshThrows = new BaiduPanException(-6, "refresh token 已失效") };
+        var session = new BaiduPanSession(api, new BaiduPanTokenStore(dir.TokenPath), now: () => Now);
+        await SeedAsync(session, dir, Now.AddMinutes(1));   // 故意让它去续期
+
+        var grant = await new NetdiskTokenSource(session, new BaiduPanLayout("VidLog")).GrantAsync();
+
+        Assert.Equal(NetdiskGrant.NotLoggedIn, grant.Status);
+        Assert.Null(grant.AccessToken);
+    }
+
+    [Fact]
+    public async Task 借令牌_问不到网盘时按这次失败报_且不作废本机登录()
+    {
+        // 限流（20012）**不是**授权失效。这一次失败要如实报成「这次问不到」，
+        // 而本机那份登录信息必须原样留着 —— 手一抖把它作废，用户就要重新登录一次。
+        using var dir = new TempDir();
+        var api = new FakeApi { RefreshThrows = new BaiduPanException(20012, "触发限流") };
+        var session = new BaiduPanSession(api, new BaiduPanTokenStore(dir.TokenPath), now: () => Now);
+        await SeedAsync(session, dir, Now.AddMinutes(1));
+
+        var grant = await new NetdiskTokenSource(session, new BaiduPanLayout("VidLog")).GrantAsync();
+
+        Assert.Equal(NetdiskGrant.Failed, grant.Status);
+        Assert.Null(grant.AccessToken);
+        Assert.True(session.IsLoggedIn, "限流不是授权失效，不许顺手把登录信息作废");
+    }
+
+    [Fact]
+    public async Task 借令牌_登着就把令牌和目录名一起给出去()
+    {
+        using var dir = new TempDir();
+        var session = new BaiduPanSession(
+            new FakeApi(), new BaiduPanTokenStore(dir.TokenPath), now: () => Now);
+        await SeedAsync(session, dir, Now.AddHours(1));
+
+        var grant = await new NetdiskTokenSource(session, new BaiduPanLayout("我的应用")).GrantAsync();
+
+        Assert.Equal(NetdiskGrant.Ok, grant.Status);
+        Assert.Equal("access-1", grant.AccessToken);
+
+        // ⚠️ 目录名必须由**电脑端**告诉手机端。手机端自己写死的话，换了应用要改两处；
+        // 而拼错这个名字时网盘回的是「目录不存在」—— 查起来完全看不出是名字错了。
+        Assert.Equal("我的应用", grant.AppName);
+    }
+
     private sealed class FakeApi : IBaiduPanApi
     {
         public int Refreshes { get; private set; }
 
         public TimeSpan RefreshDelay { get; init; }
+
+        /// <summary>续期时抛这个（默认不抛）。用来演「授权真没了」与「这次问不到」两种。</summary>
+        public BaiduPanException? RefreshThrows { get; init; }
 
         public bool RefreshReturnsEmptyRefreshToken { get; init; }
 
@@ -156,6 +233,11 @@ public class BaiduPanSessionTests
             string refreshToken, CancellationToken cancellationToken = default)
         {
             Refreshes++;
+
+            if (RefreshThrows is not null)
+            {
+                throw RefreshThrows;
+            }
 
             if (RefreshDelay > TimeSpan.Zero)
             {

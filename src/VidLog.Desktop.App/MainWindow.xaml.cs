@@ -23,6 +23,7 @@ using VidLog.Desktop.App.Platform;
 using VidLog.Desktop.Core;
 using VidLog.Desktop.Core.Configuration;
 using VidLog.Desktop.Core.Labels;
+using VidLog.Desktop.Core.Live;
 using VidLog.Desktop.Core.Punches;
 using VidLog.Desktop.Core.Recording;
 using VidLog.Desktop.Core.Rendering;
@@ -643,6 +644,82 @@ public partial class MainWindow : Window
         }
     }
 
+    /// <summary>已经开着的那一个多画面窗口。</summary>
+    /// <remarks>
+    /// ⚠️ 留着它是为了**不让人开出第二个**：每个窗口最多九路 ffmpeg 取流，
+    /// 点两下就是十八路，而用户眼里只是「点了两下」。
+    /// </remarks>
+    private MultiViewWindow? _multiView;
+
+    /// <summary>
+    /// 【实时多画面】（设计图 `_50`，规格 §3.8）—— 摆开每一台手机现在的画面。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// 机位从 <see cref="DesktopServices.Live"/> 那张表来 —— 那是手机自己报到的
+    /// （`/api/v1/live/announce`）。**表空不是错误**：那就是「还没有手机打开实时共享」，
+    /// 窗口里会摆出几格「无信号输入」，而那是设计图里正常的一种样子。
+    /// </para>
+    /// <para>
+    /// ⚠️ <b>非模态</b>（<c>Show()</c> 而不是本仓其它窗口那种 <c>ShowDialog()</c>）：
+    /// 这面墙是**一边干活一边看**的，模态会把它变成「要看画面就不能录单」。
+    /// 代价是它自己管生命周期（<c>Closed</c> 里收掉九路 ffmpeg），
+    /// 以及上面那个「不许开第二个」的守卫。
+    /// </para>
+    /// <para>
+    /// ⚠️ 机位是**开窗那一刻**取的：窗口开着的时候有手机报到，它不会自己冒出来
+    /// （关掉再开一次）。这条写进了 `docs/真机验收清单.md`。
+    /// </para>
+    /// </remarks>
+    private async void OnOpenMultiView(object sender, RoutedEventArgs e)
+    {
+        if (_multiView is { IsLoaded: true } already)
+        {
+            if (already.WindowState == WindowState.Minimized)
+            {
+                already.WindowState = WindowState.Normal;
+            }
+
+            already.Activate();
+            return;
+        }
+
+        if (_host.Services.FfmpegPath is not { } ffmpeg)
+        {
+            // ⚠️ 没有 ffmpeg 就**一路画面都拉不出来**，而窗口本身会开得很正常
+            // （九格「无信号输入」）—— 那看起来像「手机没开共享」，两件事分不开。
+            //
+            // ⚠️ 弹框之外还要**留痕**（§6.1：失败不许只说不记）：
+            // 用户事后说「当时就是不出画面」时，日志里得答得上来是哪一种不出。
+            _host.Logger.Log(
+                VidLog.Desktop.Core.Diagnostics.LogLevel.Warn, "多画面",
+                "打不开实时多画面：本机没找到 FFmpeg，一路画面都拉不起来");
+
+            MessageBox.Show(
+                this,
+                "本机没找到 FFmpeg，所以一路画面都拉不起来。原因与找法在设置窗的「关于」那一节里。",
+                "实时多画面", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        // 机位名从设备表来（§3.4.5 的机位名），拿不到就退回设备号 ——
+        // 显示一个内部号不好看，但**编一个名字更糟**。
+        var names = (await _host.Services.Devices.DevicesAsync())
+            .ToDictionary(d => d.DeviceId, d => d.DeviceName, StringComparer.Ordinal);
+
+        var tiles = _host.Services.Live.Active()
+            .Select(endpoint => LiveTile.Start(
+                ffmpeg,
+                endpoint.BaseUrl,
+                names.GetValueOrDefault(endpoint.DeviceId) ?? endpoint.DeviceId,
+                logger: _host.Logger))
+            .ToList();
+
+        _multiView = new MultiViewWindow(tiles, _host.Logger) { Owner = this };
+        _multiView.Closed += (_, _) => _multiView = null;
+        _multiView.Show();
+    }
+
     // ─────────────────────────────────────────────
     // 录制
     // ─────────────────────────────────────────────
@@ -960,6 +1037,40 @@ public partial class MainWindow : Window
     /// </remarks>
     private void OnOpenSearch(object sender, RoutedEventArgs e) =>
         new SearchWindow(_host) { Owner = this }.ShowDialog();
+
+    /// <summary>
+    /// 【安装订单联动】—— **还没做，如实说一句**（需求方 2026-10-01 裁决）。
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ 这两颗按钮原来是**禁用**的（照先前那条「禁用 + 悬停写明原因」）。
+    /// 改成可点是因为悬停提示**只有鼠标停上去才看得见** —— 触屏或者不悬停的人
+    /// 永远不知道为什么点不动，只会以为程序坏了。点一下弹一句话，
+    /// 谁都能看懂。踩坑 #13 禁的是**第三种**：点了没反应。
+    /// <para>
+    /// ⚠️ 卡的是**服务端 M6**（至今未开工），不是这边少写了几行 —— 所以话里要说清
+    /// 是哪一头没到，别让用户在这台机器上白找。
+    /// </para>
+    /// </remarks>
+    private void OnInstallOrderLink(object sender, RoutedEventArgs e) =>
+        MessageBox.Show(
+            this,
+            "订单联动还在开发中。\n\n"
+            + "它要服务端先把订单接口做出来（规格里是还没开工的 M6），"
+            + "电脑端这边没有可装的东西 —— 卡在那一头，不是这台机器上缺了什么。",
+            "还在开发中",
+            MessageBoxButton.OK,
+            MessageBoxImage.Information);
+
+    /// <summary>【发送测试订单】—— 同上。</summary>
+    private void OnSendTestOrder(object sender, RoutedEventArgs e) =>
+        MessageBox.Show(
+            this,
+            "发送测试订单还在开发中。\n\n"
+            + "它发的是订单联动那条链路上的东西，而那个服务端还没开工 —— "
+            + "现在没有可发的对象。",
+            "还在开发中",
+            MessageBoxButton.OK,
+            MessageBoxImage.Information);
 
     /// <summary>
     /// 【数据】—— 模态弹出 <see cref="DataWindow"/>。
