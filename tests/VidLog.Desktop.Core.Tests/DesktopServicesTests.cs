@@ -466,6 +466,18 @@ public class DesktopServicesTests
             settings, StringComparison.Ordinal);
 
         // ③ 组合根那两处。
+        // ⚠️ 2026-10-01 又加了一条：**多画面那一族**（规格 §3.8）也是
+        // 「logger 可选」的构造点。这里钉三件事：组合根真的传了、
+        // 界面真的把 `_host.Logger` 递下去了、别的地方没有偷偷 new 一个。
+        Assert.Contains(
+            "new LiveDirectory(logger: logger)",
+            File.ReadAllText(Path.Combine(RepoRoot(), "src", "VidLog.Desktop.Core", "Configuration", "DesktopServices.cs")),
+            StringComparison.Ordinal);
+        var mainWindow = File.ReadAllText(Path.Combine(app, "MainWindow.xaml.cs"));
+        Assert.Contains("new MultiViewWindow(tiles, _host.Logger)", mainWindow, StringComparison.Ordinal);
+        // 每一格也是（它自己会问计数、改档，失败与恢复各有一条日志）。
+        Assert.Contains("logger: _host.Logger)", mainWindow, StringComparison.Ordinal);
+
         Assert.Contains(
             "DshowDevices.ListVideoAsync(services.FfmpegPath, logger, cancellationToken)",
             host, StringComparison.Ordinal);
