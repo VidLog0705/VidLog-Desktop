@@ -77,6 +77,30 @@ public class BaiduPanWireTests
         Assert.Equal(300, code.ExpiresInSeconds);
     }
 
+    [Fact]
+    public void 二维码里放的是用户码_不是轮询用的那串设备码()
+    {
+        // ⚠️ 009《设备码模式授权》的注意事项逐字：
+        //   二维码内容拼接规则 https://openapi.baidu.com/device?display=mobile&code=u6rgnvp4
+        //   其中 code 为接口返回内容的 user_code 字段。
+        //
+        // 放反了的**第二个**后果比第一个严重：device_code 是拿去换 token 的凭据，
+        // 把它画在屏幕上等于摆给旁边任何人看 —— 拍到就能冒领这次登录。
+        var code = new BaiduDeviceCode(
+            "984c2459ec41415c9f5b0137a017fc49",
+            "8drp69hk",
+            "https://openapi.baidu.com/device",
+            "https://openapi.baidu.com/device/qrcode/a52610ef0eec30da5e45870872317478/8drp69hk",
+            5,
+            300);
+
+        Assert.Equal(
+            "https://openapi.baidu.com/device?display=mobile&code=8drp69hk",
+            code.QrPayload);
+
+        Assert.DoesNotContain(code.DeviceCode, code.QrPayload, StringComparison.Ordinal);
+    }
+
     // ─────────────────────────────────────────────
     // 续期
     // ─────────────────────────────────────────────

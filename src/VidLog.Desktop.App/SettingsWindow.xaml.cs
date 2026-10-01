@@ -1,6 +1,7 @@
 using System.ComponentModel;
 using System.Net.Http;
 using System.Windows;
+using System.Windows.Media.Imaging;
 using System.Windows.Threading;
 
 // 本工程同时开了 UseWPF 与 UseWindowsForms（后者只为托盘图标），
@@ -13,6 +14,8 @@ using ListBox = System.Windows.Controls.ListBox;
 using MessageBox = System.Windows.MessageBox;
 using MessageBoxImage = System.Windows.MessageBoxImage;
 using MessageBoxResult = System.Windows.MessageBoxResult;
+// ⚠️ 同 MainWindow：`PixelFormats` 两边都有，不钉死会选错那个（画二维码时表现是编不过）。
+using PixelFormats = System.Windows.Media.PixelFormats;
 using RadioButton = System.Windows.Controls.RadioButton;
 using SelectionChangedEventArgs = System.Windows.Controls.SelectionChangedEventArgs;
 using TextChangedEventArgs = System.Windows.Controls.TextChangedEventArgs;
@@ -26,6 +29,7 @@ using VidLog.Desktop.Core.Configuration;
 using VidLog.Desktop.Core.Diagnostics;
 using VidLog.Desktop.Core.Media;
 using VidLog.Desktop.Core.Recording;
+using VidLog.Desktop.Core.Upload;
 
 namespace VidLog.Desktop.App;
 
@@ -90,6 +94,13 @@ public partial class SettingsWindow : Window
 
     private DateTimeOffset _cloudNextPollAt;
     private DateTimeOffset _cloudLoginExpiresAt;
+
+    /// <summary>屏幕上那张二维码画的是哪一个用户码 —— 没画、或画的是上一个，就重画。</summary>
+    /// <remarks>
+    /// ⚠️ 这个字段存在的唯一理由是**省掉每两秒一次的白重画**：刷新节拍还兼着轮询进度，
+    /// 每跑一次都重画一张一模一样的图，屏幕上那张会一闪一闪的。
+    /// </remarks>
+    private string? _cloudQrUserCode;
 
     /// <summary>这一页上要说的一句**临时**话（正在同步、上一步没成…）。空着就按状态自动写。</summary>
     private string? _cloudNote;
@@ -2058,6 +2069,10 @@ public partial class SettingsWindow : Window
             CloudQueuePageText.Text = string.Empty;
             CloudQueuePrevButton.IsEnabled = false;
             CloudQueueNextButton.IsEnabled = false;
+
+            // 归档层不是网盘（或服务没起来）时这一页整页不工作 —— 那张码也一并收起：
+            // 一边写着「这一页不工作」、一边摆一张扫码就能授权的图，是自己打自己。
+            ShowCloudLoginQr(null);
             return;
         }
 
@@ -2084,9 +2099,73 @@ public partial class SettingsWindow : Window
         // 这一页开着的时候由后台变出来，所以它每两秒重算一次。
         CloudRetryButton.IsEnabled = !_cloudBusy && status.Failed > 0;
 
+        // 二维码跟着 _cloudLogin 走：它在就画出来，不在就收起。
+        // 放在这里（而不是 OnCloudLogin / PollCloudLoginAsync 里各写一次）是刻意的：
+        // 显隐只有一个来源，批准、超时、退出登录三条路都不会漏掉收起那一步。
+        ShowCloudLoginQr(_cloudLogin);
+
         CloudAccountNote.Text = DescribeCloudAccount(session, status);
 
         await RefreshCloudQueueAsync();
+    }
+
+    /// <summary>
+    /// 把设备码登录的二维码画出来；没有待批准的登录就收起。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// 内容是 <see cref="BaiduDeviceCode.QrPayload"/>，照 009 的「二维码内容拼接规则」
+    /// 逐字拼出来 —— 手机上扫一下直接落到**已经填好验证码**的授权页上，
+    /// 用户只剩「登录 + 同意」两步，不用把码从电脑屏幕手抄进手机。
+    /// </para>
+    /// <para>
+    /// ⚠️ <b>画不出来不许把这一页带下水。</b>这个函数在每两秒一次的刷新节拍里跑，
+    /// 异常抛出去会被 <c>RefreshCloudPageAsync</c> 兜住、把整页文字换成一句错误 ——
+    /// 而「网址 + 那串码」本来就是能用的（手抄一样办得成）。
+    /// 为了一张画不出来的图把那条路也盖掉，是拿能用的换不能用的。
+    /// </para>
+    /// </remarks>
+    private void ShowCloudLoginQr(BaiduDeviceCode? pending)
+    {
+        if (pending is null)
+        {
+            CloudQrPanel.Visibility = Visibility.Collapsed;
+            CloudQrImage.Source = null;
+            _cloudQrUserCode = null;
+            return;
+        }
+
+        // 码没变就原样放着（理由见 _cloudQrUserCode 的说明）。
+        if (CloudQrPanel.Visibility == Visibility.Visible
+            && string.Equals(_cloudQrUserCode, pending.UserCode, StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        try
+        {
+            var modules = EnrollQr.Modules(pending.QrPayload);
+
+            // 一个模块一个像素，放大交给 XAML 那个 NearestNeighbor（与 EnrollWindow 同一手法）。
+            var bitmap = BitmapSource.Create(
+                modules.GetLength(0), modules.GetLength(1), 96, 96,
+                PixelFormats.Gray8, null, EnrollQr.Pixels(modules), modules.GetLength(0));
+
+            bitmap.Freeze();
+
+            CloudQrImage.Source = bitmap;
+            _cloudQrUserCode = pending.UserCode;
+            CloudQrPanel.Visibility = Visibility.Visible;
+        }
+        catch (Exception ex)
+        {
+            // 不静默吞掉（§6.1 的 catch 那一条）：走 _cloudNote，
+            // 也就是这一页顶上那句用户看得见的话。按【登录百度网盘】会把它清掉。
+            CloudQrPanel.Visibility = Visibility.Collapsed;
+            CloudQrImage.Source = null;
+            _cloudQrUserCode = null;
+            _cloudNote = $"二维码没画出来（{ex.Message}），照上面那个网址和验证码手输一样能登录。";
+        }
     }
 
     /// <summary>这一页现在为什么不能用（**两句不同的话，别混**）。</summary>

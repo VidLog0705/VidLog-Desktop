@@ -706,6 +706,25 @@
                                             Margin="10,0,0,0"
                                             Content="立即重试失败上传" Click="OnCloudRetry"/>
                                 </Grid>
+
+                                <!-- 扫码授权（设备码模式）：手机上扫这张码就直接打开百度授权页，
+                                     不用把上面那串验证码手抄过去。点了【登录百度网盘】才会出现。 -->
+                                <StackPanel x:Name="CloudQrPanel" Visibility="Collapsed" Margin="0,14,0,0">
+                                    <TextBlock Style="{StaticResource Caption}" TextWrapping="Wrap"
+                                               MaxWidth="520"
+                                               Text="用手机扫下面这张码：手机上会直接打开百度授权页，验证码也已经填好，登录并同意就行 —— 不用手抄那串码。"/>
+                                    <!-- ⚠️ 这个 Border 的 `Background="White"` 是硬写的、**跟着 Theme 走会出事**：
+                                         二维码要求高对比（码是黑的、底得是白的），
+                                         用 Surface 或 PageBackground 那种带灰的底色会降低对比度。理由同 EnrollWindow。 -->
+                                    <Border Margin="0,8,0,0" Padding="10" Background="White"
+                                            BorderBrush="{StaticResource CardBorder}" BorderThickness="1"
+                                            CornerRadius="6" HorizontalAlignment="Left">
+                                        <!-- 一个模块一个像素，靠最近邻放大成方块。
+                                             换成插值会把模块边缘糊成灰边 —— 糊掉的码在屏幕上看着正常、扫不出来。 -->
+                                        <Image x:Name="CloudQrImage" Width="240" Height="240" Stretch="Uniform"
+                                               RenderOptions.BitmapScalingMode="NearestNeighbor"/>
+                                    </Border>
+                                </StackPanel>
                             </StackPanel>
                         </Border>
 

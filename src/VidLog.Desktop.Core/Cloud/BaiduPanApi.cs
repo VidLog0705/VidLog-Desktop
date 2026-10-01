@@ -15,7 +15,38 @@ public sealed record BaiduDeviceCode(
     string VerificationUrl,
     string QrCodeUrl,
     int IntervalSeconds,
-    int ExpiresInSeconds);
+    int ExpiresInSeconds)
+{
+    /// <summary>
+    /// 二维码里要放的那串内容 —— 用户拿手机扫的就是它。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// ⚠️ 拼接规则照 009《设备码模式授权》的注意事项**逐字**：
+    /// <c>https://openapi.baidu.com/device?display=mobile&amp;code=&lt;user_code&gt;</c>，
+    /// 「其中 code 为接口返回内容的 user_code 字段」。
+    /// </para>
+    /// <para>
+    /// ⚠️ <b>里面必须是 <see cref="UserCode"/>，不是 <see cref="DeviceCode"/>。</b>
+    /// 放错了有两个后果，而且第二个更糟：码扫了没用（授权页认的是 user_code），
+    /// 而**轮询用的那串密钥被画到了屏幕上** —— 站在旁边的人拍到就能冒领这次登录。
+    /// 这一条由 <c>BaiduPanWireTests</c> 钉着。
+    /// </para>
+    /// <para>
+    /// <b>为什么不用响应里那个 <see cref="QrCodeUrl"/></b>（百度渲染好的现成图片）：
+    /// 用它就得在用户登录的这一刻再去网上取一张图。而文档把**内容**规则也给全了 ——
+    /// 本地已经有二维码能力（<c>EnrollQr</c>，与非对称的一维码共用一套约定），
+    /// 自己画就不用为「显示一个码」多接一条网络依赖，登录出问题时也少一个环节要排查。
+    /// </para>
+    /// <para>
+    /// ⚠️ 这条规则**只在文档里**，真机没验过（扫码那条路要到有真手机时才知道通不通）。
+    /// 判定办法写在 <c>docs/实现决策.md</c> §87：拿手机扫这张码，
+    /// 手机上应当直接打开百度授权页**并已经把码填好**，只剩「登录 + 同意」两步。
+    /// </para>
+    /// </remarks>
+    public string QrPayload =>
+        $"https://openapi.baidu.com/device?display=mobile&code={Uri.EscapeDataString(UserCode)}";
+}
 
 /// <summary>一对令牌。</summary>
 /// <param name="AccessToken">访问令牌。</param>
