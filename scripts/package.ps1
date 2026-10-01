@@ -116,7 +116,35 @@ if (-not (Test-Path $exe)) { throw "发布完了却没有 $exe —— 产物形�
 # ─────────────────────────────────────────────
 $tools = Join-Path $stage 'tools'
 New-Item -ItemType Directory -Force $tools | Out-Null
-Copy-Item $ffmpeg (Join-Path $tools 'ffmpeg.exe') -Force
+$bundled = Join-Path $tools 'ffmpeg.exe'
+Copy-Item $ffmpeg $bundled -Force
+
+# ⚠️⚠️ 这一步不是形式主义，它抓到过一次真事故（2026-10-01 第一次 CI 出包）：
+#
+# `choco install ffmpeg` 往 `C:\ProgramData\chocolatey\bin` 放的是一个
+# **392 KB 的转发器（shim）**，真正的 ffmpeg.exe 在 `...\lib\ffmpeg\...` 下面。
+# 转发器里按**相对路径**找 `..\lib\ffmpeg\tools\ffmpeg\bin\ffmpeg.exe`，
+# 于是它**在装过 choco 的那台机器上跑起来完全正常** —— 「拷完之后试跑一下」
+# 这种验证在 CI 上照样绿，只有在别的机器上才露馅。
+# 那一版包（76 MB，比正常小了 60 MB）里的 tools\ffmpeg.exe 就是这样一份转发器。
+#
+# 判据因此是「**换到包里的这个位置还跑不跑得起来**」：转发器找的是它自己
+# 旁边那个相对路径，而包里没有 `lib\ffmpeg\...`，必然失败；
+# 真的 ffmpeg 不依赖任何邻居，换个地方照样跑。
+# ⚠️ 验的是**已经拷进包里的那一份**（不是原始路径）—— 要验的就是要发出去的东西。
+$probe = & $bundled -version 2>&1 | Out-String
+if ($LASTEXITCODE -ne 0 -or $probe -notmatch 'ffmpeg version') {
+    throw @"
+随包的 FFmpeg 换到包内位置之后跑不起来 —— 它多半是个**转发器**（chocolatey 的
+shim），不是真的 ffmpeg.exe。那份转发器拷到别的机器上什么都不是。
+
+原始路径：$ffmpeg
+换位后的输出：$($probe.Trim())
+
+换一个真的：-FfmpegPath <真的 ffmpeg.exe>，或把真的那份放进 PATH
+（chocolatey 装的话，真的在 %ChocolateyInstall%\lib\ffmpeg\ 下面）。
+"@
+}
 
 # ─────────────────────────────────────────────
 # 打 zip

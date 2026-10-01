@@ -43,13 +43,29 @@ jobs:
       # 与 ci.yml 同一段：windows-latest 镜像里没有 FFmpeg，而这个包
       # **必须**带上它 —— FfmpegLocator 会从应用目录下的 tools\ 找，
       # 少了它装出来的是个半残的软件（能开、什么都干不了）。
+      #
+      # ⚠️ 这里与 ci.yml **故意不一样**：不能用 `(Get-Command ffmpeg).Source`。
+      #    那是 `C:\ProgramData\chocolatey\bin` 下的**转发器**（shim，392 KB，
+      #    里面按相对路径找 `..\lib\ffmpeg\...`），**在装过 choco 的机器上跑起来
+      #    完全正常**，所以 CI 一路绿；而它拷进包里、到了别人机器上什么都不是。
+      #    2026-10-01 第一次出包就是这么产出了一份 76 MB 的坏包。
+      #    ci.yml 拿转发器没问题（那台机器装着 choco，它跑得起来）；
+      #    这里要的是**能跟着包走的那个文件**，只能是 lib 下面真的那份。
       - name: 安装 FFmpeg
         run: |
           choco install ffmpeg -y --no-progress
-          $ffmpeg = (Get-Command ffmpeg -ErrorAction SilentlyContinue).Source
-          if (-not $ffmpeg) { throw '装了 FFmpeg 但 PATH 上找不到' }
-          "FFMPEG_EXE=$ffmpeg" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
-          & $ffmpeg -version | Select-Object -First 1
+
+          $real = Get-ChildItem "$env:ChocolateyInstall\lib\ffmpeg" -Recurse -Filter ffmpeg.exe -ErrorAction SilentlyContinue |
+                  Where-Object { $_.Length -gt 5MB } |
+                  Select-Object -First 1 -ExpandProperty FullName
+          if (-not $real) { throw 'choco 装了 ffmpeg，但只找到转发器，没找到真的 ffmpeg.exe' }
+
+          "FFMPEG_EXE=$real" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+          Write-Host "随包的 FFmpeg：$real（$([math]::Round((Get-Item $real).Length / 1MB)) MB）"
+          & $real -version | Select-Object -First 1
+
+      # package.ps1 末尾还会**在包内**再验一次「换个位置跑不跑得起来」——
+      # 上面这段是按路径猜，那一段是拿要发出去的东西实测。两道都要有。
 
       - name: 打包
         run: ./scripts/package.ps1

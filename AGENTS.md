@@ -251,6 +251,15 @@ gh workflow run package.yml --ref main         # CI 手动派单，产物发 Rel
 探测、实时多画面全都报「没有可用的 FFmpeg」；这种「装上了但半残」比装不上更难查。
 所以脚本找不到 FFmpeg 时**当场失败**，不降级出一份半残的包。
 
+⚠️⚠️ **FFmpeg 必须是真的那份，不是转发器**。`choco install ffmpeg` 往
+`C:\ProgramData\chocolatey\bin` 放的是 **392 KB 的 shim**（里面按相对路径找
+`..\lib\ffmpeg\...`），它**在装过 choco 的机器上跑起来完全正常** —— 所以
+「拷完试跑一下」这种验证一路绿，坏包照样发出去（2026-10-01 第一次 CI 出包
+就是这么产出了一份 76 MB 的坏包）。判据只能是**把要发的那份换到包内位置再跑**：
+`scripts/package.ps1` 末尾会做这一步，失败就当场红；`package.yml` 里取的是
+`%ChocolateyInstall%\lib\ffmpeg\` 下面真的那份。**不要**改回
+`(Get-Command ffmpeg).Source`。
+
 ⚠️ `package.yml` **不要**改成 push 触发（Windows runner 2× 计费），
 也不要往 `upload-artifact` 发（2026-09-27 起账号级产物配额被拒过）。
 
