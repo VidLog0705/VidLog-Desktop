@@ -43,6 +43,9 @@ TestResults/
 *.dbf-shm
 *.dbf-wal
 
+# ---------- 出包产物（scripts/package.ps1，一个 zip 就 100MB+） ----------
+/dist/
+
 # ---------- IDE ----------
 .vscode/*
 !.vscode/extensions.json

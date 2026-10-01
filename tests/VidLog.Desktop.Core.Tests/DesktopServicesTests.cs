@@ -723,4 +723,46 @@ public class DesktopServicesTests
         });
         Assert.Single(hits);
     }
+
+    // ─────────────────────────────────────────────
+    // 出包（2026-10-01 补）
+    // ─────────────────────────────────────────────
+
+    /// <summary>
+    /// 打包脚本里的版本号**只有一个来源**（<c>VidLog.Desktop.App.csproj</c>）。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// ⚠️ 本仓在 2026-10-01 之前**根本没有出包这条路** —— 只有 <c>dotnet build</c>，
+    /// 产物落在 <c>bin\Release\</c>。那是一份**依赖开发机环境**的输出：目标机器
+    /// 要先装 .NET 9 桌面运行时、PATH 上要有 FFmpeg，而缺了第二样的表现是
+    /// 「软件能开、界面能点，采集与实时多画面全都说没有 FFmpeg」。
+    /// <c>scripts/package.ps1</c> 就是补这一环的：自包含发布 + 随包
+    /// <c>tools\ffmpeg.exe</c>（那是 <c>FfmpegLocator</c> 认的第三条路径）。
+    /// </para>
+    /// <para>
+    /// 绊线的靶子是**版本号被抄成两份**：包名与 exe 属性走岔之后
+    /// （「包名写着 0.2.0、属性里是 0.1.0」）事后没人对得出来。
+    /// </para>
+    /// <para>
+    /// ⚠️ 天花板与上面几条文本绊线相同：只挡「有人把版本号写死进脚本」，
+    /// 挡不住「脚本整体改错」。
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public void 打包脚本的版本号只从_csproj_读()
+    {
+        var script = File.ReadAllText(
+            Path.Combine(RepoRoot(), "scripts", "package.ps1"));
+
+        // ① 版本号的来源是那个 csproj（不是脚本里另写的一份）。
+        Assert.Contains("VidLog.Desktop.App.csproj", script, StringComparison.Ordinal);
+
+        // ② 包名是拼出来的。
+        Assert.Contains("VidLog-Desktop-$version-$Runtime.zip", script, StringComparison.Ordinal);
+
+        // ③ 任何地方都不许再出现一个「VidLog-Desktop-<数字>」的字面量 ——
+        //    写死版本号必然同时踩红 ② 与 ③。
+        Assert.DoesNotMatch(@"VidLog-Desktop-\d", script);
+    }
 }

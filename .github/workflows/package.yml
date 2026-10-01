@@ -1,0 +1,82 @@
+name: 电脑端安装包
+
+# ─────────────────────────────────────────────────────────────
+# 手动触发，产出自包含的 win-x64 安装包（zip）。
+#
+# ⚠️ 不要改成 push 触发。Windows runner 是 2× 计费（见 ci.yml 顶上那段），
+#    每次推送都打一次包会迅速烧光额度。本地也能打：scripts/package.ps1。
+#
+# 与 ci.yml 的关系：**打包不重跑测试**。测试是 ci.yml 的事，这里只负责
+# 「把这个提交变成一份能装到别人机器上的东西」—— 两件事分开，红的时候
+# 一眼看得出是哪一件。
+#
+# ⚠️ 产物走 Release 而不是 upload-artifact：2026-09-27 起账号级 Actions
+#    产物配额被拒过（`Artifact storage quota has been hit`），Release 资源
+#    不占那个配额。手机端 ios-package.yml 同一个套路。
+# ─────────────────────────────────────────────────────────────
+
+permissions:
+  contents: write
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: package
+  cancel-in-progress: false
+
+jobs:
+  package:
+    name: Build win-x64 package
+    runs-on: windows-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '9.0.x'
+
+      # 与 ci.yml 同一段：windows-latest 镜像里没有 FFmpeg，而这个包
+      # **必须**带上它 —— FfmpegLocator 会从应用目录下的 tools\ 找，
+      # 少了它装出来的是个半残的软件（能开、什么都干不了）。
+      - name: 安装 FFmpeg
+        run: |
+          choco install ffmpeg -y --no-progress
+          $ffmpeg = (Get-Command ffmpeg -ErrorAction SilentlyContinue).Source
+          if (-not $ffmpeg) { throw '装了 FFmpeg 但 PATH 上找不到' }
+          "FFMPEG_EXE=$ffmpeg" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+          & $ffmpeg -version | Select-Object -First 1
+
+      - name: 打包
+        run: ./scripts/package.ps1
+
+      - name: 发到 Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          # `gh release view` 在标签还不存在时是**非零退出**，那是预期的一条路
+          # （第一次跑就是这个情况），不是错误。新版 pwsh 会把原生命令的非零退出
+          # 也当异常抛，所以先关掉那个行为，下面按退出码自己判。
+          $PSNativeCommandUseErrorActionPreference = $false
+
+          $zip = Get-ChildItem dist/*.zip | Select-Object -First 1
+          if (-not $zip) { throw 'scripts/package.ps1 没产出 zip' }
+          Write-Host "包：$($zip.Name)"
+
+          # 固定一个 prerelease 标签，每次覆盖 —— Release 页永远只有最新那一份。
+          # 历史版本靠本地 dist\ 留档。
+          $tag = 'desktop-package'
+          gh release view $tag *> $null
+          if ($LASTEXITCODE -ne 0) {
+            gh release create $tag --prerelease `
+              --title '电脑端安装包' `
+              --notes '每次打包覆盖同一个 zip。解压即用，不需要先装 .NET 运行时。'
+          }
+          gh release upload $tag $zip.FullName --clobber
+          Write-Host "下载页：${{ github.server_url }}/${{ github.repository }}/releases/tag/$tag"

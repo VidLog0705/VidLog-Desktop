@@ -234,3 +234,25 @@ ProductVersion = 0.1.0+<git sha>    （`+` 那截是 SDK 加的构建元数据�
 
 > 2026-10-01 之前这里**一条版本声明都没有**，打出来的 exe 一直是 `FileVersion 1.0.0.0`
 > （那个数没有任何意义、也不随改动变）。补上这件事就是这一条规矩的由来。
+
+---
+
+## 11. 出包（2026-10-01 补）
+
+```
+pwsh -NoProfile -File scripts/package.ps1      # 本地
+gh workflow run package.yml --ref main         # CI 手动派单，产物发 Release
+```
+
+产出 `dist\VidLog-Desktop-<版本>-win-x64.zip`：**自包含**发布（目标机器不用先装
+.NET 9 桌面运行时）+ 随包 `tools\ffmpeg.exe`（`FfmpegLocator` 认的第三条路径）。
+
+⚠️ **两件都不能省** —— 少了 FFmpeg 的包**能开、界面能点**，只是采集、网络摄像头
+探测、实时多画面全都报「没有可用的 FFmpeg」；这种「装上了但半残」比装不上更难查。
+所以脚本找不到 FFmpeg 时**当场失败**，不降级出一份半残的包。
+
+⚠️ `package.yml` **不要**改成 push 触发（Windows runner 2× 计费），
+也不要往 `upload-artifact` 发（2026-09-27 起账号级产物配额被拒过）。
+
+版本号只从 `src/VidLog.Desktop.App/VidLog.Desktop.App.csproj` 的 `<Version>` 读，
+**不许在脚本里再写一个**（有绊线钉着：`DesktopServicesTests.打包脚本的版本号只从_csproj_读`）。
