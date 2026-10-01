@@ -28,13 +28,17 @@
       FileVersion 1.0.0.0（那个数没有任何意义，也不会随改动变）。
 
       它同时决定 FileVersion 与 ProductVersion：
-        FileVersion    = 0.1.0.0        （AssemblyVersion 那个 4 段形状，SDK 自动补 0）
-        ProductVersion = 0.1.0+<git sha>（`+` 后面那截是 SDK 自己加的构建元数据，是合法 semver）
+        FileVersion    = 0.2.0.0        （AssemblyVersion 那个 4 段形状，SDK 自动补 0）
+        ProductVersion = 0.2.0+<git sha>（`+` 后面那截是 SDK 自己加的构建元数据，是合法 semver）
 
       ⚠️ 改版本号就改这一行。0.1.0 是第一个版本（还没发布过正式版，1.0.0 留给
       第一次正式对外）。
+
+      0.2.0（2026-10-01）：界面照需求方设计图重做（批次 1~9，含配置向导、
+      多磁盘、百度网盘归档、本机角色、导入导出、实时多画面）——
+      在 0.x 里**加功能是次版本号**，所以是 0.2.0 而不是 0.1.1。
     -->
-    <Version>0.1.0</Version>
+    <Version>0.2.0</Version>
     <OutputType>WinExe</OutputType>
     <TargetFramework>net9.0-windows</TargetFramework>
     <Nullable>enable</Nullable>
