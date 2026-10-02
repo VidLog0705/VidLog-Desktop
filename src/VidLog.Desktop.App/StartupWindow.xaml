@@ -1,0 +1,35 @@
+<Window x:Class="VidLog.Desktop.App.StartupWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="VidLog 工位录像"
+        Width="400" SizeToContent="Height"
+        WindowStyle="None" ResizeMode="NoResize"
+        WindowStartupLocation="CenterScreen"
+        Background="{StaticResource Surface}"
+        ShowInTaskbar="True">
+    <!--
+        ⚠️ 这个窗口存在的**唯一理由**是装配期有 4–6 秒，而在此之前一个窗口都没有
+        （2026-10-02 实测：本机连摄像头都没有，也就是**最好情况**，仍是 3.7–6.1 秒）。
+        用户双击图标之后屏幕上什么都不发生，多半会再点一次，或者以为程序坏了。
+        主窗显示出来之后它立刻关掉（App.OnStartup）。
+
+        ⚠️ 刻意**没有任何图片**：规范 §10 的许可盘点禁止引入图像/字体资源，
+        所以下面全是内联文字与主题画刷（Theme.xaml）。
+        ⚠️ 刻意**不设 Topmost**：首次运行那个「选用途」的对话框要能盖在它上面。
+        ⚠️ 那句话刻意说得**含糊**（不写死「正在检测摄像头」）：首次运行时程序其实在
+        等用户选用途，写死会当场说一句假话。
+    -->
+    <Border BorderBrush="{StaticResource CardBorder}" BorderThickness="1">
+        <StackPanel Margin="28,24,28,24">
+            <TextBlock Text="VidLog 工位录像" Style="{StaticResource PageTitle}"/>
+            <TextBlock Margin="0,6,0,0" Style="{StaticResource Caption}"
+                       Text="正在启动…（要先检测本机设备，可能要几秒）"/>
+            <!-- ⚠️ 这一条不是装饰：一个不动的窗口放 6 秒，与「卡死了」看不出区别。
+                 进度条自己在动，用户一眼就知道程序还活着。 -->
+            <ProgressBar Margin="0,18,0,0" Height="4" IsIndeterminate="True"
+                         BorderThickness="0"
+                         Foreground="{StaticResource Accent}"
+                         Background="{StaticResource SurfaceMuted}"/>
+        </StackPanel>
+    </Border>
+</Window>

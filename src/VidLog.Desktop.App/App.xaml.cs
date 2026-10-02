@@ -19,6 +19,11 @@ namespace VidLog.Desktop.App;
 /// <remarks>
 /// 启动顺序刻意是「先装配、再开窗口」：装配失败时还没有窗口可以显示错误，
 /// 所以失败要用 MessageBox 说出来，而不是静默退出。
+/// <para>
+/// ⚠️ 但装配期**实测 4–6 秒**（2026-10-02 本机实测，那还是没有摄像头的最佳情况），
+/// 那几秒里不能什么都不显示 —— 所以装配之前先弹一个
+/// <see cref="StartupWindow"/>（缺陷 2 前半）。
+/// </para>
 /// </remarks>
 public partial class App : System.Windows.Application
 {
@@ -35,6 +40,18 @@ public partial class App : System.Windows.Application
         // 「窗口直接消失，磁盘上一个字都没有」。三个钩子全无，也没有任何测试会红。
         var logger = AppHost.CreateBootstrapLogger();
         Platform.CrashGuard.Install(logger);
+
+        // ⚠️ 计时是为了**能回答「启动为什么慢」**：这一条进日志之后，
+        // 用户说「打开要等半天」就有数可查，而不是只能靠猜（`AGENTS.md` §6）。
+        var startupClock = System.Diagnostics.Stopwatch.StartNew();
+
+        // ⚠️ 装配期先显示这个（缺陷 2 前半，2026-10-02）。
+        // 在这之前：双击图标之后**屏幕上什么都没有**，直到 `_window.Show()` ——
+        // 本机实测 3.7–6.1 秒，而且那还是枚举不到任何摄像头的最好情况。
+        // ⚠️ 它**不是**为了好看：那几秒里用户分不出「在启动」和「点了没反应」，
+        // 于是会再点一次。`Show()` 之后窗口就画出来了（消息泵随 OnStartup 返回而转起来）。
+        var splash = new StartupWindow();
+        splash.Show();
 
         try
         {
@@ -61,6 +78,25 @@ public partial class App : System.Windows.Application
             _host.Notice += OnNotice;
 
             _window.Show();
+
+            // ⚠️ 顺序是「主窗先出来，再收掉启动窗」—— 反过来的话那几毫秒里
+            // 一个窗口都没有（`ShutdownMode=OnExplicitShutdown`，所以不会退出，
+            // 但屏幕上会闪一下空白）。
+            splash.Close();
+
+            logger.Log(
+                LogLevel.Info, "启动",
+                $"装配完成，耗时 {startupClock.Elapsed.TotalSeconds:0.0} 秒（含设备探测）",
+                new Dictionary<string, object?>
+                {
+                    // ⚠️ 只记**时长**，不记起止时刻：日志行自带 `ts`，再写一个
+                    // “这个几点几分起算”只会多一个对不上的数（写这句时先写错过一次：
+                    // 那个时刻其实是**结束**时刻）。
+                    ["秒"] = Math.Round(startupClock.Elapsed.TotalSeconds, 1),
+                    // ⚠️ 用途一起记：不录像的那两档**不解析**摄像头与麦克风，
+                    // 快得多 —— 只记秒数的话，「这一台怎么特别慢」会查不出是用途不同。
+                    ["用途"] = StationRoles.Describe(_host.Settings.StationRole).Title,
+                });
 
             // 开机自启动：**每次启动都把注册表重写一遍**。
             // ⚠️ 理由是路径会漂移 —— 程序被搬到别的目录之后，注册表里那条指向的是
