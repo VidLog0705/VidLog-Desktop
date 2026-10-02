@@ -54,7 +54,19 @@ public sealed class OrphanRecovery
                 orphan.SourceDeviceId,
                 orphan.Segments,
                 StopReason.ProcessKilled,
-                cancellationToken);
+                cancellationToken,
+                // ⚠️ **这一行是孤儿与正常收尾唯一的输入差别**，而它曾经是缺的：
+                // 正常停录那边传 `_options.Spec`，这里不传 ⇒ **同一条收尾路径
+                // 产出两种记录** —— 孤儿条目的编码 / 分辨率 / 方向三栏全空。
+                // 类注释那句「这个类的全部意义在于它没有自己的收尾逻辑」说的是**结构**，
+                // 而走岔的是**喂进去的输入**。（2026-10-02 检索页实证：
+                // `…041052-…-000` 有 `Codec=H265 / Resolution=Uhd4K`，
+                // `…042113-…-000~003` 三项全空。）
+                //
+                // ⚠️ 规格从 `session.json` 读回来，**不从内存里找** ——
+                // 进程是**被杀**的，内存里那份早没了。老 manifest 没记它，
+                // 那时是 null，与从前一样（宁可空着，也不编一个）。
+                spec: orphan.Spec);
 
             if (outcome.Succeeded)
             {

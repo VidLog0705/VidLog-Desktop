@@ -1,3 +1,4 @@
+using VidLog.Desktop.Core.Diagnostics;
 using VidLog.Desktop.Core.Index;
 using VidLog.Desktop.Core.Media;
 using VidLog.Desktop.Core.Recording;
@@ -34,6 +35,19 @@ public class OrphanRecoveryTests
         }
     }
 
+    /// <summary>把日志收起来，好在测试里断言（本仓既有写法）。</summary>
+    private sealed class CapturingLogger : IAppLogger
+    {
+        public List<(LogLevel Level, string Message)> Entries { get; } = [];
+
+        public void Log(LogLevel level, string category, string message) =>
+            Entries.Add((level, message));
+
+        public void Log(
+            LogLevel level, string category, string message, IReadOnlyDictionary<string, object?> data) =>
+            Entries.Add((level, message));
+    }
+
     private sealed class SucceedingRunner : IProcessRunner
     {
         public Task<ProcessResult> RunAsync(
@@ -65,11 +79,20 @@ public class OrphanRecoveryTests
                 "2026-09-16T10:31:00+08:00"))
             .ToList());
 
+    /// <summary>
+    /// 同上，但 manifest 里**记着**这一场用的规格 —— 2026-10-02 起正常录制的写法
+    /// （<c>RecordingSession.StartAsync</c> 就是这么写的）。
+    /// </summary>
+    private static SessionManifest ManifestWithSpecFor(
+        string sessionId, RecordingSpec spec, params string[] segmentFiles) =>
+        ManifestFor(sessionId, segmentFiles) with { Spec = SessionSpecManifest.From(spec) };
+
     /// <summary>造一个「录到一半被杀」的工作区：有分段、有 manifest、没有 finalized 标记。</summary>
     private static async Task<RecordingWorkspace> CreateKilledSessionAsync(
         TempDir dir,
         string sessionId = "session-killed",
-        bool markFinalized = false)
+        bool markFinalized = false,
+        RecordingSpec? spec = null)
     {
         var workspace = new RecordingWorkspace(dir.Dir("work"));
         var sessionDir = workspace.SessionDirectory(sessionId);
@@ -78,7 +101,9 @@ public class OrphanRecoveryTests
         var segmentName = "segment-000.mkv";
         await File.WriteAllTextAsync(System.IO.Path.Combine(sessionDir, segmentName), "intermediate-mkv-bytes");
 
-        await workspace.WriteManifestAsync(ManifestFor(sessionId, segmentName));
+        await workspace.WriteManifestAsync(spec is null
+            ? ManifestFor(sessionId, segmentName)
+            : ManifestWithSpecFor(sessionId, spec, segmentName));
 
         if (markFinalized)
         {
@@ -125,6 +150,113 @@ public class OrphanRecoveryTests
         Assert.Equal("SF1234567890", orphan.Waybill.Value);
         Assert.Equal("device-1", orphan.SourceDeviceId);
         Assert.Single(orphan.Segments);
+    }
+
+    /// <summary>
+    /// **孤儿发现把这一场的录制规格一起带出来了。**
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ 规格**只能从 `session.json` 读回来** —— 进程是被杀的，内存里那份早没了。
+    /// 所以这条判的正是「它有没有落到盘上」，而下一段（收尾）判的是「有没有被读回来」。
+    /// </remarks>
+    [Fact]
+    public async Task 孤儿发现时把录制规格一起带出来()
+    {
+        using var dir = new TempDir();
+        var spec = new RecordingSpec(VideoCodec.H264, VideoResolution.P720, CameraRotation.Left90);
+        var workspace = await CreateKilledSessionAsync(dir, spec: spec);
+
+        var orphan = Assert.Single(await workspace.ListOrphansAsync());
+
+        Assert.Equal(spec, orphan.Spec);
+    }
+
+    /// <summary>
+    /// **老 <c>session.json</c>（追加规格字段之前写的）照样读得出来，只是规格为空。**
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ 这一条守的是**就地升级**：用户的机器上有升级前留下的会话目录，里面那份
+    /// manifest 没有 <c>Spec</c> 这一项。读不出来 ⇒ <see cref="RecordingWorkspace.ListOrphansAsync"/>
+    /// 静默 <c>continue</c> ⇒ **那批分段永远收不了尾**（本仓唯一会丢证据的方向，I2/I9）。
+    /// 「规格读回来是空」可以接受，「整个会话读不出来」不行。
+    /// </remarks>
+    [Fact]
+    public async Task 老的manifest没有规格字段时照样读得出来_只是规格为空()
+    {
+        using var dir = new TempDir();
+        var workspace = new RecordingWorkspace(dir.Dir("work"));
+        var sessionDir = workspace.SessionDirectory("session-old");
+        Directory.CreateDirectory(sessionDir);
+        await File.WriteAllTextAsync(System.IO.Path.Combine(sessionDir, "segment-000.mkv"), "bytes");
+
+        // 逐字照**追加 Spec 之前**那份写出来的形状。
+        const string oldJson = """{"SessionId":"session-old","Waybill":"SF1234567890","SourceDeviceId":"device-1","StartedAt":"2026-09-16T10:30:00+08:00","Segments":[{"Sequence":0,"FileName":"segment-000.mkv","StartedAt":"2026-09-16T10:30:00+08:00","EndedAt":"2026-09-16T10:31:00+08:00"}]}""";
+        await File.WriteAllTextAsync(
+            System.IO.Path.Combine(sessionDir, "session.json"), oldJson);
+
+        var orphan = Assert.Single(await workspace.ListOrphansAsync());
+
+        Assert.Null(orphan.Spec);
+        Assert.Single(orphan.Segments);
+    }
+
+    [Fact]
+    public void 规格写得进去也读得回来()
+    {
+        var spec = new RecordingSpec(VideoCodec.H265, VideoResolution.Uhd4K, CameraRotation.Right90);
+
+        Assert.Equal(spec, SessionSpecManifest.From(spec).ToSpec());
+    }
+
+    [Theory]
+    [InlineData("H999", "P720", "None")]
+    [InlineData("H264", "P999", "None")]
+    [InlineData("H264", "P720", "Sideways")]
+    public void 规格里有一个值认不出时_整档算认不出_不逐项回落(
+        string codec, string resolution, string rotation)
+    {
+        // ⚠️ 不逐项回落是有意的：这组数要写进索引、还要拿去估容量。
+        // 拿默认档补上一个认不出的字段，会得到一条**看着正常、其实是编的**元数据 ——
+        // 那比空着坏（空着时估容量那一头至少知道自己是在猜）。
+        Assert.Null(new SessionSpecManifest(codec, resolution, rotation).ToSpec());
+    }
+
+    /// <summary>
+    /// **规格有值但认不出时，会话照样收尾，只在日志里说一声。**
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ 一条用例守两个相反的方向：
+    /// <list type="number">
+    /// <item>认不出规格**不许**把整个会话丢掉 —— 那是本仓唯一会丢证据的方向（I2/I9）：
+    /// 分段文件还在盘上，只是元数据读不懂，照样得收尾。</item>
+    /// <item>但这一条**必须留痕**，否则它的症状（收尾出来的索引三栏空）与
+    /// 「当初根本没记过规格」**逐字一样**，而两者修法完全不同
+    /// （见 <see cref="RecordingWorkspace.ListOrphansAsync"/> 里那一段注释）。</item>
+    /// </list>
+    /// </remarks>
+    [Fact]
+    public async Task 规格认不出时照样收尾_但日志里要说一声()
+    {
+        using var dir = new TempDir();
+        var logger = new CapturingLogger();
+        var workspace = new RecordingWorkspace(dir.Dir("work"), logger);
+        var sessionDir = workspace.SessionDirectory("session-drift");
+        Directory.CreateDirectory(sessionDir);
+        await File.WriteAllTextAsync(System.IO.Path.Combine(sessionDir, "segment-000.mkv"), "bytes");
+
+        // 枚举名后来改了名（或文件被手改过）—— Spec 在，但那个值认不出。
+        await workspace.WriteManifestAsync(
+            ManifestFor("session-drift", "segment-000.mkv") with
+            {
+                Spec = new SessionSpecManifest("H999", "Uhd4K", "None"),
+            });
+
+        var orphan = Assert.Single(await workspace.ListOrphansAsync());
+        Assert.Null(orphan.Spec);
+
+        var entry = Assert.Single(logger.Entries);
+        Assert.Equal(LogLevel.Warn, entry.Level);
+        Assert.Contains("H999", entry.Message, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -200,6 +332,47 @@ public class OrphanRecoveryTests
         var outcome = Assert.Single(outcomes);
         Assert.Equal(StopReason.ProcessKilled, outcome.Reason);
         Assert.Equal(RecordingSessionState.Indexed, outcome.State);
+    }
+
+    /// <summary>
+    /// **孤儿收尾出来的索引条目带着这一场的录制规格。**
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// 2026-10-02 检索页实证：<c>…041052-…-000</c>（正常停录）有
+    /// <c>Codec=H265 / Resolution=Uhd4K / Orientation=None</c>，而
+    /// <c>…042113-…-000~003</c>（孤儿恢复）三项**全空**。
+    /// </para>
+    /// <para>
+    /// ⚠️ 代价不止是「检索页少显示一栏」：<c>CleanupPolicy.EstimateBytes</c> 见空就按
+    /// **默认档**（H.264 1080P）估，而「按空间清理」是 <c>freed += size</c> 攒到够为止。
+    /// 同一条缺陷的另一半：主窗「152.1 MB」（实测字节）vs 数据窗「约 355.9 MB」（估算），
+    /// 差 <b>2.34 倍</b> —— 而那两栏是同一个用户在同一屏上看的。
+    /// </para>
+    /// <para>
+    /// ⚠️ 这条必须走完「写 manifest → 重启发现 → 收尾 → 写索引」**整条路**：
+    /// 只测 <see cref="SessionSpecManifest.ToSpec"/> 的话，
+    /// 「规格没被写进 manifest」或「没被喂给收尾器」这两处漏都拦不住
+    /// （它们正是 2026-10-02 之前真实存在的那两处漏）。
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task 孤儿收尾出来的索引条目带着录制规格()
+    {
+        using var dir = new TempDir();
+        var spec = new RecordingSpec(VideoCodec.H264, VideoResolution.P720, CameraRotation.Left90);
+        var workspace = await CreateKilledSessionAsync(dir, spec: spec);
+        var index = new JsonLinesRecordingIndex(dir.File("index.jsonl"));
+        var recovery = BuildRecovery(dir, workspace, new SucceedingRunner(), index);
+
+        var outcomes = await recovery.RecoverAsync();
+
+        Assert.True(Assert.Single(outcomes).Succeeded);
+
+        var entry = Assert.Single(await index.LoadAllAsync());
+        Assert.Equal("H264", entry.Codec);
+        Assert.Equal("P720", entry.Resolution);
+        Assert.Equal("Left90", entry.Orientation);
     }
 
     [Fact]

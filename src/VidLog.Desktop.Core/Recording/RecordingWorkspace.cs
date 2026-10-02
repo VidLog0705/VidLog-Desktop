@@ -4,12 +4,31 @@ using System.Text.Json;
 namespace VidLog.Desktop.Core.Recording;
 
 /// <summary>工作区里 <c>session.json</c> 的形状。</summary>
+/// <param name="Spec">
+/// 这一场是在哪一档规格上录的。
+/// </param>
+/// <remarks>
+/// ⚠️ <b><paramref name="Spec"/> 只有一个用处：让**孤儿恢复**能把它读回来。</b>
+/// 进程被杀之后，「这场录的是什么编码 / 分辨率 / 方向」在内存里没了，只剩这个文件；
+/// 不写它，孤儿收尾出来的索引条目那三栏**永远是空的**。
+/// <para>
+/// ⚠️ 那不只是显示问题：<c>CleanupPolicy.EstimateBytes</c> 见空就按**默认档**
+/// （H.264 1080P）估，而「按空间清理」是拿估算 <c>freed += size</c> 攒到够为止 ——
+/// 估大了得删更多条才够，删的却是**不可逆的证据**。2026-10-02 实测：
+/// 主窗「152.1 MB」（实测字节）vs 数据窗「约 355.9 MB」（估算），差 **2.34 倍**。
+/// </para>
+/// <para>
+/// ⚠️ 可空 ⇒ 老 <c>session.json</c>（追加这个字段之前写的）照样读得出来，
+/// 读出来是 null，行为与从前**逐字一样**。
+/// </para>
+/// </remarks>
 public sealed record SessionManifest(
     string SessionId,
     string Waybill,
     string SourceDeviceId,
     string StartedAt,
-    IReadOnlyList<SegmentManifest> Segments);
+    IReadOnlyList<SegmentManifest> Segments,
+    SessionSpecManifest? Spec = null);
 
 /// <summary>一个分段的落盘元数据。</summary>
 public sealed record SegmentManifest(
@@ -18,12 +37,52 @@ public sealed record SegmentManifest(
     string StartedAt,
     string EndedAt);
 
+/// <summary>
+/// <c>session.json</c> 里记的那一档录制规格。
+/// </summary>
+/// <remarks>
+/// ⚠️ <b>存的是三个枚举名（字符串），不是 <see cref="Media.RecordingSpec"/> 本身。</b>
+/// 直接把那个 record 序列化，会把它**算出来的**那些成员（`Label`、`EncoderCandidates`、
+/// 观察到的尺寸）一起写进文件，而读回来时它们会被当成输入 —— 那些值本来是
+/// 从这三个字段推出来的，写进去就多了一份**会对不上**的副本。
+/// <para>
+/// ⚠️ 这三个字符串与 <c>RecordingEntry</c> 的 <c>Codec</c> / <c>Resolution</c> /
+/// <c>Orientation</c> 是**同一套写法**（都是枚举名）—— 因为它们最终就是往那三栏里写，
+/// 用两套写法就多了一道会走岔的转换。
+/// </para>
+/// </remarks>
+public sealed record SessionSpecManifest(string Codec, string Resolution, string Rotation)
+{
+    public static SessionSpecManifest From(Media.RecordingSpec spec) =>
+        new(spec.Codec.ToString(), spec.Resolution.ToString(), spec.Rotation.ToString());
+
+    /// <summary>
+    /// 读回一档规格。
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ <b>三个值有一个认不出就返回 null —— 不猜，也不逐项回落。</b>
+    /// 这组数要写进索引、还要拿去估容量：拿默认档补上一个认不出的字段，
+    /// 会得到一条**看着正常、其实是编的**证据元数据 —— 那比空着坏。
+    /// （空着至少估容量那一头知道自己在猜，见 <c>CleanupPolicy.EstimateBytes</c>。）
+    /// </remarks>
+    public Media.RecordingSpec? ToSpec() =>
+        Enum.TryParse<Media.VideoCodec>(Codec, out var codec)
+        && Enum.TryParse<Media.VideoResolution>(Resolution, out var resolution)
+        && Enum.TryParse<Media.CameraRotation>(Rotation, out var rotation)
+            ? new Media.RecordingSpec(codec, resolution, rotation)
+            : null;
+}
+
 /// <summary>重启后发现的、没有收尾的会话。</summary>
+/// <param name="Spec">
+/// 这一场录的是什么规格；老 manifest 里没记时为 <see langword="null"/>。
+/// </param>
 public sealed record OrphanSession(
     string SessionId,
     WaybillNumber Waybill,
     string SourceDeviceId,
-    IReadOnlyList<SegmentProduct> Segments);
+    IReadOnlyList<SegmentProduct> Segments,
+    Media.RecordingSpec? Spec = null);
 
 /// <summary>
 /// 录制工作区 —— 会话落盘与孤儿发现。
@@ -146,7 +205,22 @@ public sealed class RecordingWorkspace
                 continue;
             }
 
-            orphans.Add(new OrphanSession(sessionId, waybill!, manifest.SourceDeviceId, segments));
+            var spec = manifest.Spec?.ToSpec();
+
+            // ⚠️ 「有规格但认不出」与「老 manifest 根本没记规格」**必须分得开**：
+            // 两者收尾出来的索引条目**逐字一样**（编码 / 分辨率 / 方向三栏全空，
+            // 容量估算跟着回落到默认档），但修法完全不同 —— 一个是历史文件照旧，
+            // 一个是 `session.json` 里那几个枚举名认不出了（手改过文件，或哪天枚举改了名）。
+            // 不留这一条，下一个人只能像 2026-10-02 那样对着检索页的样本重查一遍。
+            if (manifest.Spec is { } recorded && spec is null)
+            {
+                _logger.Log(Diagnostics.LogLevel.Warn, "录制",
+                    $"会话元数据里的录制规格认不出来，收尾后索引里不会有编码/分辨率/方向"
+                    + $"（{manifestPath}）：{recorded.Codec}/{recorded.Resolution}/{recorded.Rotation}");
+            }
+
+            orphans.Add(new OrphanSession(
+                sessionId, waybill!, manifest.SourceDeviceId, segments, spec));
         }
 
         return orphans;

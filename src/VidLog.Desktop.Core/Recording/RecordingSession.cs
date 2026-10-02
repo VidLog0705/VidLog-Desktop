@@ -478,7 +478,12 @@ public sealed class RecordingSession : IAsyncDisposable
         // 水印第二行要它（规格 §3.6.2：一段只用一个单号）。
         _waybill = waybill.Value;
         _manifest = new SessionManifest(
-            SessionId, waybill.Value, SourceDeviceId, _startedAt.ToString("O"), []);
+            SessionId, waybill.Value, SourceDeviceId, _startedAt.ToString("O"), [],
+            // ⚠️ 规格**必须落在 manifest 上**，不能只在内存里：进程被系统杀掉时
+            // 内存里那份一起没了，而孤儿恢复是**从盘上读**的（见 `SessionManifest.Spec`）。
+            // 缺了它，收尾出来的索引条目编码 / 分辨率 / 方向三栏全空，
+            // 「按空间清理」的估算还会因此被系统性放大（2026-10-02 实测 2.34 倍）。
+            _options.Spec is { } spec ? SessionSpecManifest.From(spec) : null);
 
         Directory.CreateDirectory(_workspace.SessionDirectory(SessionId));
         await _workspace.WriteManifestAsync(_manifest, cancellationToken);

@@ -1,3 +1,4 @@
+using System.Text.Json;
 using VidLog.Desktop.Core.Index;
 using VidLog.Desktop.Core.Media;
 using VidLog.Desktop.Core.Recording;
@@ -34,6 +35,45 @@ public class RecordingSessionTests
         // 不写这一版，进程被杀后 ListOrphansAsync 根本看不见这个会话。
         var manifestPath = Path.Combine(dir.WorkspaceRoot, session.SessionId, "session.json");
         Assert.True(File.Exists(manifestPath), "开录必须立刻写下 session.json");
+    }
+
+    /// <summary>
+    /// **开录写下的那一版 manifest 里，带着这一场用的录制规格。**
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// ⚠️ 2026-10-02 检索页实证：正常停录的
+    /// <c>…041052-…-000</c> 有 <c>Codec=H265 / Resolution=Uhd4K / Orientation=None</c>，
+    /// 而同日孤儿恢复出来的 <c>…042113-…-000~003</c> 三项**全空**。根因不在收尾器 ——
+    /// <b>规格从来没被写到盘上</b>，进程被杀后孤儿恢复手里那份只能不传。
+    /// </para>
+    /// <para>
+    /// ⚠️ 这条是**唯一**一条经过 <see cref="RecordingSession.StartAsync"/> 的规格测试：
+    /// <c>OrphanRecoveryTests</c> 那几用的是测试自己造的 manifest，
+    /// <c>SessionSpecManifest</c> 那两条只测自己的编解码 ——
+    /// 谁把这一行改回 <c>null</c>，那几条纹丝不动，**只有这条会红**。
+    /// </para>
+    /// <para>
+    /// ⚠️ 与 <see cref="RecordingSessionOptions.WithSchedule"/> 的注释是同一件事的两面：
+    /// 那里写着「用户一改任何设置，已探好的录制规格就被抹成 null」——
+    /// 现在连「抹成 null 之后会怎样」也有据可查了：索引三栏空，
+    /// 而按空间清理的估算会被系统性放大（实测 2.34 倍）。
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task 开录写下的manifest里带着这一场的录制规格()
+    {
+        using var dir = new TempDir();
+        var spec = new RecordingSpec(VideoCodec.H264, VideoResolution.P720, CameraRotation.Left90);
+        await using var session = Build(dir, new FakeCapture(), options: DefaultOptions.With(spec));
+
+        await session.StartAsync(WaybillNumber.Parse("SF1"), "libx264");
+
+        var manifestPath = Path.Combine(dir.WorkspaceRoot, session.SessionId, "session.json");
+        var manifest = JsonSerializer.Deserialize<SessionManifest>(
+            await File.ReadAllTextAsync(manifestPath));
+
+        Assert.Equal(SessionSpecManifest.From(spec), manifest!.Spec);
     }
 
     [Fact]
