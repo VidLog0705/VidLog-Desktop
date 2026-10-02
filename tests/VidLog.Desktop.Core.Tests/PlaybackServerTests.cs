@@ -490,12 +490,24 @@ public class PlaybackServerTests
         await fixture.Client.GetAsync("/");
         await fixture.Client.GetAsync("/api/nope");
 
-        var entries = await WaitForLogEntriesAsync(logger.Path, 2);
+        var entries = await WaitForLogEntriesAsync(logger.Path, 3);
         await logger.DisposeAsync();
 
-        Assert.Equal(2, entries.Count);
+        // 启动时那条「绑上了哪个地址」不是请求日志，按有没有 `data.path` 分开数。
+        var requests = entries
+            .Where(e => e.TryGetProperty("data", out var d) && d.TryGetProperty("path", out _))
+            .ToList();
 
-        var ok = Assert.Single(entries, e => e.GetProperty("data").GetProperty("path").GetString() == "/");
+        Assert.Equal(2, requests.Count);
+
+        // ⚠️ 绑定结果本身也要留痕：首选地址（局域网可达）绑不上时会**静默**退到
+        // `localhost` —— 退过去之后手机就再也连不上这台电脑了，而界面上的
+        // 「服务已就绪」两种情形长得一模一样（2026-10-02 报上来的那个二维码问题的近亲）。
+        var bound = Assert.Single(entries, e => e.GetProperty("cat").GetString() == "回放"
+            && e.GetProperty("msg").GetString()!.Contains("已绑定", StringComparison.Ordinal));
+        Assert.Equal("INFO", bound.GetProperty("lvl").GetString());
+
+        var ok = Assert.Single(requests, e => e.GetProperty("data").GetProperty("path").GetString() == "/");
         Assert.Equal(200, ok.GetProperty("data").GetProperty("status").GetInt32());
         Assert.Equal("INFO", ok.GetProperty("lvl").GetString());
         Assert.Equal("GET", ok.GetProperty("data").GetProperty("method").GetString());
@@ -510,7 +522,7 @@ public class PlaybackServerTests
         // 原始路径**（中文会被客户端百分号编码）。这是有意的 ——
         // 日志要如实反映「路由当时看到的是什么」，而不是事后美化过的样子。
         var missing = Assert.Single(
-            entries, e => e.GetProperty("data").GetProperty("path").GetString() == "/api/nope");
+            requests, e => e.GetProperty("data").GetProperty("path").GetString() == "/api/nope");
         Assert.Equal(404, missing.GetProperty("data").GetProperty("status").GetInt32());
         Assert.Equal("WARN", missing.GetProperty("lvl").GetString());
     }

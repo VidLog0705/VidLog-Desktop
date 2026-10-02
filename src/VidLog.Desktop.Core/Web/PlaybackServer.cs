@@ -204,18 +204,33 @@ public sealed class PlaybackServer : IAsyncDisposable
 
     public Task StartAsync(CancellationToken cancellationToken = default)
     {
+        // ⚠️ 三条分支**每条都要留痕**（AGENTS.md §5.1「关键操作必须留痕」）：
+        // 「绑上了哪个地址」是排查「手机连不上」时第一个要问的问题，而这里
+        // 此前**一条日志都没有** —— 于是「退到了 localhost」与「本来就配的是
+        // localhost」在日志上长得一模一样（2026-10-02 实测报上来的）。
         if (TryBind(_options.Prefix, out var firstError))
         {
             BaseUrl = _options.Prefix;
+            _logger.Log(LogLevel.Info, "回放", $"已绑定回放地址 {BaseUrl}");
         }
         else if (_options.FallbackPrefix is not null && TryBind(_options.FallbackPrefix, out _))
         {
             BaseUrl = _options.FallbackPrefix;
             IsUsingFallback = true;
             FallbackReason = firstError;
+
+            // 回退**不是**错误（局域网那一路可能只是没注册 urlacl），但它必须
+            // 说出来：退到 localhost 之后的后果是**手机扫不到这台电脑**，
+            // 而界面上那一句「服务已就绪」看不出区别。
+            _logger.Log(LogLevel.Warn, "回放",
+                $"绑不上 {_options.Prefix}（{firstError}），改用 {BaseUrl} —— "
+                + "这个地址只有本机可达，手机连不上");
         }
         else
         {
+            _logger.Log(LogLevel.Error, "回放",
+                $"绑不上任何回放地址（首选 {_options.Prefix}：{firstError}；备用 {_options.FallbackPrefix ?? "没配"}）");
+
             throw new InvalidOperationException($"无法绑定回放地址：{firstError}");
         }
 
