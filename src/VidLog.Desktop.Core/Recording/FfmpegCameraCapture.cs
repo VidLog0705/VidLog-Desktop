@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using VidLog.Desktop.Core.Camera;
 using VidLog.Desktop.Core.Media;
 
 namespace VidLog.Desktop.Core.Recording;
@@ -59,10 +60,29 @@ public sealed class FfmpegCameraCapture : ICameraCapture
     /// </remarks>
     private readonly RecordingSpec? _spec;
 
-    public FfmpegCameraCapture(string ffmpegPath, RecordingSpec? spec = null)
+    /// <summary>
+    /// 预览画面的落点；<see langword="null"/> = 不要预览（那就**什么都不加**）。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// ⚠️ <b>它是第二路输出，不是第二个进程</b>（§62）：DirectShow 相机独占，
+    /// 录制中另起 ffmpeg 开同一台相机只会拿到 <c>device already in use</c>。
+    /// 所以画面只能从**正在录的这一路**上分出来。
+    /// </para>
+    /// <para>
+    /// ⚠️ <b>为 <see langword="null"/> 时 argv 与本次改动之前逐字一致</b> ——
+    /// 规格探测（<c>FfmpegSpecProbe</c>）、集成测试、以及任何不关心预览的调用点
+    /// 都不该因为这件事多背一路管道。
+    /// </para>
+    /// </remarks>
+    private readonly SingleSlotPreviewSink? _preview;
+
+    public FfmpegCameraCapture(
+        string ffmpegPath, RecordingSpec? spec = null, SingleSlotPreviewSink? preview = null)
     {
         _ffmpegPath = ffmpegPath;
         _spec = spec;
+        _preview = preview;
     }
 
     public async Task<ICaptureProcess> StartAsync(
@@ -124,7 +144,8 @@ public sealed class FfmpegCameraCapture : ICameraCapture
         };
 
         foreach (var argument in BuildArguments(
-            source, outputPath, encoder, _spec, watermarkAssPath, microphone))
+            source, outputPath, encoder, _spec, watermarkAssPath, microphone,
+            preview: _preview is not null, durationSeconds: null))
         {
             startInfo.ArgumentList.Add(argument);
         }
@@ -140,7 +161,19 @@ public sealed class FfmpegCameraCapture : ICameraCapture
         // ffmpeg 写不进去 → 它连 stdin 上的 q 都处理不了 → StopAsync 超时 →
         // 只能强杀 → **MKV 尾部丢掉**。今天侥幸没出事，只是因为调用方一直传 None。
         // 停机只能走 q（FfmpegCaptureProcess 里那条唯一路径），不能靠取消读。
-        _ = Task.Run(() => DrainAsync(process.StandardOutput, sink: null));
+        //
+        // ⚠️ 要预览时 stdout 走的是**裸帧读端**（不是文本排空）——
+        // 同一条管子，同一份「必须及时读、永不阻塞」的责任，见 §54.3。
+        if (_preview is { } preview)
+        {
+            _ = Task.Run(() => PreviewProcess.ReadFramesAsync(
+                process.StandardOutput.BaseStream, preview,
+                PreviewProcess.Width, PreviewProcess.Height));
+        }
+        else
+        {
+            _ = Task.Run(() => DrainAsync(process.StandardOutput, sink: null));
+        }
 
         // stderr 同样没人读的话，长时间录制里一次异常刷屏就能把它灌满，后果同上。
         // 但它有内容价值（`device already in use` 这类判定文本、诊断包素材），
@@ -377,6 +410,10 @@ public sealed class FfmpegCameraCapture : ICameraCapture
     /// 只录这么多秒就自己停（<c>-t</c>）。**只有规格探测用它**（规格 §3.1.7 要「真录 1 秒」）。
     /// <see langword="null"/> = 一直录到我们叫停。
     /// </param>
+    /// <param name="preview">
+    /// 要不要多出一路**预览画面**（裸 rgb24 走 stdout，见 §62）。
+    /// 默认 <see langword="false"/> —— 那时 argv 与本次改动之前**逐字一致**。
+    /// </param>
     /// <remarks>
     /// <para>
     /// ⚠️ <b>方向不用单独传</b>：它在 <paramref name="spec"/> 里
@@ -399,7 +436,8 @@ public sealed class FfmpegCameraCapture : ICameraCapture
     /// </remarks>
     public static IReadOnlyList<string> BuildArguments(
         CameraSource source, string outputPath, string encoder, RecordingSpec? spec = null,
-        string? watermarkAssPath = null, string? microphone = null, int? durationSeconds = null)
+        string? watermarkAssPath = null, string? microphone = null, int? durationSeconds = null,
+        bool preview = false)
     {
         var arguments = new List<string>
         {
@@ -558,6 +596,41 @@ public sealed class FfmpegCameraCapture : ICameraCapture
             "-f", "matroska",
             "-y", outputPath,
         ]);
+
+        // ── 第二路输出：预览画面（§62） ────────────────────────────────
+        //
+        // ⚠️ 它**必须**是「同一个进程的第二路输出」，不能是第二个进程：
+        // 相机是独占的（§25）。
+        // ⚠️ 形状与 `PreviewProcess` **同一个**（它那边出的也是 640×360 rgb24），
+        // 因为界面只该有一条渲染路径 —— 两点不同就会出现「录制中画面对、
+        // 别的状态花屏」这种只在一种状态下发作的毛病。
+        // 尺寸跟着方向走（转 90° 之后宽高换过来），由
+        // `PreviewProcess.PreviewFilters` 一并算出来，读端按同一个值切帧。
+        if (preview)
+        {
+            arguments.AddRange(
+            [
+                "-map", $"{videoInput}:v:0",
+                "-an",
+                "-vf", string.Join(',', PreviewProcess.PreviewFilters(
+                    spec?.Rotation ?? CameraRotation.None)),
+                "-r", PreviewProcess.Fps.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                "-f", "rawvideo",
+                "-pix_fmt", "rgb24",
+            ]);
+
+            // ⚠️⚠️ **每一路输出都要各自限长**（§54.4 真机踩出来的）：
+            // `-t` 是**输出选项**，不是全局的。只给文件那一路写 `-t` 的话，
+            // 预览这一路没有终点 —— 到点了 ffmpeg 也不退，而规格探测那一步
+            // 正是在等它自己退出（等不到就挂到超时）。
+            if (durationSeconds is { } limit)
+            {
+                arguments.Add("-t");
+                arguments.Add(limit.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            }
+
+            arguments.Add("pipe:1");
+        }
 
         return arguments;
     }

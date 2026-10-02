@@ -175,6 +175,16 @@
                 <Border Grid.Row="0" Background="{StaticResource VideoBackground}"
                         CornerRadius="8">
                     <Grid>
+                        <!-- 取景画面（§62）。帧从**两个**源头来，但都投进同一只单槽：
+                             录制中＝采集进程的第二路输出（彩色、12 fps），
+                             工作中待扫＝取景识码那一路顺带投的灰度帧（灰、3 fps）。
+                             ⚠️ `Uniform` 而不是 `Fill`：`Fill` 会把画面**拉变形**
+                             （与配置向导预览区同一条理由）。帧本身已经是 16:9
+                             且四周补过黑边，所以等比缩放之后剩下的黑边与视频底同色。
+                             ⚠️ 一开始藏着 —— 没帧的时候该露出来的，是下面那句说明。 -->
+                        <Image x:Name="PreviewImage" Stretch="Uniform" Visibility="Collapsed"
+                               RenderOptions.BitmapScalingMode="HighQuality"/>
+
                         <!-- 实时时间。⚠️ 这是**可信时钟**的时间，不是系统时钟 ——
                              改系统时间也改不动它，与录像里烧的那个是同一个来源。 -->
                         <TextBlock x:Name="PreviewClockText" Margin="0,12,16,0"
@@ -188,7 +198,11 @@
                                 <Ellipse Stroke="{StaticResource TextDisabled}" StrokeThickness="1.6"/>
                                 <Path Data="M 18,15 L 30,22 L 18,29 Z" Fill="{StaticResource TextDisabled}"/>
                             </Grid>
-                            <TextBlock Text="实时预览未接入" Margin="0,14,0,0"
+                            <!-- ⚠️ 这句原来是「实时预览未接入」—— 画面接上之后它就成了假话
+                                 （空框与「坏了」「还没开始」三种情况本来就长得一样，
+                                 而它只在最后一种下成立）。改成中性的栏目名，
+                                 为什么没有画面由下面那句说清楚。 -->
+                            <TextBlock Text="实时预览" Margin="0,14,0,0"
                                        HorizontalAlignment="Center" FontSize="15"
                                        Foreground="White"/>
                             <TextBlock x:Name="PreviewHintText" Margin="0,6,0,0"

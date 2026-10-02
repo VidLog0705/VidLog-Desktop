@@ -126,6 +126,86 @@ public class CameraCaptureTests
         Assert.Equal("matroska", args[fIndex + 1]);
     }
 
+    // ─────────────────────────────────────────────
+    // 第二路输出（预览，§62）
+    // ─────────────────────────────────────────────
+
+    private static List<string> CaptureArgs(
+        bool preview, string? microphone = null, int? durationSeconds = null)
+        => FfmpegCameraCapture.BuildArguments(
+            CameraSource.Local("Cam"), @"C:\out\seg.mkv", "libx264",
+            spec: null, watermarkAssPath: null, microphone: microphone,
+            durationSeconds: durationSeconds, preview: preview).ToList();
+
+    [Fact]
+    public void 不要预览时_命令行与从前逐字一致()
+    {
+        // 规格探测走的就是这条 —— 多一路管道等于让「只录 1 秒」的探测
+        // 多背一份读端的责任，而它根本不看画面。
+        var args = CaptureArgs(preview: false);
+
+        Assert.DoesNotContain("pipe:1", args);
+        Assert.DoesNotContain("rawvideo", args);
+        Assert.DoesNotContain("rgb24", args);
+    }
+
+    [Fact]
+    public void 要预览时_多出一路裸帧输出_原来那一路不动()
+    {
+        var args = CaptureArgs(preview: true);
+
+        // 原来那一路（写文件）还在，而且 -y 后面还是产物路径 ——
+        // 测试替身靠这个位置定位产物，换顺序会静默失效。
+        var yIndex = args.IndexOf("-y");
+        Assert.True(yIndex >= 0, "采集命令必须有 -y");
+        Assert.Equal(@"C:\out\seg.mkv", args[yIndex + 1]);
+
+        // 第二路：裸 rgb24 走 stdout，形状与 `PreviewProcess` 那边一致
+        // （界面只该有一条渲染路径）。
+        Assert.Equal("pipe:1", args[^1]);
+        Assert.True(
+            args.Zip(args.Skip(1)).Any(p => p.First == "-f" && p.Second == "rawvideo"),
+            "预览那一路必须显式 rawvideo");
+        Assert.Equal("rgb24", args[args.LastIndexOf("-pix_fmt") + 1]);
+
+        // ⚠️ 两路各自都要有 -map：ffmpeg 里 `-map` 是**开一路新输出**的标志，
+        // 少给一个的话那一路会退回**默认选流** —— 网络摄像头自带音轨时
+        // 音频就会跟着进那条「按定长切帧」的管子，于是所有帧错位（花屏，
+        // 而且不报错）。`PreviewProcessTests` 里有同一条教训。
+        Assert.Equal(2, args.Count(a => a == "-map"));
+    }
+
+    [Fact]
+    public void 预览那一路映射的是画面那个输入_带麦克风时也是()
+    {
+        // ⚠️ 带麦克风时音频是 input 0、画面是 input 1（见 `BuildArguments` 里
+        // 那个 `videoInput`）—— 预览写死 `0:v:0` 的话它会去映射麦克风那一路。
+        // 顺序是：画面的 map（给文件那一路）、音频的、预览的。
+        var args = CaptureArgs(preview: true, microphone: "Mic");
+        var maps = args
+            .Select((a, i) => (a, i))
+            .Where(p => p.a == "-map")
+            .Select(p => args[p.i + 1])
+            .ToList();
+
+        Assert.Equal(new[] { "1:v:0", "0:a:0", "1:v:0" }, maps);
+    }
+
+    [Fact]
+    public void 预览那一路也要各自限长()
+    {
+        // ⚠️⚠️ §54.4 真机踩出来的：`-t` 是**输出选项**，不是全局的。
+        // 只给文件那一路写的话，预览这一路没有终点 ⇒ 到点了 ffmpeg 也不退，
+        // 而规格探测正是在等它自己退出（等不到就挂到超时、整次探测作废）。
+        var args = CaptureArgs(preview: true, durationSeconds: 5);
+
+        Assert.Equal(2, args.Count(a => a == "-t"));
+        Assert.Equal(2, args.Count(a => a == "5"));
+
+        // 不要预览时仍然只有一路 —— 那条路上一个 -t 就够。
+        Assert.Equal(1, CaptureArgs(preview: false, durationSeconds: 5).Count(a => a == "-t"));
+    }
+
     [Fact]
     public void 枚举命令故意让它失败因为退出码在这里没有意义()
     {

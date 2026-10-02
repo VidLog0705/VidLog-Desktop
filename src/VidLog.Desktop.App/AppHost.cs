@@ -74,6 +74,18 @@ public sealed class AppHost : IAsyncDisposable
     /// </remarks>
     public void ApplyLogLevel(LogLevel level) => _logger.MinLevel = level;
 
+    /// <summary>
+    /// 主窗那幅取景画面的落点。**全进程只有这一个槽** ——
+    /// 相机同一时刻只可能被一个进程占着，所以「谁在录/谁在识码」都往这里投，
+    /// 界面只管从这里取最新一帧。
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ <b>不要做成「每个进程一只槽」</b>：那样界面就得自己判断现在该看哪一只，
+    /// 而那个判断有两个源头（协调器状态、进程存活）—— 判错的表现是
+    /// 「录着却在放上一档的旧画面」，且看不出来。
+    /// </remarks>
+    public SingleSlotPreviewSink Preview { get; }
+
     private AppHost(
         DesktopServices services,
         StartupReport startup,
@@ -81,12 +93,14 @@ public sealed class AppHost : IAsyncDisposable
         FileLogger logger,
         WindowsKeyboardHook hook,
         KeyboardScanBridge bridge,
-        RecordingCoordinator coordinator)
+        RecordingCoordinator coordinator,
+        SingleSlotPreviewSink preview)
     {
         Services = services;
         Startup = startup;
         Settings = settings;
         _logger = logger;
+        Preview = preview;
         Hook = hook;
         Bridge = bridge;
         Coordinator = coordinator;
@@ -521,11 +535,15 @@ public sealed class AppHost : IAsyncDisposable
         // 只有连规格都一个都没探通时（`EncoderName` 为 null）才退回它。
         var chosenEncoder = selection.EncoderName ?? encoder ?? "libx264";
 
+        // 取景画面的那一只槽（见 `Preview` 属性）。在这里建是因为
+        // **采集对象与识码对象在它之后才建**，两者都要拿着它。
+        var preview = new SingleSlotPreviewSink();
+
         var coordinator = new RecordingCoordinator(
             services.Workspace,
             services.FfmpegPath is null
                 ? throw new InvalidOperationException("没有可用的 FFmpeg，无法采集。")
-                : new FfmpegCameraCapture(services.FfmpegPath, selection.Spec),
+                : new FfmpegCameraCapture(services.FfmpegPath, selection.Spec, preview),
             services.Finalizer,
             new DiskSpaceGuard(new DriveSpaceProbe()),
             services.Punches,
@@ -586,7 +604,7 @@ public sealed class AppHost : IAsyncDisposable
         var bridge = new KeyboardScanBridge(settings.Scanner);
         var hook = new WindowsKeyboardHook();
 
-        var host = new AppHost(services, startup, settings, logger, hook, bridge, coordinator)
+        var host = new AppHost(services, startup, settings, logger, hook, bridge, coordinator, preview)
         {
             Warnings = warnings,
             EffectiveSpec = selection.Spec,
@@ -620,7 +638,7 @@ public sealed class AppHost : IAsyncDisposable
         if (records && settings.CameraRecognition && services.FfmpegPath is { } ffmpegPath && !camera.IsEmpty)
         {
             var scanner = new CameraFrameScanner(
-                ffmpegPath, camera, new ZXingFrameScanner(), logger)
+                ffmpegPath, camera, new ZXingFrameScanner(), logger, preview)
             {
                 // ⚠️ 与录制那一档**必须一致**（两边朝向不一致会出现
                 // 「录出来是正的、识码却要倒着认」）。它在**每次开始工作**时才被读到，
@@ -971,7 +989,7 @@ public sealed class AppHost : IAsyncDisposable
         // 下次开段会重来一遍 —— 而「记下了却没换上去」会让用户永远停在旧规格上。
         ProbedSpec = wanted;
 
-        Coordinator.Capture = new FfmpegCameraCapture(ffmpegPath, selection.Spec);
+        Coordinator.Capture = new FfmpegCameraCapture(ffmpegPath, selection.Spec, Preview);
         Coordinator.Encoder = selection.EncoderName ?? EncoderName;
 
         // ⚠️ 方向取**此刻**的设置，不取探测开始时读的那一份：这个方法跑在后台线程上，

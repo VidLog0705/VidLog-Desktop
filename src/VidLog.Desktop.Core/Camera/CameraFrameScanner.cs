@@ -27,16 +27,38 @@ public sealed class CameraFrameScanner : IAsyncDisposable
     private readonly DecodeGate _gate = new();
     private readonly SingleSlotFrameSink _sink = new();
 
+    /// <summary>
+    /// 主窗那幅预览画面的落点；<see langword="null"/> = 不投（测试与不关心界面的装配）。
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ <b>这一路是「顺手」，不是「另开一路输出」</b>：管子里的灰度帧本来就在流
+    /// （识码要用），多投一次不多花 ffmpeg 一分力气 —— 所以它**没有**给识码那条
+    /// 已经验过的 argv 加任何东西。代价是这一档的预览是**灰的、3 fps**
+    /// （它是识别用的帧，不是为了给人看而生的）。
+    /// <para>
+    /// ⚠️ 相机在「工作中」的绝大部分时间是被**这个**进程占着的（录制只在扫到单号
+    /// 之后那一段）。不投这一路的话，主窗那个取景框在一天里绝大多数时候是空的。
+    /// </para>
+    /// <para>
+    /// ⚠️ 投帧走的是**永不阻塞**的单槽（<see cref="SingleSlotPreviewSink.Publish"/>），
+    /// 所以它**不会**把识码读端拖慢 —— 而拖慢读端等于堵住管道，
+    /// 那是这台机器上唯一会丢录像的事故（§54.2）。
+    /// </para>
+    /// </remarks>
+    private readonly SingleSlotPreviewSink? _preview;
+
     private ScannerProcess? _process;
     private CancellationTokenSource? _loop;
 
     public CameraFrameScanner(
-        string ffmpegPath, CameraSource source, IFrameScanner decoder, IAppLogger logger)
+        string ffmpegPath, CameraSource source, IFrameScanner decoder, IAppLogger logger,
+        SingleSlotPreviewSink? preview = null)
     {
         _ffmpegPath = ffmpegPath;
         _source = source;
         _decoder = decoder;
         _logger = logger;
+        _preview = preview;
     }
 
     /// <summary>
@@ -128,6 +150,10 @@ public sealed class CameraFrameScanner : IAsyncDisposable
                 await Task.Delay(30, CancellationToken.None);
                 continue;
             }
+
+            // 顺手把这一帧投给主窗的取景框（见 `_preview` 的说明）。
+            // ⚠️ 放在识码**之前**：解不出来是常态，而画面该照常更新。
+            _preview?.Publish(PreviewFrame.FromGray(frame));
 
             string? decoded;
             try

@@ -71,6 +71,34 @@ public partial class MainWindow : Window
     /// </remarks>
     private readonly DispatcherTimer _clockTicker;
 
+    /// <summary>
+    /// 取景画面的刷新。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// ⚠️ <b>它是个「拉」的定时器，不是「推」的</b>：帧由 ffmpeg 那两条路投进
+    /// <see cref="AppHost.Preview"/> 的单槽，界面在这里取最新一帧。
+    /// 反过来的话（拿到帧就 <c>Dispatcher.Invoke</c>）等于**在管道的读线程上
+    /// 做界面工作** —— 而那条线程一慢，管道就满，堵住的后果是录制进程被强杀、
+    /// MKV 尾部丢掉（§54.2 真机复现过）。
+    /// </para>
+    /// <para>
+    /// 30 fps 的间隔与配置向导预览区用的是同一个数（33ms）。
+    /// </para>
+    /// </remarks>
+    private readonly DispatcherTimer _previewTimer = new() { Interval = TimeSpan.FromMilliseconds(33) };
+
+    /// <summary>画面那块位图；尺寸变了就重建（灰度帧与彩色帧的尺寸不一样）。</summary>
+    private WriteableBitmap? _frameBitmap;
+
+    /// <summary>上一次真的画上帧的时刻（<see cref="Environment.TickCount64"/>）。</summary>
+    /// <remarks>
+    /// 判据是「一秒没帧就把说明放回来」而不是「进程还在不在」：
+    /// 出画面的那两条路（识码、录制）**都在进程之间交接**，
+    /// 而交接期的空档不该在屏幕上闪一下「没有画面」。
+    /// </remarks>
+    private long _lastFrameAtMs;
+
     public MainWindow(AppHost host)
     {
         _host = host;
@@ -98,6 +126,8 @@ public partial class MainWindow : Window
             _ = _host.MaybeReprobeAsync();
         };
 
+        _previewTimer.Tick += (_, _) => RefreshPreview();
+
         // 待批准的改名请求（规格 §3.4.5 ③）。
         //
         // ⚠️ 它**不能挂在 `EnrollWindow` 上**：那个窗的轮询是以「屏幕上那张二维码」
@@ -117,6 +147,7 @@ public partial class MainWindow : Window
         {
             _ticker.Stop();
             _clockTicker.Stop();
+            _previewTimer.Stop();
             _renameWatch.Stop();
         };
 
@@ -199,6 +230,7 @@ public partial class MainWindow : Window
         UpdatePreviewClock();
         UpdatePreviewHint();
         _clockTicker.Start();
+        _previewTimer.Start();
 
         StatusText.Text = _host.Services.Server?.BaseUrl is { Length: > 0 } url
             ? $"服务已就绪。回放地址：{url}"
@@ -279,11 +311,75 @@ public partial class MainWindow : Window
     }
 
     /// <summary>
+    /// 把最新一帧画到取景框上；一秒没帧就退回那句说明。
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ 这是**拉**，不是推：帧由出画面的那个进程投进单槽，界面自己来取。
+    /// 反过来（读线程上直接 <c>Dispatcher.Invoke</c>）等于在管道的读线程上做界面工作，
+    /// 而那条线程一慢，管道就满 —— 录制进程会被强杀、MKV 尾部丢掉（§54.2）。
+    /// </remarks>
+    private void RefreshPreview()
+    {
+        var frame = _host.Preview.TakeLatest();
+
+        if (frame is null)
+        {
+            // 判据是「一秒没有新帧」而不是「进程还在不在」：出画面的那两个
+            // （识码、录制）在交接时本来就有空档，空档不该在屏幕上闪成一句话。
+            if (PreviewImage.Visibility == Visibility.Visible
+                && Environment.TickCount64 - _lastFrameAtMs > 1000)
+            {
+                PreviewImage.Source = null;
+                PreviewImage.Visibility = Visibility.Collapsed;
+                PreviewPlaceholder.Visibility = Visibility.Visible;
+                UpdatePreviewHint();
+
+                // ⚠️ 这一条是**必须**的（§6.1）：上面那句提示写着「原因会记在通知里」，
+                // 不留痕的话那句话就是假的 —— 而这正是 §6.1 点名的那个坑：
+                // 「有个用户可见通道」看起来像缺口被满足了，其实没有。
+                //
+                // ⚠️ 只在**由有到无的那一次**记：判据与提示文字是同一处，
+                // 而画面空着的时候这个分支不会再进来（`PreviewImage` 已经不是 Visible），
+                // 所以长期没画面不会把日志刷满（§6.1「重复的问题只在变了的时候记」）。
+                _host.Logger.Log(
+                    VidLog.Desktop.Core.Diagnostics.LogLevel.Warn, "预览",
+                    _host.Coordinator.IsWorking
+                        ? "工作期间取景画面断了（录制本身不受影响）"
+                        : "取景画面断了");
+            }
+
+            return;
+        }
+
+        // ⚠️ 位图**不能只建一次**：两种画面的尺寸不一样
+        // （识码那一路是 640×480 的灰度帧，录制那一路是 640×360 的彩色帧）。
+        if (_frameBitmap is null
+            || _frameBitmap.PixelWidth != frame.Width
+            || _frameBitmap.PixelHeight != frame.Height)
+        {
+            _frameBitmap = new WriteableBitmap(
+                frame.Width, frame.Height, 96, 96, PixelFormats.Rgb24, null);
+            PreviewImage.Source = _frameBitmap;
+        }
+
+        _frameBitmap.WritePixels(
+            new Int32Rect(0, 0, frame.Width, frame.Height), frame.Rgb, frame.Stride, 0);
+
+        _lastFrameAtMs = Environment.TickCount64;
+
+        if (PreviewImage.Visibility != Visibility.Visible)
+        {
+            PreviewImage.Visibility = Visibility.Visible;
+            PreviewPlaceholder.Visibility = Visibility.Collapsed;
+        }
+    }
+
+    /// <summary>
     /// 预览区中央那行说明。
     /// </summary>
     /// <remarks>
-    /// ⚠️ **必须说清楚为什么没有画面**。设计图上那儿是一路真画面，而这一版不是 ——
-    /// 一个纯黑的框与「相机坏了」「程序卡住了」「就这样设计的」三种情况长得一模一样。
+    /// ⚠️ **必须说清楚为什么没有画面**。一个空框与「相机坏了」「还没开始」
+    /// 「程序卡住了」三种情况长得一模一样。
     /// </remarks>
     private void UpdatePreviewHint()
     {
@@ -299,9 +395,17 @@ public partial class MainWindow : Window
             return;
         }
 
-        PreviewHintText.Text =
-            "取景画面还没接上：相机是独占设备，录制中要再取一路画面得先真机验一次。"
-            + "录制本身不受影响。";
+        // 走到这里说明「有 FFmpeg、有摄像头，但没有进程在出画面」。只剩两种情形，
+        // 而它们对用户的意思完全不同：
+        //  · 还没开始工作 —— 相机本来就没被占用，这是**正常的**；
+        //  · 工作中却一直没有画面 —— 那是真的掉了，得让他知道这与录制无关。
+        // ⚠️ 文案里点名的必须是**界面上真有的那颗按钮**：顶栏那颗叫【开始录制】
+        // （`StartWorkLabel`，「开始工作」是代码里的叫法，用户看不见）。
+        // 2026-10-02 截图核对时发现的 —— 原来写的是【开始工作】，
+        // 用户照着找一个不存在的按钮。
+        PreviewHintText.Text = _host.Coordinator.IsWorking
+            ? "取景画面没出来。录制本身不受影响，原因会记在通知里。"
+            : "还没开始工作。点【开始录制】之后，这里就会显示取景画面。";
     }
 
     /// <summary>
@@ -758,6 +862,7 @@ public partial class MainWindow : Window
     public void RestartTicker()
     {
         _clockTicker.Start();
+        _previewTimer.Start();
         UpdatePreviewClock();
 
         if (_host.Coordinator.CurrentWaybill is not null)
@@ -1214,6 +1319,7 @@ public partial class MainWindow : Window
     {
         _ticker.Stop();
         _clockTicker.Stop();
+        _previewTimer.Stop();
         Hide();
 
         if (_host.Settings.CloseWindowAction == CloseWindowAction.MinimizeToTray)

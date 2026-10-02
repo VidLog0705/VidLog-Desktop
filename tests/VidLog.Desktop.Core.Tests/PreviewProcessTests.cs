@@ -77,12 +77,26 @@ public class PreviewProcessTests
         {
             Assert.Contains(expected, filters, StringComparison.Ordinal);
 
-            // 方向排在缩放与补边**之后**：先归一到预览尺寸，再转。
+            // ⚠️ **方向排在最前，缩放与补边排最后** —— 2026-10-02 改的，原来反着。
+            //
+            // 反着（先归一、后转）的话，转 90° 那两档的产出是 360×640，
+            // 而读端**按定长切帧**（裸帧没有容器告诉它宽高，`ReadCoreAsync` 写死
+            // 640×360×3）：字节数**恰好一样**（转置不改总面积），所以既不报错、
+            // 也不会卡住，只是把每一帧**横竖读反** —— 表现出来是一幅斜的糊图，
+            // 而「相机是不是摆正了」正是用户看这幅图的唯一目的。
+            //
+            // 先转再归一之后，**任何方向都落在同一个尺寸上**，读端那条假设才成立。
             Assert.True(
                 filters.IndexOf(expected, StringComparison.Ordinal)
-                    > filters.IndexOf("pad=", StringComparison.Ordinal),
-                $"方向要排在 pad 之后，实际：{filters}");
+                    < filters.IndexOf("scale=", StringComparison.Ordinal),
+                $"方向要排在 scale 之前，实际：{filters}");
         }
+
+        // 不论哪个方向，最后两环都是 scale → pad（产出恒为预览尺寸）。
+        Assert.True(
+            filters.LastIndexOf("pad=", StringComparison.Ordinal)
+                > filters.IndexOf("scale=", StringComparison.Ordinal),
+            $"pad 要收在最后，实际：{filters}");
     }
 
     [Fact]
@@ -93,6 +107,26 @@ public class PreviewProcessTests
 
         Assert.DoesNotContain("-video_size", args);
         Assert.DoesNotContain("dshow", args);
+    }
+
+    [Fact]
+    public void 灰度帧也能当预览帧_每个亮度抄三份()
+    {
+        // 取景识码那一档的画面是**顺手**投过来的灰度帧（`CameraFrameScanner`）。
+        // 转成 rgb24 是为了让界面**只认一种像素格式** —— 多一条 Gray8 分支
+        // 就多一处「尺寸/格式对不上」的静默错位，而那是花屏、不报错。
+        var gray = new byte[] { 0, 128, 255, 7 };
+        var preview = PreviewFrame.FromGray(new CameraFrame(gray, 2, 2, 1234));
+
+        Assert.Equal(2, preview.Width);
+        Assert.Equal(2, preview.Height);
+        Assert.Equal(6, preview.Stride);
+        Assert.Equal(1234, preview.CapturedAtMs);
+
+        // 三个通道相等，且顺序与灰度一致。
+        Assert.Equal(
+            new byte[] { 0, 0, 0, 128, 128, 128, 255, 255, 255, 7, 7, 7 },
+            preview.Rgb);
     }
 
     // ─────────────────────────────────────────────
@@ -140,12 +174,50 @@ public class PreviewProcessTests
             "16:9 的源不该有明显的黑边");
     }
 
+    /// <summary>
+    /// 转 90° 的那两档也照样产出预览尺寸 —— 而且黑边是**转过之后**补的。
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ 这条盯的是「先转还是后转」这个顺序。顺序反了（先归一、后转）产出的是
+    /// 360×640，而读端按 640×360 切 —— **字节数恰好一样**（转置不改总面积），
+    /// 所以既不报错也不卡住，只是每帧横竖读反，屏幕上是一幅斜的糊图。
+    /// <para>
+    /// ⚠️ 判据取「转之前会不会正好填满」：16:9 的源先归一就正好填满 640×360
+    /// （没有黑边可补），转完自然也没有 —— 于是最左那个像素是**白**的。
+    /// 先转再归一才有左右那两条黑边。
+    /// </para>
+    /// </remarks>
+    [RequiresFfmpegFact]
+    public async Task 转九十度照样补出黑边_证明是转完再归一()
+    {
+        var ffmpeg = FfmpegLocator.TryFind()!;
+
+        // 1280×720 先转 ⇒ 720×1280；按比例缩到高 360 时宽只有 202，左右各补 219。
+        var pixels = await RenderOneFrameAsync(ffmpeg, "1280x720", CameraRotation.Left90);
+
+        var left = pixels[0];
+        var middle = pixels[PreviewProcess.Width / 2 * 3];
+
+        Assert.True(left < 16, $"左侧应当是黑边，实际 {left}");
+        Assert.True(middle > 240, $"画面中间应当是亮的，实际 {middle}");
+    }
+
     private const byte ModuleBitmapDark = 0;
 
     private const byte ModuleBitmapLight = 255;
 
     /// <summary>用给定的合成源尺寸出一帧预览，返回 RGB24 字节。</summary>
-    private static async Task<byte[]> RenderOneFrameAsync(string ffmpeg, string sourceSize)
+    /// <remarks>
+    /// ⚠️ 滤镜链取的是**生产那一份**（<see cref="PreviewProcess.PreviewFilters"/>），
+    /// 不是在这儿另抄一条 —— 2026-10-02 改的：原来这里是抄的，于是这几条像素级
+    /// 用例验的是一条**没人跑的链子**，链子改了它照样绿（本仓在「测了不跑的东西」
+    /// 上已经栽过一次，见 `TrustedClockTests` 里那段）。
+    /// </remarks>
+    private static Task<byte[]> RenderOneFrameAsync(string ffmpeg, string sourceSize)
+        => RenderOneFrameAsync(ffmpeg, sourceSize, CameraRotation.None);
+
+    private static async Task<byte[]> RenderOneFrameAsync(
+        string ffmpeg, string sourceSize, CameraRotation rotation)
     {
         var frameSize = PreviewProcess.Width * PreviewProcess.Height * 3;
         var startInfo = new ProcessStartInfo
@@ -157,16 +229,17 @@ public class PreviewProcessTests
             RedirectStandardError = true,
         };
 
-        foreach (var argument in new[]
+        var arguments = new List<string>
         {
             "-hide_banner", "-v", "error",
             "-f", "lavfi", "-i", $"color=c=white:s={sourceSize}:d=1",
-            "-vf", $"scale={PreviewProcess.Width}:{PreviewProcess.Height}:force_original_aspect_ratio=decrease,"
-                + $"pad={PreviewProcess.Width}:{PreviewProcess.Height}:(ow-iw)/2:(oh-ih)/2",
+            "-vf", string.Join(',', PreviewProcess.PreviewFilters(rotation)),
             "-frames:v", "1",
             "-f", "rawvideo", "-pix_fmt", "rgb24",
             "pipe:1",
-        })
+        };
+
+        foreach (var argument in arguments)
         {
             startInfo.ArgumentList.Add(argument);
         }

@@ -16,6 +16,39 @@ public sealed record PreviewFrame(byte[] Rgb, int Width, int Height, long Captur
 {
     /// <summary>一行的字节数。RGB24 是 3 字节一个像素。</summary>
     public int Stride => Width * 3;
+
+    /// <summary>
+    /// 把一帧**灰度**画面当成预览帧用（每个亮度值抄三份）。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// 给「取景识码那一档的画面也显示出来」用（<c>CameraFrameScanner</c>）：
+    /// 它那条管子里本来就在流灰度帧，**顺手**投进预览槽 —— 不额外开一路输出、
+    /// 不动那条已经验过的 argv。代价是那一档的预览是灰的（它是识别用的帧，
+    /// 不是为了给人看而生的）。
+    /// </para>
+    /// <para>
+    /// ⚠️ 之所以在这里转成 rgb24 而不是让界面认两种像素格式：
+    /// <b>界面只该有一条渲染路径</b>。多一条 Gray8 分支就多一处「尺寸/格式对不上」
+    /// 的静默错位，而那是花屏、不报错。转换代价在这一档可以忽略
+    /// （640×480 @3 fps ≈ 2.7 MB/s 的内存写）。
+    /// </para>
+    /// </remarks>
+    public static PreviewFrame FromGray(CameraFrame frame)
+    {
+        var gray = frame.Gray;
+        var rgb = new byte[frame.Width * frame.Height * 3];
+
+        for (int p = 0, i = 0; p < gray.Length && i + 2 < rgb.Length; p++, i += 3)
+        {
+            var value = gray[p];
+            rgb[i] = value;
+            rgb[i + 1] = value;
+            rgb[i + 2] = value;
+        }
+
+        return new PreviewFrame(rgb, frame.Width, frame.Height, frame.CapturedAtMs);
+    }
 }
 
 /// <summary>
@@ -74,10 +107,12 @@ public sealed class SingleSlotPreviewSink
 /// 那两步要「看着画面把摄像头摆正 / 把面单放进框里」。
 /// </para>
 /// <para>
-/// ⚠️ <b>它只在**没在录制**的时候用</b>：DirectShow 相机是**独占**的（§25 实测），
-/// 录制中另起一个 ffmpeg 开同一台相机会拿到 <c>device already in use</c>。
-/// 「录制中也有预览」要走采集进程的第二路输出（§54 验过的那条），
-/// 那是**另一件事**，不在本类里。
+/// ⚠️ <b>它是「独起一个 ffmpeg」，所以只在相机没人占的时候用</b>：DirectShow 相机是
+/// **独占**的（§25 实测），另有进程开着同一台相机时（录制中、取景识码中）
+/// 它会拿到 <c>device already in use</c>。
+/// 那两种情形下的画面走的是**别人进程**的第二路输出或顺带的那一帧 ——
+/// <c>FfmpegCameraCapture</c>（第二路输出）与 <c>CameraFrameScanner</c>（顺带灰度帧），
+/// 两者都投进同一只 <see cref="SingleSlotPreviewSink"/>。
 /// </para>
 /// <para>
 /// ⚠️ <b>一路彩色帧，不是两路</b>：第 3 步要「预览 + 同时识码」，
@@ -189,26 +224,11 @@ public sealed class PreviewProcess : IAsyncDisposable
         // 网络地址一个都不带）—— 与采集、识码两处同一条规矩。
         arguments.AddRange(source.InputArguments("64M"));
 
-        var filters = new List<string>
-        {
-            // ⚠️ 按比例缩放 + 补黑边，**不是**拉伸（`scale=640:360` 会把 4:3 的源
-            // 拉变形，而用户正靠这个画面判断摄像头摆正了没有）。
-            $"scale={Width}:{Height}:force_original_aspect_ratio=decrease",
-            $"pad={Width}:{Height}:(ow-iw)/2:(oh-ih)/2",
-        };
-
-        // 方向滤镜的产出**只有一处**（`CameraRotationFilters.For`）——
-        // 与录制、识码两处用的是同一个函数，所以三处朝向不可能不一致。
-        if (CameraRotationFilters.For(rotation) is { } rotate)
-        {
-            filters.Add(rotate);
-        }
-
         arguments.AddRange(
         [
             "-map", "0:v:0",
             "-an",
-            "-vf", string.Join(',', filters),
+            "-vf", string.Join(',', PreviewFilters(rotation)),
             "-r", Fps.ToString(System.Globalization.CultureInfo.InvariantCulture),
             "-f", "rawvideo",
             "-pix_fmt", "rgb24",
@@ -216,6 +236,46 @@ public sealed class PreviewProcess : IAsyncDisposable
         ]);
 
         return arguments;
+    }
+
+    /// <summary>
+    /// 预览那一路的滤镜链：**转完方向再缩放补黑边**，产出恒为
+    /// <see cref="Width"/>×<see cref="Height"/>。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// ⚠️ <b>顺序是承重的：方向排在最前。</b> 转 90° 会把宽高换过来，所以
+    /// 「先缩到 640×360 再转」得到的是 360×640 —— 而读端**按定长切帧**
+    /// （裸帧没有容器告诉它宽高），切出来的是错位的花屏，且不报任何错。
+    /// 先转再缩就没有这个问题，而且**任何方向都落在同一个尺寸上**。
+    /// </para>
+    /// <para>
+    /// ⚠️ 按比例缩放 + 补黑边，**不是**拉伸（`scale=640:360` 会把 4:3 的源拉变形，
+    /// 而用户正靠这个画面判断摄像头摆正了没有）。
+    /// </para>
+    /// <para>
+    /// ⚠️ 方向滤镜的产出**只有一处**（<see cref="CameraRotationFilters.For"/>）——
+    /// 与录制、识码两处用的是同一个函数，所以各处朝向不可能不一致。
+    /// </para>
+    /// <para>
+    /// ⚠️ <b>抽成公开的纯函数是因为它有第二个调用方</b>：采集进程的第二路输出
+    /// （<c>FfmpegCameraCapture</c>，见 §62）必须产出**同一个形状**，
+    /// 否则同一个界面控件会在两种状态下收到两种尺寸的帧。
+    /// </para>
+    /// </remarks>
+    public static IReadOnlyList<string> PreviewFilters(CameraRotation rotation)
+    {
+        var filters = new List<string>();
+
+        if (CameraRotationFilters.For(rotation) is { } rotate)
+        {
+            filters.Add(rotate);
+        }
+
+        filters.Add($"scale={Width}:{Height}:force_original_aspect_ratio=decrease");
+        filters.Add($"pad={Width}:{Height}:(ow-iw)/2:(oh-ih)/2");
+
+        return filters;
     }
 
     /// <summary>
@@ -303,9 +363,35 @@ public sealed class PreviewProcess : IAsyncDisposable
     /// 读端一停管道就满，ffmpeg 被顶住，连 <c>q</c> 都处理不了。
     /// 停机靠**进程退出**（管道自然断），不是靠取消这个循环。
     /// </remarks>
-    private static async Task ReadAsync(Stream stream, SingleSlotPreviewSink sink)
+    private static Task ReadAsync(Stream stream, SingleSlotPreviewSink sink)
+        => ReadCoreAsync(stream, sink, Width, Height);
+
+    /// <summary>
+    /// 从**别人进程**的管道上读预览帧，投进单槽。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// 与 <see cref="ReadAsync"/> 是同一份读法，只是尺寸由调用方给 ——
+    /// 采集进程的第二路输出（§62）与这里的关系是「同一个形状、不同的进程」。
+    /// ⚠️ 这一路**必须及时读**：读端一停管道就满，而那条管子挂在**录制进程**上，
+    /// 堵住的后果是 ffmpeg 连 <c>q</c> 都处理不了、只能强杀、MKV 尾部丢掉
+    /// （§54.2 的 B 场景真机复现过）。所以这里与 <see cref="ReadAsync"/> 一样
+    /// **不接受可取消的读**，且投帧走的是**永不阻塞**的单槽。
+    /// </para>
+    /// <para>
+    /// 尺寸**由调用方给**而不是像 <see cref="ReadAsync"/> 那样用常量：
+    /// 采集那一档的帧尺寸跟着方向走（转 90° 之后宽高是换过来的），
+    /// 而滤镜链那边是「转完再缩」—— 两边算出来的必须是一回事。
+    /// </para>
+    /// </remarks>
+    public static Task ReadFramesAsync(
+        Stream stream, SingleSlotPreviewSink sink, int width, int height)
+        => ReadCoreAsync(stream, sink, width, height);
+
+    private static async Task ReadCoreAsync(
+        Stream stream, SingleSlotPreviewSink sink, int width, int height)
     {
-        var frameSize = Width * Height * 3;
+        var frameSize = width * height * 3;
         var buffer = new byte[frameSize];
         var filled = 0;
 
@@ -318,7 +404,6 @@ public sealed class PreviewProcess : IAsyncDisposable
 
                 if (read <= 0)
                 {
-                    // 管道断了（进程退了）。正常结束，不是错误。
                     break;
                 }
 
@@ -326,9 +411,8 @@ public sealed class PreviewProcess : IAsyncDisposable
 
                 if (filled == frameSize)
                 {
-                    // 必须拷一份 —— buffer 会被下一帧复用。
                     sink.Publish(new PreviewFrame(
-                        (byte[])buffer.Clone(), Width, Height, Environment.TickCount64));
+                        (byte[])buffer.Clone(), width, height, Environment.TickCount64));
 
                     filled = 0;
                 }
@@ -336,7 +420,6 @@ public sealed class PreviewProcess : IAsyncDisposable
         }
         catch (Exception ex) when (ex is IOException or ObjectDisposedException or InvalidOperationException)
         {
-            // 进程被收掉时管道会断。同上，不是错误。
         }
     }
 
