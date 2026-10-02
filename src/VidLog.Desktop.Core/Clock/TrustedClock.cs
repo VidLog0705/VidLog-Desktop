@@ -41,6 +41,19 @@ public sealed record CalibrationState
 
     public double? LastSeenMonotonic { get; init; }
 
+    /// <summary>
+    /// <see cref="LastSeenMonotonic"/> 与 <see cref="MonotonicAtAnchor"/>
+    /// 是**哪一把尺子**量出来的。
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ <b>没有它就会误判</b>：这两个数从前是「本进程 `Stopwatch` 的读数」，
+    /// 现在是「机器开机以来的毫秒」。换了口径之后拿新读数跟旧读数相减毫无意义
+    /// （差出整整一个开机时长），会被当成「墙钟往前调了」而要求重新校准 ——
+    /// 一台离线机器于是**再也录不了**（撞 I10）。
+    /// 老文件里没有这个字段（<see langword="null"/>）⇒ 认作不可比，推齐一次即可。
+    /// </remarks>
+    public string? MonotonicEpoch { get; init; }
+
     /// <summary>历史上记录到的跳变（只留最近若干条）。</summary>
     public IReadOnlyList<JumpRecord> Jumps { get; init; } = [];
 
@@ -200,9 +213,22 @@ public sealed class CalibrationStore
 /// <item><b>同一次开机内</b>（单调钟连续）：墙钟**双向**跳变都测得出，两者都记录。</item>
 /// <item><b>跨重启</b>（单调钟归零）：只能判出<b>「时间被调回去了」</b>
 /// （现在的墙钟早于上次记录的墙钟）—— 那正是 I11 点名的伪造方向。
-/// 往前调、或正常关机过了一夜，从这两个数**分辨不出来**，
-/// 所以那种情况**放行**（不误伤「离线照常录制」那条承诺），如实记在这里。</item>
+/// 往前调、或正常关机过了一夜，从这两个数**分辨不出来**。</item>
 /// </list>
+/// <para>
+/// ⚠️ 分辨不出来的那一种，处理方式是<b>把基准推齐到当前墙钟</b>
+/// （<see cref="RebaseAsync"/>），而**不是**从前的「放行、旧锚接着用」。
+/// 两者的差别只在重启之后那一段：旧做法会把关机期间流逝的时间**当成没流过**，
+/// 于是重启后的水印从上次的锚点接着走 —— 2026-10-02 实测整体错位约 37 分钟
+/// （`calibration.json` 里 `MonotonicAtAnchor: 0.2015` 对
+/// `LastSeenMonotonic: 0.0087`，两个进程各自的秒表读数）。
+/// </para>
+/// <para>
+/// ⚠️ 推齐**用到了墙钟，但只用在「补关机那一段」**：会话内的时间线仍然只由单调钟
+/// 推进，用户录到一半改系统时间照样改不动已经起步的那条线（I11 的原意）。
+/// 代价如实记在这里：关着机的时候把系统时间改掉，重启后那条线会跟着走 ——
+/// 而离线时要接上一段没有录制的空档，本来也没有别的依据可用。
+/// </para>
 /// </remarks>
 public sealed class TrustedClock : ITrustedClock
 {
@@ -223,15 +249,33 @@ public sealed class TrustedClock : ITrustedClock
         _logger = logger ?? NullLogger.Instance;
     }
 
-    /// <summary>默认单调读数：进程内一个从构造时开始走的秒表。</summary>
+    /// <summary>
+    /// 单调读数：**机器开机以来**的时长。
+    /// </summary>
     /// <remarks>
-    /// 与 <c>RecordingSession</c> 用的是同一类东西 —— 整个应用只该有一把尺子。
+    /// ⚠️ <b>不能用「本进程的 <c>Stopwatch</c>」</b>（这里从前就是那么写的，
+    /// 那正是缺陷的来源）：它每次都从 0 开始数，于是**程序重启**与**整机重启**
+    /// 在 `CheckStartupAsync` 眼里长得一模一样 —— 而两者的处理完全不同。
+    /// 2026-10-02 实测：12:10 那个进程留下的 `MonotonicAtAnchor = 0.2`，
+    /// 12:48 新进程自己的读数是 `0.0087`，相减为负 ⇒ 判成「跨了重启」⇒
+    /// 旧锚继续用 ⇒ 水印整体错位。
+    /// <para>
+    /// <c>TickCount64</c> 是开机以来毫秒数：**跨进程连续**（程序重启不影响它），
+    /// 只在整机重启时归零 —— 那两个信号这才分得开。它不受改系统时间影响，
+    /// 仍然满足「单调」的要求。
+    /// </para>
     /// </remarks>
-    private static Func<TimeSpan> DefaultMonotonic()
-    {
-        var watch = System.Diagnostics.Stopwatch.StartNew();
-        return () => watch.Elapsed;
-    }
+    private static Func<TimeSpan> DefaultMonotonic() =>
+        () => TimeSpan.FromMilliseconds(Environment.TickCount64);
+
+    /// <summary>
+    /// 当前这把尺子的口径（见 <see cref="CalibrationState.MonotonicEpoch"/>）。
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ 公开是**故意的**：它是落盘格式的一部分，测试要照着它造「上一版程序留下的
+    /// state」 —— 拿一个字面量去对，改了那边忘了这边，测试就会绿在一个假结论上。
+    /// </remarks>
+    public const string MonotonicEpoch = "boot-ms";
 
     /// <summary>落盘的那份状态（诊断与界面用）。</summary>
     public CalibrationState State => _state;
@@ -266,11 +310,20 @@ public sealed class TrustedClock : ITrustedClock
 
         if (verdict is null)
         {
+            // ⚠️ `null` 有**两种**含义，别混：真的自洽，以及「这两个数不可比」
+            // （跨了重启、或这份状态是旧口径写的）。后者必须**把基准推齐** ——
+            // 否则旧锚接着用，重启之后的水印就从上次的锚点续着走（缺陷 4 的症状）。
+            if (!MonotonicComparable(_state, monotonic))
+            {
+                return await RebaseAsync(now, monotonic, cancellationToken);
+            }
+
             // 自洽 —— 把这次的读数记下来，供下次核对。
             _state = _state with
             {
                 LastSeenWallClockUtc = now,
                 LastSeenMonotonic = monotonic.TotalSeconds,
+                MonotonicEpoch = MonotonicEpoch,
             };
 
             await _store.SaveAsync(_state, cancellationToken);
@@ -279,11 +332,82 @@ public sealed class TrustedClock : ITrustedClock
 
         var (delta, monotonicDelta, backwards) = verdict.Value;
 
+        return await RecordJumpAsync(now, monotonic, delta, monotonicDelta, backwards, cancellationToken);
+    }
+
+    /// <summary>
+    /// 这次核对的两个数不可比（跨了重启，或者这份状态是旧口径写的）：
+    /// **把时间基准推齐到当前墙钟**。
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ 推齐的做法：把「拿到锚时的单调读数」改成「当前读数 − 锚点到现在该有的时长」，
+    /// 于是 <see cref="Now"/> 在启动这一刻正好落在墙钟上，之后照旧只由单调钟推进。
+    /// <b>锚点本身不动</b> —— 它是用户改不了的那个外部时间，换掉就等于重新校准了。
+    /// </remarks>
+    private async Task<bool> RebaseAsync(
+        DateTimeOffset now, TimeSpan monotonic, CancellationToken cancellationToken)
+    {
+        // 墙钟比上次记录的还早 ⇒ 那是**时间被调回去了**，不是重启。
+        // 与 `Judge` 里那条同一个判据，照记跳变（这一半与跨没跨重启无关）。
+        // ⚠️ 这一句必须排在推齐之前：推齐会把这个方向抹平掉。
+        if (_state.LastSeenWallClockUtc is { } lastWall && now < lastWall)
+        {
+            var monotonicDelta = _state.LastSeenMonotonic is { } lastMonotonic
+                ? monotonic - TimeSpan.FromSeconds(lastMonotonic)
+                : TimeSpan.Zero;
+
+            return await RecordJumpAsync(
+                now, monotonic, now - lastWall, monotonicDelta, backwards: true, cancellationToken);
+        }
+
+        if (_state.AnchorUtc is { } anchor)
+        {
+            var offline = _state.LastSeenWallClockUtc is { } seen ? now - seen : TimeSpan.Zero;
+
+            _state = _state with
+            {
+                MonotonicAtAnchor = (monotonic - (now - anchor)).TotalSeconds,
+            };
+
+            // ⚠️ 这一条日志从前**没有**，而它是排查「水印时间不对」时唯一能看的现场
+            // （2026-10-02 实测：重启后整体错位 37 分钟，日志里一个字都没有）。
+            _logger.Log(LogLevel.Info, "校时",
+                $"这是另一次开机（或换了一把时钟口径），已把时间基准推齐到当前墙钟"
+                + $"（上次运行到现在 {offline.TotalMinutes:0.0} 分钟）；"
+                + "关机那一段按墙钟补，会话内仍只由单调钟推进",
+                new Dictionary<string, object?>
+                {
+                    ["离线分钟"] = offline.TotalMinutes,
+                    ["单调读数秒"] = monotonic.TotalSeconds,
+                });
+        }
+
+        _state = _state with
+        {
+            MonotonicEpoch = MonotonicEpoch,
+            LastSeenWallClockUtc = now,
+            LastSeenMonotonic = monotonic.TotalSeconds,
+        };
+
+        await _store.SaveAsync(_state, cancellationToken);
+        return false;
+    }
+
+    /// <summary>记一次墙钟跳变，并要求重新校准。</summary>
+    /// <remarks>
+    /// ⚠️ 抽出来是因为它现在有**两个**入口（正常判定、以及推齐路上撞见的往回调），
+    /// 而「要求重新校准」这个后果是 I11 那一半的落点，两处各写一份迟早走岔。
+    /// </remarks>
+    private async Task<bool> RecordJumpAsync(
+        DateTimeOffset now, TimeSpan monotonic, TimeSpan delta, TimeSpan monotonicDelta,
+        bool backwards, CancellationToken cancellationToken)
+    {
         _state = _state with
         {
             NeedsRecalibration = true,
             LastSeenWallClockUtc = now,
             LastSeenMonotonic = monotonic.TotalSeconds,
+            MonotonicEpoch = MonotonicEpoch,
             // 只留最近 20 条：跳变是**罕见事件**，而这个文件每次启动都要读一遍、
             // 写一遍；留一屋子历史没有用处，还会把它撑大。
             Jumps = new List<JumpRecord>(_state.Jumps)
@@ -305,15 +429,50 @@ public sealed class TrustedClock : ITrustedClock
         return true;
     }
 
-    /// <summary>判定一次「自洽吗」；返回 null 表示自洽。</summary>
+    /// <summary>
+    /// 这次核对的两个数**能不能相减**。
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ 不可比的三种情形，处理方式都是「推齐一次」，而不是「当成跳变」：
+    /// 没有锚（第一次启动，没什么可推的）、口径对不上（老版本的文件）、
+    /// 读数比上次小（跨了重启，开机以来的毫秒数从 0 重新数）。
+    /// </remarks>
+    private static bool MonotonicComparable(CalibrationState state, TimeSpan monotonic)
+    {
+        if (state.MonotonicAtAnchor is not null && state.MonotonicEpoch != MonotonicEpoch)
+        {
+            return false;
+        }
+
+        if (state.LastSeenMonotonic is not { } last)
+        {
+            return true;
+        }
+
+        return monotonic >= TimeSpan.FromSeconds(last);
+    }
+
+    /// <summary>判定一次「自洽吗」；返回 null 表示自洽<b>或不比不可</b>（见调用点）。</summary>
     /// <remarks>
     /// ⚠️ 跨重启（单调读数比上次记录的小）时**只判「往回调」那一半** ——
     /// 理由见类注释里那条能力边界。不这么分的话，一台每晚关机的机器
     /// 天天早上都要重新校准，而它的时间其实一直都是准的。
+    /// <para>
+    /// ⚠️ 返回 <see langword="null"/> 的两种情形由调用点用
+    /// <see cref="MonotonicComparable"/> 再分一次：真自洽就记读数，
+    /// 不可比就把基准推齐。
+    /// </para>
     /// </remarks>
     private static (TimeSpan Delta, TimeSpan MonotonicDelta, bool Backwards)? Judge(
         CalibrationState state, DateTimeOffset now, TimeSpan monotonic)
     {
+        // 口径对不上（老版本写的 `calibration.json`）⇒ 这两个数不可比，
+        // 相减得出的「跳了多久」是假的。
+        if (state.MonotonicEpoch != MonotonicEpoch)
+        {
+            return null;
+        }
+
         if (state.LastSeenWallClockUtc is not { } lastWall || state.LastSeenMonotonic is not { } lastMonotonic)
         {
             return null;   // 没有可比的东西（第一次启动）
@@ -328,7 +487,8 @@ public sealed class TrustedClock : ITrustedClock
             return (wallDelta, monotonicDelta, true);
         }
 
-        // 单调钟倒退 ⇒ 这一次跨了重启 ⇒ 往前调的那一半分辨不出来，放行。
+        // 单调钟倒退 ⇒ 这一次跨了重启 ⇒ 往前调的那一半分辨不出来。
+        // 返回 null，由调用点走「推齐基准」那一条（不是「放行、旧锚接着用」）。
         if (monotonicDelta < TimeSpan.Zero)
         {
             return null;
@@ -356,6 +516,7 @@ public sealed class TrustedClock : ITrustedClock
             CalibratedAtUtc = DateTimeOffset.UtcNow,
             LastSeenWallClockUtc = DateTimeOffset.UtcNow,
             LastSeenMonotonic = monotonic.TotalSeconds,
+            MonotonicEpoch = MonotonicEpoch,
             // ⚠️ 重新校准**清掉**「要重新校准」那个标记 —— 但它不清历史跳变记录
             // （那些是事实，留着对诊断有用）。
             NeedsRecalibration = false,

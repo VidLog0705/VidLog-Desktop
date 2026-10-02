@@ -148,6 +148,7 @@ public class TrustedClockTests
             // 「上次见到」比现在**晚** 30 分钟 ⇒ 现在是**被调回去了** 30 分钟。
             LastSeenWallClockUtc = DateTimeOffset.UtcNow.AddMinutes(30),
             LastSeenMonotonic = 3600,
+            MonotonicEpoch = TrustedClock.MonotonicEpoch,
         };
 
         // 单调读数也比上次记录的**小**（= 中间关过机重启，单调钟归零了）。
@@ -172,12 +173,20 @@ public class TrustedClockTests
             MonotonicAtAnchor = 0,
             LastSeenWallClockUtc = DateTimeOffset.UtcNow.AddHours(-8),
             LastSeenMonotonic = 7200,   // 上次跑到 2 小时
+            MonotonicEpoch = TrustedClock.MonotonicEpoch,
         };
 
         var clock = new TrustedClock(state, Store(dir), () => TimeSpan.FromSeconds(30));
 
         Assert.False(await clock.CheckStartupAsync());
         Assert.True(clock.IsCalibrated);
+
+        // ⚠️ **判定的重点在这一句**：重启之后 `Now` 必须落在墙钟上。
+        // 从这里返回「不是跳变」是不够的 —— 从前就是那样，而它同时把旧锚留着，
+        // 于是水印从**八小时前**那个锚点续着走（2026-10-02 实测错位 37 分钟）。
+        Assert.True(
+            (clock.Now - DateTimeOffset.UtcNow).Duration() < TimeSpan.FromSeconds(5),
+            $"重启后 Now 该落在当前墙钟上，实际是 {clock.Now:O}");
     }
 
     [Fact]
@@ -192,12 +201,91 @@ public class TrustedClockTests
             MonotonicAtAnchor = 0,
             LastSeenWallClockUtc = DateTimeOffset.UtcNow.AddSeconds(-30),
             LastSeenMonotonic = monotonic.TotalSeconds - 30,
+            MonotonicEpoch = TrustedClock.MonotonicEpoch,
         };
 
         var clock = new TrustedClock(state, Store(dir), () => monotonic);
 
         Assert.False(await clock.CheckStartupAsync());
         Assert.True(clock.IsCalibrated);
+    }
+
+    [Fact]
+    public async Task 老版本写的校准文件_不误判成跳变_也不要求重新校准()
+    {
+        // ⚠️ 这一条是**升级路径**：`MonotonicEpoch` 是这一版才加的，老文件里没有它，
+        // 于是 `LastSeenMonotonic` 是「某个进程的秒表读数」，跟新的「开机以来毫秒」
+        // 相减会差出整整一个开机时长 —— 当成跳变的话，一台**离线**机器
+        // 会被要求「联一次网才能继续录制」，而它其实什么都没被改过（撞 I10）。
+        using var dir = new TempDir();
+
+        var state = new CalibrationState
+        {
+            AnchorUtc = DateTimeOffset.UtcNow.AddHours(-2),
+            MonotonicAtAnchor = 0.2,        // 老口径：某进程跑了 0.2 秒
+            LastSeenWallClockUtc = DateTimeOffset.UtcNow.AddSeconds(-5),
+            LastSeenMonotonic = 0.0087,     // 老口径
+            MonotonicEpoch = null,          // 老文件没有这一栏
+        };
+
+        // 新口径：开机以来 3 天（跟老读数的量级完全不同）。
+        var clock = new TrustedClock(state, Store(dir), () => TimeSpan.FromDays(3));
+
+        Assert.False(await clock.CheckStartupAsync());
+        Assert.True(clock.IsCalibrated);
+        Assert.Empty(clock.State.Jumps);
+        Assert.True((clock.Now - DateTimeOffset.UtcNow).Duration() < TimeSpan.FromSeconds(5));
+    }
+
+    [Fact]
+    public async Task 默认的单调尺子是开机以来的_不是本进程的秒表()
+    {
+        // ⚠️ 这一条盯着**尺子本身**。从前用的是「本进程的 `Stopwatch`」，
+        // 每次启动都从 0 开始数，于是「程序重启」与「整机重启」在核对眼里
+        // 一模一样 —— 而两者的处理完全不同（一个该照常比，一个该推齐）。
+        using var dir = new TempDir();
+        var clock = new TrustedClock(await Store(dir).LoadAsync(), Store(dir));
+
+        await clock.CalibrateAsync(DateTimeOffset.UtcNow, CalibrationSource.PublicTime);
+
+        // 进程秒表在这一刻是几百**毫秒**；开机以来的读数是百万级。
+        var reading = clock.State.MonotonicAtAnchor!.Value;
+        Assert.True(
+            reading > 60,
+            $"单调读数只有 {reading:0.###} 秒 —— 那是本进程的秒表，不是机器开机以来的时长");
+    }
+
+    [Fact]
+    public async Task 程序关着的那段时间里墙钟被往前调_照样测得出来()
+    {
+        // ⚠️ 这一条是「尺子必须跨进程连续」的**收益**所在：用本进程秒表时，
+        // 程序一重启读数就从 0 重来，这段时间窗口里的「往前调」会被判成
+        // 「跨了重启、分辨不出来」而放行 —— 于是 I11 点名的那一半在这一段里失效。
+        using var dir = new TempDir();
+
+        var uptime = TimeSpan.FromMilliseconds(Environment.TickCount64);
+        Assert.True(
+            uptime > TimeSpan.FromMinutes(10),
+            $"这台机器才开机 {uptime.TotalMinutes:0.0} 分钟，这条测试说明不了问题");
+
+        // 上次运行是 5 分钟前结束的；锚点是更早以前取的。
+        var lastExit = uptime - TimeSpan.FromMinutes(5);
+
+        var state = new CalibrationState
+        {
+            AnchorUtc = DateTimeOffset.UtcNow.AddHours(-6),
+            MonotonicAtAnchor = (lastExit - TimeSpan.FromHours(1)).TotalSeconds,
+            // 真实只过了 5 分钟，而墙钟显示过了 65 分钟 ⇒ 往前调了 1 小时。
+            LastSeenWallClockUtc = DateTimeOffset.UtcNow.AddMinutes(-65),
+            LastSeenMonotonic = lastExit.TotalSeconds,
+            MonotonicEpoch = TrustedClock.MonotonicEpoch,
+        };
+
+        var clock = new TrustedClock(state, Store(dir));
+
+        Assert.True(await clock.CheckStartupAsync(), "往前调的跳变漏掉了");
+        Assert.False(clock.IsCalibrated);
+        Assert.False(Assert.Single(clock.State.Jumps).Backwards);
     }
 
     [Fact]
