@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     推送前的本地预检。把 CI 失败挡在推送之前。
 
@@ -80,8 +80,12 @@ $valuePatterns = @(
 $skipFile = '\.(md|txt|rst)$|(^|/)\.gitignore$|(^|/)\.gitattributes$|scripts/precheck\.ps1$'
 $skipExt  = '\.(png|jpg|jpeg|gif|ico|pdf|zip|7z|exe|dll|so|dylib|a|aar|jar|mp4|mp3|woff2?)$'
 
-$staged = @(& git diff --cached --name-only --diff-filter=ACM 2>$null)
-if ($staged.Count -eq 0) { $staged = @(& git diff --name-only --diff-filter=ACM HEAD 2>$null) }
+# ⚠️ `-c core.quotepath=false` 是**承重的**：git 默认把非 ASCII 的文件名
+# 转义成 `"\346\226\207…"` 那种八进制串，而下面那句 `Test-Path $f` 认不出来
+# ⇒ 一个个中文名的文件会被 **`continue` 静默跳过**，等于这道闸对它们全开。
+# 本仓的文档大半是中文名，所以这一条不是洁癖。
+$staged = @(& git -c core.quotepath=false diff --cached --name-only --diff-filter=ACM 2>$null)
+if ($staged.Count -eq 0) { $staged = @(& git -c core.quotepath=false diff --name-only --diff-filter=ACM HEAD 2>$null) }
 
 if ($staged.Count -gt 0) {
     $hits = @()
@@ -111,7 +115,11 @@ if ($staged.Count -gt 0) {
 Section '2. 大文件检查'
 
 $maxMB = 20
-$big = & git ls-files 2>$null | Where-Object { $_ } | ForEach-Object {
+
+# ⚠️ 同第 1 节：不加 `core.quotepath=false` 的话，中文名的文件会以八进制转义
+# 出现在这里，`Test-Path` 报「路径里有非法字符」，整条检查**看起来在跑**
+# 却一个中文名文件都没量到（2026-10-02 实测，四个警告刷了满屏）。
+$big = & git -c core.quotepath=false ls-files 2>$null | Where-Object { $_ } | ForEach-Object {
     if (Test-Path $_) {
         $i = Get-Item $_ -Force -ErrorAction SilentlyContinue
         if ($i -and $i.Length -gt ($maxMB * 1MB)) {
