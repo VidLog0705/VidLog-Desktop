@@ -33,14 +33,24 @@
 
         <!-- ══ 画面墙 ══════════════════════════════════════════════ -->
         <Grid Grid.Row="1" Margin="16">
-            <UniformGrid x:Name="Wall" Rows="3" Columns="3"/>
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="*"/>
+            </Grid.RowDefinitions>
 
-            <!-- 一台机位都没有时的一句话（设计图原话就是这个意思）。 -->
-            <TextBlock x:Name="EmptyNote" Visibility="Collapsed"
-                       HorizontalAlignment="Center" VerticalAlignment="Center"
+            <!-- 一台机位都没有时的一句话（设计图原话就是这个意思）。
+                 ⚠️ **它有自己的那一行，不许盖在墙上**：先前它和墙同处一个格子、
+                 居中 —— 正中那一格自己写着「无信号输入」，两句话叠在一起都看不清
+                 （2026-10-02 实机报上来的）。收掉格子来避让也不行：那样整页只剩一
+                 句话，用户会以为多画面坏了（需求方 2026-10-02：「改回原来我们自己的
+                 渲染」）。所以是**把它挪开**，不是把格子收掉。 -->
+            <TextBlock x:Name="EmptyNote" Grid.Row="0" Visibility="Collapsed"
+                       HorizontalAlignment="Center" Margin="0,0,0,12"
                        TextAlignment="Center" TextWrapping="Wrap" MaxWidth="460"
                        Foreground="{StaticResource TextSecondary}"
                        Text="正在查找已开启实时共享的手机…&#x0a;（在手机上打开实时共享之后，这里会出现它的画面。）"/>
+
+            <UniformGrid x:Name="Wall" Grid.Row="1" Rows="3" Columns="3"/>
         </Grid>
 
         <!-- ══ 全屏层 ══════════════════════════════════════════════ -->
