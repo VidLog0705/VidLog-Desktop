@@ -6,6 +6,11 @@ namespace VidLog.Desktop.Core.Tests;
 /// <summary>
 /// 「测试连接」：读对端的编码与尺寸。
 /// </summary>
+/// <remarks>
+/// ⚠️ 在 <see cref="NetworkCameraCollection"/> 里：最后那一条打的是**同一台真手机**
+/// （<c>VIDLOG_TEST_RTSP_URL</c>），与另外两个类串行跑。
+/// </remarks>
+[Collection(NetworkCameraCollection.Name)]
 public class NetworkCameraProbeTests
 {
     /// <summary>

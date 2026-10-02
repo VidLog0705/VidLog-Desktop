@@ -16,7 +16,12 @@ namespace VidLog.Desktop.Core.Tests;
 /// 地址走环境变量 <see cref="RequiresRtspFactAttribute.EnvironmentVariable"/>，
 /// 不写进仓库。
 /// </para>
+/// <para>
+/// ⚠️ 在 <see cref="NetworkCameraCollection"/> 里：它那两条录制用例在做 1080p 的
+/// x264 实时编码，与预览吞吐那一条并行时会把对方拱红（2026-10-02 实测）。
+/// </para>
 /// </remarks>
+[Collection(NetworkCameraCollection.Name)]
 public class NetworkCameraIntegrationTests
 {
     private static string Ffmpeg => FfmpegLocator.TryFind()!;
@@ -98,7 +103,13 @@ public class NetworkCameraIntegrationTests
         var process = await capture.StartAsync(Source, mkv, encoder!);
 
         await Task.Delay(TimeSpan.FromSeconds(6));
-        await process.StopAsync(TimeSpan.FromSeconds(20));
+        var exitCode = await process.StopAsync(TimeSpan.FromSeconds(20));
+
+        // ⚠️ 退出码这一条**不能省**：录制整段失败时产物压根不存在，下面那个
+        // `-map 0:a:0` 探测也会失败 ⇒ `Assert.False(probe.Succeeded)` **照样通过**，
+        // 而「没有音轨」这件事一次都没验到（与 PreviewThroughputTests 同一族假绿）。
+        Assert.Equal(0, exitCode);
+        Assert.True(new FileInfo(mkv).Length > 0, "产物不能是 0 字节");
 
         var probe = await runner.RunAsync(Ffmpeg,
             ["-hide_banner", "-v", "error", "-i", mkv, "-map", "0:a:0", "-f", "null", "-"]);
