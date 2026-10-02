@@ -174,6 +174,16 @@ public sealed class PrerecordController : IAsyncDisposable
 
             if (recording is { } wanted)
             {
+                // ⚠️ **目录必须先建出来**（2026-10-02 在装出来的 0.2.0 上实测的缺陷）。
+                // 工作区那边只给**路径**、从不建目录（`RecordingWorkspace.PrerecordDirectory`
+                // 就是一句 `Path.Combine`），于是 `WriteWatermark` 抛
+                // DirectoryNotFoundException、ffmpeg 紧接着以
+                // `Could not create a libass track … Error opening output files: Invalid argument`
+                // 起不来 —— 而这一个 ffmpeg 同时扛着**取景识码**，所以现场看到的是
+                // 「预录坏了**和**待扫也不识码了」两件事一起发生。
+                // 原来那几条用例抓不到它：它们传的是 `TempDir`（目录已经在了）。
+                Directory.CreateDirectory(wanted.Directory!);
+
                 // ⚠️ 上一轮剩下的片**必须清掉**：不清的话「最新那一片」可能是几小时前
                 // 那一次待扫留下的，而它会**冒充这一轮的缓冲**被采纳 ——
                 // 开场画面因此是一段与这一件包裹毫无关系的画面，且没人看得出来。

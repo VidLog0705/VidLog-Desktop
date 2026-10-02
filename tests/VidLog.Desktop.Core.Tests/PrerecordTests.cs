@@ -391,6 +391,59 @@ public class PrerecordTests
         Assert.Contains("pre-000.mkv", Text(logger), StringComparison.Ordinal);
     }
 
+    // ─────────────────────────────────────────────
+    // 场景 ⓪：开工前的现场准备 —— **不连真源、不跑 ffmpeg**（本文件里只有这一条）
+    // ─────────────────────────────────────────────
+
+    /// <summary>
+    /// 交给控制器的预录目录**还不存在**时，它必须自己建出来，并把水印字幕写进去。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// ⚠️ <b>这条是补一个已经装出去、又没人抓到的缺陷</b>（2026-10-02 在装出来的
+    /// 0.2.0 上实测）：生产上 <c>RecordingWorkspace.PrerecordDirectory</c> 只给**路径**、
+    /// 从不建目录（它就是一句 <c>Path.Combine</c>），于是 <c>WriteWatermark</c> 抛
+    /// <c>DirectoryNotFoundException</c>，ffmpeg 紧接着以
+    /// 「Could not create a libass track … Error opening output files: Invalid argument」
+    /// 起不来 —— 而这一个 ffmpeg 同时扛着**取景识码**，所以现场看到的是
+    /// 「预录坏了**和**待扫也不识码了」。
+    /// </para>
+    /// <para>
+    /// ⚠️ <b>上面那几条抓不到它</b>：它们传的是 <see cref="TempDir"/>（目录已经在了）。
+    /// 这条故意传一个**不存在的子目录**。
+    /// </para>
+    /// <para>
+    /// ⚠️ 不必真跑 ffmpeg：给一个**不存在**的 exe，<c>StartAsync</c> 会走到「起不来」
+    /// 那条路（I3 的既有行为），而**建目录与写水印都发生在起进程之前** —— 那正是要验的。
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task 预录目录不存在时由控制器自己建出来()
+    {
+        using var dir = new TempDir();
+        var missing = Path.Combine(dir.Path, "_prerecord");
+
+        // 前提：它真的不存在。不然这条用例会在「什么都没改」的实现下也绿。
+        Assert.False(Directory.Exists(missing));
+
+        var logger = new CapturingLogger();
+
+        await using var controller = new PrerecordController(
+            "不存在的-ffmpeg.exe",
+            CameraSource.Network("rtsp://192.0.2.1:1/x"),
+            decoder: null,
+            logger,
+            new SystemProcessRunner(logger));
+
+        await controller.StartAsync(new PrerecordSetup(
+            TimeSpan.FromSeconds(5), "libx264", RecordingSpec.Default, missing));
+
+        Assert.True(Directory.Exists(missing), $"预录目录没被建出来：{Text(logger)}");
+        Assert.True(
+            File.Exists(Path.Combine(missing, "pre.ass")),
+            $"水印字幕没写出来（预录那一路会因此起不来）：{Text(logger)}");
+    }
+
     /// <summary>按**生产那一条 argv** 起一个预录进程（不经过控制器）。</summary>
     private static Process StartPrerecord(
         string pattern, string encoder, bool grayTap, int? durationSeconds)
