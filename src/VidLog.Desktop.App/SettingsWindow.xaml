@@ -136,12 +136,31 @@
                     <RadioButton x:Name="NavDevice" Style="{StaticResource NavItem}"
                                  GroupName="SettingsNav" Tag="Device" IsChecked="True"
                                  Content="设备与外观" Checked="OnSectionChanged"/>
+                    <!-- ⚠️ 批次 G 新增的三节。次序**照前身产品的页签次序**：
+                         设备与外观 / 扫码与识别 / 存储与备份 / 百度网盘上传 /
+                         录像设置 / 声音与播报 / 局域网与网页 / 扩展与联动 / 高级设置 / 关于。
+                         ⚠️ 前身那一排有 **11** 节，我们只列 **10**：少的那一节是
+                         「面单放大」—— 它整页只有一个「面单智能特写」开关 + 一条
+                         「最大放大倍数」滑杆，而**那个功能批次 D 已裁定判给手机端**
+                         （2026-10-02 需求方拍板）⇒ 摆出来就是一个管不着任何东西的开关
+                         （§63「绝不画假开关」）。前身那一页长什么样已拍下留档：
+                         `H:\_installers\shots\x-tab-2.png` / `x-tab-2.txt`，
+                         裁定过程见 `实现决策.md` §91.8。 -->
+                    <RadioButton x:Name="NavScan" Style="{StaticResource NavItem}"
+                                 GroupName="SettingsNav" Tag="Scan"
+                                 Content="扫码与识别" Checked="OnSectionChanged"/>
                     <RadioButton x:Name="NavStorage" Style="{StaticResource NavItem}"
                                  GroupName="SettingsNav" Tag="Storage"
                                  Content="存储与备份" Checked="OnSectionChanged"/>
                     <RadioButton x:Name="NavCloud" Style="{StaticResource NavItem}"
                                  GroupName="SettingsNav" Tag="Cloud"
                                  Content="百度网盘上传" Checked="OnSectionChanged"/>
+                    <RadioButton x:Name="NavRecording" Style="{StaticResource NavItem}"
+                                 GroupName="SettingsNav" Tag="Recording"
+                                 Content="录像设置" Checked="OnSectionChanged"/>
+                    <RadioButton x:Name="NavAudio" Style="{StaticResource NavItem}"
+                                 GroupName="SettingsNav" Tag="Audio"
+                                 Content="声音与播报" Checked="OnSectionChanged"/>
                     <RadioButton x:Name="NavNetwork" Style="{StaticResource NavItem}"
                                  GroupName="SettingsNav" Tag="Network"
                                  Content="局域网与网页" Checked="OnSectionChanged"/>
@@ -258,9 +277,106 @@
 
                         <Separator Margin="0,18,0,16"/>
 
+                        <TextBlock Style="{StaticResource SectionTitle}" Text="摄像头"/>
+                        <TextBlock Style="{StaticResource Caption}" Margin="0,0,0,8"
+                                   Text="录制用哪一路画面。换了要重启才生效。"/>
+                        <StackPanel Orientation="Horizontal">
+                            <ComboBox x:Name="CameraCombo" Width="300" IsEnabled="False"/>
+                            <!-- ⚠️ `TextWrapping` + `MaxWidth` 两个都要：这一句是个
+                                 **横排** StackPanel 的第二项，不给宽度上限时它按一行排、
+                                 超出的部分被窗口边缘直接剪掉 —— 2026-10-02 实测看到的是
+                                 「当前用的是网络摄像头（…），在」后面没了。 -->
+                            <TextBlock x:Name="CameraHint" Margin="10,0,0,0"
+                                       VerticalAlignment="Center" TextWrapping="Wrap"
+                                       MaxWidth="360"
+                                       Foreground="{StaticResource TextSecondary}" Text=""/>
+                        </StackPanel>
+
+                        <!-- ⚠️ 配置向导的入口**搬到「高级设置」**了（批次 G：照前身产品的分页 ——
+                             它把「配置向导 / 重新运行」放在高级设置，不在设备页）。
+                             ⚠️ 上面那句「在【配置向导 → 选择摄像头】里改」**指向的仍是同一个东西**，
+                             只是现在要先去「高级设置」那一页 —— 所以这里必须留一句指路，
+                             否则那句话又变成指着一个找不到的入口。 -->
+                        <TextBlock Style="{StaticResource Caption}" Margin="0,10,0,0"
+                                   TextWrapping="Wrap" MaxWidth="620"
+                                   Text="配置向导在【高级设置】里 —— 摄像头、摄像头识别、方向、麦克风、扫码枪都在那儿重配。"/>
+
+                    </StackPanel>
+
+                    <!-- ────────────────────────────────────────────────
+                         ② 扫码与识别（批次 G 新增，照前身产品的分页）
+
+                         ⚠️ 这一页上的两样**都是搬过来的**，没有新造开关：
+                         「工作模式」原来在设备与外观，「扫码预录缓冲」也是 ——
+                         前身产品把「打包模式」和「扫码预录制」都放在它这一页，
+                         这两样正是我们这边对应的东西（§63：不画假开关）。
+                         ⚠️ 前身这一页还有「摄像头自动识别面单」「全局键盘监听」
+                         「托盘期间扫码监听」「无回车窗口内识别」四行 ——
+                         我们这四样**只在配置向导里配**，没有独立的落盘设置，
+                         所以**这一页不列它们**，免得点开是四个没反应的开关。
+                         ⚠️ XAML 里的次序与左导航的次序**无关**（哪一页可见由
+                         `OnSectionChanged` 按 Tag 切）—— 这里按左导航的次序排，
+                         只是为了下一个人读起来顺。
+                         ──────────────────────────────────────────────── -->
+                    <StackPanel x:Name="ScanSection" Visibility="Collapsed">
+                        <TextBlock Style="{StaticResource SectionTitle}" Text="工作模式"/>
+                        <TextBlock Style="{StaticResource Caption}" Margin="0,0,0,8"
+                                   TextWrapping="Wrap" MaxWidth="620"
+                                   Text="连续扫：换件即换段。同码停：复扫同一张单号就停 —— 它不会因为扫到别的面单就自动换段，也不会一路录到把盘写满。"/>
+                        <ComboBox x:Name="ModeCombo" Width="260" HorizontalAlignment="Left"
+                                  SelectionChanged="OnModeChanged">
+                            <ComboBoxItem Tag="Continuous">连续扫（换件即换段）</ComboBoxItem>
+                            <ComboBoxItem Tag="StopOnSameWaybill">同码停（复扫同号停）</ComboBoxItem>
+                        </ComboBox>
+
+                        <Separator Margin="0,18,0,16"/>
+
+                        <!-- 预录缓冲（规格 §3.1.3，批次 C）。
+                             ⚠️ 前身产品也把「扫码预录制」放在这一页，位置一致。
+                             ⚠️ 但**那句「与识码无关」必须留着**：这一页的页名叫「识别」，
+                             最容易被人读成「识码关掉它也就关了」—— 需求方 2026-10-02
+                             恰好裁定的是**识码关掉它照样生效**。这句话是那一页上最要紧的一句。 -->
+                        <TextBlock Style="{StaticResource SectionTitle}" Text="扫码预录缓冲"/>
+                        <TextBlock Style="{StaticResource Caption}" Margin="0,0,0,8"
+                                   TextWrapping="Wrap" MaxWidth="620"
+                                   Text="把包裹放上秤、面单刚朝镜头的那几秒也留住。开始工作的这段时间摄像头一直被占着（指示灯会常亮）。改了下次开始工作生效。"/>
+                        <ComboBox x:Name="PrerecordCombo" Width="140" HorizontalAlignment="Left"
+                                  SelectionChanged="OnPrerecordChanged">
+                            <ComboBoxItem Tag="0">关闭</ComboBoxItem>
+                            <ComboBoxItem Tag="3">3 秒</ComboBoxItem>
+                            <ComboBoxItem Tag="5">5 秒</ComboBoxItem>
+                            <ComboBoxItem Tag="10">10 秒</ComboBoxItem>
+                        </ComboBox>
+                        <TextBlock Style="{StaticResource Caption}" Margin="0,8,0,0"
+                                   TextWrapping="Wrap" MaxWidth="620"
+                                   Text="⚠️ 与「用摄像头取景识码」无关：识码关掉时它照样生效。缓冲那几秒计入已录时长。"/>
+
+                        <Separator Margin="0,18,0,16"/>
+
+                        <!-- ⚠️ 摄像头识别、扫码枪、画面方向这三样**不在这一页**：
+                             它们只有配置向导一个入口（见「高级设置」）。这里不摆
+                             一个点开没反应的开关充数，指一句路就够。 -->
+                        <TextBlock Style="{StaticResource Caption}" TextWrapping="Wrap" MaxWidth="620"
+                                   Text="⚠️ 摄像头取景识码、扫码枪、画面方向不在这里配 —— 它们在【高级设置 → 配置向导】里。"/>
+                    </StackPanel>
+
+                    <!-- ────────────────────────────────────────────────
+                         ⑤ 录像设置（批次 G 新增，照前身产品的分页）
+
+                         ⚠️ 前身产品这一页放的是「录制声音 / 分辨率 / 画面没变化时自动结束 /
+                         限制录像时长 / 长时间不用时关闭摄像头 / 启用录像水印」。
+                         我们对应得上的搬过来了（闲置提醒、时长兜底、录制规格），
+                         对不上的（自动结束、摄像头空闲、水印）**本仓没有对应的落盘设置**，
+                         所以这一页不列 —— 同 §63。
+                         ⚠️ 「录制声音」按前身是放这一页的，我们**挪到了「声音与播报」**：
+                         我们那页没有订单播报（批次 E 已裁定不写），只剩麦克风一行，
+                         把录制声音也留在这一页会让「声音与播报」变成一句说明的空壳。
+                         两样都是音频，放一起才讲得通。这是**有意偏离**，记在 §92。
+                         ──────────────────────────────────────────────── -->
+                    <StackPanel x:Name="RecordingSection" Visibility="Collapsed">
                         <!-- ⚠️ 引导式录像（`IMPLEMENTATION.md` M8 一行名字，零规格）。
-                             入口摆在这里是**我挑的**（它属于录制行为，而这一节是录制相关设置的所在），
-                             设计图上没有它 —— 要挪说一声。 -->
+                             入口原来在设备与外观（**我挑的位置**），批次 G 挪到这里 ——
+                             它管的是录制过程中的行为，与前身「录像设置」这一类同族。 -->
                         <Grid Margin="0,0,0,14">
                             <Grid.ColumnDefinitions>
                                 <ColumnDefinition Width="*"/>
@@ -278,78 +394,9 @@
                                     VerticalAlignment="Center" Click="OnOpenGuidedRecording"/>
                         </Grid>
 
-                        <Separator Margin="0,18,0,16"/>
+                        <Separator Margin="0,4,0,16"/>
 
-                        <TextBlock Style="{StaticResource SectionTitle}" Text="摄像头"/>
-                        <TextBlock Style="{StaticResource Caption}" Margin="0,0,0,8"
-                                   Text="录制用哪一路画面。换了要重启才生效。"/>
                         <StackPanel Orientation="Horizontal">
-                            <ComboBox x:Name="CameraCombo" Width="300" IsEnabled="False"/>
-                            <!-- ⚠️ `TextWrapping` + `MaxWidth` 两个都要：这一句是个
-                                 **横排** StackPanel 的第二项，不给宽度上限时它按一行排、
-                                 超出的部分被窗口边缘直接剪掉 —— 2026-10-02 实测看到的是
-                                 「当前用的是网络摄像头（…），在」后面没了。 -->
-                            <TextBlock x:Name="CameraHint" Margin="10,0,0,0"
-                                       VerticalAlignment="Center" TextWrapping="Wrap"
-                                       MaxWidth="360"
-                                       Foreground="{StaticResource TextSecondary}" Text=""/>
-                        </StackPanel>
-
-                        <!--
-                            配置向导（批次 3，照设计图 `_16`–`_34`）的入口。
-                            ⚠️ 上面那句「在【配置向导 → 选择摄像头】里改」在这颗按钮存在之前
-                            指的是**一个不存在的东西** —— 2026-09-30 的 §5 真机验收把这条记下来了，
-                            这里就是它的落点。
-                        -->
-                        <Button x:Name="OpenWizardButton" Style="{StaticResource SecondaryButton}"
-                                Margin="0,10,0,0" Padding="14,6" HorizontalAlignment="Left"
-                                Content="打开配置向导" Click="OnOpenWizard"/>
-                        <TextBlock Style="{StaticResource Caption}" Margin="0,6,0,0"
-                                   TextWrapping="Wrap"
-                                   Text="一步步配好摄像头、摄像头识别、方向、麦克风、扫码枪，并当场跑一次录制性能检测。"/>
-
-                        <Separator Margin="0,18,0,16"/>
-
-                        <!-- 录制声音（规格 §3.1.8）。设置项名逐字照规格，**默认开**。 -->
-                        <TextBlock Style="{StaticResource SectionTitle}" Text="录制声音"/>
-                        <TextBlock Style="{StaticResource Caption}" Margin="0,0,0,8"
-                                   Text="音轨固定为 AAC、单声道、44.1 kHz、64 kbps，不提供选择。改了下次开始工作生效，录制中不可改。"/>
-                        <StackPanel Orientation="Horizontal">
-                            <!-- ⚠️ 挂 Checked/Unchecked 而**不是 Click**：Click 只在用户点的时候响，
-                                 而 IsChecked 还能被别的途径改（UIA 的 TogglePattern 就是直接赋值的，
-                                 2026-09-29 截图脚本实测：那样拨出来的开关是关的、旁边的字还写着「开」）。
-                                 挂这两个事件，界面状态就**不可能**与开关本身走岔。 -->
-                            <ToggleButton x:Name="AudioToggle" Style="{StaticResource ToggleSwitch}"
-                                          VerticalAlignment="Center"
-                                          Checked="OnAudioChanged" Unchecked="OnAudioChanged"/>
-                            <TextBlock x:Name="AudioStateText" Margin="10,0,0,0"
-                                       VerticalAlignment="Center"
-                                       Foreground="{StaticResource TextPrimary}" Text=""/>
-                            <ComboBox x:Name="MicrophoneCombo" Width="260" Margin="18,0,0,0"
-                                      IsEnabled="False"/>
-                            <TextBlock x:Name="MicrophoneHint" Margin="10,0,0,0"
-                                       VerticalAlignment="Center"
-                                       Foreground="{StaticResource TextSecondary}" Text=""/>
-                        </StackPanel>
-
-                        <!-- ⚠️ 这一条**不折进「?」**：它说的是「麦克风出问题也不会毁掉录像」，
-                             不写出来用户不敢开声音（而且它正是 I4 在界面上的落点）。 -->
-                        <TextBlock Style="{StaticResource Caption}" Margin="0,8,0,0"
-                                   TextWrapping="Wrap" MaxWidth="620"
-                                   Text="⚠️ 麦克风被拒、被别的程序占用、或者中途被拔掉，录像照常进行 —— 只有那一段没有音轨，界面上会写明原因。声音绝不会让整段录像失败。"/>
-
-                        <Separator Margin="0,18,0,16"/>
-
-                        <TextBlock Style="{StaticResource SectionTitle}" Text="工作模式"/>
-                        <TextBlock Style="{StaticResource Caption}" Margin="0,0,0,8"
-                                   Text="连续扫：换件即换段。同码停：复扫同一张单号就停 —— 它不会因为扫到别的面单就自动换段，也不会一路录到把盘写满。"/>
-                        <ComboBox x:Name="ModeCombo" Width="260" HorizontalAlignment="Left"
-                                  SelectionChanged="OnModeChanged">
-                            <ComboBoxItem Tag="Continuous">连续扫（换件即换段）</ComboBoxItem>
-                            <ComboBoxItem Tag="StopOnSameWaybill">同码停（复扫同号停）</ComboBoxItem>
-                        </ComboBox>
-
-                        <StackPanel Orientation="Horizontal" Margin="0,14,0,0">
                             <StackPanel>
                                 <TextBlock Style="{StaticResource SectionTitle}" Text="闲置提醒"/>
                                 <TextBlock Style="{StaticResource Caption}" Margin="0,0,0,8"
@@ -387,6 +434,7 @@
                         </StackPanel>
 
                         <TextBlock Style="{StaticResource Caption}" Margin="0,10,0,0"
+                                   TextWrapping="Wrap" MaxWidth="620"
                                    Text="闲置提醒只看「有没有扫码或打点」，不看画面；到点只出声提醒，不会替你停录 —— 真正会停的是时长兜底。"/>
 
                         <Separator Margin="0,18,0,16"/>
@@ -425,46 +473,56 @@
                         <TextBlock x:Name="EffectiveSpecText" Margin="76,6,0,0"
                                    TextWrapping="Wrap"
                                    Foreground="{StaticResource TextSecondary}" Text=""/>
-
-                        <Separator Margin="0,18,0,16"/>
-
-                        <!-- 预录缓冲（规格 §3.1.3，批次 C）。
-                             ⚠️ 它归在「录制」这一类，不是「识别」：**识码关掉时它照样生效**
-                             （需求方 2026-10-02 裁定），那句话必须写在界面上 ——
-                             不写的话关掉识码的人会以为它也跟着关了。 -->
-                        <TextBlock Style="{StaticResource SectionTitle}" Text="扫码预录缓冲"/>
-                        <TextBlock Style="{StaticResource Caption}" Margin="0,0,0,8"
-                                   TextWrapping="Wrap" MaxWidth="620"
-                                   Text="把包裹放上秤、面单刚朝镜头的那几秒也留住。开始工作的这段时间摄像头一直被占着（指示灯会常亮）。改了下次开始工作生效。"/>
-                        <ComboBox x:Name="PrerecordCombo" Width="140" HorizontalAlignment="Left"
-                                  SelectionChanged="OnPrerecordChanged">
-                            <ComboBoxItem Tag="0">关闭</ComboBoxItem>
-                            <ComboBoxItem Tag="3">3 秒</ComboBoxItem>
-                            <ComboBoxItem Tag="5">5 秒</ComboBoxItem>
-                            <ComboBoxItem Tag="10">10 秒</ComboBoxItem>
-                        </ComboBox>
-                        <TextBlock Style="{StaticResource Caption}" Margin="0,8,0,0"
-                                   TextWrapping="Wrap" MaxWidth="620"
-                                   Text="⚠️ 与「用摄像头取景识码」无关：识码关掉时它照样生效。缓冲那几秒计入已录时长。"/>
-
-                        <Separator Margin="0,18,0,16"/>
-
-                        <TextBlock Style="{StaticResource SectionTitle}" Text="连接电脑 / 手机"/>
-                        <StackPanel Orientation="Horizontal">
-                            <local:HelpTip VerticalAlignment="Center"
-                                           Text="点开弹出一张二维码，手机端扫它来申请连接。申请到了由你决定同意还是拒绝 —— 没有这一步，手机换不到凭据，录像传不上来。"/>
-                            <TextBlock Style="{StaticResource Caption}" Margin="6,0,0,0"
-                                       VerticalAlignment="Center"
-                                       Text="手机要接进来，得先在这里发一张二维码。"/>
-                        </StackPanel>
-                        <Button x:Name="EnrollButton" Content="连接电脑/手机"
-                                Style="{StaticResource SecondaryButton}"
-                                Margin="0,10,0,0" HorizontalAlignment="Left"
-                                Click="OnEnroll"/>
                     </StackPanel>
 
                     <!-- ────────────────────────────────────────────────
-                         ② 存储与备份
+                         ⑥ 声音与播报（批次 G 新增，照前身产品的分页）
+
+                         ⚠️ 前身这一页是「语音提醒 / 播报时调为最大音量 / 订单备注播报 /
+                         打印后退款报警 / 播报买家留言 / 播报卖家备注 / 播报商品信息 /
+                         播报商品件数」—— 后六行全是**订单联动**，而批次 E 已裁定
+                         「现在不写，只预留」（2026-10-02）⇒ 这一页**一行都不能摆**。
+                         ⚠️ 「语音提醒」也摆不了：本仓的语音播报是**无条件的**
+                         （`Platform.Speech.Speak` 在 `App.OnNotice` 里直接调，
+                         没有落盘的开关）—— 加一个开关就是新功能，不是搬家，
+                         没在本次范围内（§63：不画假开关）。
+                         ⇒ 这一页留下的就是**本仓真有的音频设置**：录制声音 + 麦克风。
+                         ⚠️ 前身把麦克风放在「设备与外观」、录制声音放在「录像设置」，
+                         我们**有意把这两样合到这一页**（理由见上面「录像设置」那段）。
+                         ──────────────────────────────────────────────── -->
+                    <StackPanel x:Name="AudioSection" Visibility="Collapsed">
+                        <!-- 录制声音（规格 §3.1.8）。设置项名逐字照规格，**默认开**。 -->
+                        <TextBlock Style="{StaticResource SectionTitle}" Text="录制声音"/>
+                        <TextBlock Style="{StaticResource Caption}" Margin="0,0,0,8"
+                                   TextWrapping="Wrap" MaxWidth="620"
+                                   Text="音轨固定为 AAC、单声道、44.1 kHz、64 kbps，不提供选择。改了下次开始工作生效，录制中不可改。"/>
+                        <StackPanel Orientation="Horizontal">
+                            <!-- ⚠️ 挂 Checked/Unchecked 而**不是 Click**：Click 只在用户点的时候响，
+                                 而 IsChecked 还能被别的途径改（UIA 的 TogglePattern 就是直接赋值的，
+                                 2026-09-29 截图脚本实测：那样拨出来的开关是关的、旁边的字还写着「开」）。
+                                 挂这两个事件，界面状态就**不可能**与开关本身走岔。 -->
+                            <ToggleButton x:Name="AudioToggle" Style="{StaticResource ToggleSwitch}"
+                                          VerticalAlignment="Center"
+                                          Checked="OnAudioChanged" Unchecked="OnAudioChanged"/>
+                            <TextBlock x:Name="AudioStateText" Margin="10,0,0,0"
+                                       VerticalAlignment="Center"
+                                       Foreground="{StaticResource TextPrimary}" Text=""/>
+                            <ComboBox x:Name="MicrophoneCombo" Width="260" Margin="18,0,0,0"
+                                      IsEnabled="False"/>
+                            <TextBlock x:Name="MicrophoneHint" Margin="10,0,0,0"
+                                       VerticalAlignment="Center"
+                                       Foreground="{StaticResource TextSecondary}" Text=""/>
+                        </StackPanel>
+
+                        <!-- ⚠️ 这一条**不折进「?」**：它说的是「麦克风出问题也不会毁掉录像」，
+                             不写出来用户不敢开声音（而且它正是 I4 在界面上的落点）。 -->
+                        <TextBlock Style="{StaticResource Caption}" Margin="0,8,0,0"
+                                   TextWrapping="Wrap" MaxWidth="620"
+                                   Text="⚠️ 麦克风被拒、被别的程序占用、或者中途被拔掉，录像照常进行 —— 只有那一段没有音轨，界面上会写明原因。声音绝不会让整段录像失败。"/>
+                    </StackPanel>
+
+                    <!-- ────────────────────────────────────────────────
+                         ③ 存储与备份
 
                          ⚠️ 这一节整体照设计图 `_43` 重排（批次 4）：顶上一条容量条、
                          「录像清理」两个入口、两张磁盘表（录像保存位置 / 录像备份位置），
@@ -964,7 +1022,27 @@
                         <TextBlock x:Name="ServerUrlText" Style="{StaticResource Caption}"
                                    Margin="0,10,0,0" Text=""/>
                         <TextBlock Style="{StaticResource Caption}" Margin="0,10,0,0"
+                                   TextWrapping="Wrap" MaxWidth="620"
                                    Text="手机与别的电脑在同一个局域网里，用上面这个地址就能打开回放页检索、播放。⚠️ 找不到录像时它不会伪造一个空结果 —— 服务没起来时这一行会直说「未启动」。"/>
+
+                        <Separator Margin="0,18,0,16"/>
+
+                        <!-- ⚠️ 「连接电脑 / 手机」原来是**设备与外观**里的一行（批次 G 搬来）：
+                             前身产品把它归在「局域网与网页」，它确实是局域网里的事 ——
+                             绑手机、发凭据、之后手机才连得上这台机器的回放服务。
+                             它与上面的端口是同一件事的两半（一个是被连的地址，一个是谁被允许连）。 -->
+                        <TextBlock Style="{StaticResource SectionTitle}" Text="连接电脑 / 手机"/>
+                        <StackPanel Orientation="Horizontal">
+                            <local:HelpTip VerticalAlignment="Center"
+                                           Text="点开弹出一张二维码，手机端扫它来申请连接。申请到了由你决定同意还是拒绝 —— 没有这一步，手机换不到凭据，录像传不上来。"/>
+                            <TextBlock Style="{StaticResource Caption}" Margin="6,0,0,0"
+                                       VerticalAlignment="Center"
+                                       Text="手机要接进来，得先在这里发一张二维码。"/>
+                        </StackPanel>
+                        <Button x:Name="EnrollButton" Content="连接电脑/手机"
+                                Style="{StaticResource SecondaryButton}"
+                                Margin="0,10,0,0" HorizontalAlignment="Left"
+                                Click="OnEnroll"/>
                     </StackPanel>
 
                     <!-- ────────────────────────────────────────────────
@@ -1099,6 +1177,32 @@
                                           VerticalAlignment="Center"
                                           Checked="OnCheckUpdateChanged"
                                           Unchecked="OnCheckUpdateChanged"/>
+                        </Grid>
+
+                        <!-- ── 配置向导（批次 3，照设计图 `_16`–`_34`）─────────────
+                             ⚠️ 这颗按钮**原本在「设备与外观」**（紧挨着摄像头那两行）。
+                             批次 G 照前身产品的分页搬到这里 —— 前身把
+                             「配置向导 / 重新运行」放在高级设置，位置就在
+                             「自动检查更新」之后（截图 `H:\_installers\shots\x-tab-9.png`）。
+                             ⚠️ 「设备与外观」里那句「在【配置向导 → 选择摄像头】里改」
+                             指向的仍是同一个入口 —— 那边留了一句指路，别把它删了。
+                             ⚠️ 这是**搬**不是复制：`OpenWizardButton` 全仓只有这一个
+                             （code-behind 的 `OnOpenWizard` 绑在它上面）。 -->
+                        <Grid Margin="0,14,0,0">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+                            <StackPanel Grid.Column="0">
+                                <TextBlock Style="{StaticResource SectionTitle}" Margin="0"
+                                           Text="配置向导"/>
+                                <TextBlock Style="{StaticResource Caption}" Margin="0,2,0,0"
+                                           TextWrapping="Wrap" MaxWidth="420"
+                                           Text="一步步配好摄像头、摄像头识别、方向、麦克风、扫码枪，并当场跑一次录制性能检测。"/>
+                            </StackPanel>
+                            <Button Grid.Column="1" x:Name="OpenWizardButton" Content="打开配置向导"
+                                    Style="{StaticResource SecondaryButton}" MinWidth="120"
+                                    VerticalAlignment="Center" Click="OnOpenWizard"/>
                         </Grid>
 
                         <!-- ── 日志（2026-10-01 需求方要「级别可配」）──────────

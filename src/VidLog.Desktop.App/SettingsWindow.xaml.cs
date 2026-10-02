@@ -163,7 +163,11 @@ public partial class SettingsWindow : Window
         // ⚠️ `AboutVersionText` 也要一起判空：XAML 解析期间这几个单选的 Checked
         // 就会触发（这就是这个守卫存在的原因），而「关于」那一页的控件是最后
         // 才建出来的 —— 只判到 DeviceSection 的话，在这里读它会空引用。
-        if (DeviceSection is null || StorageSection is null || AboutVersionText is null)
+        // ⚠️ 批次 G 新增的三节**也要判到**：它们排在「关于」**前面**（按左导航的次序
+        // 写在 XAML 里），所以加载到它们的 `Checked` 时「关于」还没建出来 ——
+        // 守卫仍然要认 `AboutVersionText` 这个最靠后的哨兵，三者一起判。
+        if (DeviceSection is null || StorageSection is null || AboutVersionText is null
+            || ScanSection is null || RecordingSection is null || AudioSection is null)
         {
             return;
         }
@@ -171,8 +175,11 @@ public partial class SettingsWindow : Window
         var target = (sender as RadioButton)?.Tag as string;
 
         DeviceSection.Visibility = target == "Device" ? Visibility.Visible : Visibility.Collapsed;
+        ScanSection.Visibility = target == "Scan" ? Visibility.Visible : Visibility.Collapsed;
         StorageSection.Visibility = target == "Storage" ? Visibility.Visible : Visibility.Collapsed;
         CloudSection.Visibility = target == "Cloud" ? Visibility.Visible : Visibility.Collapsed;
+        RecordingSection.Visibility = target == "Recording" ? Visibility.Visible : Visibility.Collapsed;
+        AudioSection.Visibility = target == "Audio" ? Visibility.Visible : Visibility.Collapsed;
         NetworkSection.Visibility = target == "Network" ? Visibility.Visible : Visibility.Collapsed;
         ExtensionsSection.Visibility = target == "Extensions" ? Visibility.Visible : Visibility.Collapsed;
         AdvancedSection.Visibility = target == "Advanced" ? Visibility.Visible : Visibility.Collapsed;
