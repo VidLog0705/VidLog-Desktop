@@ -67,6 +67,8 @@ public partial class RoleWindow : Window
     {
         InitializeComponent();
 
+        _current = current;
+
         if (current is { } role)
         {
             var choice = StationRoleChoice.Of(role);
@@ -81,6 +83,15 @@ public partial class RoleWindow : Window
 
     /// <summary>用户选的用途。取消退出时它没意义（调用方要看 <c>DialogResult</c>）。</summary>
     public StationRole SelectedRole { get; private set; } = StationRole.RecordAndKeep;
+
+    /// <summary>打开时本机已有的用途；首次运行时是 <see langword="null"/>。</summary>
+    /// <remarks>
+    /// ⚠️ 只为结果卡上那六个字：选中的**就是当前用途**时写「当前用途」，
+    /// 与当前不同才写「将切换到」。这一屏现在已经**每次打开都弹**，
+    /// 而绝大多数时候用户什么都没改 —— 那时写「将切换到」是一句**假话**
+    /// （I3 同一条精神：界面上说出口的话要成立）。
+    /// </remarks>
+    private readonly StationRole? _current;
 
     private void OnAnswerChanged(object sender, RoutedEventArgs e) => Refresh();
 
@@ -106,7 +117,7 @@ public partial class RoleWindow : Window
 
         SelectedRole = role;
 
-        ResultLabel.Text = "将切换到";
+        ResultLabel.Text = _current == role ? "当前用途" : "将切换到";
         ResultTitle.Text = described.Title;
         ResultSummary.Text = described.Summary;
         ResultAbilities.ItemsSource = described.Abilities;

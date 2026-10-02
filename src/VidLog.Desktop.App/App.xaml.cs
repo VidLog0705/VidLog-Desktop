@@ -57,7 +57,7 @@ public partial class App : System.Windows.Application
         {
             // ⚠️ 必须在 `AppHost.StartAsync` **之前**：用途决定装不装摄像头与麦克风、
             // 探不探录制规格，而那些全发生在装配期。装配完再问等于没问。
-            await AskStationRoleOnFirstRunAsync(logger);
+            await AskStationRoleAsync(logger);
 
             _host = await AppHost.StartAsync(logger);
 
@@ -176,49 +176,76 @@ public partial class App : System.Windows.Application
     }
 
     /// <summary>
-    /// 首次运行时先问一句「这台电脑拿来干什么」（设计图 `_11`–`_15`）。
+    /// 打开软件先问一句「这台电脑拿来干什么」（设计图 `_11`–`_15`）。
     /// </summary>
     /// <remarks>
     /// <para>
-    /// ⚠️ 判据是<b>设置文件在不在</b>，不是「用途是不是默认值」——
-    /// 后者会把每一个老用户都拦下来问一遍，而他们那台机器早就配好了。
-    /// 文件在 = 这台机器以前跑过 VidLog，跳过。
+    /// ⚠️ <b>每次打开都问</b>（2026-10-02 需求方报「打开软件后的功能选择界面没有了，
+    /// 严重错误」）。原来的判据是「设置文件在不在」，本意是「老用户别再问一遍」，
+    /// 实际后果是：这台机器上只要落过一个 <c>settings.json</c>（改过任何一个设置都会落），
+    /// 这一屏就<b>永远</b>不再出现 —— 需求方装完 0.2.0 打开看到的正是这个现象。
     /// </para>
     /// <para>
-    /// 取消**不挡启动**：按默认的「电脑录像并保存在本机」走，与没有这个概念时一样。
+    /// ⚠️ <b>它不是设置窗里那个「切换用途」</b>：这里发生在 <c>AppHost.StartAsync</c>
+    /// 之前（用途决定装不装摄像头与麦克风），所以这里选的用途<b>这一次启动就生效</b>，
+    /// 不需要重启 —— 那一处才必须重启。
+    /// </para>
+    /// <para>
+    /// 取消**不挡启动**：按上一次存的用途继续；首次运行时那就是默认的
+    /// 「电脑录像并保存在本机」。
     /// </para>
     /// </remarks>
-    private static async Task AskStationRoleOnFirstRunAsync(FileLogger logger)
+    private static async Task AskStationRoleAsync(FileLogger logger)
     {
         var layout = DataLayout.Default();
+        var store = new SettingsStore(layout.SettingsPath);
+        var firstRun = !File.Exists(layout.SettingsPath);
+        var loaded = await store.LoadAsync();
 
-        if (File.Exists(layout.SettingsPath))
-        {
-            return;
-        }
-
-        var dialog = new RoleWindow();
+        // ⚠️ 首次运行**一张卡都不预选**（图上 `_11` 那句「请完成上面两个选择」）；
+        // 之后把当前用途预选上，于是「确认用途」一进来就是可点的。
+        var dialog = new RoleWindow(firstRun ? null : loaded.Settings.StationRole);
 
         if (dialog.ShowDialog() != true)
         {
             logger.Log(
                 LogLevel.Info, "用途",
-                "首次运行没有选用途，按默认的「电脑录像并保存在本机」启动。");
+                $"打开时没有改用途，按{(firstRun ? "默认的" : "上次的")}"
+                + $"「{StationRoles.Describe(loaded.Settings.StationRole).Title}」启动。");
             return;
         }
 
-        await new SettingsStore(layout.SettingsPath)
-            .SaveAsync(AppSettings.Default with { StationRole = dialog.SelectedRole });
+        if (!firstRun && dialog.SelectedRole == loaded.Settings.StationRole)
+        {
+            return;
+        }
+
+        if (loaded.Warnings.Count > 0)
+        {
+            // ⚠️ 设置文件读不出来时**不写盘**：那条警告明说「原文件保留在 …」，
+            // 用户要拿它去查。这一次启动仍按读出来的那份（默认值）走。
+            logger.Log(
+                LogLevel.Warn, "用途",
+                "设置文件有问题（已在上一条里说明），这次选的用途**没有**写盘 —— "
+                + "先把设置文件修好，否则会把出问题的原文件覆盖掉。");
+            return;
+        }
+
+        // ⚠️ 存的是**读出来的那一份改一个字段**，不是 `AppSettings.Default with { … }`：
+        // 后者会把用户其余所有设置一次抹掉（只修一个用途却丢掉全部配置）。
+        await store.SaveAsync(loaded.Settings with { StationRole = dialog.SelectedRole });
 
         var choice = StationRoleChoice.Of(dialog.SelectedRole);
 
         logger.Log(
             LogLevel.Info, "用途",
-            $"首次运行选定了用途：{StationRoles.Describe(dialog.SelectedRole).Title}",
+            (firstRun ? "首次运行选定了用途" : "打开时改了用途")
+            + $"：{StationRoles.Describe(dialog.SelectedRole).Title}",
             new Dictionary<string, object?>
             {
                 ["是否录像"] = choice.Records,
                 ["是否长期保存"] = choice.Keeps,
+                ["生效时机"] = "本次启动",
             });
     }
 
