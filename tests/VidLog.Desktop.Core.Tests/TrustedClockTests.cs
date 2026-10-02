@@ -261,12 +261,19 @@ public class TrustedClockTests
         // ⚠️ 这一条是「尺子必须跨进程连续」的**收益**所在：用本进程秒表时，
         // 程序一重启读数就从 0 重来，这段时间窗口里的「往前调」会被判成
         // 「跨了重启、分辨不出来」而放行 —— 于是 I11 点名的那一半在这一段里失效。
+        //
+        // ⚠️ 尺子用**假**的。原来这里读真的 `Environment.TickCount64`，
+        // 并断言「这台机器开机超过了 10 分钟」—— 于是它**在刚开机的 CI runner 上必红**：
+        // 2026-10-02 实测 runner 才开机 3.5 分钟，用例自己抛「这台机器才开机 3.5 分钟，
+        // 这条测试说明不了问题」，而它跟当次改动毫无关系，白烧一次 Windows
+        // runner（私有仓 2× 计费）并让整个 CI 变红。
+        //
+        // 这条用例要验的是**判定逻辑**，不是尺子本身；尺子是另一条盯着
+        //（`默认的单调尺子是开机以来的_不是本进程的秒表`）。所以这里给一个
+        // 够大的常数就够 —— 取值只要让下面那几个读数都是正的、且有先后关系。
         using var dir = new TempDir();
 
-        var uptime = TimeSpan.FromMilliseconds(Environment.TickCount64);
-        Assert.True(
-            uptime > TimeSpan.FromMinutes(10),
-            $"这台机器才开机 {uptime.TotalMinutes:0.0} 分钟，这条测试说明不了问题");
+        var uptime = TimeSpan.FromHours(3);
 
         // 上次运行是 5 分钟前结束的；锚点是更早以前取的。
         var lastExit = uptime - TimeSpan.FromMinutes(5);
@@ -281,7 +288,7 @@ public class TrustedClockTests
             MonotonicEpoch = TrustedClock.MonotonicEpoch,
         };
 
-        var clock = new TrustedClock(state, Store(dir));
+        var clock = new TrustedClock(state, Store(dir), () => uptime);
 
         Assert.True(await clock.CheckStartupAsync(), "往前调的跳变漏掉了");
         Assert.False(clock.IsCalibrated);
