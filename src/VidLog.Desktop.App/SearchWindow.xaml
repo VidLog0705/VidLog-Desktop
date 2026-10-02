@@ -164,16 +164,39 @@
                                  SelectionChanged="OnResultSelected">
                             <ListBox.ItemTemplate>
                                 <DataTemplate>
+                                    <!-- ⚠️ **两行**：单号与【锁定】并排（第 0 行），
+                                         下面那两行说明**跨满整行**（第 1 行）。
+                                         原来它们是同一个 StackPanel 挤在「单号那一列」里，
+                                         于是**整块**都被右边那颗按钮压掉约 50px ——
+                                         下面那句「… · 类型未知」正好差这一点点宽度，
+                                         在左边那一栏里被折成两行（2026-10-02 实测：
+                                         「类型未 / 知」）。跨满整行就不用再抠那几十像素。 -->
                                     <Grid Margin="2,4">
+                                        <Grid.RowDefinitions>
+                                            <RowDefinition Height="Auto"/>
+                                            <RowDefinition Height="Auto"/>
+                                        </Grid.RowDefinitions>
                                         <Grid.ColumnDefinitions>
                                             <ColumnDefinition Width="*"/>
                                             <ColumnDefinition Width="Auto"/>
                                         </Grid.ColumnDefinitions>
 
-                                        <StackPanel Grid.Column="0">
-                                            <TextBlock Text="{Binding Waybill}"
-                                                       FontWeight="SemiBold"
-                                                       Foreground="{StaticResource TextPrimary}"/>
+                                        <TextBlock Grid.Row="0" Grid.Column="0"
+                                                   Text="{Binding Waybill}"
+                                                   FontWeight="SemiBold"
+                                                   Foreground="{StaticResource TextPrimary}"/>
+
+                                        <!-- 争议锁定（规格 §3.6.5）。⚠️ 它是**硬豁免**（§3.5.3②）：
+                                             锁上之后保留期到了也不会自动清理这一条。 -->
+                                        <Button Grid.Row="0" Grid.Column="1"
+                                                Content="{Binding LockLabel}"
+                                                Padding="8,2" Margin="6,0,0,0"
+                                                VerticalAlignment="Top"
+                                                Style="{StaticResource SecondaryButton}"
+                                                Click="OnToggleLock"
+                                                Tag="{Binding EvidenceId}"/>
+
+                                        <StackPanel Grid.Row="1" Grid.Column="0" Grid.ColumnSpan="2">
                                             <TextBlock Text="{Binding Subtitle}"
                                                        Style="{StaticResource Caption}"
                                                        Margin="0,2,0,0"/>
@@ -184,15 +207,6 @@
                                                        Foreground="{StaticResource Warning}"
                                                        Visibility="{Binding NoteVisibility}"/>
                                         </StackPanel>
-
-                                        <!-- 争议锁定（规格 §3.6.5）。⚠️ 它是**硬豁免**（§3.5.3②）：
-                                             锁上之后保留期到了也不会自动清理这一条。 -->
-                                        <Button Grid.Column="1" Content="{Binding LockLabel}"
-                                                Padding="8,2" Margin="6,0,0,0"
-                                                VerticalAlignment="Top"
-                                                Style="{StaticResource SecondaryButton}"
-                                                Click="OnToggleLock"
-                                                Tag="{Binding EvidenceId}"/>
                                     </Grid>
                                 </DataTemplate>
                             </ListBox.ItemTemplate>
@@ -207,12 +221,20 @@
                         <TextBlock Style="{StaticResource Caption}" Margin="0,6,0,0"
                                    Text="选中一条之后可以导出 —— 原样另存，不转码、不压缩、不裁剪、不打码。"/>
 
+                        <!-- ⚠️ 与设置窗底部同一条：**两列**，别把文字与按钮摞在一格。
+                             摞在一格时两者互不知情，条目一多（「共 1234 条，第 12 / 25 页」）
+                             文字就伸到按钮底下被盖住。 -->
                         <Grid Margin="0,10,0,0">
-                            <TextBlock x:Name="CountText" VerticalAlignment="Center"
-                                       HorizontalAlignment="Left"
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+                            <TextBlock x:Name="CountText" Grid.Column="0"
+                                       VerticalAlignment="Center"
+                                       Margin="0,0,8,0" TextWrapping="Wrap"
                                        Foreground="{StaticResource TextSecondary}"
                                        Text="共 0 条"/>
-                            <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                            <StackPanel Grid.Column="1" Orientation="Horizontal" HorizontalAlignment="Right">
                                 <Button x:Name="PrevPageButton" Content="上一页"
                                         Style="{StaticResource SecondaryButton}"
                                         Padding="12,4" IsEnabled="False" Click="OnPrevPage"/>
@@ -242,8 +264,15 @@
                                 HorizontalAlignment="Center" VerticalAlignment="Center">
                         <Path Data="M 0,0 L 26,15 L 0,30 Z" Fill="{StaticResource TextDisabled}"
                               HorizontalAlignment="Center"/>
+                        <!-- ⚠️ `TextWrapping` + `MaxWidth` **两个都要**：这一行不只写
+                             「请选择录像开始播放」，播不了时它换成的是**一整段**话
+                             （缺解码器那一段连着四五句）。居中又不换行的长文本会
+                             **两头一起被裁掉** —— 2026-10-02 实测：只剩中间一句，
+                             「文件在盘上」与末尾的原因都看不见了。
+                             播放区宽约 740，620 是给它左右各留一点边。 -->
                         <TextBlock x:Name="PlayerHintText" Text="请选择录像开始播放"
                                    Margin="0,14,0,0" HorizontalAlignment="Center"
+                                   TextWrapping="Wrap" MaxWidth="620" TextAlignment="Center"
                                    Foreground="{StaticResource TextDisabled}"/>
                     </StackPanel>
                 </Grid>

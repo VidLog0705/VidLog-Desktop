@@ -435,6 +435,11 @@ public class DesktopServicesTests
     /// 而成功路径只改了一行界面文案，事后没人能回答「这条是谁、什么时候锁的」。
     /// </para>
     /// <para>
+    /// ⚠️ 2026-10-02 在这个窗口里补了**第三条出口**：回放打不开。它不改数据，
+    /// 但它是 §6 表里的「异常」，而且原因（这台机器缺哪个解码器）
+    /// **换台机器就复现不出来** —— 只能靠当时记下来的那一句。
+    /// </para>
+    /// <para>
     /// 为什么只能看源码文本：App 层没有测试工程（与上面那几条同一条理由）。
     /// </para>
     /// <para>
@@ -458,7 +463,16 @@ public class DesktopServicesTests
         //    失败只留在界面上会被用户划走，而那次锁定其实没生效。
         Assert.Contains("_host.Log(", window, StringComparison.Ordinal);
         Assert.Contains("\"锁定\"", window, StringComparison.Ordinal);
-        Assert.Equal(2, System.Text.RegularExpressions.Regex.Matches(window, @"_host\.Log\(").Count);
+
+        // ③ 界面上的**别的事故**也留痕（2026-10-02 补）：回放打不开时那句原因
+        //    来自**这台机器**缺哪个解码器 —— 换一台机器就复现不出来，
+        //    所以当时不记下来，事后无从查起。
+        Assert.Contains("\"回放\"", window, StringComparison.Ordinal);
+
+        // 数一数：锁定成功、锁定失败、回放失败 —— **恰好三条**。
+        // ⚠️ 这是个精确计数（原为 2）：少一条说明「成功/失败各一条」被删了，
+        // 多一条说明有人新加了一个出口却没在这里登记。
+        Assert.Equal(3, System.Text.RegularExpressions.Regex.Matches(window, @"_host\.Log\(").Count);
     }
 
     /// <summary>

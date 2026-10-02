@@ -18,6 +18,7 @@ using VidLog.Desktop.Core.Cleanup;
 using VidLog.Desktop.Core.Diagnostics;
 using VidLog.Desktop.Core.Export;
 using VidLog.Desktop.Core.Labels;
+using VidLog.Desktop.Core.Media;
 using VidLog.Desktop.Core.Search;
 
 namespace VidLog.Desktop.App;
@@ -353,7 +354,74 @@ public partial class SearchWindow : Window
         _playing = false;
         _playTicker.Stop();
         PlayButton.Content = "播放";
-        ShowPlaceholder($"这段录像播不了：{e.ErrorException?.Message ?? "系统解码器不支持"}");
+
+        var system = e.ErrorException?.Message ?? "系统解码器不支持";
+
+        // ⚠️ **留痕**（`AGENTS.md` §6 的「异常」、§6.1 的「catch 块不许静默吞掉」）：
+        // 这件事**只有界面知道**，而它正是用户过几天会说的那句「你们这个录像打不开」。
+        // 诊断包里没有它，事后只剩猜 —— 而原因在**这台机器**上（缺解码器），
+        // 换台机器就复现不出来，更要留下当时的原话与编码。
+        if (ResultsList.SelectedItem is SearchResultRow failed)
+        {
+            _host.Log(
+                LogLevel.Warn, "回放",
+                $"播不了：{system}（编码 {failed.Hit.Entry.Codec ?? "未知"}，"
+                + $"证据 {failed.Hit.Entry.EvidenceId}）");
+        }
+
+        ShowPlaceholder(ExplainPlaybackFailure(system));
+    }
+
+    /// <summary>播不了时到底该说哪句话。</summary>
+    /// <remarks>
+    /// ⚠️ <b>系统那句话不能照抄</b>。文件明明在盘上（选中时已经核过
+    /// <see cref="File.Exists(string)"/>），而 <c>MediaElement</c> 解不了这个编码时
+    /// 报的原话是「找不到媒体文件。」—— 照抄等于把用户指去查一个**好端端在盘上**
+    /// 的文件（2026-10-02 在 H.265 的成品上实测到的就是这么一句）。
+    /// 所以这里说清楚三件事：**文件在**、问题在**这台电脑的解码能力**、哪一档编码最容易缺。
+    /// </remarks>
+    private string ExplainPlaybackFailure(string? systemMessage)
+    {
+        var system = systemMessage ?? "系统解码器不支持";
+
+        if (ResultsList.SelectedItem is not SearchResultRow row)
+        {
+            return $"这段录像播不了：{system}";
+        }
+
+        var path = PathOf(row.Hit);
+
+        // 真不在盘上时，系统那句话反倒是**对的** —— 照实说，别改。
+        if (!File.Exists(path))
+        {
+            return $"这段录像播不了：{path} 不在盘上（{system}）";
+        }
+
+        return "这段录像播不了：文件在盘上，是这台电脑的播放组件打不开它"
+            + CodecHint(row.Hit.Entry.Codec)
+            + $"。（系统的原话：{system}）";
+    }
+
+    /// <summary>这一条是什么编码录的；认不出来就只说「多半是缺解码器」。</summary>
+    /// <remarks>
+    /// ⚠️ 名字走 <see cref="RecordingSpec.CodecLabel"/>（**唯一一处产出**）：
+    /// 规格要求界面上**不得出现「HEVC」** —— 两个名字混用会让用户以为是两种编码。
+    /// 所以连带指路时也只说「H.265 的解码器」与商店里那个「视频扩展」，
+    /// **不印那个英文缩写**。
+    /// </remarks>
+    private static string CodecHint(string? storedCodec)
+    {
+        if (!Enum.TryParse<VideoCodec>(storedCodec, ignoreCase: true, out var codec))
+        {
+            return "，多半是缺这个编码的解码器（也可能是这个文件坏了）";
+        }
+
+        var label = new RecordingSpec(codec, VideoResolution.P1080).CodecLabel;
+
+        return codec == VideoCodec.H265
+            ? $"，这条录像是 {label} 编码的 —— Win10 默认不带 {label} 的解码器，"
+              + "装上（Windows 商店里那个「视频扩展」就是干这个的）就能放"
+            : $"，这条录像是 {label} 编码的，多半是缺解码器（也可能是这个文件坏了）";
     }
 
     private void UpdatePlaybackPosition()
@@ -447,9 +515,14 @@ public partial class SearchWindow : Window
             // 重检索一遍，那一格（以及「已锁定 / 锁定」）才会跟着变。
             await SearchAsync();
 
+            // ⚠️ 话里**不带那串证据 ID**（`20261002T104903-886f9c…`）：这一行
+            // 是左栏底部那条窄状态行（右边还压着【上一页】【下一页】），
+            // 22 个字的一串 ID 根本放不下，会伸到按钮底下被盖住
+            // （2026-10-02 实测）。哪一条刚被锁，**列表里那一行自己就写着**
+            // （按钮已变成「已锁定」），而留痕要的那串 ID 在**上面那条日志**里。
             CountText.Text = locked
-                ? $"{evidenceId} 已解锁，会照常按保留期清理。"
-                : $"{evidenceId} 已锁定：保留期到了也不会自动清理。";
+                ? "这条已解除锁定：会照常按保留期清理。"
+                : "这条已锁定：保留期到了也不会自动清理。";
         }
         catch (Exception ex)
         {

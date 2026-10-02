@@ -1430,12 +1430,22 @@
             <Border Grid.Row="1" Background="{StaticResource Surface}"
                     BorderBrush="{StaticResource CardBorder}" BorderThickness="0,1,0,0"
                     Padding="28,14">
+                <!-- ⚠️ **两列，不要把它俩摞在同一个格子里**。原来是一格放两个
+                     （文字左对齐 + `MaxWidth="480"`，按钮右对齐），看着像有宽度上限，
+                     其实那 480 只约束文字自己 —— 这一句一长就伸到按钮底下，
+                     被后画的按钮**盖住**，右边半句看不见（2026-10-02 实测：
+                     「……其余」后面直接没了）。给按钮一列、文字拿剩下的那一列，
+                     宽度就由版式算出来，不用猜数字。 -->
                 <Grid>
-                    <TextBlock x:Name="SettingsStatus" VerticalAlignment="Center"
-                               TextWrapping="Wrap" MaxWidth="480"
-                               HorizontalAlignment="Left"
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+                    <TextBlock x:Name="SettingsStatus" Grid.Column="0"
+                               VerticalAlignment="Center" TextWrapping="Wrap"
+                               Margin="0,0,16,0"
                                Foreground="{StaticResource TextSecondary}"/>
-                    <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                    <StackPanel Grid.Column="1" Orientation="Horizontal" HorizontalAlignment="Right">
                         <Button x:Name="OkButton" Content="确定"
                                 Style="{StaticResource PrimaryButtonStrong}"
                                 MinWidth="88" Click="OnOk"/>

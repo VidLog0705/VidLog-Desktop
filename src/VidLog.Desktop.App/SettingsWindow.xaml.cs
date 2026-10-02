@@ -900,10 +900,18 @@ public partial class SettingsWindow : Window
     /// </remarks>
     private async Task SyncAudioAsync()
     {
+        // ⚠️ 没得挑的时候**把那个下拉收起来**（2026-10-02 实测：本机没有麦克风时，
+        // 它留着一个空的灰色长条，把那一行挤成「[开] [空框] 没有找到麦克风…」——
+        // 用户看着像界面坏了）。它禁用是「不能改」，而**空**是「没东西可改」，
+        // 后者连摆都不该摆。三处「没法挑」的分支都走这一个函数，免得漏一处。
+        void ShowCombo(bool visible) =>
+            MicrophoneCombo.Visibility = visible ? Visibility.Visible : Visibility.Collapsed;
+
         if (AudioToggle.IsChecked != true)
         {
             AudioStateText.Text = "关";
             MicrophoneCombo.IsEnabled = false;
+            ShowCombo(false);
             MicrophoneHint.Text = "";
             return;
         }
@@ -911,6 +919,7 @@ public partial class SettingsWindow : Window
         AudioStateText.Text = "开";
         MicrophoneCombo.Items.Clear();
         MicrophoneCombo.IsEnabled = false;
+        ShowCombo(false);
 
         if (_host.Services.FfmpegPath is null)
         {
@@ -946,6 +955,7 @@ public partial class SettingsWindow : Window
             remembered is not null && devices.Contains(remembered) ? devices.ToList().IndexOf(remembered) : 0;
 
         MicrophoneCombo.IsEnabled = true;
+        ShowCombo(true);
         MicrophoneHint.Text = "";
     }
 
