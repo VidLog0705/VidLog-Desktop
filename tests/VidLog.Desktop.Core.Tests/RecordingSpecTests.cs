@@ -256,6 +256,118 @@ public class RecordingSpecTests
         Assert.Equal("1", arguments[arguments.IndexOf("-t") + 1]);
     }
 
+    // ─────────────────────────────────────────────
+    // ★ 源打不开时**一次就收工**（2026-10-02）
+    // ─────────────────────────────────────────────
+
+    /// <remarks>
+    /// <para>
+    /// 2026-10-02 实测：一路连不上的网络地址，让冷启动在**窗口还没画出来之前**
+    /// 耗掉 134 秒 —— 4 档 × 4 编码器 + 2 个原生档 × 4，每一次都要等满
+    /// <c>DefaultNetworkTimeout</c>（10 秒）。
+    /// </para>
+    /// <para>
+    /// ⚠️ 判据取「ffmpeg 被起了几次」而**不是**「花了几秒」：
+    /// 秒数在这台机器上取决于真实网络，而次数是那个 134 秒的**构成**本身。
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task 源打不开时_一次就收工_不把每个编码器再等一遍()
+    {
+        var runner = new DeadSourceRunner("rtsp://h:554/s: Connection refused");
+
+        var result = await new FfmpegSpecProbe("ffmpeg.exe", runner)
+            .ProbeAsync(RecordingSpec.Default, CameraSource.Network("rtsp://h/s"));
+
+        Assert.False(result.Usable);
+        Assert.True(result.SourceUnavailable, "源打不开必须报出来，调用方才知道该收工");
+        Assert.Single(runner.Invocations);
+
+        // ⚠️ 这句话是用户在**启动时那一条警告**里唯一能看到的东西 ——
+        // 冠上编码器名会把他指向「换个编码器试试」，而源打不开换哪个都一样。
+        Assert.DoesNotContain(
+            RecordingSpec.Default.EncoderCandidates[0], result.FailureReason);
+    }
+
+    /// <remarks>
+    /// ⚠️ 这一条是上面那条的**反面**，别当成重复删掉：收工的门只有一个
+    /// （<see cref="CameraErrorKind.SourceUnavailable"/>）。把「这一档参数不合适」
+    /// 也塞进那道门，会把 2026-09-30 那台只认 640×480 的相机**本该回落的那一档判死**。
+    /// </remarks>
+    [Fact]
+    public async Task 设备不支持这一档参数时_每个编码器都还得试()
+    {
+        var spec = RecordingSpec.Default;
+        var runner = new DeadSourceRunner("[dshow @ 0] Could not set video options");
+
+        var result = await new FfmpegSpecProbe("ffmpeg.exe", runner)
+            .ProbeAsync(spec, CameraSource.Local("Camera"));
+
+        Assert.False(result.Usable);
+        Assert.False(result.SourceUnavailable);
+        Assert.Equal(spec.EncoderCandidates.Count, runner.Invocations.Count);
+        Assert.Contains("不支持这一档参数", result.FailureReason);
+
+        // ⚠️ 与上一条相反：**这一条冠上编码器名是对的** —— 它说的确实是
+        // 「这个组合（含这个编码器）不行」，而这句话同样会进用户可见的警告。
+        Assert.Contains(spec.EncoderCandidates[0], result.FailureReason);
+    }
+
+    /// <remarks>
+    /// ⚠️ 提前收工的门在**两个**循环里各有一道（普通回落 / 原生档），
+    /// 少一道就还是会把 10 秒再等好几遍 —— 所以这里数的是「试了几档」。
+    /// </remarks>
+    [Fact]
+    public async Task 源打不开时_回落链一次都不试()
+    {
+        var probe = new DeadSourceProbe();
+
+        var selection = await SpecSelectionPolicy.SelectAsync(
+            new RecordingSpec(VideoCodec.H265, VideoResolution.Uhd4K),
+            CameraSource.Network("rtsp://h/s"),
+            probe);
+
+        Assert.Single(probe.Tried);
+
+        // I3：不静默 —— 收工也得把那句话说出去。
+        Assert.True(selection.ChangedFromRequested);
+        Assert.False(string.IsNullOrWhiteSpace(selection.Reason));
+    }
+
+    /// <summary>永远打不开源的假 runner：记下**被叫了几次**，这是本组唯一的判据。</summary>
+    private sealed class DeadSourceRunner(string stderr) : IProcessRunner
+    {
+        public List<List<string>> Invocations { get; } = [];
+
+        public Task<ProcessResult> RunAsync(
+            string executable,
+            IReadOnlyList<string> arguments,
+            CancellationToken cancellationToken = default)
+        {
+            Invocations.Add(arguments.ToList());
+
+            return Task.FromResult(new ProcessResult(1, string.Empty, stderr));
+        }
+    }
+
+    /// <summary>一开就报「源打不开」的假探测。</summary>
+    private sealed class DeadSourceProbe : IRecordingSpecProbe
+    {
+        public List<RecordingSpec> Tried { get; } = [];
+
+        public Task<SpecProbeResult> ProbeAsync(
+            RecordingSpec spec, CameraSource source, CancellationToken cancellationToken = default)
+        {
+            Tried.Add(spec);
+
+            return Task.FromResult(
+                new SpecProbeResult(spec, spec.EncoderCandidates[0], false, "连不上")
+                {
+                    SourceUnavailable = true,
+                });
+        }
+    }
+
     /// <summary>只认某些组合的假探测。</summary>
     private sealed class FakeSpecProbe(params RecordingSpec[] usable) : IRecordingSpecProbe
     {

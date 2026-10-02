@@ -222,6 +222,26 @@ public class LoggingTests
     }
 
     [Fact]
+    public async Task 枚举写的是名字_不是对象占位符()
+    {
+        // ⚠️ 2026-10-02 实测：`"工作模式":"<对象:WorkMode>"`、`"停因":"<对象:PunchSource>"`、
+        // `"方向":"<对象:CameraRotation>"` —— 三栏都是**看着有、其实什么都没说**。
+        // ⚠️ 修法**不能**是「干脆反射」：那个 `default:` 是刻意留的，
+        // 为的是别让 `DeviceIdentity` 的凭据进诊断包。枚举走 `ToString()`，不反射。
+        using var dir = new TempDir();
+        var logger = new FileLogger(new FileLogOptions(dir.Path, "vidlog"));
+
+        logger.Log(LogLevel.Warn, "录制", "开了",
+            new Dictionary<string, object?> { ["级别"] = LogLevel.Warn });
+        await logger.DisposeAsync();
+
+        var line = Assert.Single(await File.ReadAllLinesAsync(logger.Path));
+        using var json = JsonDocument.Parse(line);
+
+        Assert.Equal("Warn", json.RootElement.GetProperty("data").GetProperty("级别").GetString());
+    }
+
+    [Fact]
     public async Task 消息里的引号与换行不会把一条日志劈成两行()
     {
         // 手拼 JSON 最典型的坏法：`message` 里一个 `"` 或一个 `\n` ——

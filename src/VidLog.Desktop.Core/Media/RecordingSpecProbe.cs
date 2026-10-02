@@ -21,7 +21,24 @@ public sealed record SpecProbeResult(
     bool Usable,
     string? FailureReason,
     (int Width, int Height)? ObservedSize = null,
-    double? ObservedFrameRate = null);
+    double? ObservedFrameRate = null)
+{
+    /// <summary>
+    /// 这次失败是**画面源本身打不开**，不是「这一档参数不合适」。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// ⚠️ <b>调用方看到它为 true 就该收工</b>：输入侧压根没打开，分辨率与编码器
+    /// 都还没轮到上场，换哪一档录制规格得到的是**一模一样**的结果。
+    /// </para>
+    /// <para>
+    /// ⚠️ 做成属性而不是第 7 个位置参数：成功那一路、以及所有既有构造点
+    /// **一行都不用改**，而且默认 <see langword="false"/> 正好是保守的一侧
+    /// （不知道 = 继续试，见 <see cref="CameraErrorKind"/>）。
+    /// </para>
+    /// </remarks>
+    public bool SourceUnavailable { get; init; }
+}
 
 /// <summary>录制规格的可用性检查（规格 §3.1.7）。</summary>
 public interface IRecordingSpecProbe
@@ -114,15 +131,24 @@ public sealed class FfmpegSpecProbe : IRecordingSpecProbe
         // 配不了的那一档**不用真开一次**，直接说清楚：地址没填、或者少了 rtsp://
         // 这种，让 ffmpeg 去报 `Protocol not found` 对用户没有指向性 ——
         // 而 RTSP 连不上时还可能等很久（本机没有超时选项可用）。
+        // ⚠️ 这两个都是**与录制规格无关**的「源根本没打开」—— 换哪一档、
+        // 哪个编码器都是同一句话，所以带着 SourceUnavailable 回去让调用方直接收工
+        // （见 SpecProbeResult.SourceUnavailable）。
         if (source.ConfigurationProblem is { } problem)
         {
-            return new SpecProbeResult(spec, spec.EncoderCandidates[0], false, problem);
+            return new SpecProbeResult(spec, spec.EncoderCandidates[0], false, problem)
+            {
+                SourceUnavailable = true,
+            };
         }
 
         if (source.IsEmpty)
         {
             // 本机设备那一档「没配」的走法（网络那一档上面已经拦掉了）。
-            return new SpecProbeResult(spec, spec.EncoderCandidates[0], false, "没有可用的摄像头");
+            return new SpecProbeResult(spec, spec.EncoderCandidates[0], false, "没有可用的摄像头")
+            {
+                SourceUnavailable = true,
+            };
         }
 
         string? firstFailure = null;
@@ -132,7 +158,7 @@ public sealed class FfmpegSpecProbe : IRecordingSpecProbe
         {
             cancellationToken.ThrowIfCancellationRequested();
 
-            var (usable, reason, observed, observedRate) =
+            var (usable, reason, kind, observed, observedRate) =
                 await ProbeOneAsync(spec, source, encoder, cancellationToken);
             if (usable)
             {
@@ -140,12 +166,25 @@ public sealed class FfmpegSpecProbe : IRecordingSpecProbe
             }
 
             firstFailure ??= reason;
+
+            // ⚠️ **源打不开就别再换编码器了。** 这一条与编码器无关（输入侧就没成），
+            // 换下一个只是把同一句失败再等一遍 —— 网络那一档每个编码器还要
+            // 各等满 10 秒的超时（见 DefaultNetworkTimeout）。
+            if (kind == CameraErrorKind.SourceUnavailable)
+            {
+                return new SpecProbeResult(spec, firstEncoder, false, firstFailure)
+                {
+                    SourceUnavailable = true,
+                };
+            }
         }
 
         return new SpecProbeResult(spec, firstEncoder, false, firstFailure);
     }
 
-    private async Task<(bool Usable, string? Reason, (int Width, int Height)? Observed, double? FrameRate)>
+    /// <summary>试一个编码器。第三个返回值是「卡在哪一段」，决定还要不要换下一个。</summary>
+    private async Task<(bool Usable, string? Reason, CameraErrorKind Kind,
+        (int Width, int Height)? Observed, double? FrameRate)>
         ProbeOneAsync(
         RecordingSpec spec,
         CameraSource source,
@@ -194,32 +233,49 @@ public sealed class FfmpegSpecProbe : IRecordingSpecProbe
             }
             catch (OperationCanceledException)
             {
-                return (false, $"{encoder} 在 {_networkTimeout.TotalSeconds:0} 秒内没能连上"
-                    + "（地址可能不对，或者对端不通）", null, null);
+                // 10 秒没能连上 = 源打不开（网络那一档不会自己结束，见 DefaultNetworkTimeout）。
+                // ⚠️ 这句话里**不出现编码器名**：源打不开与换哪个编码器毫无关系，
+                // 冠上 `h264_qsv` 只会把用户指向「换个编码器试试」。见下面那条同源的注释。
+                return (false, $"在 {_networkTimeout.TotalSeconds:0} 秒内没能连上"
+                    + "（地址可能不对，或者对端不通）", CameraErrorKind.SourceUnavailable, null, null);
             }
             catch (Exception ex)
             {
-                return (false, $"调用 FFmpeg 失败：{ex.Message}", null, null);
+                // ⚠️ 这里**不**断言是源的问题：进程起不来（比如 ffmpeg 没了）与
+                // 「这一路打不开」是两回事，而这种失败很快，多试一档不吃亏。
+                return (false, $"调用 FFmpeg 失败：{ex.Message}", CameraErrorKind.Unknown, null, null);
             }
 
             if (!result.Succeeded)
             {
                 // ⚠️ 理由走 `CameraErrorText`（中文），**不贴 ffmpeg 的英文原文** ——
                 // 界面提示必须是中文（需求方 2026-09-29 写死）。原文进日志。
+                // ★ 分类与话**认的是同一遍关键词**，见 `CameraErrorText.Explain`。
+                var (kind, text) = CameraErrorText.Explain(result.StandardError);
+
+                // ⚠️ 「源打不开」那句话里**不出现编码器名**：它换哪个编码器都是同一句
+                // （输入侧压根没打开），冠上编码器就把用户指向「换个编码器试试」——
+                // 而这句话是他在**启动时那一条警告**里唯一能看到的东西。
+                // 其余几条（参数不合适那一条）冠上是对的：那确实是「这个组合」不行。
                 return (false,
-                    $"{encoder} 打不开这个组合：{CameraErrorText.Describe(result.StandardError)}", null, null);
+                    kind == CameraErrorKind.SourceUnavailable
+                        ? text
+                        : $"{encoder} 打不开这个组合：{text}",
+                    kind, null, null);
             }
 
             if (!File.Exists(probeFile) || new FileInfo(probeFile).Length == 0)
             {
                 // 退出码 0 却没有产物 —— 与编码器探测同一条规矩：**必须验产物**。
-                return (false, $"{encoder} 退出码为 0 但没有产物", null, null);
+                // 这是编码器那一侧的事，与源无关。
+                return (false, $"{encoder} 退出码为 0 但没有产物", CameraErrorKind.Unknown, null, null);
             }
 
             var verification = await _verifier.VerifyAsync(probeFile, cancellationToken);
             if (!verification.IsPlayable)
             {
-                return (false, $"{encoder} 产出的文件解不开：{verification.FailureReason}", null, null);
+                return (false, $"{encoder} 产出的文件解不开：{verification.FailureReason}",
+                    CameraErrorKind.Unknown, null, null);
             }
 
             // ★ 原生档的尺寸与帧率**只能在这里问出来**（我们没钉，是相机自己出的）。
@@ -229,7 +285,7 @@ public sealed class FfmpegSpecProbe : IRecordingSpecProbe
                 ? await MeasureObservedAsync(probeFile, cancellationToken)
                 : (null, null);
 
-            return (true, null, observed.Size, observed.FrameRate);
+            return (true, null, CameraErrorKind.Unknown, observed.Size, observed.FrameRate);
         }
         finally
         {
@@ -385,6 +441,16 @@ public static class SpecSelectionPolicy
             }
 
             firstReason ??= result.FailureReason;
+
+            // ⚠️ **源打不开就别再往下试了**，连原生档那一轮也不用试：
+            // 原生档改的只是「尺寸钉不钉」，而问题出在**输入侧压根没打开**。
+            // 2026-10-02 实测：一路连不上的网络地址，4 档 × 4 编码器 + 2 个原生档 × 4
+            // 里的每一次都要等满 10 秒超时 —— 冷启动因此在**窗口还没画出来之前**
+            // 耗掉 134 秒。收工之后只剩「一次超时」那么多。
+            if (result.SourceUnavailable)
+            {
+                return GiveUp(firstReason);
+            }
         }
 
         // ── ★ 最后一个兜底：**相机原生档**（设计图步 4 的未完成态）──────────
@@ -420,15 +486,30 @@ public static class SpecSelectionPolicy
             }
 
             firstReason ??= result.FailureReason;
+
+            if (result.SourceUnavailable)
+            {
+                return GiveUp(firstReason);
+            }
         }
 
-        // 连原生档都跑不通：**不假装**，回到默认档并说明原因 ——
-        // 调用方会把它变成一条用户可见的警告（I3：不存在静默失败）。
-        return new SpecSelection(
+        return GiveUp(firstReason);
+    }
+
+    /// <summary>
+    /// 一档都跑不通时那一条：**不假装**，回到默认档并说明原因 ——
+    /// 调用方会把它变成一条用户可见的警告（I3：不存在静默失败）。
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ 抽出来是因为它现在有**三个**出口：三档跑完、原生档跑完、
+    /// 以及「源打不开时提前收工」。三处各写一份的话，改措辞时会漏掉一处 ——
+    /// 而漏掉的那一处正是用户在特定机器上会看到的那一句。
+    /// </remarks>
+    private static SpecSelection GiveUp(string? firstReason) =>
+        new(
             RecordingSpec.Default,
             ChangedFromRequested: true,
             Reason: firstReason ?? "没有任何可用的录制规格组合");
-    }
 
     /// <summary>
     /// 把一次选择的结果说成**一句人话**（界面直接用这个字符串）。

@@ -88,4 +88,75 @@ public class CameraErrorTextTests
             letters.Length == 0,
             $"认不出时的话里带了英文：`{text}`（英文字母：{new string(letters)}）");
     }
+
+    // ─────────────────────────────────────────────
+    // ★ 「还要不要再试别的档」（2026-10-02）
+    // ─────────────────────────────────────────────
+
+    /// <remarks>
+    /// ⚠️ <b>这一组判的是 <see cref="CameraErrorKind"/>，不是那句话。</b>
+    /// 决定「还要不要再试别的档」的是它，而它认错了**不会报错** ——
+    /// 只是静默地多等好几遍（134 秒那一条），或者静默地把能用的档判死。
+    /// </remarks>
+    [Fact]
+    public void 设备不支持这一档参数_是唯一一条换一档可能就好的()
+    {
+        // ⚠️ 这条被归错的话，**本该回落的那一档会被判死**：
+        // 2026-09-30 真机实测，一台只认 640×480 / 320×240 / 160×120 的相机
+        // 三档全报这一句，而它换档之后录得出来。
+        // 归成「源打不开」⇒ 调用方收工 ⇒ 回落链一次都不试。
+        Assert.Equal(
+            CameraErrorKind.UnsupportedParameters,
+            CameraErrorText.Explain("[dshow @ 0] Could not set video options").Kind);
+    }
+
+    [Theory]
+    [InlineData("rtsp://h:554/s: Server returned 401 Unauthorized")]
+    [InlineData("method DESCRIBE failed: 404 Not Found")]
+    [InlineData("rtsp://h:8081/live: Invalid data found when processing input")]
+    [InlineData("rtsp://h:554/s: Connection refused")]
+    [InlineData("Connection timed out")]
+    [InlineData("Could not find video device with name [Cam]")]
+    [InlineData("[dshow @ 0] device already in use")]
+    public void 源打不开的那几条一眼就认得出来(string stderr)
+    {
+        // 这一档换任何录制规格都是同一句话：输入侧压根没打开。
+        Assert.Equal(CameraErrorKind.SourceUnavailable, CameraErrorText.Explain(stderr).Kind);
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("   ")]
+    [InlineData("Some brand new ffmpeg wording we have never seen")]
+    [InlineData("[dshow @ 0] weird thing happened")]
+    public void 认不出的落到继续试的那一侧(string stderr)
+    {
+        // ⚠️ 保守的一侧是**继续试**，两者代价不对称：多试一档只是慢一点，
+        // 而误判成「源打不开」会把**本来能用的组合判死**。
+        //
+        // ⚠️ **空 stderr 也在这一档**（2026-10-02 改回来过）：从「ffmpeg 一个字
+        // 都没说」推不出「对端没有回应」—— 进程被掐掉、起不来、管道没读到，
+        // 都是同一个样子，而这句中文会直接贴到界面上。
+        Assert.Equal(CameraErrorKind.Unknown, CameraErrorText.Explain(stderr).Kind);
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("401 Unauthorized")]
+    [InlineData("404 Not Found")]
+    [InlineData("Invalid data found")]
+    [InlineData("Connection refused")]
+    [InlineData("Could not find video device")]
+    [InlineData("already in use")]
+    [InlineData("Could not set video options")]
+    [InlineData("Some brand new ffmpeg wording we have never seen")]
+    public void 分类与那句话认的是同一遍关键词(string stderr)
+    {
+        // ⚠️ `Describe` 只取那句话、`Explain` 还要「卡在哪一段」。
+        // 分成两份关键词表的话，改一处忘一处就会**静默**走岔 ——
+        // 那时的话还是对的，只有「要不要再试」错，而那恰好是 134 秒那一条的成本。
+        var (_, text) = CameraErrorText.Explain(stderr);
+
+        Assert.Equal(CameraErrorText.Describe(stderr), text);
+    }
 }

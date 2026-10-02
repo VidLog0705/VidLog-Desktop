@@ -229,6 +229,18 @@ public sealed class AppHost : IAsyncDisposable
     /// </remarks>
     public RecordingSpec ProbedSpec { get; private set; } = RecordingSpec.Default;
 
+    /// <summary>
+    /// 上一次探测的结论是「回落」——也就是<b>本来能用的那一档没跑通</b>。
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ 只有它为 true 时才值得重探（见 <see cref="MaybeReprobeAsync"/>）。
+    /// 探得通的时候重探是纯浪费：真开一次相机、几秒钟，而结论不会变。
+    /// </remarks>
+    public bool SpecFellBack { get; private set; }
+
+    /// <summary>上一次自动重探的时刻（限流用，见 <see cref="MaybeReprobeAsync"/>）。</summary>
+    private DateTimeOffset _lastReprobeAt = DateTimeOffset.MinValue;
+
     public TrayIcon? Tray { get; private set; }
 
     /// <summary>关窗口时问一句的钩子 —— 由窗口提供（它知道怎么弹对话框）。</summary>
@@ -489,7 +501,19 @@ public sealed class AppHost : IAsyncDisposable
         {
             ["用户选的"] = wantedSpec.Label,
             ["回落"] = selection.ChangedFromRequested,
+            // ⚠️ **原因必须落进日志**：此前这一条只写了「回落: true」，而
+            // 「为什么回落」一个字都没有 —— 售后拿到诊断包也只能看见结论，
+            // 而结论恰恰是会说假话的那一半（相机那一刻不可达 = 「这台电脑跑不通 4K」）。
+            // 这句话来自 `CameraErrorText` 的固定中文句（或没配好的地址），
+            // 里面不含地址与凭据：`SystemProcessRunner` 记 argv 时已过 `UrlCredentials.Strip`。
+            ["原因"] = selection.Reason,
         });
+
+        if (selection.ChangedFromRequested)
+        {
+            logger.Log(LogLevel.Warn, "启动",
+                $"实际按 {selection.Spec.Label} 录，不是用户选的 {wantedSpec.Label}：{selection.Reason}");
+        }
 
         // ⚠️ **开录要用的编码器是规格探测的结论**，不是上面那个 H.264-only 的
         // `EncoderSelection` —— 那个只用来答「这台机器有没有能用的编码器」
@@ -572,6 +596,8 @@ public sealed class AppHost : IAsyncDisposable
             // 重探的**基准**：启动时已经真探过 `wantedSpec` 了，
             // 别让第一次开段白探一遍（那是真开一次相机、几秒钟）。
             ProbedSpec = wantedSpec,
+            // 回落过才值得重探（见 `MaybeReprobeAsync`）。
+            SpecFellBack = selection.ChangedFromRequested,
         };
 
         // §79 + §80 的落点：编码 / 分辨率改了 ⇒ **开段之前**重探一次
@@ -914,6 +940,22 @@ public sealed class AppHost : IAsyncDisposable
             return;
         }
 
+        await ProbeAsync(cancellationToken);
+    }
+
+    /// <summary>
+    /// 真探一次，并把结论落实下去（采集对象 / 编码器 / 会话选项三样一起换）。
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ <b>调用方负责判「该不该探」</b>：这条路径上有两个入口 ——
+    /// 用户改了编码/分辨率（<see cref="PrepareCaptureAsync"/>），
+    /// 以及相机恢复之后的自动重探（<see cref="MaybeReprobeAsync"/>）。
+    /// 把判据留在各自那一头，是因为两边的判据完全不同，也没有共同的部分。
+    /// </remarks>
+    private async Task ProbeAsync(CancellationToken cancellationToken)
+    {
+        var wanted = new RecordingSpec(Settings.Codec, Settings.Resolution, Settings.Rotation);
+
         // 启动那次探测没跑的前提（没有 FFmpeg、或者一台摄像头都没有）在这里是同一件事：
         // 没什么可探的，别白开一次相机（那还会白等几秒）。
         if (Services.FfmpegPath is not { } ffmpegPath || Camera.IsEmpty)
@@ -942,6 +984,8 @@ public sealed class AppHost : IAsyncDisposable
         // 设置窗里那句「你选的是 X，实际按 Y 录」靠的就是这两个属性。
         EffectiveSpec = selection.Spec;
         SpecFallbackReason = selection.Reason;
+        // ⚠️ 探通了就把标记**清掉** —— 否则相机会被反复重探（每次心跳一次真开相机）。
+        SpecFellBack = selection.ChangedFromRequested;
         if (selection.EncoderName is { } probed)
         {
             EncoderName = probed;
@@ -964,6 +1008,50 @@ public sealed class AppHost : IAsyncDisposable
                 CoordinatorNoticeKind.FinalizeFailed, null,
                 SpecSelectionPolicy.Describe(selection, wanted)));
         }
+    }
+
+    /// <summary>
+    /// 相机恢复之后自动重探一次。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// ⚠️ <b>为什么需要它</b>：2026-10-02 实测 —— 那次回落纯粹是相机那一刻不可达
+    /// （几分钟后向导里实测「H.265 4K 跑得通」），可它**锁死了整个会话**：
+    /// <see cref="ProbedSpec"/> 记的是「这一对探过了」，而
+    /// <see cref="PrepareCaptureAsync"/> 只在「用户改了编码 / 分辨率」时才重探。
+    /// 于是用户配的 4K 静默变成 720P，直到重启程序。
+    /// </para>
+    /// <para>
+    /// ⚠️ <b>只在没录的时候探</b>：相机是独占的，录制中另开一路只会失败（§25）。
+    /// 也正因如此它**不能**挂在开段路径上 —— 那会让开录先等一次十秒的超时
+    /// （§3.2.5：开录绝不被别的事挡住）。
+    /// </para>
+    /// <para>
+    /// ⚠️ 由主窗那个一秒一跳的时钟定时器捎带着调，所以这个方法必须**几乎不要钱**：
+    /// 不回落时它只做一次布尔判断。
+    /// </para>
+    /// </remarks>
+    public async Task MaybeReprobeAsync(CancellationToken cancellationToken = default)
+    {
+        if (!SpecFellBack || Coordinator.CurrentWaybill is not null)
+        {
+            return;
+        }
+
+        // 一分钟最多一次：相机一直不可达时，别让每一次心跳都去真开一次相机
+        // （那是十秒的超时 + 一次设备占用）。
+        var now = DateTimeOffset.UtcNow;
+        if (now - _lastReprobeAt < TimeSpan.FromMinutes(1))
+        {
+            return;
+        }
+
+        // ⚠️ 在探之前就记时刻：探的过程抛异常时也要算「试过了」，
+        // 否则一次持续失败会让它每次心跳都重来一遍。
+        _lastReprobeAt = now;
+
+        _logger.Log(LogLevel.Info, "录制", "相机可能已经回来了，重探一次录制规格");
+        await ProbeAsync(cancellationToken);
     }
 
     private static async Task<CameraSource> ResolveCameraAsync(

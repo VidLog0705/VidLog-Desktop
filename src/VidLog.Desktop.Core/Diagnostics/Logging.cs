@@ -342,6 +342,12 @@ public sealed class FileLogger : IAppLogger, IAsyncDisposable
     /// 的凭据原样写进日志，而诊断包会自动把 <c>logs/*</c> 打包外发。
     /// 写成一个「&lt;对象:DeviceIdentity&gt;」占位是**已知会漏**的一侧：
     /// 少一条诊断信息，好过凭据出差。
+    /// <para>
+    /// ⚠️ <b>枚举是例外，而且必须写名字</b>：它既不是对象、也不可能带凭据，
+    /// 而落到 <c>default</c> 上的表现是 <c>"工作模式":"&lt;对象:WorkMode&gt;"</c> ——
+    /// 一条**看着有、其实什么都没说**的日志（2026-10-02 实测：`停因`、`方向`
+    /// 两栏也是这样）。这与「不反射」不冲突：<c>ToString()</c> 不反射，只取名字。
+    /// </para>
     /// </remarks>
     private static void WriteValue(Utf8JsonWriter writer, string key, object? value)
     {
@@ -349,6 +355,9 @@ public sealed class FileLogger : IAppLogger, IAsyncDisposable
         {
             case null:
                 writer.WriteNull(key);
+                break;
+            case Enum e:
+                writer.WriteString(key, e.ToString());
                 break;
             case string s:
                 // 字符串一律过一遍值层脱敏：一个叫「内容」的键里塞了凭据，

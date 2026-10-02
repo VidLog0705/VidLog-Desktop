@@ -325,6 +325,11 @@ public class CameraSourceTests
         Assert.False(result.Usable);
         Assert.Contains("没能连上", result.FailureReason);
 
+        // ★ 2026-10-02：超时必须被归成「源打不开」——那是**真的 ffmpeg**
+        // 在这一条路上报出来的东西，所以它同时是那条分类的端到端证据
+        // （假 runner 那几条只能证明代码怎么走，证明不了 ffmpeg 真会说这句）。
+        Assert.True(result.SourceUnavailable);
+
         // 上界生效的**证据**：明显早于「挂满好几分钟」。
         Assert.True(
             clock.Elapsed < TimeSpan.FromSeconds(30),

@@ -209,7 +209,21 @@ public partial class WizardWindow : Window
         {
             _host.SuspendScans = false;
             _closing.Dispose();
-            Close();
+
+            // ⚠️ **不能在这里直接 `Close()`。** 此刻还在 `Closing` 的事件栈里 ——
+            // `e.Cancel = true` 之后 WPF 还没从这个事件返回，`_isClosing` 仍是 true，
+            // 而 `Close()` 会重入 `InternalClose` → `VerifyNotClosing()` 抛
+            // `InvalidOperationException`。异常从 `async void` 里逃出去 → 没人接 →
+            // 崩溃处理器把整个进程收掉（**用户看到的是「关个向导程序没了」**）。
+            //
+            // 之所以一直没被发现：**只有两个 `await` 都同步完成时才会同步走到这里**。
+            // 预览或麦克风在跑时 `await` 真的让出，异常就变成「稍后抛」而不在这条栈上。
+            // 而没相机/没麦克风的机器（本机就是）恰好两条都同步完成 ——
+            // 2026-10-02 实测：走完【完成】崩一次、打开后直接按 X 再崩一次。
+            //
+            // 丢回消息队列，等这一轮派发走完（`_isClosing` 复位）再关。
+            // 第二次进来时 `_closingNow` 已经为 true，那道门直接放行。
+            _ = Dispatcher.BeginInvoke(new Action(Close));
         }
     }
 
@@ -1283,8 +1297,14 @@ public partial class WizardWindow : Window
         }
         else if (source.IsNetwork)
         {
-            // 照图 `_18` 逐字。
-            text = "请输入网络摄像头地址，然后点击测试连接";
+            // 照图 `_18` 那句话，但**只在地址框还空着时**用。
+            // ⚠️ 地址是**预填**的（2026-10-02 实测：框里已经有
+            // `http://admin:admin@192.168.101.66:8081`），预填之后再让人「请输入」是
+            // 自相矛盾 —— 用户会去找一个根本不用填的东西，而真正该做的是点一下
+            // 【测试连接】（那一下才是把这一路验通）。
+            text = string.IsNullOrWhiteSpace(NetworkUrlBox.Text)
+                ? "请输入网络摄像头地址，然后点击测试连接"
+                : "地址已填好，点一下【测试连接】验证这一路";
         }
         else
         {
