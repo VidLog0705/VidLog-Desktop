@@ -320,9 +320,85 @@ public class RecordingSessionTests
         Assert.Contains("segment-001.mkv", json, StringComparison.Ordinal);
     }
 
+    // ─────────────────────────────────────────────
+    // 采纳预录缓冲（规格 §3.1.3）
+    // ─────────────────────────────────────────────
+
     [Fact]
-    public async Task 编排循环异常退出时_会话仍会被收尾而不是卡在收尾中()
+    public async Task 采纳的预录段占掉000_正式首段从001起_起录时刻与已录时长都从缓冲起点算()
     {
+        using var dir = new TempDir();
+        var capture = new FakeCapture();
+        var clock = new FakeClock();
+
+        // 真实路径上这是工作区 `_prerecord` 下裁好的那一份（见 `PrerecordController`）。
+        var buffered = dir.File("adopted-source.mkv");
+        await File.WriteAllTextAsync(buffered, "buffered-bytes");
+
+        // 缓冲起点比现在早 5 秒 —— 需求方 2026-10-02 裁定「从缓冲起点起算」。
+        var started = DateTimeOffset.UtcNow.AddSeconds(-5);
+        var leading = new AdoptedClip(buffered, started, TimeSpan.FromSeconds(5));
+
+        await using var session = Build(dir, capture, clock: clock);
+
+        await session.StartAsync(WaybillNumber.Parse("SF1"), "libx264", default, leading);
+
+        var sessionDir = Path.Combine(dir.WorkspaceRoot, session.SessionId);
+
+        // ① 搬进会话目录、用清单里的名字。不搬的话孤儿恢复的 `Where(File.Exists)`
+        //    会**静默**把它过滤掉 —— 等于丢证据。
+        Assert.False(File.Exists(buffered), "采纳段必须从临时位置搬走");
+        Assert.Equal(
+            "buffered-bytes",
+            await File.ReadAllTextAsync(Path.Combine(sessionDir, "segment-000.mkv")));
+
+        // ② 正式首段从 001 起 —— 撞号会让收尾拼时间轴时错位。
+        Assert.Equal("segment-001.mkv", Path.GetFileName(capture.Starts[0].OutputPath));
+
+        // ③ 第一版 manifest 里就得有它（进程被杀时恢复链路只认 manifest）。
+        var json = await File.ReadAllTextAsync(Path.Combine(sessionDir, "session.json"));
+        Assert.Contains("segment-000.mkv", json, StringComparison.Ordinal);
+
+        // ④ 起录时刻是**缓冲起点**，不是扫码那一刻 —— 产物最前面那几秒
+        //    真的是从那个时刻开始录的。
+        // ⚠️ 比到秒为止、不比整个 `"O"`：JSON 编码器会把时区里的 `+`
+        // 转义成 `+`，逐字比会**假红**（而它守的那件事其实是对的）。
+        Assert.Contains(started.ToString("yyyy-MM-ddTHH:mm:ss"), json, StringComparison.Ordinal);
+
+        // ⑤ 已录时长从缓冲起点起算（打点偏移、闲置提醒、时长兜底全部跟着它走）。
+        Assert.True(
+            session.Elapsed == TimeSpan.FromSeconds(5),
+            $"已录时长应当从缓冲起点起算（5 秒），实际 {session.Elapsed}");
+    }
+
+    [Fact]
+    public async Task 采纳段搬不动时_开录照常_而且时钟一秒都不往前挪()
+    {
+        using var dir = new TempDir();
+        var capture = new FakeCapture();
+        var clock = new FakeClock();
+        var problems = new List<string>();
+
+        // 源文件不在（磁盘满、临时目录被清、路径写错）。
+        var missing = dir.File("没有这一份.mkv");
+        var leading = new AdoptedClip(missing, DateTimeOffset.UtcNow.AddSeconds(-5), TimeSpan.FromSeconds(5));
+
+        await using var session = Build(dir, capture, clock: clock, problemReported: problems.Add);
+
+        await session.StartAsync(WaybillNumber.Parse("SF1"), "libx264", default, leading);
+
+        // ⚠️ **不挪时钟、不占序号**：没有画面却声称「从 5 秒前开始录」是一条
+        // 看起来完全正常的时间轴错误 —— 打点会偏、时长会多算，而且查不出来。
+        Assert.Equal(TimeSpan.Zero, session.Elapsed);
+        Assert.Equal(0, session.ClosedSegmentCount);
+        Assert.Equal("segment-000.mkv", Path.GetFileName(capture.Starts[0].OutputPath));
+
+        // I3：用户要看得见（那几秒没了是事实，不能静默）。
+        Assert.Contains(problems, p => p.Contains("预录", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task 编排循环异常退出时_会话仍会被收尾而不是卡在收尾中()    {
         using var dir = new TempDir();
         var capture = new FakeCapture();
         var clock = new FakeClock();

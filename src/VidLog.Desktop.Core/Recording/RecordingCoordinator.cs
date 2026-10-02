@@ -245,13 +245,36 @@ public sealed class RecordingCoordinator : IAsyncDisposable
     public bool IsWorking { get; private set; }
 
     /// <summary>
-    /// 取景识码（规格 §3.2.1 的第二种识别入口）。
+    /// 待扫期那一路：取景识码（规格 §3.2.1）＋ 预录缓冲（规格 §3.1.3）。
     /// </summary>
     /// <remarks>
-    /// 可以为 null —— 没摄像头、或没配解码器时就不装它。
-    /// 装上了的话，<see cref="StartWork"/> 会开始取景，扫到单号自动开录。
+    /// <para>
+    /// 可以为 null —— 没摄像头、既不开识码也不开预录时就不装它。
+    /// 装上了的话，<see cref="StartWork"/> 会起它，扫到单号自动开录。
+    /// </para>
+    /// <para>
+    /// ⚠️ <b>它同时也决定了「工作时段相机归谁」</b>：以前只有录制中才占相机，
+    /// 现在**待扫期间也占着**（预录要求，2026-10-02 需求方知情并裁定）。
+    /// 别的地方要开相机（规格探测、测试摄像头、向导）都得先让路，
+    /// 见 <see cref="PrepareCaptureAsync"/> 与装配层那两处入口的说明。
+    /// </para>
     /// </remarks>
-    public Camera.CameraFrameScanner? Scanner { get; set; }
+    public Camera.PrerecordController? Prerecord { get; set; }
+
+    /// <summary>
+    /// 预录缓冲时长（规格 §3.1.3）。<see cref="TimeSpan.Zero"/> = 关闭。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// 装配层按设置填。取值发生在**每次开始待扫**那一刻（见
+    /// <see cref="StartPrerecordAsync"/>），所以改动是「下次开始工作生效」。
+    /// </para>
+    /// <para>
+    /// ⚠️ <b>它可以非零而 <see cref="Prerecord"/> 为 null</b>（没摄像头 / 没 ffmpeg）
+    /// —— 那时整个预录都不存在，这是装配层已经判过的事，这里不再重复判。
+    /// </para>
+    /// </remarks>
+    public TimeSpan PrerecordBuffer { get; set; } = TimeSpan.Zero;
 
     /// <summary>采集那一层。**可替换** —— 见 <see cref="PrepareCaptureAsync"/>。</summary>
     /// <remarks>
@@ -473,13 +496,72 @@ public sealed class RecordingCoordinator : IAsyncDisposable
         _logger.Log(LogLevel.Info, "工作", "开始工作");
         Raise(CoordinatorNoticeKind.WorkStarted, null, "开始工作。");
 
-        // 开始取景识码 —— 扫到单号会自动开录（规格 §4.1 的状态机就是从
-        // 「识别到单号」起算的）。没装扫描器时用户仍可手打单号。
-        if (Scanner is not null)
+        // 开始取景识码（＋ 预录缓冲）—— 扫到单号会自动开录
+        // （规格 §4.1 的状态机就是从「识别到单号」起算的）。
+        // 没装它时用户仍可手打单号。
+        _ = StartPrerecordAsync();
+    }
+
+    /// <summary>
+    /// 起待扫那一路（识码 ＋ 预录）。没装配就是空操作。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// ⚠️ <b>缓冲时长在**这里**读</b>（不是在装配时读一次存起来）：
+    /// 用户改了档位、下次开始工作就该按新的来 —— 与
+    /// <see cref="SessionOptions"/> 的「下次录段生效」同一个口径。
+    /// </para>
+    /// <para>
+    /// 没人 await 它：<c>StartAsync</c> 自己把失败变成一条日志与
+    /// <c>Failed</c> 事件（I3），不会抛。
+    /// </para>
+    /// </remarks>
+    private Task StartPrerecordAsync()
+    {
+        if (Prerecord is not { } prerecord)
         {
-            _ = Scanner.StartAsync();
+            return Task.CompletedTask;
+        }
+
+        return prerecord.StartAsync(new Camera.PrerecordSetup(
+            PrerecordBuffer, Encoder, SessionOptions.Spec, _workspace.PrerecordDirectory));
+    }
+
+    /// <summary>
+    /// 把**相机让开**给别的窗口用（配置向导那几步要开相机），待扫那一路先停。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// ⚠️ <b>为什么必须让</b>：相机是独占的（§25 实测），而待扫那一路在
+    /// **整个工作时段**都占着它（预录要求）。不让的话向导第 2/3 步的取景与
+    /// 第 4 步的性能检测会拿到 <c>device already in use</c> ——
+    /// 而第 4 步那一次尤其糟：它会把**能用的组合误判成跑不通**
+    /// （与 <see cref="PrepareCaptureAsync"/> 里那段同一个病）。
+    /// </para>
+    /// <para>
+    /// ⚠️ <b>它不是「结束工作」</b>：工作状态、当前会话、下一件包裹该怎么走全都不动，
+    /// 只是把相机借出去一会儿。向导关掉时调用方要 <see cref="ResumePrerecordAsync"/> 接回来。
+    /// </para>
+    /// </remarks>
+    public async Task PausePrerecordAsync(CancellationToken cancellationToken = default)
+    {
+        if (Prerecord is not null)
+        {
+            await Prerecord.StopAsync(cancellationToken);
         }
     }
+
+    /// <summary>
+    /// 把相机接回来（借出去之后）。
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ <b>正在录着的时候不接</b>：那时相机在采集进程手里，起待扫会拿到
+    /// <c>device already in use</c>，报出来是一句看不懂的错。
+    /// 那种情况下待扫本来就该等着 —— 采完（<see cref="StopCurrentSegmentAsync"/> /
+    /// 编排循环）自然会把它接回去。
+    /// </remarks>
+    public Task ResumePrerecordAsync() =>
+        IsWorking && CurrentWaybill is null ? StartPrerecordAsync() : Task.CompletedTask;
 
     /// <summary>
     /// 盯着「连续 N 分钟没有任何扫码或打点」（规格 §3.3.3 电脑端那半）。
@@ -576,10 +658,11 @@ public sealed class RecordingCoordinator : IAsyncDisposable
         // 停掉闲置看门狗 —— 不结束工作的人不该继续收到提醒。
         StopIdleWatch();
 
-        // 先停取景 —— 结束时不该把相机留着开着（隐私指示灯长亮）。
-        if (Scanner is not null)
+        // 先停待扫那一路 —— 结束时不该把相机留着开着（隐私指示灯长亮），
+        // 更不该留一个还在写分片的 ffmpeg（它占着工作区里的文件）。
+        if (Prerecord is not null)
         {
-            await Scanner.StopAsync(cancellationToken);
+            await Prerecord.StopAsync(cancellationToken);
         }
 
         var outcome = await StopCurrentSegmentAsync(StopReason.Manual, cancellationToken);
@@ -726,12 +809,16 @@ public sealed class RecordingCoordinator : IAsyncDisposable
             Raise(CoordinatorNoticeKind.WorkStarted, null, "开始工作。");
         }
 
-        // ⚠️ **必须先放掉取景识码进程**：相机是独占的（实测），
-        // 识码进程还开着的话，下面的采集进程会拿到 device already in use。
-        // StopAsync 会等到进程真的退出 —— 那正是为了让它把设备放开。
-        if (Scanner is { IsScanning: true })
+        // ⚠️ **必须先放掉待扫那个进程**（识码 ＋ 预录都在它手里）：相机是独占的
+        // （实测），它还开着的话，下面的采集进程会拿到 device already in use。
+        //
+        // ⚠️ 而「停」与「取缓冲」在这里是**同一件事**：`TakeBufferedAsync` 会先停下
+        // 并等到进程真的退出（那正是为了让设备放开），再从它最后那一片里裁出
+        // 缓冲窗口 —— 拆成两次调用就有一天会有人只调了「取」忘了「停」。
+        AdoptedClip? leading = null;
+        if (Prerecord is not null)
         {
-            await Scanner.StopAsync(cancellationToken);
+            leading = await Prerecord.TakeBufferedAsync(cancellationToken);
         }
 
         // ⚠️ **重探规格的最后机会** —— 相机已空（上一行刚把取景放掉）、
@@ -768,7 +855,9 @@ public sealed class RecordingCoordinator : IAsyncDisposable
             // 那时再读 CurrentBusinessType 已经可能被切过了，会把退货的件标成发货。
             businessType: CurrentBusinessType);
 
-        await session.StartAsync(waybill, Encoder, cancellationToken);
+        // ⚠️ 缓冲那一段作为**开场段**交给会话（它占掉 segment-000，于是正式首段
+        // 自然是 001；起录时刻与时钟起点也一起往前挪）。见 `AdoptedClip` 的说明。
+        await session.StartAsync(waybill, Encoder, cancellationToken, leading);
         _current = session;
 
         // ── 起编排循环：到点滚段、到时长上限或磁盘将满就自动收尾 ──────────
@@ -915,11 +1004,12 @@ public sealed class RecordingCoordinator : IAsyncDisposable
         ReportFinalize(session, outcome);
         await session.DisposeAsync();
 
-        // 相机随收尾释放了 —— 还在工作中的话要把取景接回去，
-        // 否则下一件包裹扫不进来（用户会以为扫码枪/摄像头坏了）。
-        if (IsWorking && Scanner is not null)
+        // 相机随收尾释放了 —— 还在工作中的话要把待扫接回去（识码 ＋ 预录，
+        // 下一件包裹的缓冲就从这一刻重新起算），否则下一件包裹扫不进来
+        // （用户会以为扫码枪/摄像头坏了）。
+        if (IsWorking)
         {
-            _ = Scanner.StartAsync();
+            _ = StartPrerecordAsync();
         }
 
         return outcome;
@@ -971,11 +1061,11 @@ public sealed class RecordingCoordinator : IAsyncDisposable
 
         await session.DisposeAsync();
 
-        // 还在工作中的话把取景接回去，否则下一件包裹扫不进来
+        // 还在工作中的话把待扫接回去，否则下一件包裹扫不进来
         // （与 StopCurrentSegmentAsync 同一条理由）。
-        if (IsWorking && Scanner is not null)
+        if (IsWorking)
         {
-            _ = Scanner.StartAsync();
+            _ = StartPrerecordAsync();
         }
     }
 
@@ -1165,6 +1255,14 @@ public sealed class RecordingCoordinator : IAsyncDisposable
     public async ValueTask DisposeAsync()
     {
         StopIdleWatch();
+
+        // ⚠️ **待扫那一路也必须停**（2026-10-02 补）：它是**新的**相机占用者 ——
+        // 从前待扫进程由 AppHost 自己收，协调器不管；而它现在还会写分片文件。
+        // 不停的话退出时留一个占着相机、还在写盘、并且**没人再管**的孤儿 ffmpeg。
+        if (Prerecord is not null)
+        {
+            await Prerecord.StopAsync(CancellationToken.None);
+        }
 
         var session = _current;
         _current = null;

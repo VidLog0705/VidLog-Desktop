@@ -76,7 +76,7 @@ public enum CameraRotation
 /// </summary>
 /// <remarks>
 /// ⚠️ 抽出来是因为**两个地方**都要它：录制那一档（`FfmpegCameraCapture` 的滤镜链）
-/// 与取景识码那一档（`ScannerProcess`）。抄两份的话两边迟早不一致 ——
+/// 与取景识码那一档（`PrerecordProcess`）。抄两份的话两边迟早不一致 ——
 /// 而「录出来是正的、识码却要倒着认」正是那样来的，且看起来像「识码坏了」。
 /// <para>
 /// ⚠️ 参数含义在这里**写死**（与 <see cref="CameraRotation"/> 的说明配套）：

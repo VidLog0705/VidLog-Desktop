@@ -124,6 +124,23 @@ public sealed class RecordingWorkspace
 
     public string SessionDirectory(string sessionId) => Path.Combine(_root, sessionId);
 
+    /// <summary>
+    /// 预录缓冲的临时目录（规格 §3.1.3）。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// ⚠️ <b>它不是一个会话目录</b>（没有 <c>session.json</c>）—— 所以
+    /// <see cref="ListOrphansAsync"/> 本来就跳过它（它只认有 manifest 的目录），
+    /// 不会被当成「录到一半被杀掉的会话」。这个名字以 <c>_</c> 开头，也让它
+    /// 与 sessionId（GUID）一眼可分。
+    /// </para>
+    /// <para>
+    /// ⚠️ 里面的东西**全部是可弃的**：滚动分片会被自己滚掉、采纳完那份也会被搬走。
+    /// 它不进归档、不进索引、不算「盘上占了多少」。
+    /// </para>
+    /// </remarks>
+    public string PrerecordDirectory => Path.Combine(_root, "_prerecord");
+
     public async Task WriteManifestAsync(SessionManifest manifest, CancellationToken cancellationToken = default)
     {
         var directory = SessionDirectory(manifest.SessionId);

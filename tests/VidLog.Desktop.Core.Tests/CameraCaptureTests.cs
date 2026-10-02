@@ -536,7 +536,7 @@ public class CameraCaptureTests
         // 而那种毛病看起来像「识码坏了」，不会有人想到是方向设置。
         // 滤镜由 `CameraRotationFilters.For` **一处产出**，所以这条断言
         // 其实是在守「两边都走那一处」。
-        var args = ScannerProcess.BuildArguments(CameraSource.Local("Cam"), rotation).ToList();
+        var args = PrerecordProcess.ScannerArguments(CameraSource.Local("Cam"), rotation).ToList();
         var filters = args[args.IndexOf("-vf") + 1];
 
         if (expected is null)
@@ -566,7 +566,7 @@ public class CameraCaptureTests
         // （裸帧没有容器告诉它宽高）。转 90° 会把画面变成 480×640 ⇒
         // 切出来是错位的花屏，识码永远认不出来，**而且不报错**。
         // 修法是采集侧先缩到 480×640（宽高一反），transpose 之后正好是 640×480。
-        var args = ScannerProcess.BuildArguments(CameraSource.Local("Cam"), rotation).ToList();
+        var args = PrerecordProcess.ScannerArguments(CameraSource.Local("Cam"), rotation).ToList();
         var filters = args[args.IndexOf("-vf") + 1];
 
         Assert.Contains(expected, filters, StringComparison.Ordinal);
@@ -584,11 +584,120 @@ public class CameraCaptureTests
     [Fact]
     public void 取景识码不转时滤镜与改动前逐字一致()
     {
-        var plain = ScannerProcess.BuildArguments(CameraSource.Local("Cam")).ToList();
-        var network = ScannerProcess.BuildArguments(CameraSource.Network("rtsp://h/s")).ToList();
+        var plain = PrerecordProcess.ScannerArguments(CameraSource.Local("Cam")).ToList();
+        var network = PrerecordProcess.ScannerArguments(CameraSource.Network("rtsp://h/s")).ToList();
 
         Assert.Equal("fps=3,format=gray", plain[plain.IndexOf("-vf") + 1]);
         Assert.Equal("scale=640:480,fps=3,format=gray", network[network.IndexOf("-vf") + 1]);
+    }
+
+    // ─────────────────────────────────────────────
+    // 预录缓冲那两路（规格 §3.1.3）
+    // ─────────────────────────────────────────────
+
+    [Fact]
+    public void 不加那两个参数时argv与改动前逐字一致()
+    {
+        // ⚠️ 这条守的是「唯一 argv 来源」那条仓规：新参数必须有默认值，
+        // 而且默认值下的 argv 要**逐字**等于从前。多出一个 `-g`、
+        // 或者 `-f matroska` 被换成了 `-f segment`，都会让规格探测、
+        // 正式录制、以及几十条既有用例 quietly 走岔。
+        var args = FfmpegCameraCapture.BuildArguments(
+            CameraSource.Local("Cam"), @"C:\work\s.mkv", "libx264",
+            new RecordingSpec(VideoCodec.H264, VideoResolution.P720),
+            watermarkAssPath: null, microphone: null, durationSeconds: null, preview: false)
+            .ToList();
+
+        Assert.DoesNotContain("-g", args);
+        Assert.DoesNotContain("segment", args);
+        Assert.DoesNotContain("pipe:1", args);
+
+        // ⚠️ 用 LastIndexOf：本机设备的输入参数里也有一个 `-f dshow`（见
+        // `CameraSource.InputArguments`），拿 IndexOf 会取到它、而这条照样绿。
+        Assert.Equal("matroska", args[args.LastIndexOf("-f") + 1]);
+
+        // `-y` 紧挨着输出路径 —— 测试替身靠这个位置定位产物。
+        Assert.Equal(@"C:\work\s.mkv", args[args.IndexOf("-y") + 1]);
+    }
+
+    [Fact]
+    public void 开滚动分片时输出的是segment那一套_且钉了1秒一个关键帧()
+    {
+        var args = FfmpegCameraCapture.BuildArguments(
+            CameraSource.Local("Cam"), @"C:\work\pre-%03d.mkv", "libx264",
+            new RecordingSpec(VideoCodec.H264, VideoResolution.P720),
+            segmentSeconds: 120)
+            .ToList();
+
+        // ⚠️ LastIndexOf：本机设备的输入参数里也有一个 `-f dshow`。
+        Assert.Equal("segment", args[args.LastIndexOf("-f") + 1]);
+        Assert.Equal("matroska", args[args.IndexOf("-segment_format") + 1]);
+        Assert.Equal("120", args[args.IndexOf("-segment_time") + 1]);
+        Assert.Equal("1", args[args.IndexOf("-reset_timestamps") + 1]);
+
+        // ⚠️ **关键帧间隔是承重的**：采纳缓冲时要从片子尾巴上 `-sseof -N -c copy` 裁，
+        // 而 `-c copy` 只能从关键帧切 ⇒ 不钉它就按默认 GOP（约 250 帧 ≈ 8 秒）裁，
+        // 设 5 秒的缓冲会裁出十几秒。30 帧 = 1 秒（帧率固定 30，规格 §3.1.7）。
+        Assert.Equal("30", args[args.IndexOf("-g") + 1]);
+
+        // 分片那一档仍然紧挨着 `-y`（模式串，不是文件名）。
+        Assert.Equal(@"C:\work\pre-%03d.mkv", args[args.IndexOf("-y") + 1]);
+    }
+
+    [Fact]
+    public void 灰度那一路带着缩放与灰度输出_并且走stdout()
+    {
+        var args = FfmpegCameraCapture.BuildArguments(
+            CameraSource.Network("rtsp://h/s"), @"C:\work\pre-%03d.mkv", "libx264",
+            // 输入按 1080p 开（用户的录制规格），而读端按 640×480 硬切裸帧
+            // ⇒ 这一路**必须**缩，否则切出来是错位的花屏、不报任何错。
+            new RecordingSpec(VideoCodec.H264, VideoResolution.P1080),
+            segmentSeconds: 120, grayTap: true)
+            .ToList();
+
+        Assert.Equal("pipe:1", args[^1]);
+        Assert.Equal("gray", args[args.IndexOf("-pix_fmt", args.IndexOf("-pix_fmt") + 1) + 1]);
+
+        // 滤镜链与纯识码那一档**同一个函数**产出 —— 两处各写一份的话，
+        // 同一档识码会在「预录开着」与「关着」时收到两种尺寸的帧。
+        var grayFilters = args[args.IndexOf("-vf", args.IndexOf("-vf") + 1) + 1];
+        Assert.Equal(
+            string.Join(',', PrerecordProcess.GrayFilters(CameraRotation.None, scale: true)),
+            grayFilters);
+        Assert.Contains("scale=640:480", grayFilters, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void 预览与灰度那两路不能同时要_一个进程只有一条stdout()
+    {
+        // ⚠️ 放过去的话不是报错，是**两条输出互相咬**：读端按预览的 640×360 rgb24 切，
+        // 实际流里混着 640×480 的灰度帧 ⇒ 两路都是花屏，而且不会有任何报错。
+        var thrown = Assert.Throws<InvalidOperationException>(() =>
+            FfmpegCameraCapture.BuildArguments(
+                CameraSource.Local("Cam"), @"C:\work\s.mkv", "libx264",
+                new RecordingSpec(VideoCodec.H264, VideoResolution.P720),
+                preview: true, grayTap: true));
+
+        Assert.Contains("stdout", thrown.Message, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData(0, true, true, true, false)]      // 缓冲 0 ⇒ 不录文件（退化成纯识码）
+    [InlineData(5, false, true, true, false)]     // 没编码器 ⇒ 录不了
+    [InlineData(5, true, true, false, false)]     // 没目录 ⇒ 写不出去
+    [InlineData(5, true, false, true, true)]      // ⚠️ 规格缺**不影响**：它只是水印尺寸的兜底
+    public void 缓冲编码器目录三样齐了才真录文件_规格不参与这道闸(
+        int seconds, bool encoder, bool spec, bool directory, bool expected)
+    {
+        // 缺一个就退回纯识码那一档 —— 宁可没有缓冲，也不要写出一批采纳不了的
+        // 半成品（它们的代价是磁盘和相机时间）。
+        var setup = new PrerecordSetup(
+            TimeSpan.FromSeconds(seconds),
+            encoder ? "libx264" : null,
+            spec ? new RecordingSpec(VideoCodec.H264, VideoResolution.P720) : null,
+            directory ? @"C:\work\_prerecord" : null);
+
+        Assert.Equal(expected, setup.Records);
     }
 
     /// <summary>本机实测（2026-09-29）：拿一个不存在的麦克风名字开一路 dshow 的 stderr 尾部。</summary>

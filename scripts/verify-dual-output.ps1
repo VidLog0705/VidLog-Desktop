@@ -54,7 +54,7 @@ param(
     # 识码端多久读一帧。1 = 每秒一帧（现在那个识码进程就是低频的）
     [int]$DecodeFps = 1,
 
-    # 识码那一帧的尺寸 —— 与 `ScannerProcess` 一致（640x480 灰度）
+    # 识码那一帧的尺寸 —— 与 `PrerecordProcess` 一致（640x480 灰度）
     [int]$DecodeWidth = 640,
     [int]$DecodeHeight = 480
 )

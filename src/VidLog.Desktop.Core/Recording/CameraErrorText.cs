@@ -128,7 +128,7 @@ public static class CameraErrorText
 
         // ── 本机摄像头（DirectShow）──────────────────────────────
         //
-        // ⚠️ 这几条措辞取自 `FfmpegCameraCapture` / `ScannerProcess` 的注释里
+        // ⚠️ 这几条措辞取自 `FfmpegCameraCapture` / `PrerecordProcess` 的注释里
         // 记下来的真实报错（那两处的注释就是为了「把 ffmpeg 真正说的话报出来」）。
         // 本机**没有 dshow 设备**（实测 2026-09-29），所以这几条**没有真机验过** ——
         // 认不出最多落到通用句，不会给出一个**错的**原因，这是刻意的保守。

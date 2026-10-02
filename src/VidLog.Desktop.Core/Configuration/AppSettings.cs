@@ -152,6 +152,31 @@ public sealed record AppSettings
     public bool CameraRecognition { get; init; } = true;
 
     /// <summary>
+    /// 预录缓冲的秒数（规格 §3.1.3「缓冲时长可配置」）。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <c>0</c> = 关闭。档位是需求方 2026-10-02 拍板的「关闭 / 3 / 5 / 10 秒」，
+    /// 默认 5 秒 —— 界面只给这几档，而这里存的是秒数
+    /// （设置文件可以手改，范围由 <see cref="IsPlausible"/> 拦）。
+    /// </para>
+    /// <para>
+    /// ⚠️ <b>与「用摄像头取景识码」无关</b>（需求方裁定）：识码关掉时预录照样生效
+    /// —— 预录是录制行为，不是识别行为。代价是这类工位工作时段相机也常亮。
+    /// 所以装配层那个条件判的是「两个里有一个开着」。
+    /// </para>
+    /// <para>
+    /// ⚠️ 缓冲那几秒**计入已录时长**（闲置提醒、时长兜底、打点偏移都从缓冲起点起算）
+    /// —— 需求方 2026-10-02 裁定，见 <c>docs/01-行为规格书.md</c> §3.1.3。
+    /// </para>
+    /// <para>
+    /// 改它**下次开始工作才生效**（<c>RecordingCoordinator.StartPrerecordAsync</c>
+    /// 每次开始待扫时读一次）—— 与录制规格那一档同口径，不需要重启。
+    /// </para>
+    /// </remarks>
+    public int PrerecordSeconds { get; init; } = 5;
+
+    /// <summary>
     /// 摄像头配置（哪一个 + 地址合成一个）。**不落盘**，由上面那两个字段算出来。
     /// </summary>
     /// <remarks>
@@ -409,6 +434,12 @@ public sealed record AppSettings
         && s.LogRetainDays is >= 1 and <= 365
         // 重复单号检测：0 = 关闭，上限 365 天（一年前的单号翻出来没有意义）。
         && s.DuplicateCheckDays is >= 0 and <= 365
+        // 预录缓冲：0 = 关闭，界面上只给「关闭 / 3 / 5 / 10」四档。
+        // ⚠️ 上限给到 30（比界面最上面那档还宽）是刻意的：设置文件是手改得了的，
+        // 而**手改出来的大值不该被当成损坏而整体回落** —— 它只是「想要更长」。
+        // 30 秒之上不再放行的理由是缓冲是**内存外的滚动文件**（每 120 秒一片、
+        // 留 3 片），想要「一分钟以上的缓冲」该改的是分片策略，不是这个数。
+        && s.PrerecordSeconds is >= 0 and <= 30
         && s.Scanner.MaxInterKeyIntervalMs is >= 10 and <= 500
         && s.Scanner.MinLength is >= 1 and <= 64
         && s.Scanner.MaxLength is >= 1 and <= 256
@@ -685,6 +716,7 @@ public sealed class SettingsStore
         Compare(nameof(AppSettings.CameraDevice), previous.CameraDevice, next.CameraDevice);
         Compare(nameof(AppSettings.CameraSource), previous.CameraSource, next.CameraSource);
         Compare(nameof(AppSettings.CameraRecognition), previous.CameraRecognition, next.CameraRecognition);
+        Compare(nameof(AppSettings.PrerecordSeconds), previous.PrerecordSeconds, next.PrerecordSeconds);
 
         // ⚠️ 网络摄像头地址**必须抹掉凭据再比**：它是用户自己的摄像头密码，
         // 而 Compare 默认会把两边的值整个写进日志（`X: 旧值 → 新值`）。

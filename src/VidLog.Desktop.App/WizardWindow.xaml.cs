@@ -821,7 +821,7 @@ public partial class WizardWindow : Window
     /// </summary>
     /// <remarks>
     /// ⚠️ 这几行**故意留在这里**，没往 Core 里放：Core 那一侧的帧通路
-    /// 从头到尾都是灰度的（`ScannerProcess` 直接让 ffmpeg 出 gray），
+    /// 从头到尾都是灰度的（`PrerecordProcess` 直接让 ffmpeg 出 gray），
     /// 彩色帧只有向导这一处有（要给人看），而它需要灰度只是**顺带**。
     /// 搬进 Core 会变成「一个只有界面层用的转换函数住在领域层里」。
     /// <para>

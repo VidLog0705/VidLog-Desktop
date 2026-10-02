@@ -428,6 +428,27 @@
 
                         <Separator Margin="0,18,0,16"/>
 
+                        <!-- 预录缓冲（规格 §3.1.3，批次 C）。
+                             ⚠️ 它归在「录制」这一类，不是「识别」：**识码关掉时它照样生效**
+                             （需求方 2026-10-02 裁定），那句话必须写在界面上 ——
+                             不写的话关掉识码的人会以为它也跟着关了。 -->
+                        <TextBlock Style="{StaticResource SectionTitle}" Text="扫码预录缓冲"/>
+                        <TextBlock Style="{StaticResource Caption}" Margin="0,0,0,8"
+                                   TextWrapping="Wrap" MaxWidth="620"
+                                   Text="把包裹放上秤、面单刚朝镜头的那几秒也留住。开始工作的这段时间摄像头一直被占着（指示灯会常亮）。改了下次开始工作生效。"/>
+                        <ComboBox x:Name="PrerecordCombo" Width="140" HorizontalAlignment="Left"
+                                  SelectionChanged="OnPrerecordChanged">
+                            <ComboBoxItem Tag="0">关闭</ComboBoxItem>
+                            <ComboBoxItem Tag="3">3 秒</ComboBoxItem>
+                            <ComboBoxItem Tag="5">5 秒</ComboBoxItem>
+                            <ComboBoxItem Tag="10">10 秒</ComboBoxItem>
+                        </ComboBox>
+                        <TextBlock Style="{StaticResource Caption}" Margin="0,8,0,0"
+                                   TextWrapping="Wrap" MaxWidth="620"
+                                   Text="⚠️ 与「用摄像头取景识码」无关：识码关掉时它照样生效。缓冲那几秒计入已录时长。"/>
+
+                        <Separator Margin="0,18,0,16"/>
+
                         <TextBlock Style="{StaticResource SectionTitle}" Text="连接电脑 / 手机"/>
                         <StackPanel Orientation="Horizontal">
                             <local:HelpTip VerticalAlignment="Center"

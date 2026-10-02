@@ -22,7 +22,7 @@ public sealed record PreviewFrame(byte[] Rgb, int Width, int Height, long Captur
     /// </summary>
     /// <remarks>
     /// <para>
-    /// 给「取景识码那一档的画面也显示出来」用（<c>CameraFrameScanner</c>）：
+    /// 给「取景识码那一档的画面也显示出来」用（<c>PrerecordController</c>）：
     /// 它那条管子里本来就在流灰度帧，**顺手**投进预览槽 —— 不额外开一路输出、
     /// 不动那条已经验过的 argv。代价是那一档的预览是灰的（它是识别用的帧，
     /// 不是为了给人看而生的）。
@@ -111,7 +111,7 @@ public sealed class SingleSlotPreviewSink
 /// **独占**的（§25 实测），另有进程开着同一台相机时（录制中、取景识码中）
 /// 它会拿到 <c>device already in use</c>。
 /// 那两种情形下的画面走的是**别人进程**的第二路输出或顺带的那一帧 ——
-/// <c>FfmpegCameraCapture</c>（第二路输出）与 <c>CameraFrameScanner</c>（顺带灰度帧），
+/// <c>FfmpegCameraCapture</c>（第二路输出）与 <c>PrerecordController</c>（顺带灰度帧），
 /// 两者都投进同一只 <see cref="SingleSlotPreviewSink"/>。
 /// </para>
 /// <para>
@@ -284,7 +284,7 @@ public sealed class PreviewProcess : IAsyncDisposable
     /// <remarks>
     /// <para>
     /// 等它退干净是必须的：相机是独占的，没释放干净的话紧接着的录制进程
-    /// 会拿到 <c>device already in use</c>。与 <see cref="ScannerProcess"/> 同一条理由。
+    /// 会拿到 <c>device already in use</c>。与 <see cref="PrerecordProcess"/> 同一条理由。
     /// </para>
     /// <para>
     /// ⚠️ <b>幂等，而且是**认领式**的</b>（与 <c>RecordingSession.ReleaseCaptureAsync</c>

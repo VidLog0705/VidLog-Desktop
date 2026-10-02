@@ -213,6 +213,7 @@ public partial class SettingsWindow : Window
             SelectRadio(CodecButtons, _host.Settings.Codec.ToString());
             SelectRadio(ResolutionButtons, _host.Settings.Resolution.ToString());
             SegmentBox.Text = _host.Settings.SegmentMinutes.ToString();
+            SelectByTag(PrerecordCombo, _host.Settings.PrerecordSeconds.ToString());
             DuplicateDaysBox.Text = _host.Settings.DuplicateCheckDays.ToString();
             PortBox.Text = _host.Settings.PlaybackPort.ToString();
             SelectRetention(ArchivedOutboundCombo, _host.Settings.Retention.ArchivedOutbound);
@@ -1008,7 +1009,24 @@ public partial class SettingsWindow : Window
         }
 
         var wizard = new WizardWindow(_host) { Owner = this };
-        wizard.ShowDialog();
+
+        // ⚠️ **向导那几步要开相机**（步 2/3 的取景、步 4 的性能检测），
+        // 而相机是独占的 —— 待扫那一路在工作时段一直占着它（预录要求，
+        // 规格 §3.1.3）。不让开的话向导会拿到 `device already in use`，
+        // 步 4 还会把**能用的组合误判成跑不通**。
+        // ⚠️ 只在向导活着这段时间让开：它不是「结束工作」，见协调器那边的说明。
+        await _host.Coordinator.PausePrerecordAsync();
+
+        try
+        {
+            wizard.ShowDialog();
+        }
+        finally
+        {
+            // 关窗、抛异常、用户按 X —— 三条路都要接回来，否则相机**一直没人用**，
+            // 表现是「扫包裹没反应」，而没人会想到是向导没接回来。
+            await _host.Coordinator.ResumePrerecordAsync();
+        }
 
         if (wizard.Completed)
         {
@@ -1053,6 +1071,7 @@ public partial class SettingsWindow : Window
     private void OnIdleReminderChanged(object sender, SelectionChangedEventArgs e) => MarkDirty();
     private void OnIdleMinutesChanged(object sender, RoutedEventArgs e) => MarkDirty();
     private void OnDurationChanged(object sender, SelectionChangedEventArgs e) => MarkDirty();
+    private void OnPrerecordChanged(object sender, SelectionChangedEventArgs e) => MarkDirty();
     private void OnRetentionChanged(object sender, SelectionChangedEventArgs e) => MarkDirty();
     private void OnRecordingSpecChanged(object sender, RoutedEventArgs e) => MarkDirty();
 
@@ -1183,6 +1202,12 @@ public partial class SettingsWindow : Window
             DurationFallback = Enum.TryParse<DurationFallbackOption>(TagOf(DurationCombo), out var d)
                 ? d : _host.Settings.DurationFallback,
             SegmentMinutes = segment,
+            // 扫码预录缓冲（批次 C，规格 §3.1.3）。四个档位，正常取不到别的值；
+            // 越界就保持原值而不是夹一下 —— 与「同时上传数」同一个理由，
+            // 猜错一档要么白丢几秒画面、要么白占一份磁盘，不如不动。
+            PrerecordSeconds = int.TryParse(TagOf(PrerecordCombo), out var prerecord)
+                && prerecord is >= 0 and <= 30
+                    ? prerecord : _host.Settings.PrerecordSeconds,
             DuplicateCheckDays = duplicateDays,
             PlaybackPort = port,
 

@@ -395,6 +395,37 @@ public class DesktopServicesTests
     }
 
     /// <summary>
+    /// 钉住「取景识码那个对象真的挂到协调器上了」（规格 §3.2.1 / §3.1.3）。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// 两处失效都**编译得过**，而且都一声不响：
+    /// ① 少了 <c>coordinator.Prerecord = prerecord;</c> —— 对象建出来、两个事件也接好了，
+    /// 而协调器从来不碰它。表现是「【开始工作】之后相机没反应、放到画面里也不开录、
+    /// 预录缓冲也没有」，界面上没有原因可查（今天的 `_prerecord` 目录还会是空的）。
+    /// ② 少了 <c>prerecord.Failed +=</c> —— 起来之后死掉的原因（`device in use`、
+    /// 地址打不开）就没人往界面上说了，而那正是 I3 要挡的那件事。
+    /// </para>
+    /// <para>
+    /// ⚠️ 这一处与「组合根真的把日志器递下去了」不同：那边的洞是**可选参数**
+    /// （不传就静默），这里的洞是**赋值**（不赋也静默）。两者编译器都不管。
+    /// 文本绊线只挡「有人把这一行删了/注释了」—— 见 §«装配的最后一跳»。
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public void 取景识码真的挂到协调器上()
+    {
+        var code = string.Join(
+            '\n',
+            File.ReadAllLines(Path.Combine(RepoRoot(), "src", "VidLog.Desktop.App", "AppHost.cs"))
+                .Where(line => !line.TrimStart().StartsWith("//")));
+
+        Assert.Contains("coordinator.Prerecord = prerecord;", code, StringComparison.Ordinal);
+        Assert.Contains("prerecord.Failed += ", code, StringComparison.Ordinal);
+        Assert.Contains("prerecord.Scanned += ", code, StringComparison.Ordinal);
+    }
+
+    /// <summary>
     /// 钉住「界面上那些**改用户数据**的动作也留痕」（`AGENTS.md` §6 + §6.1）。
     /// </summary>
     /// <remarks>

@@ -630,15 +630,31 @@ public sealed class AppHost : IAsyncDisposable
             logger.Log(LogLevel.Info, "启动", $"清掉了 {purged} 个过期日志文件");
         }
 
-        // 摄像头识码（规格 §3.2.1 的第二种入口）。装在协调器上，
-        // 【开始工作】时会自动开始取景，扫到单号自动开录。
+        // 摄像头识码（规格 §3.2.1 的第二种入口）＋ 预录缓冲（规格 §3.1.3）。
+        // 装在协调器上，【开始工作】时会自动起它，扫到单号自动开录。
+        //
         // ⚠️ `CameraRecognition` 是配置向导第 3 步那个二选一（照图 `_28`/`_29`）：
-        // 关掉时**整个取景进程都不建** —— 不是「建了不用」，那样它照样占着相机。
+        // 关掉时**连取景进程都不建** —— 不是「建了不用」，那样它照样占着相机。
         // 它要重启才生效（与摄像头同一档，界面上写明了）。
-        if (records && settings.CameraRecognition && services.FfmpegPath is { } ffmpegPath && !camera.IsEmpty)
+        //
+        // ⚠️ 预录缓冲与识码**无关**（需求方 2026-10-02 裁定）：识码关着而缓冲非零时
+        // **照样要建这个进程** —— 只是它不挂解码器（出灰帧但不识码）。
+        // 所以这里判的是「两个里有一个开着」，不是「识码开着」。
+        if (records
+            && (settings.CameraRecognition || settings.PrerecordSeconds > 0)
+            && services.FfmpegPath is { } ffmpegPath
+            && !camera.IsEmpty)
         {
-            var scanner = new CameraFrameScanner(
-                ffmpegPath, camera, new ZXingFrameScanner(), logger, preview)
+            var prerecord = new PrerecordController(
+                ffmpegPath,
+                camera,
+                // 识码关着就**不挂解码器** —— 那时这个进程只写分片（不开识码那一档的
+                // 灰度解码），这是「预录与识码无关」在代码里的落点。
+                settings.CameraRecognition ? new ZXingFrameScanner() : null,
+                logger,
+                new SystemProcessRunner(logger),
+                services.TrustedClock,
+                preview)
             {
                 // ⚠️ 与录制那一档**必须一致**（两边朝向不一致会出现
                 // 「录出来是正的、识码却要倒着认」）。它在**每次开始工作**时才被读到，
@@ -646,7 +662,7 @@ public sealed class AppHost : IAsyncDisposable
                 Rotation = settings.Rotation,
             };
 
-            scanner.Scanned += waybill =>
+            prerecord.Scanned += waybill =>
             {
                 // ⚠️ 取景识码**不认命令码**。它看的是包裹上的面单，而屏幕上那两张码
                 // 一旦被它认出来（相机正对着屏幕），表现就是「没人碰它，
@@ -662,11 +678,12 @@ public sealed class AppHost : IAsyncDisposable
                 _ = coordinator.SubmitAsync(waybill, PunchSource.CameraDecoder);
             };
 
-            // I3：识码起不来要说出来，否则用户只会觉得「摄像头怎么不好使」。
-            scanner.Failed += message => host.RaiseNotice(
+            // I3：起不来要说出来，否则用户只会觉得「摄像头怎么不好使」。
+            prerecord.Failed += message => host.RaiseNotice(
                 new CoordinatorNotice(CoordinatorNoticeKind.FinalizeFailed, null, message));
 
-            coordinator.Scanner = scanner;
+            coordinator.Prerecord = prerecord;
+            coordinator.PrerecordBuffer = TimeSpan.FromSeconds(settings.PrerecordSeconds);
         }
 
         host.Wire();
@@ -866,13 +883,19 @@ public sealed class AppHost : IAsyncDisposable
             options = options.With(spec with { Rotation = next.Rotation });
         }
 
-        // ⚠️ 取景识码那一档**也要同步** —— 两边朝向不一致会出现
+        // ⚠️ 待扫那一档（识码 ＋ 预录）**也要同步** —— 两边朝向不一致会出现
         // 「录出来是正的、识码却要倒着认」（或者反过来），
         // 而那种毛病看起来像「识码坏了」，不会有人想到是方向设置。
-        if (Coordinator.Scanner is { } scanner)
+        if (Coordinator.Prerecord is { } prerecord)
         {
-            scanner.Rotation = next.Rotation;
+            prerecord.Rotation = next.Rotation;
         }
+
+        // ⚠️ 缓冲时长**与方向不同**：它在**每次开始待扫**时被读一次
+        // （`StartPrerecordAsync`），所以设置页写的是「下次开始工作生效」——
+        // 这里存下去即可，不要去动正在跑的那一个进程（换成新档要重启进程、
+        // 而重启 = 相机放开又拿回来那 1.5 秒，用户正站在那里等）。
+        Coordinator.PrerecordBuffer = TimeSpan.FromSeconds(next.PrerecordSeconds);
 
         // 音轨（规格 §3.1.8）：只有音频那两项真变了才重新枚举设备 ——
         // 每次存设置都起一次 ffmpeg 枚举设备是白花 0.3 秒。
@@ -1051,7 +1074,14 @@ public sealed class AppHost : IAsyncDisposable
     /// </remarks>
     public async Task MaybeReprobeAsync(CancellationToken cancellationToken = default)
     {
-        if (!SpecFellBack || Coordinator.CurrentWaybill is not null)
+        // ⚠️ <b>「没在录」不等于「相机是空的」</b>（2026-10-02 预录缓冲带来的新情况）：
+        // 待扫期间相机在**预录那个进程**手里，这时去探只会拿到
+        // `device already in use` —— 于是把**能用的组合误判成跑不通**，
+        // 而那正是这个方法存在的理由（上一次误判就是这么来的，见上面那段）。
+        // 所以判据要看「有没有人正持着相机」，不是「有没有在录」。
+        if (!SpecFellBack
+            || Coordinator.CurrentWaybill is not null
+            || Coordinator.Prerecord is { IsActive: true })
         {
             return;
         }

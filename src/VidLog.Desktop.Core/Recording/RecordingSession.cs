@@ -129,6 +129,27 @@ public sealed record RecordingSessionOptions(
 }
 
 /// <summary>
+/// 一段**在开录之前就已经录好的画面**（规格 §3.1.3 的预录缓冲采纳下来的那一段）。
+/// </summary>
+/// <remarks>
+/// <para>
+/// ⚠️ <b>它的 <see cref="Path"/> 是调用方那边的一份临时文件</b>，会话会把它**搬进**
+/// 自己的目录并登记成 <c>segment-000.mkv</c>。搬是必须的：孤儿恢复只认
+/// manifest 里列出、且**文件真在**的分段（<see cref="RecordingWorkspace.ListOrphansAsync"/>
+/// 有一道 <c>Where(File.Exists)</c>）—— 停在临时目录里等于这一段**静默消失**。
+/// </para>
+/// <para>
+/// ⚠️ <b>时长是「缓冲窗口」，不是文件的真实长度</b>：裁切走 <c>-c copy</c>，
+/// 只能落在关键帧上，所以产物通常比窗口长一点点（最多一个关键帧间隔）。
+/// 记账用窗口（它才是「从什么时候开始有画面」的准确表述）。
+/// </para>
+/// </remarks>
+/// <param name="Path">那份裁好的 MKV。</param>
+/// <param name="StartedAt">这段画面的**起点**（可信时刻，I11）。会话的起录时刻就是它。</param>
+/// <param name="Duration">缓冲窗口的长度。</param>
+public sealed record AdoptedClip(string Path, DateTimeOffset StartedAt, TimeSpan Duration);
+
+/// <summary>
 /// 一次录制会话的编排：开录 → 分段滚动 → 收尾 → 入库。
 /// </summary>
 /// <remarks>
@@ -449,7 +470,8 @@ public sealed class RecordingSession : IAsyncDisposable
     public async Task StartAsync(
         WaybillNumber waybill,
         string encoder,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        AdoptedClip? leading = null)
     {
         if (State != RecordingSessionState.Idle)
         {
@@ -467,30 +489,113 @@ public sealed class RecordingSession : IAsyncDisposable
                 $"{clock.BlockedReason}（规格 §3.6.4：未校准不得开始录制）");
         }
 
+        // ⚠️ **采纳预录缓冲**（规格 §3.1.3）。
+        //
+        // ⚠️ 它排在**设置时钟与起录时刻之前**：搬得成，那几秒画面才真的在这段录像里，
+        // 时钟与起录时刻才该往前挪；搬不成（源文件没了、磁盘满）就**一点都不挪** ——
+        // 否则 manifest 会声称「从 5 秒前开始录的」而盘上根本没有那 5 秒的画面，
+        // 时间轴会整体前移，而**没有任何东西看起来是错的**。
+        Directory.CreateDirectory(_workspace.SessionDirectory(SessionId));
+
+        var adopted = leading is { } buffered && AdoptLeadingClip(buffered);
+
         // 单调时钟的起点挪到开录这一刻 —— 会话可能在开录前先建好（协调器就是）。
-        RestartClock();
+        //
+        // ⚠️ **采纳了预录缓冲时它还要往前挪**（2026-10-02 需求方裁定
+        // 「计入已录时长封顶，**从缓冲起点起算**」）：缓冲那几秒是**已经录下来的画面**，
+        // 不往前挪的话 `Elapsed` 会比产物的真实长度短一截 ——
+        // 于是闲置提醒、时长兜底、以及打点偏移（`PunchAsync` 按 `Elapsed` 算）
+        // 全都系统性偏晚。挪的是**时钟起点**，不是「重设时钟」。
+        RestartClock(adopted ? leading!.Duration : default);
 
         // ⚠️ 起录时刻取**可信时钟**，不是墙钟（规格 §3.6.3：「水印与时长都不得
         // 取自墙钟 —— 用户改系统时间**不得**改变视频里的时间」）。
         // 没接可信时钟时（测试路径）才退回墙钟。
-        _startedAt = _trustedClock?.Now ?? DateTimeOffset.UtcNow;
+        //
+        // ⚠️ 采纳了缓冲时它取**缓冲起点**（由预录那一路记下、随 `AdoptedClip` 传进来）：
+        // 那一段画面真的是从那个时刻开始在录的，manifest 的起录时刻写它才与产物对得上。
+        _startedAt = adopted ? leading!.StartedAt : _trustedClock?.Now ?? DateTimeOffset.UtcNow;
 
         // 水印第二行要它（规格 §3.6.2：一段只用一个单号）。
         _waybill = waybill.Value;
+
+        // ⚠️ 采纳段**必须出现在第一版 manifest 里**，不能等收尾再补：
+        // 孤儿恢复只认 manifest 里列出、且**文件真在**的分段
+        // （`RecordingWorkspace.ListOrphansAsync` 有一道 `Where(File.Exists)`），
+        // 不列它的话，进程被杀时那一段**静默消失**（既不在索引里、也没人知道它存在过）。
         _manifest = new SessionManifest(
-            SessionId, waybill.Value, SourceDeviceId, _startedAt.ToString("O"), [],
+            SessionId, waybill.Value, SourceDeviceId, _startedAt.ToString("O"),
+            adopted ? [LeadingSegmentManifest(leading!)] : [],
             // ⚠️ 规格**必须落在 manifest 上**，不能只在内存里：进程被系统杀掉时
             // 内存里那份一起没了，而孤儿恢复是**从盘上读**的（见 `SessionManifest.Spec`）。
             // 缺了它，收尾出来的索引条目编码 / 分辨率 / 方向三栏全空，
             // 「按空间清理」的估算还会因此被系统性放大（2026-10-02 实测 2.34 倍）。
             _options.Spec is { } spec ? SessionSpecManifest.From(spec) : null);
 
-        Directory.CreateDirectory(_workspace.SessionDirectory(SessionId));
         await _workspace.WriteManifestAsync(_manifest, cancellationToken);
 
         State = RecordingSessionState.Recording;
         await StartSegmentAsync(encoder, cancellationToken);
     }
+
+    /// <summary>采纳段在清单里的那一行。文件名与序号在 <see cref="AdoptLeadingClip"/> 里。</summary>
+    private static SegmentManifest LeadingSegmentManifest(AdoptedClip buffered) =>
+        new(LeadingSegmentSequence, LeadingSegmentFileName,
+            buffered.StartedAt.ToString("O"),
+            (buffered.StartedAt + buffered.Duration).ToString("O"));
+
+    /// <summary>
+    /// 把预录缓冲采纳的那一段搬进会话目录，并登记成**第 0 段**。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// ⚠️ <b>它占掉序号 0</b>，所以正式的第一次开录自然变成 <c>segment-001.mkv</c>
+    /// —— 靠的是 <see cref="StartSegmentAsync"/> 用 <see cref="ClosedSegmentCount"/>
+    /// 算序号，不是硬写。两处各写一个数字的话，将来加一段顺序会撞号。
+    /// </para>
+    /// <para>
+    /// ⚠️ <b>它不经过 <c>ICameraCapture</c></b>（本来就录好了，只是一个文件），
+    /// 所以没有「起进程 → 确认开起来了」那一步，也不需要编码器。
+    /// </para>
+    /// <para>
+    /// 搬失败**不让开录失败**（那一段是「多出来的几秒」，开录本身才是主任务），
+    /// 但**调用方必须知道成没成** —— 时钟与起录时刻要不要往前挪全看它，
+    /// 而「挪了却没有画面」是一条**看起来没错**的时间轴错误。所以返回成败，
+    /// 并按 <see cref="LastProblem"/> 报出去（I3：用户要看得见）。
+    /// </para>
+    /// </remarks>
+    /// <returns>真的搬进去并登记了返回 <see langword="true"/>。</returns>
+    private bool AdoptLeadingClip(AdoptedClip buffered)
+    {
+        var destination = Path.Combine(
+            _workspace.SessionDirectory(SessionId), LeadingSegmentFileName);
+
+        try
+        {
+            File.Move(buffered.Path, destination, overwrite: true);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            LastProblem = $"预录的那几秒没能保留（{ex.Message}），这一段从扫码后开始。";
+            return false;
+        }
+
+        lock (_gate)
+        {
+            // ⚠️ `ClosedSegmentCount` 是后面算序号的依据 —— 它必须在这里就变，
+            // 而不是等收尾（`StartSegmentAsync` 紧随其后）。
+            _closedSegments.Add(new SegmentProduct(
+                LeadingSegmentSequence, destination,
+                buffered.StartedAt, buffered.StartedAt + buffered.Duration));
+        }
+
+        return true;
+    }
+
+    /// <summary>采纳段在会话里的位置 —— 它**必须是第 0 段**（时间轴最前面那一段）。</summary>
+    private const int LeadingSegmentSequence = 0;
+
+    private const string LeadingSegmentFileName = "segment-000.mkv";
 
     /// <summary>
     /// 起编排循环：到点滚段、到上限或磁盘将满就自动收尾。
@@ -902,9 +1007,23 @@ public sealed class RecordingSession : IAsyncDisposable
     /// 兜底的计时基准就会跟时钟走岔。
     /// </para>
     /// </remarks>
-    private void RestartClock()
+    /// <param name="backdate">
+    /// 把起点再**往前挪**这么多（规格 §3.1.3 的预录缓冲采纳了多少就挪多少）。
+    /// 默认 <see cref="TimeSpan.Zero"/> = 今天的行为，一动不变。
+    /// <para>
+    /// ⚠️ <b>挪起点而不是「把已录时长加上去」</b>：`Elapsed` 是所有下游记账
+    /// （打点偏移、时长兜底、闲置提醒、段落起止）的**唯一**基准，
+    /// 只改它一处，下游全部自动跟着走；在每一处各加一遍的话，
+    /// 迟早漏一处，而漏的那一处表现是「时间对不上，但没人知道是哪一段」。
+    /// </para>
+    /// <para>
+    /// ⚠️ 兜底的计时**也跟着往前挪**（`_nextPromptAt` 用同一个 `Elapsed` 比），
+    /// 这正是需求方 2026-10-02 裁定的「计入已录时长封顶，从缓冲起点起算」。
+    /// </para>
+    /// </param>
+    private void RestartClock(TimeSpan backdate = default)
     {
-        _clockOrigin = _clock();
+        _clockOrigin = _clock() - backdate;
 
         // 时长兜底档位「关闭」⇒ 不问也不停（与手机端的 null 同形）。
         _nextPromptAt = _options.MaxDuration == RecordingSessionOptions.NoFallback

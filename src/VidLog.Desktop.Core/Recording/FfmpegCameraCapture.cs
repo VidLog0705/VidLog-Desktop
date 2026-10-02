@@ -30,6 +30,16 @@ public sealed class FfmpegCameraCapture : ICameraCapture
     private const string BufferSize = "256M";
 
     /// <summary>
+    /// 滚动分片那一路的关键帧间隔（帧）。
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ 它决定了「从片子尾巴上裁最后 N 秒」这件事的**精度**：裁切走 <c>-c copy</c>，
+    /// 只能从关键帧切。帧率固定 30（规格 §3.1.7）⇒ 30 帧正好 1 秒。
+    /// 改它之前先读 <see cref="BuildArguments"/> 里 <c>segmentSeconds</c> 那一段。
+    /// </remarks>
+    private const int SegmentKeyframeInterval = 30;
+
+    /// <summary>
     /// 「这一次采集真的起来了没有」的等待上限（规格 §3.1.8）。
     /// </summary>
     /// <remarks>
@@ -414,6 +424,16 @@ public sealed class FfmpegCameraCapture : ICameraCapture
     /// 要不要多出一路**预览画面**（裸 rgb24 走 stdout，见 §62）。
     /// 默认 <see langword="false"/> —— 那时 argv 与本次改动之前**逐字一致**。
     /// </param>
+    /// <param name="segmentSeconds">
+    /// 非 <see langword="null"/> 时，文件那一路改成**滚动分片**（<c>-f segment</c>，
+    /// <paramref name="outputPath"/> 因此是一个**模式**，如 <c>pre-%03d.mkv</c>），
+    /// 单片的秒数就是它。规格 §3.1.3 的预录缓冲用它。
+    /// <see langword="null"/>（默认）= 今天那种「一个输出路径一个文件」，argv 逐字不变。
+    /// </param>
+    /// <param name="grayTap">
+    /// 要不要多出一路**灰度裸帧**（640×480，识码用）。
+    /// 与 <paramref name="preview"/> **不能同时为真**（都要 stdout），同时给会抛异常。
+    /// </param>
     /// <remarks>
     /// <para>
     /// ⚠️ <b>方向不用单独传</b>：它在 <paramref name="spec"/> 里
@@ -437,8 +457,18 @@ public sealed class FfmpegCameraCapture : ICameraCapture
     public static IReadOnlyList<string> BuildArguments(
         CameraSource source, string outputPath, string encoder, RecordingSpec? spec = null,
         string? watermarkAssPath = null, string? microphone = null, int? durationSeconds = null,
-        bool preview = false)
+        bool preview = false, int? segmentSeconds = null, bool grayTap = false)
     {
+        // ⚠️ 两路都要 `pipe:1` —— 而**一个 Process 只有一条 stdout**
+        // （2026-10-02 定下的架构）。放过去的话不是报错，是两条输出互相咬：
+        // 读端按预览的 640×360 rgb24 切，实际流里混着 640×480 的灰度帧
+        // ⇒ 两路都是花屏，而且不会有任何报错。所以宁可在这里炸掉。
+        if (preview && grayTap)
+        {
+            throw new InvalidOperationException(
+                "预览与灰度那一路都要 stdout，一个进程只有一条 —— 这两种输出不能同时要。");
+        }
+
         var arguments = new List<string>
         {
             "-hide_banner",
@@ -591,11 +621,42 @@ public sealed class FfmpegCameraCapture : ICameraCapture
             "-flush_packets", "1",
         ]);
 
-        arguments.AddRange(
-        [
-            "-f", "matroska",
-            "-y", outputPath,
-        ]);
+        if (segmentSeconds is { } segmentLength)
+        {
+            // ── 滚动分片（规格 §3.1.3 的预录缓冲用它） ──────────────────
+            //
+            // ⚠️ <b>`-g` 是承重的，不是画质选项</b>：采纳缓冲时要从片子的**尾巴**上
+            // 裁最后 N 秒，而 `-c copy` 只能从**关键帧**切 ⇒ 裁出来的长度精度
+            // 就等于关键帧间隔。全仓没有别的地方设过 `-g`，ffmpeg 的默认 GOP
+            // 约 250 帧 ≈ 8 秒 —— 设 5 秒的缓冲会裁出十几秒。
+            // 帧率固定 30（规格 §3.1.7）⇒ 30 帧正好 1 秒。
+            arguments.AddRange(
+            [
+                "-g", SegmentKeyframeInterval.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            ]);
+
+            arguments.AddRange(
+            [
+                "-f", "segment",
+                "-segment_format", "matroska",
+                "-segment_time",
+                segmentLength.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                // ⚠️ 每片从 0 起（与正式分段同形）：不重置的话第二片起时间戳接着上一片，
+                // 单独丢给 `RemuxPipeline` / `DecodeVerifier` 会被当成「缺了开头」。
+                "-reset_timestamps", "1",
+                // ⚠️ <b>输出的这个位置是**模式**，不是文件名</b>（`pre-%03d.mkv`）。
+                // `-y` 仍然紧挨着它 —— 测试替身靠那个位置定位产物。
+                "-y", outputPath,
+            ]);
+        }
+        else
+        {
+            arguments.AddRange(
+            [
+                "-f", "matroska",
+                "-y", outputPath,
+            ]);
+        }
 
         // ── 第二路输出：预览画面（§62） ────────────────────────────────
         //
@@ -627,6 +688,37 @@ public sealed class FfmpegCameraCapture : ICameraCapture
             {
                 arguments.Add("-t");
                 arguments.Add(limit.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            }
+
+            arguments.Add("pipe:1");
+        }
+
+        // ── 第二路输出：灰度裸帧（识码用，§54） ────────────────────────
+        //
+        // ⚠️ 与上面预览那一路**不能共存**（开头就拦住了）——两路都要 stdout。
+        // 预录那一路要的是「文件 ＋ 灰度」：文件给缓冲，灰度给识码。
+        if (grayTap)
+        {
+            arguments.AddRange(
+            [
+                "-map", $"{videoInput}:v:0",
+                "-an",
+                // ⚠️ <b>一律 scale</b>：这一路的输入是按**用户的录制规格**开的
+                // （可能是 1920×1080），而读端按 640×480 定长切裸帧 ——
+                // 不缩的话切出来是错位的花屏、识码永远认不出来，**且不报任何错**。
+                // 见 `PrerecordProcess.GrayFilters`。
+                "-vf", string.Join(',', PrerecordProcess.GrayFilters(
+                    spec?.Rotation ?? CameraRotation.None, scale: true)),
+                "-pix_fmt", "gray",
+                "-f", "rawvideo",
+            ]);
+
+            // ⚠️ 同上面预览那一路：**每一路输出都要各自限长**（§54.4）——
+            // `-t` 是输出选项，不是全局的。
+            if (durationSeconds is { } grayLimit)
+            {
+                arguments.Add("-t");
+                arguments.Add(grayLimit.ToString(System.Globalization.CultureInfo.InvariantCulture));
             }
 
             arguments.Add("pipe:1");

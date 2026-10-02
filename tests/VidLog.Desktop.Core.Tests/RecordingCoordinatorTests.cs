@@ -1,3 +1,4 @@
+using VidLog.Desktop.Core.Camera;
 using VidLog.Desktop.Core.Clock;
 using VidLog.Desktop.Core.Diagnostics;
 using VidLog.Desktop.Core.Index;
@@ -1041,6 +1042,64 @@ public class RecordingCoordinatorTests
             CancellationToken cancellationToken = default) =>
             Task.FromResult<IReadOnlyDictionary<string, IReadOnlyDictionary<string, string>>>(
                 new Dictionary<string, IReadOnlyDictionary<string, string>>());
+    }
+
+    // ─────────────────────────────────────────────
+    // 相机让路（配置向导那几步要开相机）
+    // ─────────────────────────────────────────────
+
+    /// <summary>
+    /// <c>ResumePrerecordAsync</c> 在**录着的时候不接相机**，没在录时才接。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// ⚠️ <b>为什么要有这条</b>：相机独占，录着的时候它在采集进程手里 ——
+    /// 这时去起待扫会拿到 <c>device already in use</c>，而用户看到的是一句
+    /// 看不懂的错。所以接回来这件事有个闸，闸的判据是「相机现在是不是空的」。
+    /// </para>
+    /// <para>
+    /// ⚠️ <b>判据用 <c>Failed</c> 事件当计数器</b>：<c>StartAsync</c> 把「起不来」
+    /// 变成一条日志与 <c>Failed</c>（I3），不抛。给一个**根本不存在**的 exe，
+    /// 这个路径就必然走到 <c>Failed</c> —— 于是「有没有真去起」这件事
+    /// 从外面看得见。<see cref="PrerecordController"/> 是具体类（不是接口），
+    /// 没有比这更省事的观察点。
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task 录着的时候不把相机接回来_没在录时才接()
+    {
+        using var dir = new TempDir();
+        await using var coordinator = Build(dir, WorkMode.StopOnSameWaybill, new FakePunchLog());
+
+        var attempts = 0;
+        var prerecord = new PrerecordController(
+            "不存在的-ffmpeg.exe",
+            CameraSource.Network("rtsp://192.0.2.1:1/x"),
+            decoder: null,
+            NullLogger.Instance,
+            new SystemProcessRunner());
+
+        prerecord.Failed += _ => Interlocked.Increment(ref attempts);
+
+        coordinator.Prerecord = prerecord;
+        coordinator.StartWork();
+
+        await Task.Delay(200);
+        Assert.Equal(1, attempts);
+
+        // 没在录 —— 会去起（这一条是**反证**：没有它，下面那条断言
+        // 在「这个方法永远什么都不做」的实现下也会绿）。
+        await coordinator.ResumePrerecordAsync();
+        await Task.Delay(200);
+        Assert.Equal(2, attempts);
+
+        await coordinator.SubmitAsync(A, PunchSource.KeyboardScanner);
+        Assert.NotNull(coordinator.CurrentWaybill);
+
+        // 录着 —— 不接。
+        await coordinator.ResumePrerecordAsync();
+        await Task.Delay(200);
+        Assert.Equal(2, attempts);
     }
 
     private static RecordingCoordinator Build(
