@@ -273,6 +273,19 @@
     </Style>
 
     <!--
+        绿色主按钮（主窗那颗【开始录制】）。
+
+        ⚠️ **它存在的唯一理由是「禁用时得看得灰」**：此前那颗按钮把底色写成
+        `Background="{StaticResource Success}"` 的**本地值**，而本地值压过
+        `PrimaryButton` 里 `IsEnabled=False` 的触发器 —— 于是空单号时它是一颗
+        满绿的按钮，点下去毫无反应（2026-10-02 实测报上来的）。
+        底色改由**样式**给，触发器就压得住了。
+    -->
+    <Style x:Key="SuccessButton" TargetType="Button" BasedOn="{StaticResource PrimaryButton}">
+        <Setter Property="Background" Value="{StaticResource Success}"/>
+    </Style>
+
+    <!--
         无边框的图标按钮（输入框里那个 ✕ 这类）。
         默认 Button 的 chrome 是系统渐变 + 系统边框，一个透明底的小 ✕ 套上去
         会变成「灰底方块里一个叉」，与图上的样子差得远。所以这里重写模板，

@@ -79,6 +79,7 @@ public partial class MainWindow : Window
         // ⚠️ 在构造里就切好，不在 `OnLoaded` 里 —— 后者会先画一帧录制台再换成
         // 备份主机面板，看起来像闪了一下。数（备份条数/设备数）要等索引读完，
         // 那一半在 `RefreshOverviewAsync` 里填。
+        // （标题也归它管，见 `ApplyStationRole`。）
         ApplyStationRole();
 
         // 界面上「已录 / 已存」只能靠定时刷新 —— 协调器不推送进度，Elapsed 是拉取式的。
@@ -86,7 +87,16 @@ public partial class MainWindow : Window
         _ticker.Tick += (_, _) => UpdateRecordingStatus();
 
         _clockTicker = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
-        _clockTicker.Tick += (_, _) => UpdatePreviewClock();
+        _clockTicker.Tick += (_, _) =>
+        {
+            UpdatePreviewClock();
+
+            // ⚠️ 相机回来之后自动重探（补上 §3.1.7「改了下次开始工作才生效」之外的
+            // 那一种：用户什么都没改，是相机自己回来了）。**不 await** ——
+            // 它可能真要开一次相机、卡住十秒，而这一跳还得去刷屏幕上的时钟。
+            // 限流与全部判据都在 `MaybeReprobeAsync` 里面，不回落时它只做一次布尔判断。
+            _ = _host.MaybeReprobeAsync();
+        };
 
         // 待批准的改名请求（规格 §3.4.5 ③）。
         //
@@ -197,11 +207,16 @@ public partial class MainWindow : Window
         // 上次没走完的录像收回来没有（规格 §3.1.1）。**必须说出来** ——
         // 「悄悄收好了」和「其实什么都没收」在界面上长得一模一样，用户无从分辨。
         // 收尾失败的会由 StartupReport.Warnings 走「需要注意」那一块，不在这里重复。
+        // ⚠️ 单位是**场（会话）**，不是「段」：`RecoveredCount` 数的是
+        // `OrphanOutcomes` 里成功的**会话**，而一场里有几个分段就是几个 ——
+        // 日志那边是按段一条条记的。写成「段」的话同一件事会出现
+        // 「通知说 1 段、日志写 4 段」（2026-10-02 实测报上来的），
+        // 两个数都对，只有那个量词错。
         var recovered = _host.Startup.RecoveredCount;
         if (recovered > 0)
         {
             NoticesText.Text =
-                $"{DateTime.Now:HH:mm:ss}  上次有 {recovered} 段录像没走完收尾，已自动收好并入库。";
+                $"{DateTime.Now:HH:mm:ss}  上次有 {recovered} 场录像没走完收尾，已自动收好并入库。";
         }
 
         // 保留期到了的那些（规格 §3.5.5）。**排在最后**：它是唯一会删东西的一步，
@@ -579,6 +594,15 @@ public partial class MainWindow : Window
         var role = _host.Settings.StationRole;
         var records = _host.Settings.Role.Records;
 
+        // ⚠️ **标题跟着用途走**（对齐前身「一用途一标题」）：同一个可执行文件装出
+        // 四种形态（设计图 `_11`–`_15`），而远程支持时第一句要问的就是
+        // 「你那台是哪种用途」。用途名取 `StationRoles`（设计图原文）——
+        // 与下面 `BackupRoleText` 用的是同一份来源，两处不会走岔。
+        //
+        // ⚠️ 版本号只取 semver 那一段（`0.2.0`）：`CurrentVersion` 后面还挂着 `+<sha>`，
+        // 那 40 位十六进制塞进标题栏会把窗口名撑到没法看。完整串在「关于」页里。
+        Title = $"VidLog · {StationRoles.Describe(role).Title} {_host.CurrentVersion.Split('+')[0]}";
+
         RecordingRoot.Visibility = records ? Visibility.Visible : Visibility.Collapsed;
         BackupRoot.Visibility = records ? Visibility.Collapsed : Visibility.Visible;
 
@@ -917,7 +941,12 @@ public partial class MainWindow : Window
         var hasWaybill = WaybillNumber.TryParse(WaybillBox.Text, out _, out _);
 
         StartWorkLabel.Text = recording ? "停止录制" : "开始录制";
-        StartWorkButton.Background = (Brush)FindResource(recording ? "Danger" : "Success");
+
+        // ⚠️ 底色走**样式**，不走本地值 —— 设 `Background` 等于写下一个本地值，
+        // 它会压过样式里 `IsEnabled=False` 的触发器，禁用时照样满绿（见
+        // `Theme.xaml` 里 `SuccessButton` 那段）。换样式没这个问题。
+        StartWorkButton.Style = (Style)FindResource(recording ? "DangerButton" : "SuccessButton");
+
         StartWorkButton.IsEnabled = recording || hasCamera && hasWaybill;
     }
 

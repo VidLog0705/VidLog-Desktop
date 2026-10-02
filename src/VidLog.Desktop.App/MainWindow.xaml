@@ -142,8 +142,7 @@
                      没有单独的停止按钮 —— 录起来之后它自己变红底「停止录制」
                      （`RefreshStartButton` 里切，颜色与文字一起换）。 -->
                 <Button x:Name="StartWorkButton" Grid.Column="2"
-                        Background="{StaticResource Success}"
-                        Style="{StaticResource PrimaryButton}"
+                        Style="{StaticResource SuccessButton}"
                         Padding="22,10" IsEnabled="False" Click="OnStartOrStopWork">
                     <StackPanel Orientation="Horizontal">
                         <Grid VerticalAlignment="Center" Width="16" Height="16">
@@ -274,7 +273,13 @@
                              标题也跟着它变 —— 图上写的是「扫码切换退货」（那一刻录的是发货）。
                              ⚠️ 画码用 `BitmapScalingMode="NearestNeighbor"`：与
                              `EnrollWindow` 那张二维码同一条理由，插值会把条空边界糊成灰边，
-                             表现是「看着像条码、扫不出来」。**那个属性别动。** -->
+                             表现是「看着像条码、扫不出来」。**那个属性别动。**
+
+                             ⚠️ `Stretch="Fill"` **也不能删**（向导第 6 步那张码同样有它）。
+                             `Code128.Modules` 返回的矩阵是 `[宽, 1]` —— 高度只有 1 个像素，
+                             宽高比是 110:1。`Image` 的 `Stretch` 默认是 `Uniform`（保持宽高比），
+                             于是 `Height="64"` 被**无声忽略**，整张码被压成 220×**2** 的一条细线，
+                             屏幕上根本扫不出来。实测过一次：`w=220 h=2`。 -->
                         <Border Style="{StaticResource Card}" Padding="12,10" Margin="0,0,0,16">
                             <StackPanel>
                                 <TextBlock x:Name="BusinessBarcodeTitle"
@@ -289,6 +294,7 @@
                                         BorderBrush="{StaticResource CardBorder}"
                                         BorderThickness="1">
                                     <Image x:Name="BusinessBarcodeImage" Height="64"
+                                           Stretch="Fill"
                                            RenderOptions.BitmapScalingMode="NearestNeighbor"/>
                                 </Border>
                                 <TextBlock x:Name="BusinessBarcodePayload"
@@ -463,12 +469,13 @@
                                 <TextBlock Style="{StaticResource Caption}" Margin="0,4,0,0"
                                            HorizontalAlignment="Center" TextAlignment="Center"
                                            TextWrapping="Wrap"
-                                           Text="等同于按一下上面的【开始录制】；之后扫面单才会开录。"/>
+                                           Text="等同于按一下上面的【开始录制】；之后扫面单才会开录。（那一颗要求单号框里已经有单号。）"/>
                                 <Border Background="White" Padding="8" Margin="0,8,0,0"
                                         CornerRadius="6" HorizontalAlignment="Center"
                                         BorderBrush="{StaticResource CardBorder}"
                                         BorderThickness="1">
                                     <Image x:Name="RecordBarcodeImage" Height="64"
+                                           Stretch="Fill"
                                            RenderOptions.BitmapScalingMode="NearestNeighbor"/>
                                 </Border>
                                 <TextBlock x:Name="RecordBarcodePayload"

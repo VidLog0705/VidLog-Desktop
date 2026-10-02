@@ -219,13 +219,22 @@ public partial class MultiViewWindow : Window
 
         Wall.Rows = (_cellCount + Wall.Columns - 1) / Wall.Columns;
 
+        // ⚠️ **一台机位都没有时，格子整体收掉**，只留那句说明。
+        // 此前是「格子照摆 + 说明也居中」，而空格子自己在正中画「无信号输入」——
+        // 正中那一格于是压着两句话，都看不清（2026-10-02 实测报上来的）。
+        // ⚠️ 上面那条「选了几格就摆几格」的规矩**只在一台机位都没有时不适用**：
+        // 那时摆出来的格子每一格都是「无信号输入」，说了九遍同一件事。
+        var showCells = _tiles.Count > 0;
+
         for (var index = 0; index < _cells.Count; index++)
         {
-            _cells[index].Root.Visibility = index < _cellCount ? Visibility.Visible : Visibility.Collapsed;
+            _cells[index].Root.Visibility = showCells && index < _cellCount
+                ? Visibility.Visible
+                : Visibility.Collapsed;
         }
 
         TitleText.Text = $"实时多画面 · {_cellCount} 宫格";
-        EmptyNote.Visibility = _tiles.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+        EmptyNote.Visibility = showCells ? Visibility.Collapsed : Visibility.Visible;
     }
 
     // ─────────────────────────────────────────────

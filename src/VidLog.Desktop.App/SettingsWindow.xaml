@@ -285,8 +285,13 @@
                                    Text="录制用哪一路画面。换了要重启才生效。"/>
                         <StackPanel Orientation="Horizontal">
                             <ComboBox x:Name="CameraCombo" Width="300" IsEnabled="False"/>
+                            <!-- ⚠️ `TextWrapping` + `MaxWidth` 两个都要：这一句是个
+                                 **横排** StackPanel 的第二项，不给宽度上限时它按一行排、
+                                 超出的部分被窗口边缘直接剪掉 —— 2026-10-02 实测看到的是
+                                 「当前用的是网络摄像头（…），在」后面没了。 -->
                             <TextBlock x:Name="CameraHint" Margin="10,0,0,0"
-                                       VerticalAlignment="Center"
+                                       VerticalAlignment="Center" TextWrapping="Wrap"
+                                       MaxWidth="360"
                                        Foreground="{StaticResource TextSecondary}" Text=""/>
                         </StackPanel>
 
@@ -1285,7 +1290,11 @@
                         <TextBlock Text="启动时需要注意" Style="{StaticResource SectionTitle}"
                                    Margin="0,20,0,8"
                                    x:Name="WarningsHeader" Visibility="Collapsed"/>
-                        <ListBox x:Name="WarningsList" MaxHeight="180"
+                        <!-- ⚠️ **不给 MaxHeight**：这一页整页已经在一个 `ScrollViewer`
+                             里，再限一次高度只会让第 3、4 条被自己的滚动条裁掉
+                             （2026-10-02 实测报上来的）。没上界时它按内容长、由外层的
+                             滚动条统一管。 -->
+                        <ListBox x:Name="WarningsList"
                                  HorizontalContentAlignment="Stretch"
                                  Visibility="Collapsed"/>
                     </StackPanel>
