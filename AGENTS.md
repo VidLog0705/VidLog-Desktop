@@ -237,15 +237,22 @@ ProductVersion = 0.1.0+<git sha>    （`+` 那截是 SDK 加的构建元数据�
 
 ---
 
-## 11. 出包（2026-10-01 补）
+## 11. 出包（2026-10-01 补，2026-10-02 加安装程序）
 
 ```
-pwsh -NoProfile -File scripts/package.ps1      # 本地
-gh workflow run package.yml --ref main         # CI 手动派单，产物发 Release
+pwsh -NoProfile -File scripts/package.ps1 -Installer   # 本地（两份都出）
+gh workflow run package.yml --ref main                 # CI 手动派单，产物发 Release
 ```
 
-产出 `dist\VidLog-Desktop-<版本>-win-x64.zip`：**自包含**发布（目标机器不用先装
-.NET 9 桌面运行时）+ 随包 `tools\ffmpeg.exe`（`FfmpegLocator` 认的第三条路径）。
+产出两份：
+
+| 文件 | 是什么 |
+|---|---|
+| `dist\VidLog-Desktop-<版本>-win-x64-setup.exe` | **安装程序**（Inno Setup）。装到 Program Files，**并注册回放地址的访问许可** |
+| `dist\VidLog-Desktop-<版本>-win-x64.zip` | 解压即用的绿色包，**不注册**那条许可 |
+
+两份都是**自包含**发布（目标机器不用先装 .NET 9 桌面运行时）+ 随包
+`tools\ffmpeg.exe`（`FfmpegLocator` 认的第三条路径）。
 
 ⚠️ **两件都不能省** —— 少了 FFmpeg 的包**能开、界面能点**，只是采集、网络摄像头
 探测、实时多画面全都报「没有可用的 FFmpeg」；这种「装上了但半残」比装不上更难查。
@@ -265,3 +272,44 @@ gh workflow run package.yml --ref main         # CI 手动派单，产物发 Rel
 
 版本号只从 `src/VidLog.Desktop.App/VidLog.Desktop.App.csproj` 的 `<Version>` 读，
 **不许在脚本里再写一个**（有绊线钉着：`DesktopServicesTests.打包脚本的版本号只从_csproj_读`）。
+
+### 11.1 安装程序（2026-10-02 加）
+
+脚本 `installer\VidLog.iss`，由 `scripts/package.ps1 -Installer` 编译。
+
+**它存在的唯一理由是那条 urlacl。** 绑 `http://+:8720/`（局域网可达那个前缀）
+需要一次性注册，而那要管理员权限；安装程序本来就是提权的，顺手做掉。
+在这之前只发 zip，于是回放服务**静默**退到 `localhost`，手机扫二维码连不上
+（2026-10-02 报上来的缺陷就是这个）。
+
+几条钉死的：
+
+- **`AppId` 发布之后再也不许改** —— 改了会在「程序和功能」里另起一行，旧的卸不掉。
+- **卸载不清用户数据**：录像/索引/设置在 `%LOCALAPPDATA%\VidLog`，不在 `{app}` 里；
+  `.iss` 里刻意**没有** `[UninstallDelete]` 段，**一个字都不许加**（母仓 §3）。
+  有绊线钉着。
+- **端口 8720 与 `DesktopServices.DefaultPlaybackPort` 是同一个数**，有绊线比对。
+  ⚠️ 已知边界：用户在设置里改了回放端口之后，这条预留就管不着新端口了 ——
+  那时报名窗会**看得见**地提示回退到本机并给出该敲的命令（I3），不是静默失效。
+- **`.iss` 必须存成 UTF-8 带 BOM**（Inno 认不出没有 BOM 的 UTF-8，中文常量会全花，
+  而编译器**一个字都不说**）。少了 BOM 时 `package.ps1` **当场失败**，不替人改文件
+  （打包脚本偷偷改受控文件是个坑）；有绊线钉着。
+- 已知缺口：**安装向导是英文的**。官方发行版不带简体中文语言文件，而
+  `Languages\Unofficial\ChineseSimplified.isl` 在本机网络下取不到（三个镜像都试过）。
+  要补的话：把那份 `.isl` 放进 `installer\` 再加一行 `[Languages]`。
+
+### 11.2 Inno Setup 必须钉在 6.4.3（2026-10-02）
+
+⚠️ **Inno Setup 自 6.5.0（2025-08-12）起引入商业许可**。官网每次发布都写
+「Using Inno Setup commercially? Please purchase a license」，未授权的副本
+编译时会印一行 `Non-commercial use only`，而本产品是**商业软件**。
+
+6.4.3 是最后一个仍在纯宽松许可下的版本，它自带的 `license.txt` 明写
+"Permission is granted to anyone to use this software for any purpose,
+**including commercial applications**"。
+
+因此 `package.yml` 里**下载并钉住 6.4.3**，而且**断言 ISCC 的版本号是 `6.4.*`** ——
+哪天镜像换了包、或有人图省事改成「装最新版」，那一步会当场红。
+
+**公司若日后购买商业许可**，把 `package.yml` 里那一段换成最新版（或 `choco install
+innosetup`）、删掉那条断言，并**同步改本节**。

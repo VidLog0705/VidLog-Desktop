@@ -1,5 +1,6 @@
 using System.Net;
 using System.Net.Sockets;
+using System.Text.RegularExpressions;
 using VidLog.Desktop.Core.Configuration;
 using VidLog.Desktop.Core.Media;
 using VidLog.Desktop.Core.Recording;
@@ -764,5 +765,133 @@ public class DesktopServicesTests
         // ③ 任何地方都不许再出现一个「VidLog-Desktop-<数字>」的字面量 ——
         //    写死版本号必然同时踩红 ② 与 ③。
         Assert.DoesNotMatch(@"VidLog-Desktop-\d", script);
+    }
+
+    // ─────────────────────────────────────────────
+    // 安装程序（2026-10-02 补）
+    // ─────────────────────────────────────────────
+
+    private static string InstallerScript() =>
+        File.ReadAllText(Path.Combine(RepoRoot(), "installer", "VidLog.iss"));
+
+    /// <summary>
+    /// <c>.iss</c> 的**正文**：先把 Inno 的注释（行内第一个 <c>;</c> 起）剥掉。
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ 不剥注释的话，下面几条全是**假红** —— 注释里会正当地写着「这里刻意没有
+    /// <c>[UninstallDelete]</c>」「端口 8720 与 … 是同一个数」这类说明，
+    /// 那正是要写给人看的话。绊线的靶子是**正文**，不是散文。
+    /// <para>
+    /// ⚠️ 天花板：按「行内第一个 <c>;</c>」剥，够用在本文件上（值里没有分号）。
+    /// 真出现值里带分号的那天，这条得换成逐字符扫描。
+    /// </para>
+    /// </remarks>
+    private static string InstallerCode() =>
+        string.Join('\n', InstallerScript().Split('\n').Select(line =>
+        {
+            var i = line.IndexOf(';', StringComparison.Ordinal);
+            return i >= 0 ? line[..i] : line;
+        }));
+
+    /// <summary>
+    /// 安装脚本里的版本号**也只有一个来源**（那个 csproj，经
+    /// <c>package.ps1</c> 用 <c>/D</c> 传进来）。
+    /// </summary>
+    /// <remarks>
+    /// 与 <see cref="打包脚本的版本号只从_csproj_读"/> 同一个靶子，只是多了一层：
+    /// 版本号现在是 zip 名、exe 属性、安装程序属性**三处**印出来，走岔了更难对。
+    /// </remarks>
+    [Fact]
+    public void 安装脚本只认传进来的版本号()
+    {
+        var iss = InstallerCode();
+
+        // ① 用的是 /D 传进来的量，不是自己写的。
+        Assert.Contains("AppVersion={#AppVersion}", iss, StringComparison.Ordinal);
+        Assert.Contains("VersionInfoVersion={#AppVersion4}", iss, StringComparison.Ordinal);
+
+        // ② 任何形如 1.2.3 的字面量都不许出现 —— 出现就是抄了一份版本号。
+        Assert.DoesNotMatch(@"\d+\.\d+\.\d+", iss);
+
+        // ③ 缺了 /D 要**当场编译失败**，而不是编出一个版本号空着的包。
+        Assert.Contains("#ifndef AppVersion", iss, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// 安装脚本登记的回放端口，与 <see cref="DesktopServices.DefaultPlaybackPort"/>
+    /// **必须是同一个数**。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// ⚠️ 这是**唯一**能挡住端口漂移的检查，而漂移的表现是最难查的那一类：
+    /// 「软件装好了、界面一切正常，手机就是连不上」—— 两边分开看都是对的。
+    /// 安装脚本引用不了 C# 常量，只能靠这条绊线把它们钉在一起。
+    /// </para>
+    /// <para>
+    /// ⚠️ 天花板：端口被改过之后（<c>SettingsWindow</c> 的「回放端口」是可改的），
+    /// 这条预留就管不着新端口了。那是个**已知边界**，由报名窗可见地提示（I3），
+    /// 不是靠这里挡 —— 这里挡的是「两处默认值本身就不一致」。
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public void 安装脚本登记的回放端口与代码里的默认端口是同一个数()
+    {
+        var iss = InstallerCode();
+        var expected = DesktopServices.DefaultPlaybackPort.ToString();
+
+        // 装的时候登记、卸的时候撤掉，凡是出现端口的**每一处**都得是这个数。
+        var used = Regex.Matches(iss, @"url=http://\+:(\d+)/")
+                        .Select(m => m.Groups[1].Value)
+                        .Distinct()
+                        .ToList();
+
+        Assert.NotEmpty(used);
+        Assert.Equal(expected, Assert.Single(used));
+    }
+
+    /// <summary>
+    /// 卸载**不清用户数据**（母仓 AGENTS.md §3）。
+    /// </summary>
+    /// <remarks>
+    /// 录像、索引、设置在 <c>%LOCALAPPDATA%\VidLog</c>，**不在** <c>{app}</c> 里，
+    /// 所以 Inno 默认就碰不到它们。<c>[UninstallDelete]</c> 是唯一能删到
+    /// <c>{app}</c> 之外东西的段 —— 加上它，「卸载重装」这个常规排查手段
+    /// 就变成了一次数据灭失，而那正是本产品承诺「证据不丢」的反面。
+    /// </remarks>
+    [Fact]
+    public void 安装脚本卸载时不删用户数据()
+    {
+        var iss = InstallerCode();
+
+        // ① 那个段整个不许出现。
+        Assert.DoesNotContain("[UninstallDelete]", iss, StringComparison.Ordinal);
+
+        // ② 也不许绕过它去碰数据目录（`{localappdata}` 只会出现在真的拿它做事的地方）。
+        Assert.DoesNotContain("{localappdata}", iss, StringComparison.OrdinalIgnoreCase);
+
+        // ③ 装的时候登记了 urlacl，卸的时候就得撤掉 —— 只登记不撤会在那台机器上
+        //    留下一条指向已卸软件的预留，下一个想用 8720 的人会莫名失败。
+        var idx = iss.IndexOf("[UninstallRun]", StringComparison.Ordinal);
+        Assert.True(idx >= 0, "`.iss` 里没有 [UninstallRun] —— 卸载会留下那条 urlacl 预留");
+        Assert.Contains("netsh http delete urlacl", iss[idx..], StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// 安装脚本必须是 **UTF-8 带 BOM**。
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ Inno 认不出没有 BOM 的 UTF-8，会把中文按 ANSI 读 —— **编译器一个字都不说**，
+    /// 装出来的向导与快捷方式名字全花，只有把人叫到机器前才看得见。
+    /// <c>package.ps1</c> 撞见没 BOM 会**当场失败**（不替人改文件，改文件会让
+    /// 一次打包悄悄改动工作区），所以这条得在这儿钉住。
+    /// </remarks>
+    [Fact]
+    public void 安装脚本是带_BOM_的_UTF8()
+    {
+        var bytes = File.ReadAllBytes(Path.Combine(RepoRoot(), "installer", "VidLog.iss"));
+
+        Assert.True(
+            bytes.Length >= 3 && bytes[0] == 0xEF && bytes[1] == 0xBB && bytes[2] == 0xBF,
+            "installer\\VidLog.iss 少了 UTF-8 BOM —— Inno 会把里面的中文按 ANSI 读");
     }
 }

@@ -1,6 +1,7 @@
 ﻿<#
 .SYNOPSIS
-    打电脑端的安装包：自包含的 win-x64 目录 + 随包 FFmpeg → 一个 zip。
+    打电脑端的安装包：自包含的 win-x64 目录 + 随包 FFmpeg → 一个 zip；
+    加 -Installer 再编出一个真正的安装程序（Inno Setup）。
 
 .DESCRIPTION
     在本脚本之前，本仓**没有出包这条路** —— 只有 `dotnet build`，产物落在
@@ -36,15 +37,27 @@
 .PARAMETER OutputDir
     产出目录，默认仓库根的 `dist\`（已在 .gitignore 里）。
 
+.PARAMETER Installer
+    额外编出真正的安装程序（`installer\VidLog.iss`，Inno Setup）。
+    ⚠️ **只有它会注册回放地址的 urlacl** —— 那是「手机连不上这台电脑」的根因，
+    而注册要管理员权限，装的时候正好有。zip 那条路照旧（解压即用，
+    但局域网回放会静默退到 localhost）。
+
+.PARAMETER IsccPath
+    Inno Setup 的编译器 `ISCC.exe`。不给就按 `ISCC_EXE` 环境变量、
+    再按 PATH、再按两个默认安装位置找。
+
 .EXAMPLE
-    pwsh -NoProfile -File scripts/package.ps1
+    pwsh -NoProfile -File scripts/package.ps1 -Installer
 #>
 [CmdletBinding()]
 param(
     [string]$Configuration = 'Release',
     [string]$Runtime = 'win-x64',
     [string]$FfmpegPath,
-    [string]$OutputDir
+    [string]$OutputDir,
+    [switch]$Installer,
+    [string]$IsccPath
 )
 
 $ErrorActionPreference = 'Stop'
@@ -62,7 +75,21 @@ if (-not $version) {
     throw "$csproj 里没有 <Version> —— 出包必须有版本号（母仓 AGENTS.md §9.1）"
 }
 
-Write-Host "版本：$version  运行时：$Runtime  配置：$Configuration"
+# ⚠️ 安装程序的 `VersionInfoVersion` **只认 4 段数字**（`0.2.0` 会被当场拒绝），
+#    所以这里把同一个数补成 4 段。补法是机械的 —— 它仍然是**那一个**版本号，
+#    不是第二处定义（绊线测试比对的就是这一点）。
+#
+# ⚠️ 取**数字前缀**再补零，取不到就**当场失败**：`1.0.0-rc1` 这种先导段里的
+#    非数字会把「按点切分再筛数字」那种写法带进沟里（它会悄悄变成 1.0.1.0）。
+#    宁可不出包，也不出一个版本号是编的的包。
+if ($version -notmatch '^\d+(\.\d+){0,3}') {
+    throw "<Version>$version</Version> 不是以 a[.b[.c[.d]]] 开头的版本号，补不出 4 段式"
+}
+$version4 = $Matches[0] -split '\.'
+while ($version4.Count -lt 4) { $version4 += '0' }
+$version4 = $version4 -join '.'
+
+Write-Host "版本：$version（四段式 $version4）  运行时：$Runtime  配置：$Configuration"
 
 # ─────────────────────────────────────────────
 # FFmpeg：找不到就**当场失败**，不留一份半残的包
@@ -89,6 +116,44 @@ function Resolve-Ffmpeg([string]$explicit) {
 
 $ffmpeg = Resolve-Ffmpeg $FfmpegPath
 Write-Host "FFmpeg：$ffmpeg"
+
+# ─────────────────────────────────────────────
+# Inno Setup：只有 -Installer 才需要
+# ─────────────────────────────────────────────
+function Resolve-Iscc([string]$explicit) {
+    if ($explicit) {
+        if (-not (Test-Path $explicit)) { throw "指定的 ISCC 不存在：$explicit" }
+        return (Resolve-Path $explicit).Path
+    }
+
+    if ($env:ISCC_EXE -and (Test-Path $env:ISCC_EXE)) {
+        return (Resolve-Path $env:ISCC_EXE).Path
+    }
+
+    $onPath = Get-Command ISCC.exe -ErrorAction SilentlyContinue
+    if ($onPath) { return $onPath.Source }
+
+    # choco 默认装在这两处之一（64 位系统上是 x86 那个）。
+    foreach ($base in @(${env:ProgramFiles(x86)}, $env:ProgramFiles)) {
+        if (-not $base) { continue }
+        $guess = Join-Path $base 'Inno Setup 6\ISCC.exe'
+        if (Test-Path $guess) { return (Resolve-Path $guess).Path }
+    }
+
+    throw @'
+找不到 Inno Setup 的编译器 ISCC.exe（-Installer 需要它）。
+⚠️ 必须是 **6.4.3 或更早**：6.5.0 起 Inno Setup 引入商业许可，未授权的副本编译时
+会印一行「Non-commercial use only」，而本产品是商业软件（理由与出处见 AGENTS.md §11）。
+6.4.3：https://github.com/jrsoftware/issrc/releases/download/is-6_4_3/innosetup-6.4.3.exe
+静默装：innosetup-6.4.3.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /NOICONS
+或用 -IsccPath 指一个，或设 ISCC_EXE，或把它放进 PATH。
+'@
+}
+
+# ⚠️ 和 FFmpeg 一个道理：**先找齐再动手**。等两分钟的发布 + 打包跑完才报
+#    「找不到编译器」是在浪费人的时间，也容易让人以为是打包坏了。
+$iscc = if ($Installer) { Resolve-Iscc $IsccPath } else { $null }
+if ($iscc) { Write-Host "Inno Setup：$iscc" }
 
 # ─────────────────────────────────────────────
 # 发布
@@ -158,15 +223,65 @@ if (Test-Path $zip) { Remove-Item $zip -Force }
 [System.IO.Compression.ZipFile]::CreateFromDirectory(
     $stage, $zip, [System.IO.Compression.CompressionLevel]::Optimal, $false)
 
+$zipItem = Get-Item $zip
+$zipHash = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLower()
+
+Write-Host ''
+Write-Host "zip：$($zipItem.FullName)"
+Write-Host ("     大小 {0:N1} MB   sha256 {1}" -f ($zipItem.Length / 1MB), $zipHash)
+Write-Host '     装法：解压到任意目录 → 运行 VidLog.Desktop.App.exe（自包含，不用先装 .NET）。'
+Write-Host '     ⚠️ 别把 exe 单独拖出来 —— 旁边那一堆 dll 与 tools\ffmpeg.exe 都是它的。'
+Write-Host '     ⚠️ 这条路**不注册**回放地址的访问许可，于是手机连不上这台电脑。'
+
+# ─────────────────────────────────────────────
+# 安装程序（Inno Setup）—— 只有 -Installer 才编
+# ─────────────────────────────────────────────
+if ($Installer) {
+    $iss = Join-Path $root 'installer\VidLog.iss'
+    if (-not (Test-Path $iss)) { throw "找不到 $iss" }
+
+    # ⚠️ ISCC 的 /D 传参处理不了带空格的路径 —— 与其在编译期报一句看不懂的错，
+    #    不如在这儿说清楚。
+    if ($stage -match ' ' -or $OutputDir -match ' ') {
+        throw "路径里有空格（stage=$stage / OutputDir=$OutputDir）—— ISCC 的 /D 传不了，换个不带空格的位置"
+    }
+
+    # ⚠️ Inno 认不出没有 BOM 的 UTF-8，会把中文按 ANSI 读 —— 装出来的向导与
+    #    快捷方式名字全花，而**编译器一个字都不说**。
+    #    ⚠️ 这里**不替人补 BOM**：打包脚本偷偷改一个受版本控制的工作区文件，
+    #    是那种「跑完一遍 git status 里多出一处不认识改动」的坑。
+    #    改成**当场失败**并说清怎么修。配套的绊线在
+    #    DesktopServicesTests.安装脚本是带_BOM_的_UTF8，正常轮不到这里报。
+    $issBytes = [System.IO.File]::ReadAllBytes($iss)
+    if (-not ($issBytes.Length -ge 3 -and $issBytes[0] -eq 0xEF -and
+              $issBytes[1] -eq 0xBB -and $issBytes[2] -eq 0xBF)) {
+        throw @"
+$iss 少了 UTF-8 BOM —— Inno 会把里面的中文按 ANSI 读，编出来的向导全花。
+用编辑器把它另存为「UTF-8 with BOM / 带 BOM」，别用「UTF-8」。
+（不要在这里自动补：那会让一次打包悄悄改动工作区里的受控文件。）
+"@
+    }
+
+    Write-Host ''
+    Write-Host "编安装程序：$iscc"
+
+    # ⚠️ 先清掉旧的：下面按 `*-setup.exe` 取产物，留一个旧的在那儿会**假装成功**。
+    Get-ChildItem $OutputDir -Filter '*-setup.exe' -ErrorAction SilentlyContinue | Remove-Item -Force
+
+    & $iscc "/DAppVersion=$version" "/DAppVersion4=$version4" `
+        "/DStageDir=$stage" "/DOutputDir=$OutputDir" $iss
+    if ($LASTEXITCODE -ne 0) { throw "ISCC 编译失败（退出码 $LASTEXITCODE）" }
+
+    $setup = Get-ChildItem $OutputDir -Filter '*-setup.exe' | Select-Object -First 1
+    if (-not $setup) { throw "ISCC 说编好了，$OutputDir 里却没有 *-setup.exe" }
+
+    $setupHash = (Get-FileHash $setup.FullName -Algorithm SHA256).Hash.ToLower()
+    Write-Host ''
+    Write-Host "安装程序：$($setup.FullName)"
+    Write-Host ("     大小 {0:N1} MB   sha256 {1}" -f ($setup.Length / 1MB), $setupHash)
+    Write-Host '     装到 Program Files，顺手注册 8720 端口的访问许可（所以会要提权）。'
+    Write-Host '     ⚠️ 卸载**不删**录像：数据在 %LOCALAPPDATA%\VidLog，不在安装目录里。'
+}
+
+# ⚠️ stage 到这里才能删 —— 安装程序就是拿它当素材的。
 Remove-Item $stage -Recurse -Force
-
-$item = Get-Item $zip
-$hash = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLower()
-
-Write-Host ''
-Write-Host "打好了：$($item.FullName)"
-Write-Host ("大小：{0:N1} MB" -f ($item.Length / 1MB))
-Write-Host "sha256：$hash"
-Write-Host ''
-Write-Host '装法：解压到任意目录 → 运行 VidLog.Desktop.App.exe（自包含，不需要先装 .NET）。'
-Write-Host '⚠️ 别把 exe 单独拖出来 —— 它旁边那一堆 dll 与 tools\ffmpeg.exe 都是它的。'

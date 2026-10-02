@@ -67,8 +67,41 @@ jobs:
       # package.ps1 末尾还会**在包内**再验一次「换个位置跑不跑得起来」——
       # 上面这段是按路径猜，那一段是拿要发出去的东西实测。两道都要有。
 
+      # ⚠️ **版本必须钉在 6.4.3，不许用「装最新版」**：
+      #    Inno Setup 自 6.5.0（2025-08-12）起引入商业许可，未授权的副本编译时
+      #    会印一行 `Non-commercial use only`；而本产品是商业软件。
+      #    6.4.3 是最后一个仍在纯宽松许可下的版本 —— 它自带的 license.txt 明写
+      #    "Permission is granted to anyone to use this software for any purpose,
+      #     including commercial applications"。
+      #    哪天公司买了商业许可，把这里与下面那段断言一起换掉，并同步 AGENTS.md §11。
+      - name: 装 Inno Setup 6.4.3（钉住的版本）
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          $url = 'https://github.com/jrsoftware/issrc/releases/download/is-6_4_3/innosetup-6.4.3.exe'
+          $exe = Join-Path $env:RUNNER_TEMP 'innosetup-6.4.3.exe'
+          Invoke-WebRequest -Uri $url -OutFile $exe -UseBasicParsing
+          Write-Host ("下到 {0:N1} MB" -f ((Get-Item $exe).Length / 1MB))
+
+          $p = Start-Process $exe -Wait -PassThru `
+              -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/NOICONS'
+          if ($p.ExitCode -ne 0) { throw "Inno Setup 安装失败（退出码 $($p.ExitCode)）" }
+
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { throw "装完了却没有 $iscc" }
+
+          # ⚠️ 这条断言才是「钉住」的落点：镜像上换了包、或者哪天有人图省事改成
+          #    choco 装最新版，这里会**当场红**，而不是悄悄出一个带商业许可横幅的包。
+          $ver = (Get-Item $iscc).VersionInfo.FileVersion
+          if ($ver -notlike '6.4.*') {
+            throw "ISCC 是 $ver，不是钉住的 6.4.x —— 6.5+ 带商业许可要求（AGENTS.md §11）"
+          }
+          Write-Host "ISCC：$iscc（$ver）"
+
+          "ISCC_EXE=$iscc" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+
       - name: 打包
-        run: ./scripts/package.ps1
+        run: ./scripts/package.ps1 -Installer
 
       - name: 发到 Release
         env:
@@ -85,14 +118,30 @@ jobs:
           if (-not $zip) { throw 'scripts/package.ps1 没产出 zip' }
           Write-Host "包：$($zip.Name)"
 
-          # 固定一个 prerelease 标签，每次覆盖 —— Release 页永远只有最新那一份。
-          # 历史版本靠本地 dist\ 留档。
-          $tag = 'desktop-package'
+          # 安装程序是**要发出去的那一份**（它会注册回放地址的许可，手机才连得上）。
+          # 缺了它不许往下走：只发 zip 等于回到「解压即用、但局域网回放静默失效」。
+          $setup = Get-ChildItem dist/*-setup.exe | Select-Object -First 1
+          if (-not $setup) { throw '没产出安装程序 —— scripts/package.ps1 该带 -Installer 跑' }
+          Write-Host "安装程序：$($setup.Name)"
+
+          # ⚠️ 标签**必须是版本号本身**，不能是一个固定的名字。
+          # 客户端「关于」页的更新检查读的就是 `tag_name`（`ReleaseFeed.cs`），
+          # 固定 `desktop-package` 时那一栏印出来的是「已是最新（desktop-package）」
+          # —— 一句没有任何版本信息的废话（2026-10-02 实测报上来的）。
+          # 版本号从 zip 名里取（`scripts/package.ps1` 按 `<名>-<版本>-win-x64` 命名），
+          # 取不到就**当场失败**：宁可不出包，也不出一个版本号是假的的包。
+          $version = if ($zip.BaseName -match '\d+\.\d+\.\d+') { $Matches[0] } else { $null }
+          if (-not $version) { throw "从 $($zip.Name) 里取不到版本号，包名不合规" }
+
+          # 同一个版本号重复打包就**覆盖**（标签已存在时走 upload --clobber）。
+          # 每次覆盖 —— Release 页永远只有最新那一份。历史版本靠本地 dist\ 留档。
+          $tag = "v$version"
+          Write-Host "版本：$version（标签 $tag）"
           gh release view $tag *> $null
           if ($LASTEXITCODE -ne 0) {
             gh release create $tag --prerelease `
               --title '电脑端安装包' `
-              --notes '每次打包覆盖同一个 zip。解压即用，不需要先装 .NET 运行时。'
+              --notes '两份：`…-setup.exe` 是安装程序，**推荐用它** —— 它会装到 Program Files 并注册回放地址的访问许可（手机才连得上这台电脑），要管理员权限；`…win-x64.zip` 是解压即用的绿色包，不注册那条许可。都不需要先装 .NET 运行时。同一个版本号重复打包会覆盖这一份。'
           }
-          gh release upload $tag $zip.FullName --clobber
+          gh release upload $tag $zip.FullName $setup.FullName --clobber
           Write-Host "下载页：${{ github.server_url }}/${{ github.repository }}/releases/tag/$tag"
