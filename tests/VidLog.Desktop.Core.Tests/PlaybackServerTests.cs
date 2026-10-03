@@ -74,6 +74,17 @@ public class PlaybackServerTests
         }
     }
 
+    /// <summary>把日志收起来，好在测试里断言（本仓既有写法）。</summary>
+    private sealed class CapturingLogger : IAppLogger
+    {
+        public List<string> Messages { get; } = [];
+
+        public void Log(LogLevel level, string category, string message) => Messages.Add(message);
+
+        public void Log(LogLevel level, string category, string message, IReadOnlyDictionary<string, object?> data) =>
+            Messages.Add(message);
+    }
+
     private sealed class Fixture : IAsyncDisposable
     {
         public required PlaybackServer Server { get; init; }
@@ -90,6 +101,16 @@ public class PlaybackServerTests
 
         /// <summary>机位发现那张表（`/api/v1/live/announce` 写进去的那个）。</summary>
         public required Core.Live.LiveDirectory Live { get; init; }
+
+        /// <summary>
+        /// 现在的机位数（一格可变的值，登记簿读的就是它）。
+        /// </summary>
+        /// <remarks>
+        /// ⚠️ 拨它是**模拟「重启之后许可已经变了」**：许可状态在一次运行里是冻结的（L7），
+        /// 所以「试用到期」在真实世界里只能通过重新启动才生效 —— 先入网、再把机位拨成 0，
+        /// 就是那个顺序。
+        /// </remarks>
+        public required int[] Seats { get; init; }
 
         public async ValueTask DisposeAsync()
         {
@@ -186,7 +207,10 @@ public class PlaybackServerTests
         var live = new Core.Live.LiveDirectory();
 
         var layout = new DataLayout(dir.Path);
-        var devices = new DeviceRegistry(layout.DevicesPath);
+        // 机位数先给 4（够把这台设备接进来），要验「未激活」的用例之后自己拨成 0。
+        var seats = new[] { 4 };
+        var devices = new DeviceRegistry(
+            layout.DevicesPath, logger: logger, seatLimit: () => seats[0]);
 
         // 走一遍完整入网，拿一张真凭据 —— `/api/v1/*` 一律要它，
         // 而「凭据从哪儿来」这件事本身就是那条接口的一半。
@@ -231,6 +255,7 @@ public class PlaybackServerTests
             Credential = credential,
             Location = relative,
             Live = live,
+            Seats = seats,
         };
     }
 
@@ -1104,6 +1129,63 @@ public class PlaybackServerTests
         Assert.Contains(endpoint.Address, new[] { "127.0.0.1", "[::1]" });
         Assert.Equal(8888, endpoint.Port);
         Assert.Equal($"http://{endpoint.Address}:8888", endpoint.BaseUrl);
+    }
+
+    [Fact]
+    public async Task 没有机位时_已经在册的手机也不许报到_于是看不到实时()
+    {
+        // ⚠️ 2026-10-03 用户裁定：「7 天试用期结束，如未重新激活，则电脑端功能均不能使用
+        //    （观看已存储的视频除外）」。光挡住**新接入**不够 —— 试用期内接进来的那台手机
+        //    要是照样能报到，试用就等于永远不结束：客户在试用期把手机接上，之后白用实时画面。
+        //
+        // 机位拨成 0 = 「重启之后校验发现试用已结束」（许可在一次运行里是冻结的，L7）。
+        using var dir = new TempDir();
+        var logger = new CapturingLogger();
+        await using var fixture = await StartAsync(dir, logger);
+
+        fixture.Seats[0] = 0;
+
+        var response = await fixture.Client.SendAsync(
+            AnnounceRequest(fixture, fixture.Credential, new { port = 8888 }));
+
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+        Assert.Empty(fixture.Live.Active());          // 不许记进去
+
+        // ⚠️ **只记一条**（从好变坏那一刻）：报到 20 秒一次，每次都记就是每小时一百八十条，
+        //    而被刷满的日志等于没有日志。再报一次，日志里不许再多一条。
+        Assert.Single(logger.Messages, m => m.Contains("不再接收手机的实时画面报到", StringComparison.Ordinal));
+
+        await fixture.Client.SendAsync(AnnounceRequest(fixture, fixture.Credential, new { port = 8888 }));
+
+        Assert.Single(logger.Messages, m => m.Contains("不再接收手机的实时画面报到", StringComparison.Ordinal));
+
+        // 机位回来了（客户激活了）⇒ 放行，并且**记一条状态变化**。
+        fixture.Seats[0] = 4;
+        logger.Messages.Clear();
+
+        var back = await fixture.Client.SendAsync(
+            AnnounceRequest(fixture, fixture.Credential, new { port = 8888 }));
+
+        Assert.Equal(HttpStatusCode.OK, back.StatusCode);
+        Assert.Single(logger.Messages, m => m.Contains("机位回来了", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task 没有机位时_手机上还没传过来的那一段照收()
+    {
+        // ⚠️ 闸门**只装在实时那一条路上**（L8）：手机上已经录下、还没投递过来的证据
+        //    必须照收。装进 `AuthenticateAsync` 的话，这一段会被挡在门外 ——
+        //    那正是「未激活 / 试用过期绝不可锁定已有录像」要防的事。
+        using var dir = new TempDir();
+        await using var fixture = await StartAsync(dir);
+
+        fixture.Seats[0] = 0;
+
+        // 凭据照样认得出这台设备（投递那条路不问许可）。
+        var response = await fixture.Client.SendAsync(
+            VerifyRequest(fixture.Credential, fixture.Location));
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
     }
 
     [Fact]

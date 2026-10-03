@@ -1481,9 +1481,30 @@ public partial class SettingsWindow : Window
               + "同型号的机器可能算出一样的码 —— 请先查清为什么读不到（常见是 WMI 被禁用了）。"
             : string.Empty;
 
-        LicenseNote.Text = status.Activated
-            ? $"✅ 已激活：允许接入 {status.Slots} 台手机端。{degraded}"
-            : $"⛔ {status.FailureReason}允许接入 0 台手机端。{degraded}";
+        // ⚠️ 试用**必须先判**（见 `LicenseStatus` 的注释：试用中 `Activated` 也是 true）。
+        //
+        // ⚠️ 「购买入口」是**一句话，不是一个按钮** —— 到今天为止没有真实的购买渠道
+        // （没有下单页、没有联系方式），摆一颗按钮就是假开关（§63 / 踩坑 #13）。
+        // 等到真有渠道了，把这里换成按钮，别在那之前先摆上。
+        LicenseNote.Text = status switch
+        {
+            { IsTrial: true, Activated: true } =>
+                $"✅ 试用中：还剩 {status.TrialRemainingText}（试用期 7 天 / 4 机位）。"
+                + "试用到期只挡住新的录制与接入 —— 已有的录像照常可以检索、回放、导出。"
+                + "要长期用得换一个长期激活码：把上面的机器码给提供方。"
+                + degraded,
+
+            { IsTrial: true } =>
+                $"⛔ {status.FailureReason}"
+                + "试用期里才能录新的、接手机、看手机的实时画面；"
+                + "已有的录像照常可以检索、回放、导出。"
+                + "要接着用得激活 —— 把上面的机器码给提供方。"
+                + degraded,
+
+            { Activated: true } => $"✅ 已激活：允许接入 {status.Slots} 台手机端。{degraded}",
+
+            _ => $"⛔ {status.FailureReason}允许接入 0 台手机端。{degraded}",
+        };
 
         ActivationBox.IsEnabled = true;
         ActivateButton.IsEnabled = true;

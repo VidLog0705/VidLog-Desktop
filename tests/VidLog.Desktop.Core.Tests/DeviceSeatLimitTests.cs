@@ -11,6 +11,11 @@ namespace VidLog.Desktop.Core.Tests;
 /// 「超限接不进来」和「已经进来的照常」。
 /// </para>
 /// <para>
+/// ⚠️ <b>「0 机位」是这条规则的一个例外</b>（2026-10-03）：0 机位的意思是
+/// **这台机器没有许可**（未激活 / 试用已结束），不是「坐满了」——
+/// 所以连已经在册的那台也不放行，有一条专门钉它。
+/// </para>
+/// <para>
 /// ⚠️ <b>L8 红线不在这个文件里守</b>：许可不得锁住已有录像（检索 / 回放 / 导出
 /// 一条都不看许可）由 <c>LicenseIndependenceTests</c> 守着。这里只保证
 /// 机位闸门没有顺手把别的路也堵上 —— 所以有一条专门验「已入网的设备还能换码重配」。
@@ -93,6 +98,34 @@ public class DeviceSeatLimitTests
     }
 
     [Fact]
+    public async Task 机位归零后_已经在册的那台也不许重新入网()
+    {
+        // ⚠️ 「档位用满」与「0 机位」是两回事（2026-10-03 用户裁定：
+        //    「7 天试用期结束，如未重新激活，则电脑端功能均不能使用」）。
+        //    前者可以放行已经在册的那台（它本来就占着位置），后者一个机位都没有，
+        //    没有「本来就占着」可言。
+        //
+        // 先给 4 个机位把手机接进来，再拨成 0 —— 那就是「重启之后校验发现试用已结束」
+        // 的样子（许可在一次运行里是冻结的，L7）。
+        using var dir = new TempDir();
+
+        var seats = new[] { 4 };
+        var registry = new DeviceRegistry(dir.File("devices.jsonl"), seatLimit: () => seats[0]);
+
+        Assert.Equal(EnrollStatus.Approved, (await EnrollAsync(registry, "phone-1")).Status);
+
+        seats[0] = 0;
+
+        var again = await EnrollAsync(registry, "phone-1");
+
+        Assert.Equal(EnrollStatus.SeatLimitExceeded, again.Status);
+        Assert.Null(again.Credential);
+
+        // ⚠️ 说的必须是「没激活」，不是「满了」—— 两句都是实话，但指向两个不同的动作。
+        Assert.Contains("激活", again.Detail);
+    }
+
+    [Fact]
     public async Task 未激活一台都接不进来()
     {
         // 机位数 0 = 没激活（或者软件没配好公钥）。这个档位**一台都不给** ——
@@ -131,6 +164,9 @@ public class DeviceSeatLimitTests
         // 所以即使档位已经用满也必须放行。
         //
         // 不放行的话，「机位满了之后手机丢了」会变成死局：用户手里那个激活码明明是够的。
+        //
+        // ⚠️ 这一条说的是**档位用满**（1 机位），不是 0 机位 ——
+        // 0 机位那条例外在上一条里钉着。
         using var dir = new TempDir();
         var registry = new DeviceRegistry(dir.File("devices.jsonl"), seatLimit: () => 1);
 

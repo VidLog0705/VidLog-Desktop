@@ -59,6 +59,15 @@ internal static class StatusSummaries
 
         var status = license.Status;
 
+        // ⚠️ 试用**必须先判**：试用中 `Activated` 也是 true（见 `LicenseStatus` 的注释），
+        // 不先看 `IsTrial` 的话，一行「✅ 已激活」就把还剩几小时藏掉了 ——
+        // 而那正是用户此刻最该知道的一件事。
+        if (status.IsTrial && status.Activated)
+        {
+            return $"✅ 试用中：还剩 {status.TrialRemainingText}，"
+                + $"可接入 {status.Slots} 台手机端。";
+        }
+
         return status.Activated
             ? $"✅ 已激活：允许接入 {status.Slots} 台手机端。"
             : $"⛔ {status.FailureReason}允许接入 0 台手机端。";

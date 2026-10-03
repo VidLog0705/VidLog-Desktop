@@ -45,10 +45,35 @@ public sealed record LicensePayload(
     /// <summary>载荷长度：1 + 1 + 1 + 3 + 4 + 15。</summary>
     public const int Size = 25;
 
-    /// <summary>本版支持的格式版本。</summary>
+    /// <summary>终身码的格式版本。</summary>
+    /// <remarks>
+    /// ⚠️ <b>保持 1。</b>版本字节同时是「这是哪种码」的判别位：1 = 终身，2 = 试用。
+    /// 载荷长度**一个字节都没加** —— 见 <see cref="TrialVersion"/> 的注释。
+    /// </remarks>
     public const byte CurrentVersion = 1;
 
-    /// <summary>合法的机位数。</summary>
+    /// <summary>
+    /// 试用码的格式版本（7 天 / 4 机位，规格 §6）。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// ⚠️ <b>判别只能借版本字节，不能新加字段。</b> 加一个字节会让载荷从 25 变 26、
+    /// 正文从 89 变 90，而**已经发出去的终身码全是 89 字节** ——
+    /// 它们会在 §4.1 第 ② 步的长度检查那里**当场全部失效**。
+    /// </para>
+    /// <para>
+    /// 试用天数（168 小时）**不进码**：它是客户端的常量（§6.1），
+    /// 而「从哪一刻开始算」由客户端的试用记录管（§6.3）—— 签发方管不着，
+    /// 也不该管（码里塞一个签发时刻，客户屯一周再装就少用一周）。
+    /// </para>
+    /// </remarks>
+    public const byte TrialVersion = 2;
+
+    /// <summary>试用码的机位数（§6.1 写死 4）。</summary>
+    /// <remarks>类型跟着 <see cref="LicensePayload.Slots"/> 走（byte）—— 它进的就是那个字段。</remarks>
+    public const byte TrialSlots = 4;
+
+    /// <summary>合法的机位数。⚠️ 试用码不走这个表，它固定 4 台。</summary>
     public static readonly IReadOnlyList<int> ValidSlots = [2, 4, 6, 8];
 
     /// <summary>签发日的基准日。</summary>
@@ -100,6 +125,9 @@ public sealed record LicensePayload(
 
     /// <summary>签发日。</summary>
     public DateOnly Issued => Epoch.AddDays(IssuedDay);
+
+    /// <summary>这是不是一个试用码（规格 §6）。</summary>
+    public bool IsTrial => Version == TrialVersion;
 }
 
 /// <summary>一次验签的结果。</summary>
@@ -221,14 +249,22 @@ public sealed class LicenseVerifier
 
         var payload = LicensePayload.FromBytes(payloadBytes);
 
-        // ⑤ 版本
-        if (payload.Version != LicensePayload.CurrentVersion)
+        // ⑤ 版本 —— **终身码与试用码是同一套载荷的两个版本**（见 TrialVersion 的注释）
+        if (payload.Version is not (LicensePayload.CurrentVersion or LicensePayload.TrialVersion))
         {
             return LicenseCheck.Failed("激活码版本不支持，请升级软件。");
         }
 
         // ⑥ 机位数合法性
-        if (!LicensePayload.ValidSlots.Contains(payload.Slots))
+        //
+        // ⚠️ 试用码单列一档：它**不走 {2,4,6,8}**，固定 4 台（§6.1）。
+        //    签发工具那边有一道同样的闸（`LicenseFormat.Issue`）—— 两头都该挡住，
+        //    因为这里挡不住的话，一个签错的试用码会**当场生效**而不是报错。
+        var slotsOk = payload.IsTrial
+            ? payload.Slots == LicensePayload.TrialSlots
+            : LicensePayload.ValidSlots.Contains(payload.Slots);
+
+        if (!slotsOk)
         {
             return LicenseCheck.Failed("激活码无效（机位数不在可选档位里）。");
         }

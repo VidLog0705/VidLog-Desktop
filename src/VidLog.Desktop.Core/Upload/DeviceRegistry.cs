@@ -164,6 +164,9 @@ public sealed class DeviceRegistry
     /// <summary>等人工批准的改名请求（规格 §3.4.5 ③）。**与入网那批分开**，见 <see cref="PendingRename"/>。</summary>
     private readonly Dictionary<string, PendingRename> _renamePending = new(StringComparer.Ordinal);
 
+    /// <summary>上一次手机来报到实时画面时它有没有被挡下（用来「只记状态变化」）。</summary>
+    private bool _announceBlocked;
+
     /// <param name="seatLimit">
     /// 这个激活码允许接入几台手机端（`docs/04-许可设计.md` §5.1）。
     /// <b>传 <see langword="null"/> 表示不限</b> —— 只有测试会那么传；
@@ -183,6 +186,70 @@ public sealed class DeviceRegistry
         _now = now ?? (() => DateTimeOffset.UtcNow);
         _logger = logger ?? NullLogger.Instance;
         _seatLimit = seatLimit;
+    }
+
+    /// <summary>
+    /// 这台机器现在还有机位可用吗（= 已激活 / 试用还没结束）。
+    /// </summary>
+    /// <remarks>
+    /// <c>_seatLimit</c> 为 <see langword="null"/>（不限，只有测试会那么传）视为有。
+    /// </remarks>
+    public bool HasAnySeat => _seatLimit is null || _seatLimit() > 0;
+
+    /// <summary>
+    /// 手机来报到实时画面（`/api/v1/live/announce`）时该不该挡下它。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// ⚠️ <b>0 机位 = 这台机器没有许可</b>（未激活 / 试用已结束），不是「坐满了」——
+    /// 所以**连已经在册的那台手机也不许报到**：试用期内接进来的手机，到期后
+    /// 连实时画面也不再上报（2026-10-03 用户裁定：「电脑端功能均不能使用，
+    /// 观看已存储的视频除外」）。不挡的话，试用等于永远不结束。
+    /// </para>
+    /// <para>
+    /// ⚠️ <b>只挡「看实时」与「新接入」，不挡证据投递</b> —— 手机上**已经录下、还没传过来**
+    /// 的那一段必须照收（L8：未激活 / 试用过期绝不可锁定已有录像）。
+    /// 所以叫它的是推流上报那一处，**不是**设备鉴权（<c>AuthenticateAsync</c>）。
+    /// </para>
+    /// <para>
+    /// ⚠️ <b>这两句话为什么长在这里而不是 <c>PlaybackServer</c></b>：
+    /// 那个文件同时托管着检索 / 回放 / 导出，而 <c>LicenseIndependenceTests</c>
+    /// 拿文本绊线钉着「那几条路的源码里不许出现许可」（L8）。
+    /// 判断这件事本来就该由**管机器的这一层**回答 —— 它与机位闸门读的是同一个
+    /// <c>_seatLimit</c>，放在一起才不会出现「入网说没机位、实时说有机位」。
+    /// 那一刻记一条日志（只在状态变化时，见 <see cref="_announceBlocked"/>）。
+    /// </para>
+    /// </remarks>
+    public ClaimResult? LiveAnnounceBlocked()
+    {
+        if (HasAnySeat)
+        {
+            if (_announceBlocked)
+            {
+                _announceBlocked = false;
+                _logger.Log(LogLevel.Info, "多画面", "机位回来了，手机可以重新报到实时画面");
+            }
+
+            return null;
+        }
+
+        // ⚠️ 只在**从好变坏**那一刻记一条：报到 20 秒一次，每次都记是每小时一百八十条，
+        //    而被刷满的日志等于没有日志。不记的话，「手机突然从多画面里消失」
+        //    在电脑端日志里一个字都没有 —— 那正是 2026-10-03 那次诊断盲区的形状。
+        //    `_announceBlocked` 是个没上锁的 bool：并发下最多多记一条，不值得为它加锁。
+        if (!_announceBlocked)
+        {
+            _announceBlocked = true;
+            _logger.Log(LogLevel.Warn, "多画面",
+                "本机没有机位（未激活 / 试用已结束），不再接收手机的实时画面报到"
+                + "（手机那边照常录制，只是电脑端的多画面里不会出现它）");
+        }
+
+        return new ClaimResult(
+            EnrollStatus.SeatLimitExceeded,
+            null,
+            "电脑端还没有激活（或者试用已经结束），暂时不能看实时画面。"
+            + "已经在电脑端存下来的录像不受影响。");
     }
 
     /// <summary>
@@ -581,6 +648,11 @@ public sealed class DeviceRegistry
     /// 而用户手里那个激活码明明是够的。
     /// </para>
     /// <para>
+    /// ⚠️ <b>「档位用满」才适用上面那条；「0 机位」不适用</b> ——
+    /// 0 机位的意思是这台机器**没有许可**，一个机位都没有，
+    /// 所以它连已经在册的那台也不放行。见下面那一处的说明。
+    /// </para>
+    /// <para>
     /// ⚠️ <b>只在 <see cref="RequestAsync"/> 那一处查</b>，签发凭据的
     /// <see cref="ClaimAsync"/> 那边**不重复查**。这不是漏了一道，而是那道查不到东西：
     /// 一张码只服务一次入网（领走凭据时 <c>_session</c> 就被置空），
@@ -594,8 +666,8 @@ public sealed class DeviceRegistry
     /// —— 搬的理由是那句「一张码只服务一次」不再成立了。
     /// </para>
     /// <para>
-    /// <b>未激活</b>（机位数 0）与「档位用满」走的是同一句话：对这台手机来说，
-    /// 事情是一样的 —— 没有一个空机位给它。原因在电脑端界面上说（那里能说清是没激活还是满了）。
+    /// <b>「档位用满」与「未激活（0 机位）」各说各的话</b>：前者是「满了、去升档」，
+    /// 后者是「这台机器压根没许可」。两句都在电脑端界面上能说清，手机这边只说结论。
     /// </para>
     /// </remarks>
     private async Task<ClaimResult?> SeatBlockedAsync(string deviceId, CancellationToken cancellationToken)
@@ -605,14 +677,30 @@ public sealed class DeviceRegistry
             return null;
         }
 
+        var limit = _seatLimit();
         var enrolled = await LatestAsync(cancellationToken);
+
+        // ⚠️ **0 机位先判，而且连已经在册的那台也不放行**（2026-10-03 用户裁定：
+        // 「7 天试用期结束，如未重新激活，则电脑端功能均不能使用，观看已存储的视频除外」）。
+        // 0 机位的含义是**这台机器没有许可**，不是「席位坐满了」——
+        // 下面那句「它本来就占着那个位置」在这里不成立：一个机位都没有。
+        // 不先判的话，试用期内接进来的手机到期后照样能重新入网。
+        if (limit <= 0)
+        {
+            _logger.Log(LogLevel.Warn, "入网", "本机没有机位（未激活 / 试用已结束），挡下了一台设备",
+                new Dictionary<string, object?> { ["设备"] = deviceId });
+
+            return new ClaimResult(
+                EnrollStatus.SeatLimitExceeded,
+                null,
+                "电脑端还没有激活（或者试用已经结束），一台手机也接不进来。"
+                + "请在电脑端的【许可】里激活，或者联系提供方。");
+        }
 
         if (enrolled.Any(d => string.Equals(d.DeviceId, deviceId, StringComparison.Ordinal)))
         {
             return null;
         }
-
-        var limit = _seatLimit();
 
         // 这台接进去之后占几个 —— 拿**接进去之后**的数比，而不是拿现在的数。
         if (SeatUsage.For(enrolled.Count + 1, SeatUsage.Cameras) <= limit)

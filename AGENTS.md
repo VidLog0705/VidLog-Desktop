@@ -62,6 +62,12 @@
 - 客户端**绝不内置** secret —— 用设备码/授权码 + PKCE，密钥只留在服务端
 - 本地开发用 `.env`（已 gitignore）；CI 用 GitHub Secrets
 - 提交前自查：`git diff --cached | grep -iE 'secret|token|password|api[_-]?key'`
+- ⚠️ **许可公钥是唯一的例外，而且它不是例外**：`License/LicensePublicKey.cs` 里那串
+  **公钥**必须编进程序（2026-10-03，母仓 `docs/04-许可设计.md` §7.2）。
+  它**只能验签、不能签**，所以不是 secret —— 「绝不内置」那条管的是私钥（L1 / S1），
+  **私钥永远只在签发仓 `D:\VidLog-Signing`、只落仓外的 `H:\vidlog-keys\license.pem`**。
+  环境变量 `VIDLOG_LICENSE_PUBKEY` 仍然优先，仅供开发时换测试公钥。
+  这一条是踩过坑补的：原先只认环境变量，装机时没人设 ⇒ 许可整条路是死的。
 
 ---
 

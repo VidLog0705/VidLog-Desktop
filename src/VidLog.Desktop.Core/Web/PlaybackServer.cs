@@ -938,6 +938,18 @@ public sealed class PlaybackServer : IAsyncDisposable
             return;
         }
 
+        // ⚠️ 这道闸门问的是「这台机器还许不许手机报到实时画面」（未激活 / 试用已结束
+        //    ⇒ 不许，2026-10-03 用户裁定：「电脑端功能均不能使用，观看已存储的视频除外」）。
+        //    判断与那句话都在 `DeviceRegistry` 里 —— **这个文件里不许出现「许可」**
+        //    （`LicenseIndependenceTests` 那条绊线）：它同时托管着检索 / 回放 / 导出，
+        //    而 L8 要求那几条路上一个门禁都没有。闸门只装在这一条路上，
+        //    **不装进 `AuthenticateAsync`** —— 手机上已经录下、还没传过来的那一段必须照收。
+        if (_devices.LiveAnnounceBlocked() is { } blocked)
+        {
+            await WriteErrorAsync(context, 403, UploadErrors.SeatLimit, blocked.Detail);
+            return;
+        }
+
         var request = await ReadJsonAsync<LiveAnnouncePayload>(context);
 
         if (request?.Port is not { } port || port is < 1 or > 65535)

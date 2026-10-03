@@ -293,11 +293,26 @@ public sealed class DesktopServices : IAsyncDisposable
         // ⚠️ **校验只在启动时做一次**（L7），运行期间冻结 ——
         // 录到一半许可过期了，不该把这一段掐掉。
         //
-        // ⚠️ 公钥从环境变量注入（`VIDLOG_LICENSE_PUBKEY`）：本仓**不含任何密钥**，
-        // 连公钥也在构建/部署时给（L1/L2 的边界画得更紧一点，代价是多一步配置）。
-        // 没配的话激活一律失败，而失败原因是「这台电脑里的软件没配好」。
+        // ⚠️ 公钥**编进程序**（`License/LicensePublicKey.cs`）。环境变量仍然优先 ——
+        // 开发和临时换密钥时不用重编程序。
+        //
+        // ⚠️ 这一行改过一次，改的原因是**原先只有环境变量那条路，而那是条死路**：
+        // 客户机上不会有 `VIDLOG_LICENSE_PUBKEY` ⇒ 公钥为空 ⇒ 这里建不出
+        // `LicenseService` ⇒ 机位恒为 0 ⇒ 客户粘什么码都激活不了，
+        // 而表现是「手机说机位满了、电脑端一个字都不显示」（2026-10-03 报上来的）。
+        var overrideKey = Environment.GetEnvironmentVariable("VIDLOG_LICENSE_PUBKEY");
+
+        // ⚠️ **哪把公钥生效**要记一条（§6.1）。2026-10-03 那个事故的全部诊断
+        //    就卡在这个问题上：日志里翻不出「这一台到底在拿哪把公钥验」，
+        //    于是「码没错、程序不对」和「码是别家的」分不开。
+        //    开发机留着 `VIDLOG_LICENSE_PUBKEY` 忘删、结果发出去的包拒收真码，
+        //    也是这一行才能一眼看出来的。
+        logger?.Log(LogLevel.Info, "许可", string.IsNullOrWhiteSpace(overrideKey)
+            ? "激活码公钥：用程序里内置的那把。"
+            : "激活码公钥：**被环境变量 VIDLOG_LICENSE_PUBKEY 覆盖了**（开发用的那条路，只有测试机上才该看见这句）。");
+
         var licenseVerifier = LicenseVerifier.FromEmbeddedKey(
-            Environment.GetEnvironmentVariable("VIDLOG_LICENSE_PUBKEY") ?? string.Empty);
+            string.IsNullOrWhiteSpace(overrideKey) ? LicensePublicKey.Base64 : overrideKey);
 
         var license = licenseVerifier is null
             ? null
@@ -305,7 +320,10 @@ public sealed class DesktopServices : IAsyncDisposable
                 licenseVerifier,
                 new EntitlementStore(layout.LicensePath),
                 MachineIdentity.From(new WmiMachineIdentifiers(logger)),
-                logger);
+                logger,
+                // ⚠️ 必须给：不给的话试用码**一律激活不了**（`EvaluateTrial` 会说
+                //    「本机没配上试用记录」）。这个参数是 2026-10-03 加 7 天试用码时加的。
+                TrialRecordStore.ForThisMachine(layout.TrialPath, logger));
 
         if (license is null)
         {

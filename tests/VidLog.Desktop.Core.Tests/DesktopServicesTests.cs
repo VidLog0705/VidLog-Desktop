@@ -2,6 +2,7 @@ using System.Net;
 using System.Net.Sockets;
 using System.Text.RegularExpressions;
 using VidLog.Desktop.Core.Configuration;
+using VidLog.Desktop.Core.Diagnostics;
 using VidLog.Desktop.Core.Media;
 using VidLog.Desktop.Core.Recording;
 using VidLog.Desktop.Core.Upload;
@@ -1028,6 +1029,58 @@ public class DesktopServicesTests
         Assert.Contains($"name={PlaybackFirewall.RuleName}", exists.Arguments[^1], StringComparison.Ordinal);
     }
 
+    /// <summary>
+    /// 装配时要记一条「这一台在用哪把公钥」。
+    /// </summary>
+    /// <remarks>
+    /// 2026-10-03 那个事故（客户机上没有 <c>VIDLOG_LICENSE_PUBKEY</c> ⇒ 机位恒 0 ⇒
+    /// 粘什么码都激活不了）**诊断了整整一轮才定位**，因为日志里翻不出
+    /// 「这一台到底在拿哪把公钥验」。这一条钉的就是那句话必须在。
+    /// <para>
+    /// 环境变量那一档也要留着 —— 开发机忘删就会拒收真码，而那时日志是唯一的线索。
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task 装配时记一条_用的是哪把公钥()
+    {
+        var previous = Environment.GetEnvironmentVariable("VIDLOG_LICENSE_PUBKEY");
+        try
+        {
+            Environment.SetEnvironmentVariable("VIDLOG_LICENSE_PUBKEY", null);
+
+            using var dir = new TempDir();
+            var logger = new CapturingLogger();
+
+            await using var services = DesktopServices.Create(
+                new DataLayout(dir.Dir("data")), playbackPort: null, logger: logger);
+
+            var line = Assert.Single(logger.Messages, m => m.Contains("激活码公钥", StringComparison.Ordinal));
+            Assert.Contains("内置", line, StringComparison.Ordinal);
+            // 装配没问题时**不该**出现那条警告（不然下面那条断言就是白过的）。
+            Assert.DoesNotContain(
+                services.Warnings, w => w.Contains("许可没有配置好", StringComparison.Ordinal));
+
+            // 设上环境变量之后，那一句话必须**改口**（否则它就只是一句废话）。
+            Environment.SetEnvironmentVariable("VIDLOG_LICENSE_PUBKEY", "AAAA");
+            var overridden = new CapturingLogger();
+            await using var withOverride = DesktopServices.Create(
+                new DataLayout(dir.Dir("data2")), playbackPort: null, logger: overridden);
+
+            var other = Assert.Single(
+                overridden.Messages, m => m.Contains("激活码公钥", StringComparison.Ordinal));
+            Assert.Contains("覆盖", other, StringComparison.Ordinal);
+
+            // 公钥解析不了 ⇒ 没有 LicenseService，那条用户可见的警告要出来。
+            Assert.Contains(
+                withOverride.Warnings,
+                w => w.Contains("许可没有配置好", StringComparison.Ordinal));
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("VIDLOG_LICENSE_PUBKEY", previous);
+        }
+    }
+
     /// <summary>退出码固定、并把 argv 留一份的假 netsh。</summary>
     private sealed class StubRunner(int exitCode) : IProcessRunner
     {
@@ -1041,5 +1094,17 @@ public class DesktopServicesTests
             Arguments = [executable, .. arguments];
             return Task.FromResult(new ProcessResult(exitCode, string.Empty, string.Empty));
         }
+    }
+
+    /// <summary>把日志收起来的假 logger（本仓测试的惯例）。</summary>
+    private sealed class CapturingLogger : IAppLogger
+    {
+        public List<string> Messages { get; } = [];
+
+        public void Log(LogLevel level, string category, string message) => Messages.Add(message);
+
+        public void Log(
+            LogLevel level, string category, string message,
+            IReadOnlyDictionary<string, object?> data) => Messages.Add(message);
     }
 }

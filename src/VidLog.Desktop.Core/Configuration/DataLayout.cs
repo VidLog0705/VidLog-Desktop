@@ -68,6 +68,16 @@ public sealed class DataLayout
     public string LicensePath => Path.Combine(RootDirectory, "license.json");
 
     /// <summary>
+    /// 试用记录（`docs/04-许可设计.md` §6.3 的四处位置之一）。
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ 另外三处**不在这里** —— <c>%ProgramData%</c> 与两处注册表都不在数据根下面，
+    /// 由 <c>License.TrialRecordStore.ForThisMachine</c> 自己拼。
+    /// 四处的取舍见规格 §6.3：「要重置必须四个全找到并删掉」。
+    /// </remarks>
+    public string TrialPath => Path.Combine(RootDirectory, "trial.dat");
+
+    /// <summary>
     /// 错误扫描记录（规格 §6.1「必须保存的事实」）。
     /// </summary>
     /// <remarks>

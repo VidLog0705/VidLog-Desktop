@@ -1,4 +1,5 @@
 using System.Security.Cryptography;
+using VidLog.Desktop.Core.Diagnostics;
 using VidLog.Desktop.Core.License;
 
 namespace VidLog.Desktop.Core.Tests;
@@ -26,11 +27,16 @@ public class LicenseTests
         string bios = "1.2.3") => new(motherboard, cpu, bios);
 
     /// <summary>签发一个激活码（测试里的卖家）。</summary>
+    /// <param name="version">
+    /// 默认终身码。<see cref="LicensePayload.TrialVersion"/> 就是试用码
+    /// （那时 <paramref name="slots"/> 必须是 <see cref="LicensePayload.TrialSlots"/>）。
+    /// </param>
     private static string Issue(
-        ECDsa signing, MachineIdentity machine, byte slots = 2, byte minMatch = 3, uint serial = 1)
+        ECDsa signing, MachineIdentity machine, byte slots = 2, byte minMatch = 3, uint serial = 1,
+        byte version = LicensePayload.CurrentVersion)
     {
         var payload = new LicensePayload(
-            LicensePayload.CurrentVersion, slots, minMatch, 100, serial, machine.AllHashes);
+            version, slots, minMatch, 100, serial, machine.AllHashes);
 
         var bytes = payload.ToBytes();
         var signature = signing.SignData(
@@ -307,6 +313,60 @@ public class LicenseTests
     }
 
     // ─────────────────────────────────────────────
+    // 试用码（规格 §6）：同一个载荷，版本字节从 1 变 2
+    // ─────────────────────────────────────────────
+
+    [Fact]
+    public void 版本_2_的码认得出来是试用码_而且机位是_4()
+    {
+        var (signing, verifier) = NewKeyPair();
+        var machine = Machine();
+
+        var check = verifier.Verify(
+            Issue(signing, machine, slots: LicensePayload.TrialSlots,
+                version: LicensePayload.TrialVersion), machine);
+
+        Assert.True(check.Ok, check.FailureReason);
+        Assert.True(check.Payload!.IsTrial);
+
+        // ⚠️ 机位取的是**常量**不是字面量 4：试用机位数只在一处定义，
+        //    换个地方改成 6 的时候，这条要跟着红。
+        Assert.Equal(LicensePayload.TrialSlots, check.Payload.Slots);
+    }
+
+    [Fact]
+    public void 试用码的机位数不是_4_时回无效()
+    {
+        var (signing, verifier) = NewKeyPair();
+        var machine = Machine();
+
+        // 一个签成 8 机位的试用码 —— 签发工具那边也会挡住这种（`LicenseFormat.Issue`），
+        // 但**两头都该挡住**：这里漏了的话，签错的码会当场生效而不是报错。
+        var check = verifier.Verify(
+            Issue(signing, machine, slots: 8, version: LicensePayload.TrialVersion), machine);
+
+        Assert.False(check.Ok);
+        Assert.Contains("无效", check.FailureReason);
+    }
+
+    [Fact]
+    public void 终身码不受试用那一条影响_机位照旧走_2_4_6_8()
+    {
+        // 反证：上面那条如果不分版本、一律要求 4，这里就会红。
+        var (signing, verifier) = NewKeyPair();
+        var machine = Machine();
+
+        foreach (var slots in new byte[] { 2, 4, 6, 8 })
+        {
+            var check = verifier.Verify(Issue(signing, machine, slots: slots), machine);
+
+            Assert.True(check.Ok, $"{slots} 机位：{check.FailureReason}");
+            Assert.False(check.Payload!.IsTrial);
+            Assert.Equal(slots, check.Payload.Slots);
+        }
+    }
+
+    // ─────────────────────────────────────────────
     // Base32
     // ─────────────────────────────────────────────
 
@@ -368,6 +428,18 @@ public class LicenseTests
         Assert.Contains("还没有激活", status.FailureReason);
     }
 
+    /// <summary>把日志收起来的假 logger（本仓测试的惯例）。</summary>
+    private sealed class CapturingLogger : IAppLogger
+    {
+        public List<string> Messages { get; } = [];
+
+        public void Log(LogLevel level, string category, string message) => Messages.Add(message);
+
+        public void Log(
+            LogLevel level, string category, string message,
+            IReadOnlyDictionary<string, object?> data) => Messages.Add(message);
+    }
+
     [Fact]
     public async Task 激活之后落盘_重启还在_而且是重新验签出来的()
     {
@@ -388,6 +460,30 @@ public class LicenseTests
 
         Assert.True(status.Activated);
         Assert.Equal(4, status.Slots);
+    }
+
+    [Fact]
+    public async Task 激活没成功_日志里要留一条_但不许把那串码记进去()
+    {
+        // §6.1：失败也要留痕。判据就在这句话里 —— 用户在电话里只会说
+        // 「激活不了」，分不出「抄漏了一段」和「码是给别的机器的」。
+        using var dir = new TempDir();
+        var (signing, verifier) = NewKeyPair();
+        var logger = new CapturingLogger();
+        var service = new LicenseService(
+            verifier, new EntitlementStore(dir.File), Machine(), logger);
+
+        // 给**别的机器**签的码：本机一定验不过。
+        var code = Issue(signing, Machine(motherboard: "ANOTHER-MB-9999"), slots: 4);
+
+        var status = await service.ActivateAsync(code);
+
+        Assert.False(status.Activated);
+        var line = Assert.Single(logger.Messages, m => m.StartsWith("激活没成功", StringComparison.Ordinal));
+        Assert.Contains(status.FailureReason!, line);
+        // ⚠️ 那串码是凭据，`Sanitizer` 也不认识它 —— **一个字符都不许进日志**。
+        Assert.DoesNotContain(code, line);
+        Assert.DoesNotContain(code[3..20], line);
     }
 
     [Fact]
@@ -535,6 +631,66 @@ public class LicenseTests
 
         Assert.False(check.Ok);
         Assert.Contains("不适用于本机", check.FailureReason);
+    }
+
+    /// <summary>
+    /// 签发工具产出的**试用码**，客户端也验得过（规格 §6）。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// ⚠️ <b>这一条与上面那条终身码的向量是一对，是**两个仓之间唯一的对齐物**。</b>
+    /// 试用码的编码只差一个版本字节（5 号位那条向量证明不了它）——
+    /// 签发工具那边若把版本字节写成别的值、或者忘了强制 4 机位，
+    /// **只有这一条会红**。
+    /// </para>
+    /// <para>
+    /// ⚠️ <b>生成这个码的那把私钥已经销毁了</b>（只留下公钥）。要换向量，
+    /// 就用签发工具重新签一个：
+    /// <c>issue --key &lt;临时私钥&gt; --machine 62OH-NXKO-SW6E-2BCB-UIWI-PPC2 --trial --serial 501</c>
+    /// （那串机器码就是本文件 <see cref="Machine"/> 的默认身份），
+    /// 再把公钥、码、序号、签发日一起换掉。
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public void 签发工具产出的试用码_客户端验得过()
+    {
+        const string publicKey =
+            "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEaI2zETmr6pLUwu1M4M/FNDHRwesNDaDuua+nm4o8pinJ"
+            + "Zj7Mc9C72S4ePfXCPHezlx3JTH8U2ayOtwW+MdLNbQ==";
+
+        // ⚠️ 换行是为了读得下去，粘的时候要看成一整串。
+        const string code =
+            "VLGAICAHIYJAD2QCAAA62OHNXKOSW6E2BCBUIWIPPC25EVT23JMUIBK5LMYVE3ICOSRRWPV3I5U24ZZF"
+            + "KWEZVL3IIZUHY6NVCE5DFZDUGSX2VB7LDY5P7CRPSJIFFMOA324SLQFSNIDRW7HVKI";
+
+        var verifier = LicenseVerifier.FromEmbeddedKey(publicKey);
+        Assert.NotNull(verifier);
+
+        var check = verifier.Verify(code, Machine());
+
+        Assert.True(check.Ok, check.FailureReason);
+        Assert.Equal(LicensePayload.TrialVersion, check.Payload!.Version);
+        Assert.True(check.Payload.IsTrial);
+        Assert.Equal(LicensePayload.TrialSlots, check.Payload.Slots);
+        Assert.Equal(501u, check.Payload.Serial);
+        Assert.Equal(new DateOnly(2026, 10, 3), check.Payload.Issued);
+    }
+
+    /// <summary>
+    /// 内置的那把公钥是个**能用的**公钥。
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ 防的是「装配时把这一串留空 / 留了个占位符」—— 那会让**每台装出来的机器**
+    /// 都激活不了，而表现是**手机上说「电脑端的机位已经满了」、电脑端一个字都不显示**
+    /// （2026-10-03 报上来的正是这一条）。空串在这里会当场红。
+    /// </remarks>
+    [Fact]
+    public void 内置公钥不是空的_而且能解析出验证器()
+    {
+        Assert.False(string.IsNullOrWhiteSpace(LicensePublicKey.Base64));
+
+        // `FromEmbeddedKey` 解析不了时返回 null —— 那正是「装出来的软件激活不了」。
+        Assert.NotNull(LicenseVerifier.FromEmbeddedKey(LicensePublicKey.Base64));
     }
 
     [Fact]
