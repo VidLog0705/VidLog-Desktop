@@ -796,15 +796,16 @@ public partial class MainWindow : Window
     /// <para>
     /// ⚠️ <b>非模态</b>（<c>Show()</c> 而不是本仓其它窗口那种 <c>ShowDialog()</c>）：
     /// 这面墙是**一边干活一边看**的，模态会把它变成「要看画面就不能录单」。
-    /// 代价是它自己管生命周期（<c>Closed</c> 里收掉九路 ffmpeg），
+    /// 代价是它自己管生命周期（<c>Closed</c> 里收掉那几路 ffmpeg），
     /// 以及上面那个「不许开第二个」的守卫。
     /// </para>
     /// <para>
-    /// ⚠️ 机位是**开窗那一刻**取的：窗口开着的时候有手机报到，它不会自己冒出来
-    /// （关掉再开一次）。这条写进了 `docs/真机验收清单.md`。
+    /// ⚠️ <b>机位不是开窗那一刻的快照</b>：窗口自己每两秒对一次账 —— 新报到的接上、
+    /// 换了端口的指过去、不再报到的不留（见 <c>LiveWall</c>）。
+    /// 从这里递进去的是「怎么取机位」与「怎么建一格」，两份**函数**。
     /// </para>
     /// </remarks>
-    private async void OnOpenMultiView(object sender, RoutedEventArgs e)
+    private void OnOpenMultiView(object sender, RoutedEventArgs e)
     {
         if (_multiView is { IsLoaded: true } already)
         {
@@ -835,22 +836,36 @@ public partial class MainWindow : Window
             return;
         }
 
-        // 机位名从设备表来（§3.4.5 的机位名），拿不到就退回设备号 ——
-        // 显示一个内部号不好看，但**编一个名字更糟**。
-        var names = (await _host.Services.Devices.DevicesAsync())
-            .ToDictionary(d => d.DeviceId, d => d.DeviceName, StringComparer.Ordinal);
+        // ⚠️ 传的是**函数**不是快照，而且建格那一下才去查一次机位名：
+        // 快照的话这面墙就永远停在开窗那一刻的机位上（手机每开一次共享都换端口，
+        // 于是「手机在推、电脑端一直黑着」—— 2026-10-03 就是这么报上来的）。
+        _multiView = new MultiViewWindow(
+            _host.Services.Live.Active,
+            endpoint => CreateLiveTileAsync(endpoint, ffmpeg),
+            logger: _host.Logger)
+        {
+            Owner = this,
+        };
 
-        var tiles = _host.Services.Live.Active()
-            .Select(endpoint => LiveTile.Start(
-                ffmpeg,
-                endpoint.BaseUrl,
-                names.GetValueOrDefault(endpoint.DeviceId) ?? endpoint.DeviceId,
-                logger: _host.Logger))
-            .ToList();
-
-        _multiView = new MultiViewWindow(tiles, _host.Logger) { Owner = this };
         _multiView.Closed += (_, _) => _multiView = null;
         _multiView.Show();
+    }
+
+    /// <summary>给多画面建一格：机位名从设备表来（§3.4.5），拿不到就退回设备号。</summary>
+    /// <remarks>
+    /// 显示一个内部号不好看，但**编一个名字更糟**。
+    /// ⚠️ 查询只在**建格那一刻**做一次：机位名在这个窗里不会跟着改（改了名要重开窗口
+    /// 才看得到）—— 而每一拍都查一遍设备表，代价比这一点收益大得多。
+    /// </remarks>
+    private async Task<LiveTile> CreateLiveTileAsync(LiveEndpoint endpoint, string ffmpeg)
+    {
+        var name = (await _host.Services.Devices.DevicesAsync())
+            .FirstOrDefault(d => string.Equals(d.DeviceId, endpoint.DeviceId, StringComparison.Ordinal))
+            .DeviceName;
+
+        if (string.IsNullOrWhiteSpace(name)) name = endpoint.DeviceId;
+
+        return LiveTile.Start(ffmpeg, endpoint.BaseUrl, name, logger: _host.Logger);
     }
 
     // ─────────────────────────────────────────────

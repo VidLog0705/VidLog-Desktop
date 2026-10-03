@@ -522,9 +522,14 @@ public class DesktopServicesTests
             File.ReadAllText(Path.Combine(RepoRoot(), "src", "VidLog.Desktop.Core", "Configuration", "DesktopServices.cs")),
             StringComparison.Ordinal);
         var mainWindow = File.ReadAllText(Path.Combine(app, "MainWindow.xaml.cs"));
-        Assert.Contains("new MultiViewWindow(tiles, _host.Logger)", mainWindow, StringComparison.Ordinal);
-        // 每一格也是（它自己会问计数、改档，失败与恢复各有一条日志）。
-        Assert.Contains("logger: _host.Logger)", mainWindow, StringComparison.Ordinal);
+        Assert.Contains("new MultiViewWindow(", mainWindow, StringComparison.Ordinal);
+        // ⚠️ 数**几处**，而不是钉整段调用文本：2026-10-03 多画面那一族的构造点变了
+        //（机位改成「取机位的函数 + 建一格的函数」，不再是开窗那一刻的快照），
+        // 整段钉死的话，一次排版改动就会让这条测试红，而它真正要守的是
+        // 「窗口与每一格都把 `_host.Logger` 递下去了」—— 正好两处。
+        Assert.True(
+            CountOf(mainWindow, "logger: _host.Logger)") >= 2,
+            "多画面窗口与格子里那一路都要把 _host.Logger 递下去（不传就是静默不落盘）");
 
         Assert.Contains(
             "DshowDevices.ListVideoAsync(services.FfmpegPath, logger, cancellationToken)",
@@ -695,6 +700,21 @@ public class DesktopServicesTests
     }
 
     /// <summary>从测试程序集往上找到仓库根（含 <c>src</c> 与 <c>tests</c> 的那一层）。</summary>
+    /// <summary><paramref name="needle"/> 在 <paramref name="haystack"/> 里出现了几次。</summary>
+    private static int CountOf(string haystack, string needle)
+    {
+        var count = 0;
+
+        for (var at = haystack.IndexOf(needle, StringComparison.Ordinal);
+             at >= 0;
+             at = haystack.IndexOf(needle, at + needle.Length, StringComparison.Ordinal))
+        {
+            count++;
+        }
+
+        return count;
+    }
+
     private static string RepoRoot()
     {
         var dir = new DirectoryInfo(AppContext.BaseDirectory);

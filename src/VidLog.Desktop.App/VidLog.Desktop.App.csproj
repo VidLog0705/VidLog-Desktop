@@ -64,7 +64,7 @@
       ⚠️ 手机端同期还改了【发货】/【退货】两页右上角的实时共享开关，并加了手电筒按钮
       —— 那是**纯手机端**的改动，电脑端一行没动，不算在这里的升版理由里。
     -->
-    <Version>0.4.0</Version>
+    <Version>0.4.1</Version>
     <OutputType>WinExe</OutputType>
     <TargetFramework>net9.0-windows</TargetFramework>
     <Nullable>enable</Nullable>

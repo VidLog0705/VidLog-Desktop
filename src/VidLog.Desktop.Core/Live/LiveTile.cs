@@ -34,21 +34,31 @@ public sealed record LiveCounts(int Outbound, int Returned, int? ReportedQuality
 public sealed class LiveTile : IAsyncDisposable
 {
     /// <summary>
-    /// 一路断了之后**最多再接几次**（每次之间退避）。超过就停手，把原因写在
-    /// <see cref="Problem"/> 上。
+    /// 连着几次都没起来之后就**不再逐次播报**（但**照样接着试**）。
     /// </summary>
     /// <remarks>
-    /// ⚠️ 有上限不是抠门：手机没开实时共享时，重连是**永远不会成功**的，
-    /// 而每一路重连都要起一个 ffmpeg 并各留两条日志 —— 九格一起刷，
-    /// 一分钟就是几十行，而被灌满的日志等于没有日志（§6.1 的配套要求）。
-    /// 上限之内足够兜住「网络抖一下」和「那台手机重启了一下」。
+    /// ⚠️ 这只是「说多少」，不是「试几次」。手机没开实时共享时重连永远不会成功，
+    /// 每次都记的话九格一起刷、一分钟几十行，而被灌满的日志等于没有日志
+    ///（§6.1 的配套要求）—— 所以过了这个数就闭嘴，只留 <see cref="Problem"/> 在屏幕上说话。
     /// </remarks>
-    private const int MaxRetries = 3;
+    private const int QuietAfterRetries = 3;
+
+    /// <summary>两次重连之间最多等多久。</summary>
+    internal static readonly TimeSpan MaxRetryDelay = TimeSpan.FromSeconds(30);
+
+    /// <summary>多久没拿到新帧就算「这一格现在没有画面」。</summary>
+    /// <remarks>
+    /// ⚠️ 取 3 秒：格子那一路是 12 fps，这是三十多帧没来；而 ffmpeg 自己的读超时是
+    /// 5 秒（<c>LiveTileProcess.BuildArguments</c>）—— 也就是**在它放弃之前**就先说实话。
+    /// </remarks>
+    internal static readonly TimeSpan StaleAfter = TimeSpan.FromSeconds(3);
 
     private readonly string _ffmpeg;
-    private readonly string _baseUrl;
     private readonly IAppLogger _logger;
     private readonly HttpClient _http;
+
+    /// <summary>这一格现在指的地址。⚠️ **不是 readonly**：手机每开一次共享都是一个新端口（见 <see cref="Repoint"/>）。</summary>
+    private string _baseUrl;
 
     private readonly SemaphoreSlim _gate = new(1, 1);
 
@@ -101,14 +111,26 @@ public sealed class LiveTile : IAsyncDisposable
     public LiveQuality Quality => _quality;
 
     /// <summary>最新一帧；**还没有就是「无信号输入」**。</summary>
+    /// <remarks>
+    /// ⚠️ <b>老画面不算画面。</b>一路断了之后 <see cref="LiveTileProcess"/> 里还留着
+    /// 最后那一帧，不判的话格子里会**冻着一张静止的旧图** —— 而它看起来与「正在看」
+    /// 一模一样，用户会拿几分钟前的画面当作现在（2026-10-03 那一格连着几次起不来时
+    /// 就是这个形状：屏幕上一直有图，其实早就断了）。
+    /// </remarks>
     public LiveFrame? Latest()
     {
         var frame = _process?.Latest();
 
+        if (frame is null
+            || Environment.TickCount64 - frame.CapturedAtMs > StaleAfter.TotalMilliseconds)
+        {
+            return null;
+        }
+
         // ⚠️ 有画面了 = 之前那句「为什么没画面」不再成立，撤掉。
         // 撤在这儿是因为**只有这里知道画面真的来了** —— 问得到计数、
         // TCP 连得上，都不代表有画面（那两件事在「手机没开共享」时照样成立）。
-        if (frame is not null) _problem = null;
+        _problem = null;
 
         return frame;
     }
@@ -249,6 +271,57 @@ public sealed class LiveTile : IAsyncDisposable
         }
     }
 
+    /// <summary>
+    /// 那台手机**换了地址**（它每开一次实时共享都绑一个新端口）—— 把这一格指过去。
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ <b>没有这个方法，多画面里每一格都会永远钉在开窗那一刻的地址上。</b>
+    /// 而手机那边每一段推流都是新端口（`HttpServer.bind(anyIPv4, 0)`），
+    /// 于是「手机明明在推、电脑端那一格却一直黑着」，唯一的出路是把窗口关掉重开 ——
+    /// 2026-10-03 的日志里用户六分钟关了四次，那不是他手欠，那是**当时的唯一出路**。
+    /// </remarks>
+    /// <returns>真的换了返回 <see langword="true"/>；地址没变（或已经收了）返回 <see langword="false"/>。</returns>
+    public bool Repoint(string baseUrl)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(baseUrl);
+
+        baseUrl = baseUrl.TrimEnd('/');
+
+        lock (_life)
+        {
+            if (ObjectDisposedCheck()) return false;
+            if (string.Equals(_baseUrl, baseUrl, StringComparison.Ordinal)) return false;
+
+            _baseUrl = baseUrl;
+
+            // ⚠️ 换了地址就是从零开始：上一处地址的失败次数、那句「为什么没画面」、
+            // 那两个计数，说的都是**另一台机器/另一段推流**，留着就是撒谎。
+            _failStreak = 0;
+            _problem = null;
+            _counts = null;
+            _statusFailing = false;
+
+            RestartVideo();
+        }
+
+        _logger.Log(LogLevel.Info, "多画面", $"这一格换了地址：{Name} → {baseUrl}");
+        return true;
+    }
+
+    /// <summary>连着断了 <paramref name="failStreak"/> 次之后，隔多久再试。</summary>
+    /// <remarks>
+    /// ⚠️ <b>退避到 30 秒就封顶，而且**没有次数上限**。</b>从前的上限是 3 次，
+    /// 过了就永久停手并让用户「重开多画面」—— 而手机那边每次【开始工作】都换端口，
+    /// 于是那面墙用着用着就再也不出画面了（2026-10-03 六分钟四次就是这个）。
+    /// 30 秒封顶是给日志与 CPU 留的余地：一直试、但别一直吵。
+    /// </remarks>
+    public static TimeSpan RetryDelay(int failStreak)
+    {
+        var seconds = Math.Pow(2, Math.Min(Math.Max(failStreak, 1), 5));
+
+        return TimeSpan.FromSeconds(Math.Min(seconds, MaxRetryDelay.TotalSeconds));
+    }
+
     /// <summary>按当前档重起本地那一路。（改档、断线重连、以及第一次起来时用。）</summary>
     private void RestartVideo()
     {
@@ -279,7 +352,7 @@ public sealed class LiveTile : IAsyncDisposable
         }
     }
 
-    /// <summary>本地这一路**自己**断了 —— 接回来（见 <see cref="MaxRetries"/>）。</summary>
+    /// <summary>本地这一路**自己**断了 —— 接回来（见 <see cref="RetryDelay"/>）。</summary>
     /// <remarks>
     /// ⚠️ 它是在**读循环那条线程**上调的，所以这里只做两件不阻塞的事：
     /// 记个数、排一个一次性计时器。真正重起的那一下在 <see cref="Retry"/> 里。
@@ -289,7 +362,6 @@ public sealed class LiveTile : IAsyncDisposable
         if (ObjectDisposedCheck()) return;
 
         string? reason = null;
-        var attempts = 0;
 
         lock (_life)
         {
@@ -301,39 +373,35 @@ public sealed class LiveTile : IAsyncDisposable
             var hadFrame = process.HadFrame;
 
             // 出过画面说明这条路是通的（网抖、手机那侧重启）—— 从 1 数起，
-            // 而且下次出画面时又会归 1：掉线接回来这件事本身不该被上限挡住。
+            // 而且下次出画面时又会归 1：掉线接回来这件事本身不该被次数挡住。
             _failStreak = hadFrame ? 1 : _failStreak + 1;
-            attempts = _failStreak;
 
-            if (_failStreak > MaxRetries)
-            {
-                _problem = "这一格的画面连着几次都没起来 —— 手机那边的实时共享可能关着，或者网络不通。";
-            }
-            else
+            // ⚠️ **一直会重试，只是不再逐次播报。** 屏幕上那句话必须说清「还在试」，
+            // 否则用户能做的下一个动作就是去关窗口重开（而那不是必须的了）。
+            _problem = "这一格现在没有画面 —— 手机那边的实时共享可能关着，或者网络不通。（还在自动重试）";
+
+            if (_failStreak <= QuietAfterRetries)
             {
                 reason = hadFrame
                     ? $"这一格断了，接回来（第 {_failStreak} 次）"
                     : $"这一格还没出画面，再试（第 {_failStreak} 次）";
-
-                _retry?.Dispose();
-                _retry = new Timer(
-                    _ => Retry(),
-                    null,
-                    TimeSpan.FromSeconds(Math.Pow(2, _failStreak)),
-                    Timeout.InfiniteTimeSpan);
             }
+            else if (_failStreak == QuietAfterRetries + 1)
+            {
+                // 只在这一个点上多说一句，往后每 30 秒一次的重试不再留痕
+                //（§6.1 的配套要求：重复的问题只在「变了」的时候记）。
+                reason = $"这一格连着 {_failStreak} 次都没起来，接着试（每 30 秒一次），不再逐次说了";
+            }
+
+            _retry?.Dispose();
+            _retry = new Timer(
+                _ => Retry(),
+                null,
+                RetryDelay(_failStreak),
+                Timeout.InfiniteTimeSpan);
         }
 
-        if (reason is null)
-        {
-            _logger.Log(
-                LogLevel.Warn, "多画面",
-                $"这一格连着 {attempts} 次都没起来，先不重试了（要它自己回来就重开多画面）：{Name}");
-        }
-        else
-        {
-            _logger.Log(LogLevel.Info, "多画面", $"{reason}：{Name}");
-        }
+        if (reason is not null) _logger.Log(LogLevel.Info, "多画面", $"{reason}：{Name}");
     }
 
     /// <summary>计时器到点：把本地那一路重起。</summary>

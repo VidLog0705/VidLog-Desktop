@@ -65,36 +65,67 @@ public partial class MultiViewWindow : Window
         [LiveQuality.P1080] = "1080P：全屏最清楚；最费流量，机位多时手机容易发热、画面可能卡。",
     };
 
-    private readonly IReadOnlyList<LiveTile> _tiles;
+    /// <summary>每一拍重新问一次「现在还算数的机位有哪些」。</summary>
+    private readonly Func<IReadOnlyList<LiveEndpoint>> _cameras;
+
+    /// <summary>对账那面墙；**设计器那条路上是 <see langword="null"/>**（没有机位源）。</summary>
+    private readonly LiveWall? _wall;
+
     private readonly VidLog.Desktop.Core.Diagnostics.IAppLogger _logger;
     private readonly List<Cell> _cells = [];
     private readonly DispatcherTimer _frameTimer;
     private readonly DispatcherTimer _statusTimer;
+    private readonly DispatcherTimer _syncTimer;
 
     private int _cellCount = MaxCells;
 
+    /// <summary>墙上现在挂着几台机位（对完账才知道）。</summary>
+    private int _onlineCount;
+
     /// <summary>计数那一拍正在跑（见 <see cref="PumpCounts"/> 的重入保护）。</summary>
     private bool _pumpingCounts;
+
+    /// <summary>对账那一拍正在跑（理由同 <see cref="PumpCounts"/>：它要 await）。</summary>
+    private bool _syncing;
+
     private Cell? _fullscreen;
     private LiveQuality _fullscreenQuality = LiveQualityExtensions.FullscreenDefault;
     private Image? _fullscreenImage;
 
-    /// <summary>给 XAML 用的无参构造（设计器与测试）。**别在运行时用它**。</summary>
-    public MultiViewWindow() : this([])
+    /// <summary>全屏时那句「为什么没有画面」（见 <see cref="PumpFullscreenNote"/>）。</summary>
+    private TextBlock? _fullscreenNote;
+
+    /// <summary>给 XAML 用的无参构造（设计器）。**别在运行时用它** —— 它没有机位源，墙上永远是空的。</summary>
+    public MultiViewWindow() : this(() => [], null)
     {
     }
 
+    /// <param name="cameras">
+    /// 现在还算数的机位（`DesktopServices.Live.Active`）。**是个函数、不是一份快照** ——
+    /// 每一次对账都重新问一遍，手机换了端口或新报到了这里才看得见。
+    /// </param>
+    /// <param name="create">
+    /// 建一格（真机上就是 `LiveTile.Start` 外加一次机位名查询）。
+    /// ⚠️ 传 <see langword="null"/> = 这面墙不接任何机位（设计器那条路）。
+    /// </param>
     /// <param name="logger">
     /// ⚠️ <b>调用方必须传</b>（`AppHost.Logger`）。它是可选参数、默认 `NullLogger` ——
     /// 不传的话这个窗的一切都**静默不落盘**，而编译器一个字都不会说。
     /// 这正是 `AppHost.Logger` 那段注释在警告的事。
     /// </param>
-    public MultiViewWindow(IReadOnlyList<LiveTile> tiles, Core.Diagnostics.IAppLogger? logger = null)
+    public MultiViewWindow(
+        Func<IReadOnlyList<LiveEndpoint>> cameras,
+        Func<LiveEndpoint, Task<LiveTile>>? create,
+        Core.Diagnostics.IAppLogger? logger = null)
     {
         InitializeComponent();
 
-        _tiles = tiles;
+        _cameras = cameras;
         _logger = logger ?? Core.Diagnostics.NullLogger.Instance;
+
+        // ⚠️ 对账那面墙**归这个窗口造**：它要把阵容摆到下面那些格子上，
+        // 而那件事只有窗口做得了（见 `ApplyLineup`）。
+        _wall = create is null ? null : new LiveWall(create, ApplyLineup, _logger);
 
         BuildWall();
         BuildQualityRow();
@@ -112,29 +143,41 @@ public partial class MultiViewWindow : Window
         _statusTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
         _statusTimer.Tick += (_, _) => PumpCounts();
 
-        Loaded += (_, _) =>
+        // ⚠️ **对账两秒一次**，不是一秒：手机那边报到本身就 20 秒一次，
+        // 而这一拍要问一遍机位表（在内存里，很便宜）—— 但再快也没意义。
+        // 两秒够用：手机重启之后，那一格最多两秒就指到新端口上了
+        //（只有**新机位**才会去读设备表，见 `MainWindow.CreateLiveTileAsync`）。
+        _syncTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(2) };
+        _syncTimer.Tick += async (_, _) => await SyncCamerasAsync();
+
+        Loaded += async (_, _) =>
         {
             ApplyCellCount(_cellCount);
             _frameTimer.Start();
             _statusTimer.Start();
+            _syncTimer.Start();
+
+            // ⚠️ **开窗当场先对一次账**，别等第一拍：最常见的一种顺序就是
+            // 「先把电脑这边摆好，再点手机上的【开始工作】」—— 等两秒才接上
+            // 在一面空墙前面是很长的一段时间。
+            await SyncCamerasAsync();
 
             // ⚠️ 「起」留一条（§6.1：有生命周期的组件）。带上机位数 ——
             // 「为什么只有一格有画面」的答案常常就是这里（压根只报到了 1 台）。
             _logger.Log(
                 LogLevel.Info, "多画面",
-                $"多画面窗口开了：{_cellCount} 格、{_tiles.Count} 台机位在线");
+                $"多画面窗口开了：{_cellCount} 格、{_onlineCount} 台机位在线");
         };
 
         Closed += async (_, _) =>
         {
             _frameTimer.Stop();
             _statusTimer.Stop();
+            _syncTimer.Stop();
 
-            foreach (var cell in _cells)
-            {
-                // 空格子没有机位可收（用户选了几格而机位不够）。
-                if (cell.Tile is { } tile) await tile.DisposeAsync();
-            }
+            // ⚠️ 收 tile 这件事**归那面墙**（它才是那些 tile 的主）——
+            // 这里再收一遍就是两份主人，而 `Repoint`/对账那边还以为它们活着。
+            if (_wall is not null) await _wall.DisposeAsync();
 
             _logger.Log(LogLevel.Info, "多画面", "多画面窗口关了");
         };
@@ -144,17 +187,54 @@ public partial class MultiViewWindow : Window
     // 搭界面
     // ─────────────────────────────────────────────
 
+    /// <summary>
+    /// 先摆出九格**空**的，机位由 <see cref="ApplyLineup"/> 那一拍接上来。
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ 从前是「开窗时按机位表建好再摆」—— 那一份快照用完就丢，于是窗口
+    /// **永远停在开窗那一刻的机位上**（手机换端口就再也不出画面了）。
+    /// 现在格子是固定的、谁挂在这一格上每一拍都在变（见 <see cref="LiveWall"/>）。
+    /// </remarks>
     private void BuildWall()
     {
         for (var index = 0; index < MaxCells; index++)
         {
-            var tile = index < _tiles.Count ? _tiles[index] : null;
-            var cell = new Cell(this, index, tile);
+            var cell = new Cell(this, index);
 
             _cells.Add(cell);
             Wall.Children.Add(cell.Root);
         }
     }
+
+    /// <summary>
+    /// 对一次账：把机位表现在这几位摆到格子上。
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ <b>它是 <see cref="LiveWall"/> 回头叫的那个回调</b>（不是计时器直接叫的）——
+    /// 顺序由那面墙保证：**先摆新的、再收旧的**。反过来的话，界面会有一瞬间
+    /// 指着一个已经收掉的 tile。
+    /// </remarks>
+    private void ApplyLineup(IReadOnlyList<LiveTile?> lineup)
+    {
+        for (var index = 0; index < _cells.Count; index++)
+        {
+            // 机位比格子少是常态（用户选了几格而只有两台手机）—— 剩下的格子留空。
+            _cells[index].Adopt(index < lineup.Count ? lineup[index] : null);
+        }
+
+        _onlineCount = lineup.Count;
+        UpdateCameraNote();
+    }
+
+    /// <summary>墙上方那句「正在查找…」要不要露出来。</summary>
+    /// <remarks>
+    /// ⚠️ 一台机位都没有时**格子照摆**（每格写「无信号输入」），另外补一句说明 ——
+    /// 曾经的做法是「没机位就把格子整体收掉」，那让整页只剩一句话、看着像坏了
+    ///（需求方 2026-10-02：「改回原来我们自己的渲染」）。
+    /// 这句话现在是**真的**：窗口自己在对账，有手机报到就会自己接上来。
+    /// </remarks>
+    private void UpdateCameraNote() =>
+        EmptyNote.Visibility = _onlineCount == 0 ? Visibility.Visible : Visibility.Collapsed;
 
     private void BuildQualityRow()
     {
@@ -228,11 +308,36 @@ public partial class MultiViewWindow : Window
 
         TitleText.Text = $"实时多画面 · {_cellCount} 宫格";
 
-        // ⚠️ 一台机位都没有时**格子照摆**（每格写「无信号输入」），另外在**墙上方**
-        // 补一句「正在查找…」。曾经的做法是「没机位就把格子整体收掉」，那让整页只剩
-        // 一句话、看着像坏了（需求方 2026-10-02：「改回原来我们自己的渲染」）。
-        // 压字的问题改由**说明另占一行**解决（见 .xaml），不是靠收格子。
-        EmptyNote.Visibility = _tiles.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+        // 压字的问题由**说明另占一行**解决（见 .xaml），不是靠收格子。
+        UpdateCameraNote();
+    }
+
+    /// <summary>对一次账：机位表 → 格子。</summary>
+    /// <remarks>
+    /// ⚠️ <b>必须 `await`，不能 `_ =` 把它丢掉</b> —— 与 <see cref="PumpCounts"/> 同一条
+    /// 理由：丢掉的异常没有人观察，字不出现而日志里一个字都没有。
+    /// </remarks>
+    private async Task SyncCamerasAsync()
+    {
+        // ⚠️ 重入保护：这一拍里要读设备表、还可能收掉几路（每一路最多等它退 2 秒），
+        // 叠起来可能超过两秒。不挡的话每一拍都叠一批新动作。
+        if (_syncing || _wall is null) return;
+        _syncing = true;
+
+        try
+        {
+            await _wall.SyncAsync(_cameras());
+        }
+        catch (Exception ex)
+        {
+            // 走到这儿是**意料之外**的异常（正常的「手机没开共享」只是接不上，
+            // 不是异常）—— 意料之外的就该吵。
+            _logger.Log(LogLevel.Warn, "多画面", $"机位表没对上：{ex.Message}");
+        }
+        finally
+        {
+            _syncing = false;
+        }
     }
 
     // ─────────────────────────────────────────────
@@ -244,6 +349,7 @@ public partial class MultiViewWindow : Window
         if (_fullscreen is not null)
         {
             _fullscreen.Pump(_fullscreenImage);
+            PumpFullscreenNote();
             return;
         }
 
@@ -251,6 +357,32 @@ public partial class MultiViewWindow : Window
         {
             _cells[index].Pump(_cells[index].Surface);
         }
+    }
+
+    /// <summary>全屏那一格没有画面时，把原因写在黑屏上。</summary>
+    /// <remarks>
+    /// ⚠️ 「有没有画面」这一判**问的是 <see cref="LiveTile.Latest"/>**，不另写一套超时
+    /// —— 两处各判一次的话，迟早会出现「格子说断了、全屏还在放」这种自相矛盾。
+    /// </remarks>
+    private void PumpFullscreenNote()
+    {
+        if (_fullscreenNote is null) return;
+
+        var tile = _fullscreen?.Tile;
+
+        var why = tile is null
+            ? "这一格已经不在墙上了"
+            : tile.Latest() is not null ? null : tile.Problem ?? "无信号输入";
+
+        if (why is null)
+        {
+            _fullscreenNote.Visibility = Visibility.Collapsed;
+            return;
+        }
+
+        if (!string.Equals(_fullscreenNote.Text, why, StringComparison.Ordinal)) _fullscreenNote.Text = why;
+
+        _fullscreenNote.Visibility = Visibility.Visible;
     }
 
     /// <summary>每格问一次计数。</summary>
@@ -315,8 +447,24 @@ public partial class MultiViewWindow : Window
 
         UseSmoothScaling(_fullscreenImage);
 
+        // ⚠️ 格子里那个「无信号输入」的 TextBlock 在 `Cell` 里，**不在这一层** ——
+        // 不补一个的话，全屏时一路断了就是**一整片黑，一个字都没有**
+        //（而全屏正是用户用来看画质清楚不清楚的地方：他只会以为「这一格糊/坏了」）。
+        _fullscreenNote = new TextBlock
+        {
+            Text = "无信号输入",
+            Foreground = (Brush)FindResource("TextDisabled"),
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center,
+            TextWrapping = TextWrapping.Wrap,
+            TextAlignment = TextAlignment.Center,
+            MaxWidth = 520,
+            Visibility = Visibility.Collapsed,
+        };
+
         FullscreenHost.Children.Clear();
         FullscreenHost.Children.Add(_fullscreenImage);
+        FullscreenHost.Children.Add(_fullscreenNote);
 
         FullscreenTitle.Text = tile.Name;
         FullscreenLayer.Visibility = Visibility.Visible;
@@ -334,6 +482,7 @@ public partial class MultiViewWindow : Window
         FullscreenLayer.Visibility = Visibility.Collapsed;
         FullscreenHost.Children.Clear();
         _fullscreenImage = null;
+        _fullscreenNote = null;
 
         // ⚠️ **改回格子那一档**：不改的话那台手机会一直占着高码率，
         // 而没人再看它 —— 白耗它的电与整个局域网的带宽。
@@ -396,6 +545,7 @@ public partial class MultiViewWindow : Window
     /// <remarks>
     /// ⚠️ <see cref="Tile"/> 为 <see langword="null"/> 是**正常的一种格子**：
     /// 用户选了 9 格而只有 2 台手机，剩下 7 格就是这样 —— 里面写「无信号输入」。
+    /// 而它**每一拍都可能换**（见 <see cref="Adopt"/>）。
     /// </remarks>
     private sealed class Cell
     {
@@ -403,13 +553,14 @@ public partial class MultiViewWindow : Window
         private readonly int _index;
         private readonly Brush _countGreen;
         private readonly Brush _countRed;
+        private readonly TextBlock _name;
+        private readonly Button _rotate;
         private long _shownAt;
 
-        public Cell(MultiViewWindow owner, int index, LiveTile? tile)
+        public Cell(MultiViewWindow owner, int index)
         {
             _owner = owner;
             _index = index;
-            Tile = tile;
 
             // ⚠️ 颜色在这一刻就取好（构造里 `FindResource` 是**验过能用**的 ——
             // 别的几个键就是在这儿取的）。放到每帧的渲染路径里去查，一查不到
@@ -442,9 +593,9 @@ public partial class MultiViewWindow : Window
                 TextAlignment = TextAlignment.Center,
             };
 
-            var name = new TextBlock
+            _name = new TextBlock
             {
-                Text = tile?.Name ?? $"机位 {index + 1}",
+                Text = $"机位 {index + 1}",
                 Foreground = Brushes.White,
                 Margin = new Thickness(8, 6, 8, 0),
                 HorizontalAlignment = HorizontalAlignment.Left,
@@ -457,10 +608,10 @@ public partial class MultiViewWindow : Window
             // 而 `TextBlock` 有。截图脚本按 id 找控件（不按中文标题找 ——
             // PS 5.1 的控制台代码页会把中文读成乱码）。
             // 双击这个字也会**冒泡到格子**上，所以脚本照样进得了全屏。
-            AutomationProperties.SetAutomationId(name, $"LiveCell{index + 1}");
-            AutomationProperties.SetName(name, $"机位 {index + 1}");
+            AutomationProperties.SetAutomationId(_name, $"LiveCell{index + 1}");
+            AutomationProperties.SetName(_name, $"机位 {index + 1}");
 
-            var rotate = new Button
+            _rotate = new Button
             {
                 Content = "⟳",
                 Width = 28,
@@ -470,9 +621,9 @@ public partial class MultiViewWindow : Window
                 VerticalAlignment = VerticalAlignment.Top,
                 Style = (Style)((FrameworkElement)owner).FindResource("IconButton"),
                 ToolTip = "转 90°",
-                Visibility = tile is null ? Visibility.Collapsed : Visibility.Visible,
+                Visibility = Visibility.Collapsed,
             };
-            rotate.Click += (_, _) => Rotate();
+            _rotate.Click += (_, _) => Rotate();
 
             Counts = new TextBlock
             {
@@ -487,8 +638,8 @@ public partial class MultiViewWindow : Window
             var inner = new Grid();
             inner.Children.Add(Surface);
             inner.Children.Add(Empty);
-            inner.Children.Add(name);
-            inner.Children.Add(rotate);
+            inner.Children.Add(_name);
+            inner.Children.Add(_rotate);
             inner.Children.Add(Counts);
 
             Root = new Border
@@ -505,8 +656,47 @@ public partial class MultiViewWindow : Window
             Root.MouseLeftButtonDown += OnMouseDown;
         }
 
-        /// <summary>这一格的机位；**用户选了几格而机位不够时是 <see langword="null"/>**。</summary>
-        public LiveTile? Tile { get; }
+        /// <summary>
+        /// 这一格的机位；**用户选了几格而机位不够时是 <see langword="null"/>**。
+        /// ⚠️ 它**每一拍都可能换**（换了地址的是同一个对象，退了休的才是新的/空的）——
+        /// 读它之前那一刻的值不算数，所以别再缓存它。
+        /// </summary>
+        public LiveTile? Tile { get; private set; }
+
+        /// <summary>
+        /// 把这一格改挂到 <paramref name="tile"/> 上（<see langword="null"/> = 摘空）。
+        /// </summary>
+        /// <remarks>
+        /// ⚠️ <b>换了一路就得把上一路留下的东西全抹掉</b>：画面、那两个计数、
+        /// 那句话。抹不干净的话，新机位还没出画面时屏幕上会是**上一台手机的
+        /// 计数和旧图** —— 而那看起来完全正常。
+        /// </remarks>
+        public void Adopt(LiveTile? tile)
+        {
+            if (ReferenceEquals(Tile, tile)) return;
+
+            Tile = tile;
+
+            _name.Text = tile?.Name ?? $"机位 {_index + 1}";
+            _rotate.Visibility = tile is null ? Visibility.Collapsed : Visibility.Visible;
+
+            Surface.Source = null;
+            Counts.Inlines.Clear();
+            Counts.Visibility = Visibility.Collapsed;
+
+            // 0 不可能等于任何一帧的时间戳 ⇒ 下一帧一定画得上（`Pump` 拿它去重）。
+            _shownAt = 0;
+
+            Empty.Text = tile?.Problem ?? "无信号输入";
+            Empty.Visibility = Visibility.Visible;
+
+            // 正全屏看着的那一格被收了（机位过期了）：退出来 —— 不退的话全屏层会
+            // 冻在最后一帧上，标题还写着那台机位，而它已经不在了。
+            if (tile is null && ReferenceEquals(_owner._fullscreen, this))
+            {
+                _ = _owner.ExitFullscreenAsync();
+            }
+        }
 
         public Border Root { get; }
 
@@ -552,11 +742,22 @@ public partial class MultiViewWindow : Window
             if (frame is null)
             {
                 // ⚠️ 抹平那句「无信号输入」是个**四种情况共用**的说法：手机没开实时共享、
-                // 网络不通、这边起不来、连了几次都失败。`LiveTile.Problem` 里那几句
+                // 网络不通、这边起不来、断了几次还没接回来。`LiveTile.Problem` 里那几句
                 // 是分得清的，就该写出来 —— 不然用户只能看到一格黑着，没有任何下一步。
                 var why = tile.Problem ?? "无信号输入";
 
                 if (!string.Equals(Empty.Text, why, StringComparison.Ordinal)) Empty.Text = why;
+
+                // ⚠️ **这句话要能重新露出来。** 出过画面之后 `Empty` 就被按下去了，
+                // 而断了之后 `Surface` 里还留着最后那张图 —— 不重新露的话，格子里是
+                // **一张冻住的旧画面，一个字都没有**，而它看起来与「正在看」一模一样
+                //（`LiveTile.Latest` 那边判定「老画面不算画面」，这一行负责把它说出来）。
+                Empty.Visibility = Visibility.Visible;
+
+                // 旧图一起撤掉：留着它，那句话就压在图上（能看见，但底下是几秒前的
+                // 现实，看的人会以为「还能看，只是有点卡」）。
+                target.Source = null;
+                _shownAt = 0;
 
                 return;
             }
