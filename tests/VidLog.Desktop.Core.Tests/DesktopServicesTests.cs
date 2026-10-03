@@ -5,6 +5,7 @@ using VidLog.Desktop.Core.Configuration;
 using VidLog.Desktop.Core.Media;
 using VidLog.Desktop.Core.Recording;
 using VidLog.Desktop.Core.Upload;
+using VidLog.Desktop.Core.Web;
 
 namespace VidLog.Desktop.Core.Tests;
 
@@ -938,5 +939,107 @@ public class DesktopServicesTests
         Assert.True(
             bytes.Length >= 3 && bytes[0] == 0xEF && bytes[1] == 0xBB && bytes[2] == 0xBF,
             "installer\\VidLog.iss 少了 UTF-8 BOM —— Inno 会把里面的中文按 ANSI 读");
+    }
+
+    /// <summary>
+    /// 安装脚本加的那条**防火墙放行**，与 Core 里那份（<see cref="PlaybackFirewall"/>）
+    /// 必须是同一个名字、同一个端口，而且**装上 / 卸下成对**。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// ⚠️ 这是 2026-10-03 那个缺陷的闸。回放服务绑的是 http.sys，Windows 那个
+    /// 「允许访问」的弹窗**不会出现**，所以放行只能由安装程序做 —— 而少了它，
+    /// 现场是「软件一切正常、二维码照画，手机报连不上、电脑端一个字都不显示」，
+    /// 两边分开看都是对的。这个名字一旦与代码里那份走岔，
+    /// 界面就会**说反**：明明放行了却报「没放行」（或者反过来，什么都不说）。
+    /// </para>
+    /// <para>
+    /// ⚠️ 天花板：`remoteip=localsubnet` 是**故意**只放行本网段的（手机只可能从
+    /// 局域网连过来），所以这条规则对「手机在另一个网段」那种部署无能为力 ——
+    /// 那种情况由手机端的「手填地址」兜底，不是靠这里挡。
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public void 安装脚本的防火墙放行与代码里的那一份对得上()
+    {
+        var iss = InstallerCode();
+
+        // ① 名字逐字相同：加的那条在 [Run] 里，删的那条在 [UninstallRun] 里 ——
+        //    删漏了会在那台机器上留下一个没人认领的入站口子。
+        var ruleName = PlaybackFirewall.RuleName;
+
+        Assert.Contains(
+            $"netsh advfirewall firewall add rule name={ruleName}",
+            iss,
+            StringComparison.Ordinal);
+
+        var uninstall = iss.IndexOf("[UninstallRun]", StringComparison.Ordinal);
+        Assert.True(uninstall >= 0, "`.iss` 里没有 [UninstallRun]");
+        Assert.Contains(
+            $"netsh advfirewall firewall delete rule name={ruleName}",
+            iss[uninstall..],
+            StringComparison.Ordinal);
+
+        // ② 端口与 urlacl 那条是同一个数（默认回放端口）。
+        var ports = Regex.Matches(iss, @"localport=(\d+)")
+                         .Select(m => m.Groups[1].Value)
+                         .Distinct()
+                         .ToList();
+
+        Assert.Equal(DesktopServices.DefaultPlaybackPort.ToString(), Assert.Single(ports));
+
+        // ③ 只放行本网段 —— 别对着整个人网开一道门；
+        //    profile 用 any（这台机器的网卡常常被归到「公用网络」，只给「专用」放行等于没放）。
+        Assert.Contains("remoteip=localsubnet", iss, StringComparison.Ordinal);
+        Assert.Contains("profile=any", iss, StringComparison.Ordinal);
+
+        // ④ 界面念给用户听的那一行命令，与安装程序做的是**同一件事** ——
+        //    逐项对得上，不是「意思差不多」：少一个 profile 就是一个
+        //    只在某些机器上才连不上的坑（而这条修复的立身之本正是「两处一致」）。
+        var shown = PlaybackFirewall.AddCommandLine(DesktopServices.DefaultPlaybackPort);
+
+        Assert.Contains(
+            $"netsh advfirewall firewall add rule name={ruleName}",
+            shown,
+            StringComparison.Ordinal);
+        Assert.Contains("remoteip=localsubnet", shown, StringComparison.Ordinal);
+        Assert.Contains("profile=any", shown, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// 判据只用退出码：**0 在、1 不在、别的都是「说不准」**。
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ 「说不准」不许塌成「不在」：那会让界面在别的杀软 / 被组策略管着的机器上
+    /// 平白吓人一跳（而且报的是一件假事）。这两条都是「用户可见通道分得清吗」那条要求。
+    /// </remarks>
+    [Fact]
+    public async Task 防火墙规则在不在只看退出码_说不准不许当成不在()
+    {
+        var exists = new StubRunner(0);
+        var missing = new StubRunner(1);
+        var unknown = new StubRunner(2);
+
+        Assert.True(await PlaybackFirewall.IsRulePresentAsync(exists));
+        Assert.False(await PlaybackFirewall.IsRulePresentAsync(missing));
+        Assert.Null(await PlaybackFirewall.IsRulePresentAsync(unknown));
+
+        // 问的是**那一条规则**，不是「防火墙开没开」之类别的东西。
+        Assert.Contains($"name={PlaybackFirewall.RuleName}", exists.Arguments[^1], StringComparison.Ordinal);
+    }
+
+    /// <summary>退出码固定、并把 argv 留一份的假 netsh。</summary>
+    private sealed class StubRunner(int exitCode) : IProcessRunner
+    {
+        public IReadOnlyList<string> Arguments { get; private set; } = [];
+
+        public Task<ProcessResult> RunAsync(
+            string executable,
+            IReadOnlyList<string> arguments,
+            CancellationToken cancellationToken = default)
+        {
+            Arguments = [executable, .. arguments];
+            return Task.FromResult(new ProcessResult(exitCode, string.Empty, string.Empty));
+        }
     }
 }

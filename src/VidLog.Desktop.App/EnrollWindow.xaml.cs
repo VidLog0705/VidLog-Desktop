@@ -2,7 +2,11 @@ using System.Windows;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using System.Windows.Threading;
+using VidLog.Desktop.Core.Configuration;
+using VidLog.Desktop.Core.Diagnostics;
+using VidLog.Desktop.Core.Media;
 using VidLog.Desktop.Core.Upload;
+using VidLog.Desktop.Core.Web;
 
 // 本工程同时开了 UseWPF 与 UseWindowsForms（后者只为托盘图标），
 // ImplicitUsings 会把两边的命名空间都带进来，于是 MessageBox 这类同名类型
@@ -119,6 +123,71 @@ public partial class EnrollWindow : Window
         // 停掉了心跳，紧接着这一句又把它打开了（那之后就再也没人停它）。
         _ticker.Start();
         await PollAsync();
+        await WarnIfFirewallBlockedAsync();
+    }
+
+    /// <summary>
+    /// 防火墙没放行回放端口的话，把这件事和该敲的那一行写在码下面。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// 这是 2026-10-03 报上来的那个缺陷留下来的：回放服务绑的是 <b>http.sys</b>，
+    /// Windows 那个「允许访问」的弹窗**不会出现**（监听的是 System 进程，没人有点的
+    /// 机会）—— 于是没有人会去放行，而界面上一切正常：服务绑上了、地址有了、
+    /// 二维码也画出来了。手机那边报「连不上」，电脑端**一个字都不显示**，
+    /// 用户只能对着一张好码干等。
+    /// </para>
+    /// <para>
+    /// ⚠️ **只有问得出「确实不在」才提示**。「问不出来」（netsh 起不来、
+    /// 被执行策略挡住、退出码不是 0/1）时**什么都不说** —— 在那种机器上平白
+    /// 吓人一跳，比不说更坏（§6.1 那条「这条通道分得清吗」）。
+    /// </para>
+    /// </remarks>
+    private async Task WarnIfFirewallBlockedAsync()
+    {
+        FirewallWarning.Visibility = Visibility.Collapsed;
+
+        var port = _host.Services.PlaybackPort;
+
+        // 端口被改过时那条规则管不着新端口 —— 但那种情况**根本绑不上 `+`**
+        // （urlacl 只登记了 8720 这一个），窗口这时已经在说另一句话了，不在这里重复。
+        if (port != DesktopServices.DefaultPlaybackPort)
+        {
+            return;
+        }
+
+        bool? present;
+        try
+        {
+            present = await PlaybackFirewall.IsRulePresentAsync(
+                new SystemProcessRunner(_host.Logger), PlaybackFirewall.RuleName);
+        }
+        catch (Exception ex)
+        {
+            // §6.1：catch 不许静默吞掉。这里用户可见的那条通道就是「什么都没提示」
+            // （= 问不出来），所以至少要留一条痕，免得下次又查不出来。
+            _host.Log(LogLevel.Warn, "入网", $"问不出防火墙那条规则在不在：{ex.Message}");
+            return;
+        }
+
+        if (present is not false)
+        {
+            return;
+        }
+
+        _host.Logger.Log(
+            LogLevel.Warn, "入网", "防火墙没放行回放端口，手机多半连不上",
+            new Dictionary<string, object?>
+            {
+                ["端口"] = port,
+                ["规则"] = PlaybackFirewall.RuleName,
+            });
+
+        FirewallWarning.Text =
+            $"⚠️ 这台电脑的防火墙没有放行 {port} 端口 —— 手机扫了多半会报「连不上」。"
+            + "让管理员在这台电脑上执行一次（安装程序本来会自动做，绿色包不会）：\n"
+            + PlaybackFirewall.AddCommandLine(port);
+        FirewallWarning.Visibility = Visibility.Visible;
     }
 
     /// <summary>现在发不出二维码的原因；发得出来返回 <see langword="null"/>。</summary>

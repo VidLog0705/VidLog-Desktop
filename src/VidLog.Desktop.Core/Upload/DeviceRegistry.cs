@@ -293,15 +293,35 @@ public sealed class DeviceRegistry
             var existing = _pending.TryGetValue(deviceId, out var previous) ? previous : null;
             var decision = existing?.Decision ?? EnrollDecision.Pending;
 
+            // ⚠️ **入口就截**（规格 §3.4.3 ②：上限属于「机位名」这个字段，
+            // 不只属于手机端那个输入框）。
+            // 不截的话，电脑端的待批准弹窗与设备表里会显示一个超长的名字，
+            // 而批准之后落盘的那份是截过的 —— 用户看到的两处不一样。
+            var clamped = DeviceNameRules.Clamp(deviceName);
+
             _pending[deviceId] = new PendingEnrollment(
                 deviceId,
-                // ⚠️ **入口就截**（规格 §3.4.3 ②：上限属于「机位名」这个字段，
-                // 不只属于手机端那个输入框）。
-                // 不截的话，电脑端的待批准弹窗与设备表里会显示一个超长的名字，
-                // 而批准之后落盘的那份是截过的 —— 用户看到的两处不一样。
-                DeviceNameRules.Clamp(deviceName),
+                clamped,
                 existing?.RequestedAt ?? _now(),
                 decision);
+
+            // 这条留痕是**给事后查的**，理由很具体（2026-10-03）：
+            // 有人报「手机扫码后电脑端不提示同意」，而日志里**一个字都没有** ——
+            // 分不清是「手机的请求根本没到」（防火墙）还是「到了、但没人弹窗」（界面），
+            // 两个方向的修法完全相反。申请到达本身就是关键操作，必须留痕。
+            //
+            // ⚠️ **只记「第一次看到这台设备」那一次**：手机是每两秒轮询一次的，
+            // 每轮都记的话同一句话会把日志刷满，而被刷满的日志等于没有日志。
+            // 令牌与凭据**绝不进日志**（见 Sanitizer）。
+            if (existing is null)
+            {
+                _logger.Log(LogLevel.Info, "入网", "收到入网申请",
+                    new Dictionary<string, object?>
+                    {
+                        ["deviceId"] = deviceId,
+                        ["设备名"] = clamped,
+                    });
+            }
 
             var status = decision switch
             {

@@ -13,11 +13,17 @@
 ;    改版本就改 csproj 那一行，别的什么都别改。
 ;
 ; ── 为什么需要安装程序（而不是继续只发 zip）────────────────────────────
-; Windows 上绑定 `http://+:8720/`（局域网可达的那个前缀）需要**一次性**注册
-; urlacl，而那要管理员权限。之前只发 zip，用户解压就开 —— 于是回放服务
-; **静默**退到 `localhost`，手机扫二维码那一步根本连不上这台电脑
-; （2026-10-02 报上来的「点连接手机不显示 / 扫了没反应」就是这个）。
-; 安装程序跑的时候本来就是提权的，顺手把这件事做掉，用户什么都不用敲。
+; 有两件事**只能提权做**，而两件少了都会让「手机连不上这台电脑」：
+;
+;   ① urlacl —— 绑 `http://+:8720/`（局域网可达的那个前缀）需要一次性注册。
+;      少了它回放服务**静默**退到 `localhost`，手机连不上这台电脑
+;      （2026-10-02 报上来的「点连接手机不显示 / 扫了没反应」就是这个）。
+;   ② 防火墙入站放行 —— 绑的是 http.sys，**不会**弹「允许访问」那个框
+;      （监听的是 System 进程），于是没人会去放行：urlacl 好了、界面正常、
+;      二维码照画，**手机的请求却在防火墙这一层被丢掉**，电脑端一个字都不显示
+;      （2026-10-03 报上来的「手机报连不上、电脑端不提示同意」就是这个）。
+;
+; 安装程序跑的时候本来就是提权的，顺手把这两件事都做掉，用户什么都不用敲。
 ;
 ; ⚠️ 必须存成 **UTF-8 带 BOM**。Inno 认不出没有 BOM 的 UTF-8，会把中文
 ;    按 ANSI 读 —— 界面上那一堆常量就全花了，而**编译器一个字都不说**。
@@ -112,6 +118,22 @@ Filename: "{cmd}"; \
 ;    那时报名窗会**看得见**地提示回退到了本机地址并给出该敲的命令（I3），
 ;    不是静默失效。
 
+; ── 防火墙的入站放行（2026-10-03 补）──────────────────────────────────
+; 只登记 urlacl 是不够的：绑定走的是 http.sys，Windows 那个「允许访问」的弹窗
+; **不会出现**（监听的是 System 进程，没人有点的机会），于是没有人会去放行 ——
+; 手机发出的请求在防火墙这一层就被丢掉，而**电脑端什么都不知道**：
+; urlacl 好了、界面一切正常、二维码也照画，看着就是「扫码后没反应」。
+;
+; remoteip=localsubnet 是**故意**的：手机只可能从局域网连过来，只放行本网段，
+; 不给整个人网开一道门。profile=any 也是**故意**的：这台机器上的网卡常常被
+; 系统归到「公用网络」（本机实测就是），只给「专用」放行等于没放。
+; 规则名与 Core 的 `PlaybackFirewall.RuleName` 逐字相同，有绊线钉着；
+; 端口与上面 urlacl 那条是同一个数，也有绊线钉着。
+Filename: "{cmd}"; \
+    Parameters: "/c ""netsh advfirewall firewall delete rule name=VidLog-Playback-8720 >nul 2>&1 & netsh advfirewall firewall add rule name=VidLog-Playback-8720 dir=in action=allow protocol=TCP localport=8720 remoteip=localsubnet profile=any >nul 2>&1 & exit /b 0"""; \
+    Flags: runhidden; \
+    StatusMsg: "正在放行防火墙上的 8720 端口（少了这一步也连不上）…"
+
 Filename: "{app}\VidLog.Desktop.App.exe"; Description: "现在启动 VidLog"; \
     Flags: nowait postinstall skipifsilent
 
@@ -121,6 +143,12 @@ Filename: "{app}\VidLog.Desktop.App.exe"; Description: "现在启动 VidLog"; \
 Filename: "{cmd}"; \
     Parameters: "/c ""netsh http delete urlacl url=http://+:8720/ >nul 2>&1 & exit /b 0"""; \
     Flags: runhidden; RunOnceId: "RemovePlaybackUrlAcl"
+
+; 防火墙那条规则同理：卸了还留着，就等于这台机器上一直开着一道
+; 没人认领的入站口子（而且那条规则的「程序」那栏是空的，只认端口）。
+Filename: "{cmd}"; \
+    Parameters: "/c ""netsh advfirewall firewall delete rule name=VidLog-Playback-8720 >nul 2>&1 & exit /b 0"""; \
+    Flags: runhidden; RunOnceId: "RemovePlaybackFirewallRule"
 
 ; ── 关于卸载时**不删**什么 ─────────────────────────────────────────────
 ; 这里刻意**没有** [UninstallDelete] 段，而且一个字都不许加：

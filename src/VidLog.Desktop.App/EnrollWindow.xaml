@@ -48,6 +48,13 @@
             <TextBlock x:Name="AddressLine" Margin="0,4,0,0" HorizontalAlignment="Center"
                        TextAlignment="Center" TextWrapping="Wrap"
                        Foreground="{StaticResource TextSecondary}"/>
+
+            <!-- 防火墙没放行的时候才出现（见 `WarnIfFirewallBlockedAsync`）：
+                 那种情况下码是好的、服务也绑上了，手机却连不上 —— 不说出来
+                 用户只能对着一张好码干等。 -->
+            <TextBlock x:Name="FirewallWarning" Margin="0,8,0,0" HorizontalAlignment="Center"
+                       TextAlignment="Center" TextWrapping="Wrap"
+                       Foreground="{StaticResource Danger}" Visibility="Collapsed"/>
         </StackPanel>
 
         <StackPanel Grid.Row="4" Margin="0,14,0,0">
