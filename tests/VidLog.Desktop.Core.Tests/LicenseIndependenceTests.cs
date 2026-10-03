@@ -312,6 +312,41 @@ public class LicenseIndependenceTests
         }
     }
 
+    /// <summary>「备份主机」那套主窗布局里也要有许可那一行。</summary>
+    /// <remarks>
+    /// <para>
+    /// ⚠️ <b>2026-10-03 补的</b>：那里原先**一个字都不显示**，于是备份主机形态下
+    /// 看不到「试用还剩几小时 / 已到期」—— 而不录像的机器照样吃机位（手机要把录像传进来），
+    /// 用户能看见的症状只有「手机扫码没反应」。
+    /// </para>
+    /// <para>
+    /// 为什么值得一条绊线：这类「漏了一个显示点」的缺口**没有任何东西会让它红**
+    /// （App 层没有测试），所以它作为已知缺口躺了很久才被翻出来。
+    /// 这条钉两件事：布局里那个元素在、且它的文本**来自同一个来源**
+    /// （<c>StatusSummaries</c>，不许另写一份措辞）。
+    /// </para>
+    /// <para>
+    /// 天花板：挡不住「绕开 <c>StatusSummaries</c> 自己拼一句话」，也挡不住
+    /// 把这一行**挪进一个永远不会显示的容器**里。绊线的意义是让人停一下。
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public void 备份主机那套布局里也要有许可那一行()
+    {
+        var appRoot = Path.Combine(RepoRoot(), "src", "VidLog.Desktop.App");
+        var xaml = Path.Combine(appRoot, "MainWindow.xaml");
+        var codeBehind = Path.Combine(appRoot, "MainWindow.xaml.cs");
+
+        Assert.True(File.Exists(xaml), "找不到 MainWindow.xaml —— 这条绊线的路径过期了");
+
+        Assert.Contains("x:Name=\"BackupLicenseText\"", File.ReadAllText(xaml));
+
+        // 注释里提到许可**是允许的**，所以剥掉注释再看 —— 否则把这一行注释掉测试照样绿。
+        Assert.Contains(
+            "BackupLicenseText.Text = StatusSummaries.License(",
+            StripComments(File.ReadAllText(codeBehind)));
+    }
+
     /// <summary>把泛型类型展开成它自己加所有泛型实参（比如 <c>IReadOnlyList&lt;LicenseInfo&gt;</c>）。</summary>
     private static IEnumerable<Type> Flatten(Type type)
     {

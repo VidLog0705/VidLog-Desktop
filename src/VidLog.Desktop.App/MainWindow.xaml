@@ -542,6 +542,13 @@
                     </StackPanel>
                     <TextBlock x:Name="BackupRoleText" Style="{StaticResource Caption}"
                                FontSize="13" Margin="0,8,0,0"/>
+                    <!-- ⚠️ 图上没有这一行（设计图 `_39`），是**补的**：
+                         备份主机不录像，但**照样吃机位**（手机的录像要传进来），
+                         而「试用还剩几小时 / 已到期」正是这台机器上唯一会被追问的事。
+                         不显示就只剩「手机上扫码没反应」这一个可见症状。
+                         与录制台那行同一个来源（`StatusSummaries.License`），不另写一份。 -->
+                    <TextBlock x:Name="BackupLicenseText" Style="{StaticResource Caption}"
+                               FontSize="13" Margin="0,6,0,0"/>
                 </StackPanel>
 
                 <Button x:Name="SwitchRoleButton" Grid.Column="1"

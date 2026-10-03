@@ -275,6 +275,11 @@ public partial class MainWindow : Window
     {
         NavClockText.Text = StatusSummaries.Calibration(_host);
         NavLicenseText.Text = StatusSummaries.License(_host);
+
+        // ⚠️ 备份主机那套布局**没有**左边那一栏，所以它要自己的一份 —— 但**是同一句话**
+        //    （同一次调用产出、同一个来源）。2026-10-03 之前这里没有这一行，
+        //    于是「备份主机」形态下**看不到试用剩余 / 已到期**。
+        BackupLicenseText.Text = StatusSummaries.License(_host);
     }
 
     /// <summary>
