@@ -128,9 +128,100 @@ public class LiveTileProcessTests
     }
 
     [RequiresFfmpegFact]
+    public async Task 手机把流断了_那一格自己接回来()
+    {
+        // ⚠️ 2026-10-03 那次「多画面卡顿」的日志里就是这个形状：ffmpeg 退了之后
+        // **没有任何人重起它**，那一格就一直黑着 —— 当时唯一的恢复办法是把
+        // 多画面窗口关掉重开（日志里那一分钟正是「退了 → 改档六次 → 关窗重开」）。
+        //
+        // 这条用例钉的是：第一路被挂断（一帧都没给）之后，那一格要**自己**接回来，
+        // 而且接回来的那一路要真的出画面。
+        var ffmpeg = FfmpegLocator.TryFind();
+        Assert.NotNull(ffmpeg);
+
+        using var dir = new TempDir();
+        var h264 = await EncodeAsync(ffmpeg!, dir.File("stream.h264"));
+
+        using var phone = new FakePhone(h264) { HangUpLiveTimes = 1 };
+        var logger = new CapturingLogger();
+
+        await using var tile = LiveTile.Start(ffmpeg!, phone.BaseUrl, "1 号机位", logger: logger);
+
+        // 第一路一帧都没有，画面只可能来自重连后的第二路。
+        var frame = await WaitForFrameAsync(tile, TimeSpan.FromSeconds(60));
+
+        Assert.True(
+            frame is not null,
+            $"断了一路之后没接回来。日志：{string.Join(" / ", logger.Messages)}");
+
+        Assert.Contains(logger.Messages, m => m.Contains("再试"));
+    }
+
+    [RequiresFfmpegFact]
+    public async Task 改档换掉的那一路_旧的不许被当成断线重连()
+    {
+        // ⚠️ 换档时旧的那一路也是「自己结束」的样子。认错的话，一次改档会额外
+        // 多起一路 ffmpeg（日志里就是「起了一路」比改档次数多）。
+        var ffmpeg = FfmpegLocator.TryFind();
+        Assert.NotNull(ffmpeg);
+
+        using var dir = new TempDir();
+        var h264 = await EncodeAsync(ffmpeg!, dir.File("stream.h264"));
+        using var phone = new FakePhone(h264);
+        var logger = new CapturingLogger();
+
+        await using var tile = LiveTile.Start(ffmpeg!, phone.BaseUrl, "1 号机位", logger: logger);
+
+        Assert.True(await WaitForFrameAsync(tile, TimeSpan.FromSeconds(30)) is not null);
+
+        Assert.True(await tile.SetQualityAsync(LiveQuality.P720));
+
+        // 改档之后那一路要出得来画面（本地按新尺寸重起）。
+        Assert.True(
+            await WaitForFrameAsync(tile, TimeSpan.FromSeconds(30)) is not null,
+            "改档之后没有画面");
+
+        // 给它够长的时间去犯「把换掉的那一路当成断线」这个错（退避是 2 秒起）。
+        await Task.Delay(TimeSpan.FromSeconds(5));
+
+        Assert.DoesNotContain(logger.Messages, m => m.Contains("接回来"));
+        Assert.DoesNotContain(logger.Messages, m => m.Contains("再试"));
+    }
+
+    [RequiresFfmpegFact]
     public async Task 问不到计数不影响画面()
     {
         // 网络抖一下不该让整面墙闪一下「无信号输入」。
+        //
+        // ⚠️ 这里「问不到计数」用的是**假的坏 `/status`**，不是把手机整个关掉：
+        // 关掉手机连**视频那一路**也断了，那是另一件事（见下一个用例）——
+        // 2026-10-03 之前这条用例正是拿 `phone.Dispose()` 凑的，
+        // 而那时「断了」根本不会有人管，所以两种毛病看着一样。
+        var ffmpeg = FfmpegLocator.TryFind();
+        Assert.NotNull(ffmpeg);
+
+        using var dir = new TempDir();
+        var h264 = await EncodeAsync(ffmpeg!, dir.File("stream.h264"));
+        using var phone = new FakePhone(h264) { BrokenStatus = true };
+
+        await using var tile = LiveTile.Start(ffmpeg!, phone.BaseUrl, "1 号机位");
+
+        Assert.True(await WaitForFrameAsync(tile, TimeSpan.FromSeconds(30)) is not null);
+
+        await tile.RefreshStatusAsync();
+
+        Assert.Null(tile.Counts);
+        // 画面还在，只是下面那两个字先不显示。
+        Assert.NotNull(tile.Latest());
+    }
+
+    [RequiresFfmpegFact]
+    public async Task 手机整个不见了_那一格会黑掉而不是冻着上一帧()
+    {
+        // ⚠️ **冻着的画面看起来与实时的没两样**：一台手机掉线之后那一格要是继续
+        // 显示最后一帧，看的人会以为现场就是这样 —— 那比黑着更糟。
+        // 所以视频流真的没了的时候，`Latest()` 必须回到 null（界面画「无信号输入」
+        // 或者 `Problem` 里那句原因），而不是一直端着那张旧图。
         var ffmpeg = FfmpegLocator.TryFind();
         Assert.NotNull(ffmpeg);
 
@@ -142,13 +233,17 @@ public class LiveTileProcessTests
 
         Assert.True(await WaitForFrameAsync(tile, TimeSpan.FromSeconds(30)) is not null);
 
-        // 把手机「关掉」再问计数。
+        // 手机整个消失：视频那一路跟着断。
         phone.Dispose();
-        await tile.RefreshStatusAsync();
 
-        Assert.Null(tile.Counts);
-        // 画面还在（读循环里的最后一帧），只是下面那两个字先不显示。
-        Assert.NotNull(tile.Latest());
+        var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(20);
+
+        while (DateTime.UtcNow < deadline && tile.Latest() is not null)
+        {
+            await Task.Delay(50);
+        }
+
+        Assert.Null(tile.Latest());
     }
 
     [RequiresFfmpegFact]
@@ -345,6 +440,17 @@ public class LiveTileProcessTests
         /// <summary>装成「计数坏了」（手机在、画面也在，就是 /status 回不了）。</summary>
         public bool BrokenStatus { get; set; }
 
+        /// <summary>
+        /// 头几路 <c>/live</c> **连上就断、一帧都不给**（模拟「那一格断了」）。
+        /// </summary>
+        /// <remarks>
+        /// 断在**发数据之前**：这样重连是拿到画面的唯一途径，
+        /// 用例才真的证明了「自己接回来了」，而不是靠第一路的帧蒙过去。
+        /// </remarks>
+        public int HangUpLiveTimes { get; set; }
+
+        private int _hungUp;
+
         /// <summary>收到过的改档请求（按顺序）。</summary>
         public List<int> QualityRequests { get; } = [];
 
@@ -442,6 +548,10 @@ public class LiveTileProcessTests
                 _cts.Token);
 
             await stream.FlushAsync(_cts.Token);
+
+            // 装成「这一路断了」：头几路连上就断、一个字节都不发（`ServeAsync` 的
+            // `using` 一退出，这条连接就关了）。
+            if (Interlocked.Increment(ref _hungUp) <= HangUpLiveTimes) return;
 
             // ⚠️ 一直循环喂：既是「实时流不结束」的形状，
             // 也让每个循环开头都带上一组 SPS/PPS + IDR —— 正是手机那侧的契约。

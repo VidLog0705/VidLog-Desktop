@@ -1,4 +1,8 @@
 using System.ComponentModel;
+// ⚠️ `System.IO` 要显式写：这台 SDK 一开 `UseWPF` 就不再把 `System.IO` 与
+// `System.Net.Http` 放进隐式 using 里了（`Path` 会与 `Shapes.Path` 撞名）——
+// 所以这个文件里 `File` / `Path` 不像普通 .NET 工程那样随手可用。
+using System.IO;
 using System.Net.Http;
 using System.Windows;
 using System.Windows.Media.Imaging;
@@ -2059,24 +2063,120 @@ public partial class SettingsWindow : Window
         }
     }
 
-    private async void OnExportDiagnostics(object sender, RoutedEventArgs e)
+    /// <summary>把日志、设置与环境信息打成一个 zip，返回它的路径。</summary>
+    /// <remarks>
+    /// 生成在**临时目录**里，由调用方决定它最后去哪儿（用户挑的位置 / 当附件发出去）。
+    /// 直接往数据目录里写的话，「保存到本地」就成了「先生成一份、再复制一份」，
+    /// 而那一份还会留在那儿占地方。
+    /// </remarks>
+    private async Task<string> BuildDiagnosticsAsync()
+    {
+        var package = new DiagnosticsPackage(new DiagnosticsSources(
+            _host.Services.Layout,
+            _host.Settings,
+            _host.Warnings,
+            _ => Task.FromResult<IReadOnlyList<string>>(BuildEnvironmentLines())));
+
+        return await package.ExportAsync(Path.Combine(Path.GetTempPath(), "vidlog-diagnostics"));
+    }
+
+    /// <summary>日志导出——「保存到本地…」（需求方 2026-10-03）。</summary>
+    private async void OnSaveDiagnostics(object sender, RoutedEventArgs e)
+    {
+        // ⚠️ **先弹对话框再生成**：用户在对话框上点了取消就不该白生成一份东西。
+        var dialog = new Microsoft.Win32.SaveFileDialog
+        {
+            Title = "保存诊断包",
+            FileName = $"vidlog-诊断包-{DateTime.Now:yyyyMMdd-HHmmss}.zip",
+            DefaultExt = ".zip",
+            Filter = "压缩包 (zip)|*.zip|所有文件|*.*",
+            OverwritePrompt = true,
+            InitialDirectory = _host.Services.Layout.RootDirectory,
+        };
+
+        if (dialog.ShowDialog(this) != true)
+        {
+            return;
+        }
+
+        try
+        {
+            var produced = await BuildDiagnosticsAsync();
+
+            // 生成出来的文件名带自己的时间戳（`DiagnosticsPackage` 定的），
+            // 而用户挑的那个名字说了算 —— 复制过去而不是要求那边改名。
+            File.Copy(produced, dialog.FileName, overwrite: true);
+
+            SettingsStatus.Text = $"诊断包已保存：{dialog.FileName}";
+
+            _host.Logger.Log(
+                LogLevel.Info, "诊断包", "导出到本地",
+                new Dictionary<string, object?> { ["目标"] = dialog.FileName });
+        }
+        catch (Exception ex)
+        {
+            // catch 不静默：状态栏那句话**必须显示**（§6.1 的「用户可见通道」）。
+            SettingsStatus.Text = $"导出失败：{ex.Message}";
+            _host.Logger.Log(
+                LogLevel.Warn, "诊断包", $"导出到本地失败：{ex.Message}");
+        }
+    }
+
+    /// <summary>日志导出——「发送到开发者邮箱」（需求方 2026-10-03）。</summary>
+    /// <remarks>
+    /// ⚠️ 走的是**系统邮件客户端**（见 <see cref="MailComposer"/> 的说明）：
+    /// 程序里没有、也不该有发信凭据。所以最后那一下由用户按。
+    /// </remarks>
+    private async void OnEmailDiagnostics(object sender, RoutedEventArgs e)
     {
         try
         {
-            var package = new DiagnosticsPackage(new DiagnosticsSources(
-                _host.Services.Layout,
-                _host.Settings,
-                _host.Warnings,
-                _ => Task.FromResult<IReadOnlyList<string>>(BuildEnvironmentLines())));
+            var produced = await BuildDiagnosticsAsync();
+            var now = DateTimeOffset.Now;
 
-            var path = await package.ExportAsync(_host.Services.Layout.RootDirectory);
+            SettingsStatus.Text = "正在把它交给邮件客户端…";
 
-            SettingsStatus.Text = $"诊断包已导出：{path}";
-            ShellOpen.Try(_host.Services.Layout.RootDirectory);
+            var problem = MailComposer.TryCompose(
+                SupportMail.Address,
+                SupportMail.Subject(Environment.MachineName, now),
+                SupportMail.Body(Environment.MachineName, _host.CurrentVersion, now),
+                produced);
+
+            if (problem is null)
+            {
+                // ⚠️ 说法是「交给客户端了」而**不是**「已经发出去了」：
+                // MAPI 返回成功只说明信到了客户端（可能是发件箱），
+                // 而最后那一下在邮件客户端那一侧。
+                SettingsStatus.Text =
+                    $"已交给邮件客户端，请在那儿按发送（收件人 {SupportMail.Address}）。";
+                _host.Logger.Log(
+                    LogLevel.Info, "诊断包", "交给邮件客户端",
+                    new Dictionary<string, object?>
+                    {
+                        ["收件人"] = SupportMail.Address,
+                        ["附件"] = produced,
+                    });
+            }
+            else
+            {
+                // ⚠️ 失败**不等于**日志没导出来 —— 那句话里必须带上附件到底在哪儿，
+                // 否则用户只会以为「什么都没发生」。附件留在临时目录里**刻意不删**：
+                // 这条路的下一步就是让他手发。
+                SettingsStatus.Text = $"{problem}（文件在 {produced}）";
+                _host.Logger.Log(
+                    LogLevel.Warn, "诊断包", $"邮件没能发出去：{problem}",
+                    new Dictionary<string, object?>
+                    {
+                        ["收件人"] = SupportMail.Address,
+                        ["附件"] = produced,
+                    });
+            }
         }
         catch (Exception ex)
         {
             SettingsStatus.Text = $"导出失败：{ex.Message}";
+            _host.Logger.Log(
+                LogLevel.Warn, "诊断包", $"发邮件前导出失败：{ex.Message}");
         }
     }
 

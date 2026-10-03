@@ -33,6 +33,18 @@ public sealed record LiveCounts(int Outbound, int Returned, int? ReportedQuality
 /// </remarks>
 public sealed class LiveTile : IAsyncDisposable
 {
+    /// <summary>
+    /// 一路断了之后**最多再接几次**（每次之间退避）。超过就停手，把原因写在
+    /// <see cref="Problem"/> 上。
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ 有上限不是抠门：手机没开实时共享时，重连是**永远不会成功**的，
+    /// 而每一路重连都要起一个 ffmpeg 并各留两条日志 —— 九格一起刷，
+    /// 一分钟就是几十行，而被灌满的日志等于没有日志（§6.1 的配套要求）。
+    /// 上限之内足够兜住「网络抖一下」和「那台手机重启了一下」。
+    /// </remarks>
+    private const int MaxRetries = 3;
+
     private readonly string _ffmpeg;
     private readonly string _baseUrl;
     private readonly IAppLogger _logger;
@@ -40,8 +52,26 @@ public sealed class LiveTile : IAsyncDisposable
 
     private readonly SemaphoreSlim _gate = new(1, 1);
 
+    /// <summary>
+    /// 管 <see cref="_process"/> 与 <see cref="_retry"/> 这一对。
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ 它与 <see cref="_gate"/> 是**两把不同的锁**，管的东西不重叠：
+    /// <c>_gate</c> 串的是 HTTP 那两件事（改档、关），<c>_life</c> 串的是
+    /// 「本地这一路是谁」—— 断线重连是**从读循环那条线程**上来的，
+    /// 与界面上点改档是两条线程，只靠 <c>_gate</c> 挡不住（它只在 await 时才排队）。
+    /// 取用顺序永远只有 <c>_gate → _life</c> 一个方向。
+    /// </remarks>
+    private readonly Lock _life = new();
+
     private LiveTileProcess? _process;
     private LiveCounts? _counts;
+
+    /// <summary>定时的重连（一次性；<see cref="Timer"/> 不占线程，比挂个 Task 少一样要收的东西）。</summary>
+    private Timer? _retry;
+
+    /// <summary>连着断了几次。出过画面的从 1 数起（下一次出画面又会归 1），一帧都没出过的接着累加。</summary>
+    private int _failStreak;
 
     /// <summary>上一次问计数是不是失败着（用来把重复的失败**去重成两条**：变坏一条、变好一条）。</summary>
     private bool _statusFailing;
@@ -71,7 +101,17 @@ public sealed class LiveTile : IAsyncDisposable
     public LiveQuality Quality => _quality;
 
     /// <summary>最新一帧；**还没有就是「无信号输入」**。</summary>
-    public LiveFrame? Latest() => _process?.Latest();
+    public LiveFrame? Latest()
+    {
+        var frame = _process?.Latest();
+
+        // ⚠️ 有画面了 = 之前那句「为什么没画面」不再成立，撤掉。
+        // 撤在这儿是因为**只有这里知道画面真的来了** —— 问得到计数、
+        // TCP 连得上，都不代表有画面（那两件事在「手机没开共享」时照样成立）。
+        if (frame is not null) _problem = null;
+
+        return frame;
+    }
 
     /// <summary>那台手机报上来的计数；还没问到就是 <see langword="null"/>。</summary>
     public LiveCounts? Counts => _counts;
@@ -134,7 +174,10 @@ public sealed class LiveTile : IAsyncDisposable
                 root.TryGetProperty("t", out var t) ? t.GetInt32() : 0,
                 root.TryGetProperty("p", out var p) ? p.GetInt32() : null);
 
-            _problem = null;
+            // ⚠️ **这里不撤 `_problem`。** 计数问得到和有没有画面是两回事：
+            // 手机没开实时共享时 `/status` 照样回 200，而那一格一帧都没有 ——
+            // 在这里撤的话，屏幕上那句「为什么没画面」会被每秒清掉一次，
+            // 用户只会看到一格黑着、没有任何解释。撤销改在 `Latest()`。
 
             if (_statusFailing)
             {
@@ -206,23 +249,113 @@ public sealed class LiveTile : IAsyncDisposable
         }
     }
 
-    /// <summary>按当前档重起本地那一路。（改档、以及第一次起来时用。）</summary>
+    /// <summary>按当前档重起本地那一路。（改档、断线重连、以及第一次起来时用。）</summary>
     private void RestartVideo()
     {
-        var old = _process;
-        _process = null;
-
-        if (old is not null) _ = old.DisposeAsync();
-
-        var (width, height) = SizeFor(_quality);
-
-        // 「无信号输入」是常态（手机没开实时共享），所以起不来**不是错误** ——
-        // 记一条就够，界面画那四个字。
-        _process = LiveTileProcess.Start(_ffmpeg, $"{_baseUrl}/live", width, height, _logger);
-
-        if (_process is null)
+        lock (_life)
         {
-            _problem = "这一格的画面起不来（本机 ffmpeg 没跑起来）。";
+            // 关窗那一头也要拿这把锁 —— 不判的话「刚好在关的那一瞬重连」
+            // 会起出一路没人收的 ffmpeg（它就这么一直跑着）。
+            if (ObjectDisposedCheck()) return;
+
+            var old = _process;
+            _process = null;
+
+            // ⚠️ 旧的那一路自己退掉时**也会**走到 `OnProcessEnded`，
+            // 而那时 `_process` 已经是新的（或 null）—— 那一头靠 `ReferenceEquals` 挡住。
+            if (old is not null) _ = old.DisposeAsync();
+
+            var (width, height) = SizeFor(_quality);
+
+            // 「无信号输入」是常态（手机没开实时共享），所以起不来**不是错误** ——
+            // 记一条就够，界面画那四个字。
+            _process = LiveTileProcess.Start(
+                _ffmpeg, $"{_baseUrl}/live", width, height, _logger, OnProcessEnded);
+
+            if (_process is null)
+            {
+                _problem = "这一格的画面起不来（本机 ffmpeg 没跑起来）。";
+            }
+        }
+    }
+
+    /// <summary>本地这一路**自己**断了 —— 接回来（见 <see cref="MaxRetries"/>）。</summary>
+    /// <remarks>
+    /// ⚠️ 它是在**读循环那条线程**上调的，所以这里只做两件不阻塞的事：
+    /// 记个数、排一个一次性计时器。真正重起的那一下在 <see cref="Retry"/> 里。
+    /// </remarks>
+    private void OnProcessEnded(LiveTileProcess process)
+    {
+        if (ObjectDisposedCheck()) return;
+
+        string? reason = null;
+        var attempts = 0;
+
+        lock (_life)
+        {
+            // 换档/关窗把我们换掉的那种「结束」不算断线。
+            // ⚠️ 这一判必须在 `_life` 里：`RestartVideo` **整段**都握着这把锁
+            //（起进程 + 赋 `_process`），所以新的一路不可能「还没赋上就被判成断了」。
+            if (!ReferenceEquals(_process, process)) return;
+
+            var hadFrame = process.HadFrame;
+
+            // 出过画面说明这条路是通的（网抖、手机那侧重启）—— 从 1 数起，
+            // 而且下次出画面时又会归 1：掉线接回来这件事本身不该被上限挡住。
+            _failStreak = hadFrame ? 1 : _failStreak + 1;
+            attempts = _failStreak;
+
+            if (_failStreak > MaxRetries)
+            {
+                _problem = "这一格的画面连着几次都没起来 —— 手机那边的实时共享可能关着，或者网络不通。";
+            }
+            else
+            {
+                reason = hadFrame
+                    ? $"这一格断了，接回来（第 {_failStreak} 次）"
+                    : $"这一格还没出画面，再试（第 {_failStreak} 次）";
+
+                _retry?.Dispose();
+                _retry = new Timer(
+                    _ => Retry(),
+                    null,
+                    TimeSpan.FromSeconds(Math.Pow(2, _failStreak)),
+                    Timeout.InfiniteTimeSpan);
+            }
+        }
+
+        if (reason is null)
+        {
+            _logger.Log(
+                LogLevel.Warn, "多画面",
+                $"这一格连着 {attempts} 次都没起来，先不重试了（要它自己回来就重开多画面）：{Name}");
+        }
+        else
+        {
+            _logger.Log(LogLevel.Info, "多画面", $"{reason}：{Name}");
+        }
+    }
+
+    /// <summary>计时器到点：把本地那一路重起。</summary>
+    private void Retry()
+    {
+        try
+        {
+            // ⚠️ 再判一次「关没关」：排计时器到它响之间，窗口可能已经关了。
+            // （`_stopped` 那一侧也一样 —— 关掉之后重起就是一路没人收的 ffmpeg。）
+            lock (_life)
+            {
+                _retry?.Dispose();
+                _retry = null;
+
+                if (ObjectDisposedCheck()) return;
+                RestartVideo();
+            }
+        }
+        catch (Exception ex)
+        {
+            // 计时器回调里的异常没人接得住（`.NET` 上就是静默消失）—— 必须自己说。
+            _logger.Log(LogLevel.Warn, "多画面", $"重连那一步没成：{ex.Message}");
         }
     }
 
@@ -232,8 +365,18 @@ public sealed class LiveTile : IAsyncDisposable
     {
         if (Interlocked.Exchange(ref _disposed, 1) == 1) return;
 
-        var process = _process;
-        _process = null;
+        LiveTileProcess? process;
+
+        lock (_life)
+        {
+            _retry?.Dispose();
+            _retry = null;
+
+            // ⚠️ 在这一把锁里换 —— 见 `RestartVideo` 里那条注释：
+            // 不然「刚好在关的那一瞬重连」会漏出一路。
+            process = _process;
+            _process = null;
+        }
 
         if (process is not null) await process.DisposeAsync();
 

@@ -1402,13 +1402,25 @@
 
                         <Separator Margin="0,18,0,16"/>
 
-                        <TextBlock Style="{StaticResource SectionTitle}" Text="诊断包"/>
+                        <!-- ────────────────────────────────────────────
+                             日志导出（需求方 2026-10-03）：
+                             「电脑端导出日志需要能保存本地和发送邮件」。
+                             两条路摆在一起 —— 邮件那条走系统邮件客户端
+                             （我们没有任何发信凭据，也不该有），
+                             发不出去时**把落点告诉用户**（下面那行状态栏）。
+                             ──────────────────────────────────────────── -->
+                        <TextBlock Style="{StaticResource SectionTitle}" Text="日志与诊断包"/>
                         <TextBlock Style="{StaticResource Caption}" Margin="0,0,0,8"
-                                   Text="把日志、设置与环境信息打成一个 zip，不含任何视频。"/>
-                        <Button x:Name="ExportDiagnosticsButton" Content="导出诊断包"
-                                Style="{StaticResource SecondaryButton}"
-                                HorizontalAlignment="Left"
-                                Click="OnExportDiagnostics"/>
+                                   Text="把日志、设置与环境信息打成一个 zip，不含任何视频。发给我们看就行。"/>
+                        <StackPanel Orientation="Horizontal">
+                            <Button x:Name="SaveDiagnosticsButton" Content="保存到本地…"
+                                    Style="{StaticResource SecondaryButton}"
+                                    Click="OnSaveDiagnostics"/>
+                            <Button x:Name="EmailDiagnosticsButton" Content="发送到开发者邮箱"
+                                    Style="{StaticResource SecondaryButton}"
+                                    Margin="8,0,0,0"
+                                    Click="OnEmailDiagnostics"/>
+                        </StackPanel>
 
                         <!-- 启动时的问题（`AppHost.Warnings`）。**必须看得见** ——
                              它们在启动那一刻就发生了，而用户多半没盯着屏幕。 -->

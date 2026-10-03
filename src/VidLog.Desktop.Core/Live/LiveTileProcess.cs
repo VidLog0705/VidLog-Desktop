@@ -53,20 +53,26 @@ public sealed class LiveTileProcess : IAsyncDisposable
     private readonly BoundedTextTail _errors;
     private readonly IAppLogger _logger;
 
+    /// <summary>这一路**自己**结束了（不是我们收的）时报一下 —— 见 <see cref="Start"/>。</summary>
+    private readonly Action<LiveTileProcess>? _onEnded;
+
     private readonly object _gate = new();
     private LiveFrame? _latest;
     private long _dropped;
     private int _stopped;
+    private bool _hadFrame;
 
     /// <summary>读帧那一趟。⚠️ 它有**一次赋值、一次读**，都在同一线程的
     /// 构造与 <see cref="DisposeAsync"/> 上，所以不加锁。</summary>
     private Task _readLoop = Task.CompletedTask;
 
-    private LiveTileProcess(Process process, BoundedTextTail errors, IAppLogger logger)
+    private LiveTileProcess(
+        Process process, BoundedTextTail errors, IAppLogger logger, Action<LiveTileProcess>? onEnded)
     {
         _process = process;
         _errors = errors;
         _logger = logger;
+        _onEnded = onEnded;
     }
 
     /// <summary>最新那一帧。还没有就是 <see langword="null"/>（界面画「无信号输入」）。</summary>
@@ -90,9 +96,30 @@ public sealed class LiveTileProcess : IAsyncDisposable
     /// <summary>还在跑没有。</summary>
     public bool IsRunning => !_process.HasExited;
 
+    /// <summary>这一路出过画面没有。</summary>
+    /// <remarks>
+    /// ⚠️ 重连时要用它分两种情况：<b>出过画面又断</b>（网抖、手机那侧重启）值得马上再试；
+    /// <b>一帧都没出过</b>多半是手机没开实时共享，硬试没用，得退避甚至停手。
+    /// </remarks>
+    public bool HadFrame
+    {
+        get { lock (_gate) { return _hadFrame; } }
+    }
+
     /// <summary>
     /// 起一路。<paramref name="url"/> 形如 <c>http://192.168.1.9:PORT/live</c>。
     /// </summary>
+    /// <param name="onEnded">
+    /// ⚠️ <b>这一路**自己**结束了（不是被 <see cref="DisposeAsync"/> 收掉的）时叫一下。</b>
+    /// 调用方（<see cref="LiveTile"/>）据此把它接回来。参数就是**结束的这一路** ——
+    /// 调用方靠它认出「这是不是我刚换掉的那个」（换档时旧的那一路也是这么结束的，
+    /// 那种不算断线）。
+    /// <para>
+    /// 没有这个回调的话，ffmpeg 一退那一格就**永远黑着** —— 关掉重开多画面窗口是
+    /// 当时唯一的恢复路径。2026-10-03 的日志里那一分钟正是这个形状：
+    /// 一格退了 → 用户折腾了六次改档 → 最后还是把窗口关掉重开的。
+    /// </para>
+    /// </param>
     /// <remarks>
     /// ⚠️ <b>起不来返回 <see langword="null"/>，不抛。</b>一格拉不起来不该让整个
     /// 多画面窗口开不了 —— 它自己那一格画「无信号输入」并写明原因就够了。
@@ -102,7 +129,8 @@ public sealed class LiveTileProcess : IAsyncDisposable
         string url,
         int width,
         int height,
-        IAppLogger? logger = null)
+        IAppLogger? logger = null,
+        Action<LiveTileProcess>? onEnded = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(ffmpegPath);
         ArgumentException.ThrowIfNullOrWhiteSpace(url);
@@ -160,9 +188,12 @@ public sealed class LiveTileProcess : IAsyncDisposable
 
         // ⚠️ 先建实例再起读循环，**而且只建一个**：读循环要挂在返回出去的那一个上。
         // （先前写成「建两个、循环挂在前一个上」，返回的那个永远读不到帧。）
-        var tile = new LiveTileProcess(process, errors, log);
+        var tile = new LiveTileProcess(process, errors, log, onEnded);
+        var startedAt = Environment.TickCount64;
+
         tile._readLoop = Task.Run(
-            () => tile.ReadFramesAsync(process, drainErrors, width, height, CancellationToken.None));
+            () => tile.ReadFramesAsync(
+                process, drainErrors, width, height, startedAt, CancellationToken.None));
 
         // ⚠️ 「起」也要留一条（§6.1：有生命周期的组件，起/停/失败各一条）。
         // 只记失败的话，「那一格为什么黑着」永远分不出「没起」和「起了没画面」。
@@ -218,11 +249,17 @@ public sealed class LiveTileProcess : IAsyncDisposable
     }
 
     private async Task ReadFramesAsync(
-        Process process, Task drainErrors, int width, int height, CancellationToken cancellationToken)
+        Process process,
+        Task drainErrors,
+        int width,
+        int height,
+        long startedAt,
+        CancellationToken cancellationToken)
     {
         var frameSize = width * height * 3;
         var buffer = new byte[frameSize];
         var filled = 0;
+        var first = true;
 
         try
         {
@@ -245,6 +282,22 @@ public sealed class LiveTileProcess : IAsyncDisposable
                         // 排队的话延迟会越积越大 —— 而实时画面宁可掉帧也不能滞后。
                         if (_latest is not null) _dropped++;
                         _latest = frame;
+                        _hadFrame = true;
+                    }
+
+                    // ⚠️ 「出画面了」也留一条（§6.1：有生命周期的组件，起/停/失败各一条）
+                    // —— 而且**带上等了多久**：中途接入要等下一个关键帧，
+                    // 「等了 0.2 秒」和「等了 6 秒」是两种完全不同的毛病，
+                    // 而这句话是当场唯一能分出它们的东西（只记一次）。
+                    if (first)
+                    {
+                        first = false;
+
+                        var waited = (Environment.TickCount64 - startedAt) / 1000.0;
+
+                        _logger.Log(
+                            LogLevel.Info, "多画面",
+                            $"这一格出画面了（{waited:0.0} 秒）：{width}x{height}");
                     }
 
                     filled = 0;
@@ -272,6 +325,21 @@ public sealed class LiveTileProcess : IAsyncDisposable
             _logger.Log(
                 LogLevel.Warn, "多画面",
                 $"这一格的 ffmpeg 退了（code {process.ExitCode}）：{(tail.Length > 0 ? tail : "没说为什么")}");
+        }
+
+        // ⚠️ 「自己结束了」——`_stopped` 是**收**那个动作打的标记，所以这里一判就把
+        // 「我们主动换档/关窗」和「它自己断了」分开了（后者才该接回来）。
+        if (Volatile.Read(ref _stopped) == 0)
+        {
+            try
+            {
+                _onEnded?.Invoke(this);
+            }
+            catch (Exception ex)
+            {
+                // 回调是外面给的，它抛了不该把读循环这条线程弄没了 —— 但也不许静默。
+                _logger.Log(LogLevel.Warn, "多画面", $"重连那一步自己出错了：{ex.Message}");
+            }
         }
     }
 

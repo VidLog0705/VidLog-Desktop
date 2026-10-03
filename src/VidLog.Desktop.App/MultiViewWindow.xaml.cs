@@ -435,6 +435,11 @@ public partial class MultiViewWindow : Window
                 HorizontalAlignment = HorizontalAlignment.Center,
                 VerticalAlignment = VerticalAlignment.Center,
                 Visibility = Visibility.Visible,
+                // ⚠️ 这两行是给 `LiveTile.Problem` 那几句用的：它们比「无信号输入」
+                // 长得多（「……手机那边的实时共享可能关着，或者网络不通。」），
+                // 默认不折行的话会从格子里伸出去。
+                TextWrapping = TextWrapping.Wrap,
+                TextAlignment = TextAlignment.Center,
             };
 
             var name = new TextBlock
@@ -543,7 +548,20 @@ public partial class MultiViewWindow : Window
             if (target is null || tile is null) return;
 
             var frame = tile.Latest();
-            if (frame is null || frame.CapturedAtMs == _shownAt) return;
+
+            if (frame is null)
+            {
+                // ⚠️ 抹平那句「无信号输入」是个**四种情况共用**的说法：手机没开实时共享、
+                // 网络不通、这边起不来、连了几次都失败。`LiveTile.Problem` 里那几句
+                // 是分得清的，就该写出来 —— 不然用户只能看到一格黑着，没有任何下一步。
+                var why = tile.Problem ?? "无信号输入";
+
+                if (!string.Equals(Empty.Text, why, StringComparison.Ordinal)) Empty.Text = why;
+
+                return;
+            }
+
+            if (frame.CapturedAtMs == _shownAt) return;
 
             _shownAt = frame.CapturedAtMs;
 
