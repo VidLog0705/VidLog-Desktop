@@ -498,6 +498,74 @@ public class CleanupTests
     }
 
     // ─────────────────────────────────────────────
+    // 安全阀（T6）：一次删掉计划里一半以上就中止
+    // ─────────────────────────────────────────────
+
+    [Theory]
+    // ⚠️ **只删 1 条不触发**：盘上只有 1 条时比例必然是 100%（1/1），
+    // 而那不是异常信号。异常信号是「一次删掉一大片」。
+    // 这一档同时也是**既有测试的护栏** —— 它们造的计划全是「1 个候选、0 个豁免」，
+    // 没有这个下限的话下面每一条都会红。
+    [InlineData(1, 0, false)]
+    // 「超过一半」是**严格大于**：正好一半不算（1/2、3/6）。
+    [InlineData(1, 1, false)]
+    [InlineData(3, 3, false)]
+    // 过半就触发
+    [InlineData(2, 0, true)] // 2/2
+    [InlineData(2, 1, true)] // 2/3
+    [InlineData(3, 2, true)] // 3/5
+    // 一条都不删当然不触发
+    [InlineData(0, 5, false)]
+    public void 安全阀的门槛是删掉计划里一半以上(int candidates, int exempted, bool expected)
+    {
+        Assert.Equal(expected, CleanupExecutor.TripsSafetyValve(PlanOf(candidates, exempted)));
+    }
+
+    [Fact]
+    public async Task 安全阀跳起来时一条都不删()
+    {
+        using var dir = new TempDir();
+        var a = dir.WriteArtifact("a.mp4");
+        var b = dir.WriteArtifact("b.mp4");
+
+        var executor = BuildExecutor(dir, new FakeArchive(ArchiveBackendKind.Cloud, exists: true));
+
+        // 2 / 2 —— 回查这一关**全都能过**，拦下它的是安全阀，不是 I8。
+        var plan = PlanFor(
+            Entry("c0", Now.AddDays(-365), "a.mp4"),
+            Entry("c1", Now.AddDays(-365), "b.mp4"));
+
+        var report = await executor.ExecuteAsync(plan);
+
+        Assert.Empty(report.Deleted);
+        Assert.Equal(2, report.Refused.Count);
+        Assert.True(File.Exists(a) && File.Exists(b), "安全阀跳起来时盘上一个文件都不许少");
+    }
+
+    [Fact]
+    public async Task 安全阀被覆盖之后就照删()
+    {
+        using var dir = new TempDir();
+        var a = dir.WriteArtifact("a.mp4");
+        var b = dir.WriteArtifact("b.mp4");
+
+        var executor = BuildExecutor(dir, new FakeArchive(ArchiveBackendKind.Cloud, exists: true));
+        var plan = PlanFor(
+            Entry("c0", Now.AddDays(-365), "a.mp4"),
+            Entry("c1", Now.AddDays(-365), "b.mp4"));
+
+        // 先证明它**真的会拦** —— 不然后面那句「覆盖之后照删」什么都证明不了。
+        Assert.True(CleanupExecutor.TripsSafetyValve(plan));
+
+        var report = await executor.ExecuteAsync(plan, force: true);
+
+        Assert.Equal(2, report.Deleted.Count);
+        Assert.Empty(report.Refused);
+        Assert.False(File.Exists(a));
+        Assert.False(File.Exists(b));
+    }
+
+    // ─────────────────────────────────────────────
     // 脚手架
     // ─────────────────────────────────────────────
 
@@ -507,6 +575,23 @@ public class CleanupTests
 
     private static CleanupPlan PlanFor(params RecordingEntry[] entries) =>
         new([.. entries.Select(e => new CleanupCandidate(e, 0, e.Location, "测试"))], []);
+
+    /// <summary>
+    /// 候选 N 条 + 豁免 M 条的计划。
+    /// </summary>
+    /// <remarks>
+    /// 安全阀判的是**两者的比例**，所以验它的用例必须能同时给定这两个数 ——
+    /// <see cref="PlanFor(RecordingEntry[])"/> 只会造「全是候选」。
+    /// </remarks>
+    private static CleanupPlan PlanOf(int candidates, int exempted) =>
+        new(
+            [.. Enumerable.Range(0, candidates).Select(i =>
+            {
+                var e = Entry($"c{i}", Now.AddDays(-365));
+                return new CleanupCandidate(e, 0, e.Location, "测试");
+            })],
+            [.. Enumerable.Range(0, exempted).Select(i =>
+                new ExemptedEntry(Entry($"k{i}", Now.AddDays(-1)), "测试"))]);
 
     private static IReadOnlyDictionary<string, IReadOnlyDictionary<string, string>> NoLabels() =>
         new Dictionary<string, IReadOnlyDictionary<string, string>>();

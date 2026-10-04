@@ -47,25 +47,48 @@ internal static class CleanupPrompt
     public static async Task<CleanupOutcome> AskAndRunAsync(
         Window owner, AppHost host, CleanupPlan plan, string headline)
     {
+        // ── T6 安全阀 ────────────────────────────────────────────────
+        //
+        // 这一次会删掉这份计划里**一半以上**吗。判据走的是执行层同一个函数
+        // （`CleanupExecutor.TripsSafetyValve`）—— **一处定义、两处用**：
+        // 界面这道是「不让用户在不知情的情况下点下去」，执行层那道是
+        // 「就算被绕过了也不许删」。两处各写一遍的话，改了门槛只改一处就会对不上。
+        var trips = CleanupExecutor.TripsSafetyValve(plan);
+        var total = plan.Candidates.Count + plan.Exempted.Count;
+
         var answer = MessageBox.Show(
             owner,
             $"{headline}\n\n"
+            // ⚠️ 这段只在安全阀跳起来时插进去，**底下那三条逐字不动**。
+            + (trips
+                ? $"⚠️ 这一次要删 {plan.Candidates.Count} 条，而这份计划里一共只有 {total} 条"
+                  + " —— 超过一半。\n"
+                  + "这个比例多半是算错了（保留期设成了「不保留」、索引读漏了一截、"
+                  + "或者【按空间释放】碰上一个探错的剩余空间），不是真的该删这么多。\n"
+                  + "建议先点【否】，回设置里核一下保留期，然后再来。\n\n"
+                : "")
             + "要现在清理吗？\n"
             + "· 清理前会逐条回查归档层，查不到或查不了的那条不会删；\n"
             + "· 删掉的是本机上这一份，归档层上的那份不动；\n"
             + "· 已锁定与最近 24 小时内录的一条都不会动。",
-            "清理本地副本",
+            trips ? "删除比例异常，请再确认一次" : "清理本地副本",
             MessageBoxButton.YesNo,
-            MessageBoxImage.Warning,
             // 默认是「否」——不可逆的动作不该让回车键替用户点头。
+            // 比例异常时图标也升一档（Warning → Stop）。
+            trips ? MessageBoxImage.Stop : MessageBoxImage.Warning,
             MessageBoxResult.No);
 
         if (answer != MessageBoxResult.Yes)
         {
-            return new CleanupOutcome(false, $"这次没清理（{plan.Candidates.Count} 条仍在盘上）。");
+            return new CleanupOutcome(false, trips
+                ? $"这次没清理：要删 {plan.Candidates.Count} / {total} 条（超过一半），"
+                  + "按安全阀中止，一条都没删。"
+                : $"这次没清理（{plan.Candidates.Count} 条仍在盘上）。");
         }
 
-        var report = await host.Services.Cleanup.RunAsync(plan);
+        // ⚠️ 只有安全阀真的跳起来时才可能带 force —— 别的计划根本没有「覆盖」这回事，
+        // 所以这里不需要第三个分支，也就没有「手滑传了 force」的余地。
+        var report = await host.Services.Cleanup.RunAsync(plan, force: trips);
 
         return new CleanupOutcome(true,
             $"清理完成：删了 {report.Deleted.Count} 条"

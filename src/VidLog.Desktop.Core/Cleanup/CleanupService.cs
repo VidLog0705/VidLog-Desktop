@@ -154,10 +154,15 @@ public sealed class CleanupService
     }
 
     /// <summary>按计划真删。逐条回查归档层，查不到或查不了都**不删**（I8）。</summary>
+    /// <param name="force">
+    /// 覆盖 T6 的安全阀（一次删掉计划里一半以上）。**只有用户在界面上看过
+    /// 「这一次要删掉一半以上」那句之后才该传 true** ——
+    /// 界面侧的落点是 <c>CleanupPrompt</c>，它在同一个框里把比例摆出来。
+    /// </param>
     public async Task<CleanupReport> RunAsync(
-        CleanupPlan plan, CancellationToken cancellationToken = default)
+        CleanupPlan plan, CancellationToken cancellationToken = default, bool force = false)
     {
-        var report = await _executor.ExecuteAsync(plan, cancellationToken);
+        var report = await _executor.ExecuteAsync(plan, cancellationToken, force);
 
         if (report.Deleted.Count > 0 || report.Refused.Count > 0)
         {
