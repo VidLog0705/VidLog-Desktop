@@ -113,6 +113,27 @@
     <FontFamily x:Key="UiFont">Microsoft YaHei UI, Segoe UI</FontFamily>
     <FontFamily x:Key="MonoFont">Consolas, Microsoft YaHei UI</FontFamily>
 
+    <!-- ── 圆角 ──────────────────────────────────────────────────── -->
+    <!--
+        ⚠️ 这三支的值是**数出来的，不是拍的**（2026-10-04）：
+        把 App 下 9 个 `.xaml` 里的 `CornerRadius=` 全数一遍 ——
+        6 出现 **16** 次、8 出现 **14** 次、4 出现 **5** 次，
+        再往后就是断崖（5 两次，3 / 9 / 11 各一次）。
+        前三档各有一个角色，剩下的没有角色、只有偏差。
+
+        ⚠️ 与 `docs/` 里那份改造报告对不上，两处：
+        它写「卡片 10、弹窗 14」，而**本仓的卡片本来就是 8**
+        （`Card` 样式就在下面）、**14 在全仓一次都没出现过**。
+        这里按量到的值落，不按报告里的数落 —— 那份数没在代码里核过。
+
+        ⚠️ `ToggleSwitch` 那个 `CornerRadius="11"` **故意不进令牌**：
+        它是 `Height / 2`（高 22 的胶囊），是**算出来的**不是选出来的；
+        给它编一个令牌，等于把「22 的一半」抄成一个看起来可调的数。
+    -->
+    <CornerRadius x:Key="RadiusControl">6</CornerRadius>
+    <CornerRadius x:Key="RadiusCard">8</CornerRadius>
+    <CornerRadius x:Key="RadiusTag">4</CornerRadius>
+
     <!-- ── 文字 ──────────────────────────────────────────────────── -->
     <Style x:Key="PageTitle" TargetType="TextBlock">
         <Setter Property="FontFamily" Value="{StaticResource UiFont}"/>
@@ -181,7 +202,7 @@
         <Setter Property="Background" Value="{StaticResource Surface}"/>
         <Setter Property="BorderBrush" Value="{StaticResource CardBorder}"/>
         <Setter Property="BorderThickness" Value="1"/>
-        <Setter Property="CornerRadius" Value="8"/>
+        <Setter Property="CornerRadius" Value="{StaticResource RadiusCard}"/>
         <Setter Property="Padding" Value="16"/>
         <Setter Property="Margin" Value="0,0,0,12"/>
     </Style>
@@ -208,9 +229,9 @@
             <Setter.Value>
                 <ControlTemplate TargetType="Button">
                     <Border Background="{TemplateBinding Background}"
-                            CornerRadius="6" SnapsToDevicePixels="True">
+                            CornerRadius="{StaticResource RadiusControl}" SnapsToDevicePixels="True">
                         <Grid>
-                            <Border x:Name="Overlay" Background="Transparent" CornerRadius="6"/>
+                            <Border x:Name="Overlay" Background="Transparent" CornerRadius="{StaticResource RadiusControl}"/>
                             <ContentPresenter Margin="{TemplateBinding Padding}"
                                               HorizontalAlignment="Center" VerticalAlignment="Center"/>
                         </Grid>
@@ -252,9 +273,9 @@
                 <ControlTemplate TargetType="Button">
                     <Border Background="{TemplateBinding Background}"
                             BorderBrush="{StaticResource BorderStrong}" BorderThickness="1"
-                            CornerRadius="6" SnapsToDevicePixels="True">
+                            CornerRadius="{StaticResource RadiusControl}" SnapsToDevicePixels="True">
                         <Grid>
-                            <Border x:Name="Overlay" Background="Transparent" CornerRadius="6"/>
+                            <Border x:Name="Overlay" Background="Transparent" CornerRadius="{StaticResource RadiusControl}"/>
                             <ContentPresenter Margin="{TemplateBinding Padding}"
                                               HorizontalAlignment="Center" VerticalAlignment="Center"/>
                         </Grid>
@@ -313,7 +334,7 @@
             <Setter.Value>
                 <ControlTemplate TargetType="Button">
                     <Border x:Name="Bd" Background="{TemplateBinding Background}"
-                            CornerRadius="4" SnapsToDevicePixels="True">
+                            CornerRadius="{StaticResource RadiusTag}" SnapsToDevicePixels="True">
                         <ContentPresenter Margin="{TemplateBinding Padding}"
                                           HorizontalAlignment="Center" VerticalAlignment="Center"/>
                     </Border>
@@ -352,7 +373,7 @@
                 <ControlTemplate TargetType="RadioButton">
                     <Border x:Name="Bd" Background="Transparent"
                             BorderBrush="Transparent" BorderThickness="1"
-                            CornerRadius="6" Padding="12,9" SnapsToDevicePixels="True">
+                            CornerRadius="{StaticResource RadiusControl}" Padding="12,9" SnapsToDevicePixels="True">
                         <ContentPresenter VerticalAlignment="Center"/>
                     </Border>
                     <ControlTemplate.Triggers>
@@ -413,7 +434,7 @@
         —— 底色/字色由调用处设，因为图上有五六种颜色，写死在这里还不如不写。
     -->
     <Style x:Key="TagPill" TargetType="Border">
-        <Setter Property="CornerRadius" Value="4"/>
+        <Setter Property="CornerRadius" Value="{StaticResource RadiusTag}"/>
         <Setter Property="Padding" Value="7,2"/>
         <Setter Property="VerticalAlignment" Value="Center"/>
     </Style>
