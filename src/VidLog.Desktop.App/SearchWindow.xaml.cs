@@ -75,12 +75,30 @@ public partial class SearchWindow : Window
     /// <summary>用户正拖着进度条 —— 这期间不要用播放位置去覆盖他拖到的位置。</summary>
     private bool _seeking;
 
-    public SearchWindow(AppHost host)
+    /// <param name="initialQuery">
+    /// 打开时预先填进检索框、并**当场检索一次**（T12 命令面板打单号跳过来用）。
+    /// <see langword="null"/> = 就照原来的样子：空框，等用户自己输。
+    /// </param>
+    public SearchWindow(AppHost host, string? initialQuery = null)
     {
         _host = host;
         InitializeComponent();
 
         SearchButton.IsEnabled = true;
+
+        if (!string.IsNullOrWhiteSpace(initialQuery))
+        {
+            SearchBox.Text = initialQuery;
+
+            // ⚠️ 用**模糊**，不是框上默认的「精确」：命令面板里敲进去的多半是单号
+            // 的一截，精确匹配会一条都搜不出来 —— 而用户看到的会是「跳过来是个空列表」，
+            // 看起来像这条录像丢了。
+            MatchCombo.SelectedIndex = 2;
+
+            // ⚠️ 等界面画完再搜：`SearchAsync` 会动列表与按钮文字，构造里调的时候
+            // 这些控件还没量过尺寸。
+            Loaded += async (_, _) => await SearchAsync();
+        }
 
         _playTicker = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(250) };
         _playTicker.Tick += (_, _) => UpdatePlaybackPosition();

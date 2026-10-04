@@ -1,0 +1,40 @@
+<Window x:Class="VidLog.Desktop.App.CommandPaletteWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="命令面板" Width="520" MaxHeight="480"
+        SizeToContent="Height"
+        FontFamily="{StaticResource UiFont}"
+        Background="{StaticResource PageBackground}"
+        WindowStartupLocation="CenterOwner"
+        ResizeMode="NoResize" ShowInTaskbar="False">
+    <!--
+        ⚠️ 这个窗是**哑的**：匹配全在 `VidLog.Desktop.Core.Commands.PaletteMatcher`
+        里（那边能测；App 这层是 WinExe，Core.Tests 够不着）。
+        这里只负责「把用户敲的字递上去、把他选的那条还回去」。
+    -->
+    <Border Margin="10" Padding="12" Style="{StaticResource Card}">
+        <StackPanel>
+            <TextBox x:Name="QueryBox" FontSize="15" Padding="8,6"
+                     BorderBrush="{StaticResource BorderStrong}"/>
+
+            <!-- 这句是**死的**（不随输入变），所以写在 XAML 里，不在每次敲字时重设 -->
+            <TextBlock x:Name="HintText" Margin="2,8,0,0" TextWrapping="Wrap"
+                       Style="{StaticResource Caption}"
+                       Text="↑↓ 选，回车打开，Esc 关掉。也可以直接打单号。"/>
+
+            <ListBox x:Name="ResultList" Margin="0,8,0,0" MinHeight="180" MaxHeight="300"
+                     BorderThickness="0" Background="Transparent"
+                     ScrollViewer.HorizontalScrollBarVisibility="Disabled">
+                <ListBox.ItemContainerStyle>
+                    <Style TargetType="ListBoxItem">
+                        <Setter Property="Padding" Value="8,6"/>
+                    </Style>
+                </ListBox.ItemContainerStyle>
+            </ListBox>
+
+            <!-- Esc 关掉。⚠️ 复用 T1 那个做法：`IsCancel` 挂在**看不见的**按钮上 ——
+                 焦点在 TextBox 里也一样收得到（不然用户敲了几个字想反悔，只能去够右上角）。 -->
+            <Button x:Name="CancelButton" Visibility="Collapsed" IsCancel="True"/>
+        </StackPanel>
+    </Border>
+</Window>

@@ -20,8 +20,12 @@ using MessageBox = System.Windows.MessageBox;
 using MessageBoxImage = System.Windows.MessageBoxImage;
 using MessageBoxResult = System.Windows.MessageBoxResult;
 using TextChangedEventArgs = System.Windows.Controls.TextChangedEventArgs;
+// ⚠️ WinForms 那侧也有一个 `KeyEventArgs`（`MouseEventArgs` 那些倒是不撞，
+// 所以只有这一个要钉）。T12 的命令面板开始用 WPF 那个。
+using KeyEventArgs = System.Windows.Input.KeyEventArgs;
 using VidLog.Desktop.App.Platform;
 using VidLog.Desktop.Core;
+using VidLog.Desktop.Core.Commands;
 using VidLog.Desktop.Core.Configuration;
 using VidLog.Desktop.Core.Labels;
 using VidLog.Desktop.Core.Live;
@@ -149,6 +153,10 @@ public partial class MainWindow : Window
         _renameWatch.Start();
 
         Loaded += OnLoaded;
+
+        // 命令面板（T12）—— 焦点在哪个控件上都要收得到，所以挂窗这一层。
+        PreviewKeyDown += OnPaletteShortcut;
+
         Closed += (_, _) =>
         {
             _ticker.Stop();
@@ -802,6 +810,22 @@ public partial class MainWindow : Window
     private GlobalHotKeys? _hotKeys;
 
     /// <summary>
+    /// 命令面板这一次匹配出来的每条候选**该做什么**（T12）。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// ⚠️ 与候选表**同一个来源、同一次生成**（见 <see cref="MatchPalette"/>）：
+    /// 两者分开写的话，加一条候选却忘了加它的动作，症状是「选了没反应」——
+    /// 而那正是踩坑 #13 点名的第三种。
+    /// </para>
+    /// <para>
+    /// ⚠️ <b>面板只把「选中了哪一条」还回来，动作在这里查</b> —— 反过来让面板
+    /// 直接执行，它就得知道每一个动作要开哪个窗，那是把它变成第二个主窗。
+    /// </para>
+    /// </remarks>
+    private readonly Dictionary<PaletteCandidate, Action> _paletteRuns = [];
+
+    /// <summary>
     /// 【实时多画面】（设计图 `_50`，规格 §3.8）—— 摆开每一台手机现在的画面。
     /// </summary>
     /// <remarks>
@@ -906,6 +930,145 @@ public partial class MainWindow : Window
                 "开始/停止录像", ModifierKeys.Control | ModifierKeys.Alt, Key.R,
                 () => OnStartOrStopWork(this, new RoutedEventArgs()));
         }
+    }
+
+    // ─────────────────────────────────────────────
+    // 命令面板（T12）
+    // ─────────────────────────────────────────────
+
+    /// <summary>
+    /// <c>Ctrl+K</c> —— 顺手敲两下就能到任何一个入口，不必先找那颗按钮在哪一屏。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// ⚠️ 挂在窗的 <see cref="UIElement.PreviewKeyDown"/> 上，不在某个控件上：
+    /// 焦点这会儿可能在单号框里（用户刚扫完一枪），而那个框的普通 <c>KeyDown</c>
+    /// 会先把字母吃掉。
+    /// </para>
+    /// <para>
+    /// ⚠️ <b>刻意不做成「可见的入口」</b>（按钮 / 菜单项）：清单没要求，
+    /// 凭空在主窗上加一颗按钮是**改设计图**。代价是它只能靠人传人 ——
+    /// 见汇报里的「已知上限」。
+    /// </para>
+    /// </remarks>
+    private void OnPaletteShortcut(object sender, KeyEventArgs e)
+    {
+        if (e.Key != Key.K || Keyboard.Modifiers != ModifierKeys.Control)
+        {
+            return;
+        }
+
+        // 标成已处理：不然这个 K 还会继续往焦点所在的框里走（单号框会多一个 k）。
+        e.Handled = true;
+
+        OpenPalette();
+    }
+
+    private void OpenPalette()
+    {
+        var palette = new CommandPaletteWindow(MatchPalette) { Owner = this };
+
+        // ⚠️ **模态**，与其它几个入口一致：主窗这时是活的，回收站与保留期清理
+        // 都在背后跑 —— 用户正盯着一条候选、底下的录像却少了，那更费解。
+        palette.ShowDialog();
+
+        if (palette.Chosen is { } chosen)
+        {
+            // §6.1：面板本身没有资源、没有不可逆动作，但它**替用户按了别处的按钮** ——
+            // 用户事后说「我按了 Ctrl+K 选了检索，怎么没反应」时，
+            // 「他到底选的是哪一条」只有这里记得下来。
+            _host.Logger.Log(
+                VidLog.Desktop.Core.Diagnostics.LogLevel.Info, "命令面板", $"选了：{chosen.Label}");
+
+            RunPaletteCommand(chosen);
+        }
+    }
+
+    /// <summary>
+    /// 候选表。<b>每个动作就是主窗上原来那颗按钮</b>，不另写一份实现。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// ⚠️ 每次敲字都会重来一遍：表里可能有**跟着输入变**的一条（「检索单号 X」），
+    /// 而 <see cref="PaletteMatcher"/> 是纯函数，它只认递进来的这张表。
+    /// </para>
+    /// <para>
+    /// ⚠️ 表是**手写**的、靠前的是更要紧的入口 —— 同分时
+    /// <see cref="PaletteMatcher.Rank"/> 保持这个先后（见那边的注释）。
+    /// </para>
+    /// </remarks>
+    private IReadOnlyList<PaletteCandidate> MatchPalette(string typed)
+    {
+        _paletteRuns.Clear();
+
+        // ⚠️ **候选与它要做的事写在一起**，不分成两张表：分成两张的话，加一条候选
+        // 却忘了加动作，症状就是「选了没反应」（踩坑 #13 点名的第三种）。
+        var table = new List<(PaletteCandidate Candidate, Action Run)>
+        {
+            (new("search", "检索录像", "回放,查找,单号,播放"),
+                () => OnOpenSearch(this, new RoutedEventArgs())),
+            (new("data", "打开数据", "备份,存档,总览,统计"),
+                () => OnOpenData(this, new RoutedEventArgs())),
+            (new("settings", "打开设置", "配置,选项,许可,激活"),
+                () => OnOpenSettings(this, new RoutedEventArgs())),
+            (new("wall", "实时多画面", "九格,监控,机位"),
+                () => OnOpenMultiView(this, new RoutedEventArgs())),
+            (new("enroll", "连接手机", "二维码,扫码,入网"),
+                () => OnEnroll(this, new RoutedEventArgs())),
+        };
+
+        var candidates = new List<PaletteCandidate>(table.Count);
+
+        foreach (var (candidate, run) in table)
+        {
+            _paletteRuns[candidate] = run;
+            candidates.Add(candidate);
+        }
+
+        var hits = PaletteMatcher.Rank(typed, candidates);
+
+        // 打进去的既不是动作名、也不是关键词 —— 那多半就是个**单号**，
+        // 于是补一条「去检索它」。这是清单点名要的四种用法里的第四种。
+        //
+        // ⚠️ **只在一条动作都没命中时才补**。不然「打」这种字（单号里的第一个字，
+        // 也正好是「打开…」的第一个字）会同时冒出「打开数据」和「检索单号 打」，
+        // 而后者永远不是用户想要的。
+        //
+        // 已知上限：单号长得**恰好**能子序列命中某个动作名时（比如某个单号里
+        // 一个字不差地散落着「实、时、多、画、面」），跳单号那一条就不会出现。
+        // 概率极低，代价是用户改用【回放】那颗按钮 —— 不为它加一层启发式。
+        if (hits.Count == 0 && !string.IsNullOrWhiteSpace(typed))
+        {
+            var raw = typed.Trim();
+            var jump = new PaletteCandidate(
+                "waybill", $"检索单号 {WaybillNumber.Normalize(raw)} 的录像", "跳转,打开,查找");
+
+            _paletteRuns[jump] = () => new SearchWindow(_host, raw) { Owner = this }.ShowDialog();
+
+            return [jump];
+        }
+
+        return hits;
+    }
+
+    private void RunPaletteCommand(PaletteCandidate chosen)
+    {
+        // ⚠️ 拿**上一次匹配**留下的那张表来查，而 `chosen` 正是从那张表里选出来的，
+        // 所以查得到（`PaletteCandidate` 是 record，比的是值）。
+        //
+        // 查不到只有一种可能：**这张表在选中之后又被重建过**。重建只发生在面板
+        // 那一次 `MatchPalette` 调用里，而面板已经关掉了 —— 现在不会，将来也不会。
+        // 真查不到就什么都不做：一个「选了没反应」比**开错窗**好解释得多。
+        if (!_paletteRuns.TryGetValue(chosen, out var run))
+        {
+            _host.Logger.Log(
+                VidLog.Desktop.Core.Diagnostics.LogLevel.Warn, "命令面板",
+                $"选中了「{chosen.Label}」，但它没有对应的动作 —— 什么也没做");
+
+            return;
+        }
+
+        run();
     }
 
     /// <summary>给多画面建一格：机位名从设备表来（§3.4.5），拿不到就退回设备号。</summary>
