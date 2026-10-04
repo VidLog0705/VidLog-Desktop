@@ -59,6 +59,7 @@ public sealed class LiveTileProcess : IAsyncDisposable
     private readonly object _gate = new();
     private LiveFrame? _latest;
     private long _dropped;
+    private long _received;
     private int _stopped;
     private bool _hadFrame;
 
@@ -88,6 +89,20 @@ public sealed class LiveTileProcess : IAsyncDisposable
     public long DroppedCount
     {
         get { lock (_gate) { return _dropped; } }
+    }
+
+    /// <summary>
+    /// 这一路**收进来**的完整帧数（诊断用，T11 的「网络侧」那个数的底料）。
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ 它与 <see cref="DroppedCount"/> 是**两件事**，不重合：
+    /// 这个是「网络那头给了多少帧」（来源健不健康），那个是
+    /// 「界面这一头没跟上多少」（我们自己画得慢不慢）。
+    /// 只看得见其中一个时，「画面卡」到底怪谁分不出来 —— 那正是 T11 要拆的东西。
+    /// </remarks>
+    public long ReceivedCount
+    {
+        get { lock (_gate) { return _received; } }
     }
 
     /// <summary>ffmpeg 说的最后一句话（起不来时用它给用户一个原因，I3）。</summary>
@@ -280,6 +295,12 @@ public sealed class LiveTileProcess : IAsyncDisposable
                     {
                         // ⚠️ **只留最新那一帧，旧的直接丢。** 界面按自己的节拍来取；
                         // 排队的话延迟会越积越大 —— 而实时画面宁可掉帧也不能滞后。
+                        //
+                        // ⚠️ 这两下数的是**两件事**，别合并（T11）：
+                        //    `_received` = **网络那头给了多少**（这一路健不健康）
+                        //    `_dropped`  = **界面这一头没跟上多少**（我们自己的事）
+                        // 合起来看才分得出「手机上没编出来」与「这台电脑画不过来」。
+                        _received++;
                         if (_latest is not null) _dropped++;
                         _latest = frame;
                         _hadFrame = true;

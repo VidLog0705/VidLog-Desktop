@@ -8,12 +8,17 @@ namespace VidLog.Desktop.Core.Live;
 /// <param name="Outbound">发货（绿的那个 F）。</param>
 /// <param name="Returned">退货（红的那个 T）。</param>
 /// <param name="ReportedQuality">手机**自己说**它现在是哪一档。</param>
+/// <param name="PhoneDropped">
+/// 手机**编码那一侧**丢了多少帧（T11）。⚠️ 与 <paramref name="Outbound"/> 那一对
+/// **不是一回事**：那两个是**业务计数**，这个是**推流健康度**。
+/// </param>
 /// <remarks>
 /// ⚠️ <paramref name="ReportedQuality"/> 是给诊断用的，不是给我们用的：
 /// 用户抱怨「明明选了 1080P 怎么还是糊」时，把它和我们以为的那一档一比，
 /// 就知道是**改档没生效**还是**那一格本来就该糊**。
 /// </remarks>
-public sealed record LiveCounts(int Outbound, int Returned, int? ReportedQuality);
+public sealed record LiveCounts(
+    int Outbound, int Returned, int? ReportedQuality, int PhoneDropped = 0);
 
 /// <summary>
 /// 多画面里的**一格**：一路画面 + 那台手机的计数 + 它现在的画质档。
@@ -85,6 +90,13 @@ public sealed class LiveTile : IAsyncDisposable
 
     /// <summary>上一次问计数是不是失败着（用来把重复的失败**去重成两条**：变坏一条、变好一条）。</summary>
     private bool _statusFailing;
+
+    /// <summary>上一次量到的接收帧率（T11）。<see langword="null"/> = 还没量出来。</summary>
+    private double? _fps;
+
+    /// <summary>上一次采样的那两个底数（帧数、时刻）。⚠️ 只在 <see cref="_life"/> 里动。</summary>
+    private long _rateFrames;
+    private long _rateAtMs;
     private LiveQuality _quality;
     private string? _problem;
     private int _disposed;
@@ -137,6 +149,63 @@ public sealed class LiveTile : IAsyncDisposable
 
     /// <summary>那台手机报上来的计数；还没问到就是 <see langword="null"/>。</summary>
     public LiveCounts? Counts => _counts;
+
+    /// <summary>
+    /// 这一格**实测**的接收帧率（T11 的「网络侧」那个数）。还没量出来是 <see langword="null"/>。
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ <b>它不是「ffmpeg 说它收了多少」，是我们真从管子上一帧一帧数出来的。</b>
+    /// 两者本来是一回事（ffmpeg 的 <c>fps=</c> 那行说的也是它自己读出来的速率），
+    /// 但数自己的**少一层解析、也不会因为 ffmpeg 换了输出格式就失准** ——
+    /// 而 ffmpeg 的 stderr 在这个类里已经另作他用（错误尾巴）。
+    /// </remarks>
+    public double? ReceiveFps
+    {
+        get { lock (_life) { return _fps; } }
+    }
+
+    /// <summary>因为**我们这一头**没跟上而丢掉的帧数（T11 的「显示侧」）。</summary>
+    public long ScreenDropped
+    {
+        get { lock (_life) { return _process?.DroppedCount ?? 0; } }
+    }
+
+    /// <summary>
+    /// 量一次接收帧率。<b>每秒调一次</b>（`MultiViewWindow` 的计数那一拍顺手带上）。
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ <b>做成「显式采样」而不是一个会自己算的属性</b>：帧率是**一段时间上的差**，
+    /// 而属性会在任何一次读取时把底数推走 —— 同一秒里被读两次的话，
+    /// 第二次量到的是一段几十毫秒的窗口，那个数会乱跳。
+    /// </remarks>
+    public void SampleReceiveRate()
+    {
+        var now = Environment.TickCount64;
+
+        lock (_life)
+        {
+            var count = _process?.ReceivedCount ?? 0;
+
+            if (_rateAtMs == 0)
+            {
+                // 第一次只记底数 —— 没有上一次数，算不出差值。
+                _rateFrames = count;
+                _rateAtMs = now;
+                return;
+            }
+
+            var ms = now - _rateAtMs;
+            if (ms < 250) return;
+
+            var frames = count - _rateFrames;
+
+            // ⚠️ 负数是**重连**（新进程从 0 数起）。当成「重新起算」，
+            // 不显示一个负的帧率 —— 那比不显示更让人困惑。
+            _fps = frames < 0 ? 0 : frames * 1000.0 / ms;
+            _rateFrames = count;
+            _rateAtMs = now;
+        }
+    }
 
     /// <summary>
     /// 这一格为什么没画面（起不来、断了）。**不是**「无信号输入」——
@@ -194,7 +263,11 @@ public sealed class LiveTile : IAsyncDisposable
             _counts = new LiveCounts(
                 root.TryGetProperty("f", out var f) ? f.GetInt32() : 0,
                 root.TryGetProperty("t", out var t) ? t.GetInt32() : 0,
-                root.TryGetProperty("p", out var p) ? p.GetInt32() : null);
+                root.TryGetProperty("p", out var p) ? p.GetInt32() : null,
+                // ⚠️ 读不到就是 0，不是「未知」：老的手机端（还没报 `d` 的那些）
+                // 与「一台都没丢」在界面上长得一样 —— 而这里是**诊断**，
+                // 一个多出来的「未知」态只会让人去查一个不存在的问题。
+                root.TryGetProperty("d", out var d) ? d.GetInt32() : 0);
 
             // ⚠️ **这里不撤 `_problem`。** 计数问得到和有没有画面是两回事：
             // 手机没开实时共享时 `/status` 照样回 200，而那一格一帧都没有 ——

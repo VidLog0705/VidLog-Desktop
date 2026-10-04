@@ -407,6 +407,12 @@ public partial class MultiViewWindow : Window
                 if (!cell.IsOnScreen) continue;
 
                 // `IsOnScreen` 已经保证了 Tile 非空，这里那个 `!` 是给编译器的。
+                //
+                // ⚠️ **采样在这一拍的最前面，不在 `await` 后面**（T11）：帧率是**两次采样之间**
+                // 的差，而下面那个请求最长能等 5 秒。放到后面的话，一格卡住就会把
+                // 别格的窗口一起拉长，几格之间的读数没法比 —— 而「哪一格不对」正是这行字要回答的。
+                cell.Tile!.SampleReceiveRate();
+
                 await cell.Tile!.RefreshStatusAsync();
                 cell.RenderCounts();
             }
@@ -553,6 +559,8 @@ public partial class MultiViewWindow : Window
         private readonly int _index;
         private readonly Brush _countGreen;
         private readonly Brush _countRed;
+        private readonly Brush _countDim;
+        private readonly Brush _countWarn;
         private readonly TextBlock _name;
         private readonly Button _rotate;
         private long _shownAt;
@@ -567,6 +575,10 @@ public partial class MultiViewWindow : Window
             // 就是**一条被丢掉的异常**：字不出现，而没有任何地方会说话。
             _countGreen = (Brush)owner.FindResource("Success");
             _countRed = (Brush)owner.FindResource("Danger");
+
+            // 推流健康度那一行（T11）用的两个：帧率是**说明**（暗），丢帧是**要看的**（琥珀）。
+            _countDim = (Brush)owner.FindResource("TextDisabled");
+            _countWarn = (Brush)owner.FindResource("Warning");
 
             Surface = new Image
             {
@@ -632,6 +644,9 @@ public partial class MultiViewWindow : Window
                 Margin = new Thickness(0, 0, 0, 6),
                 FontFamily = (FontFamily)((FrameworkElement)owner).FindResource("MonoFont"),
                 FontSize = 14,
+                // ⚠️ 加了第二行（健康度）之后必须显式居中：不设的话整个块按**最宽那行**
+                //     居中，两行各自左对齐 —— 短的那行会偏到一边去。
+                TextAlignment = TextAlignment.Center,
                 Visibility = Visibility.Collapsed,
             };
 
@@ -783,11 +798,40 @@ public partial class MultiViewWindow : Window
         /// 拿不到时显示 <c>–</c>，**不是 0**：一个假的 0 会被当成
         /// 「这台机位今天一单没做」，而用户不会去怀疑那两个数字。
         /// </remarks>
+        /// <summary>把这一格的推流健康度与计数画到格子下沿。</summary>
+        /// <remarks>
+        /// ⚠️ 两行是**两件事**，别当成一件事看（T11）：
+        /// 下面那行 F/T 是「今天扫了多少发货/退货」（**业务计数**，手机报的），
+        /// 上面那行是「这条管子通不通」（**推流健康度**）。
+        /// 用户嘴里那句「画面卡」只有看着上面那行才分得出是**手机编不出来**
+        /// 还是**网络不行** —— 而这两件事的处置完全不同。
+        /// </remarks>
         public void RenderCounts()
         {
             var counts = Tile?.Counts;
+            var fps = Tile?.ReceiveFps;
 
             Counts.Inlines.Clear();
+
+            Counts.Inlines.Add(new Run(
+                fps is null
+                    ? "– fps"
+                    : fps.Value.ToString("0.0", CultureInfo.InvariantCulture) + " fps")
+            {
+                Foreground = _countDim,
+            });
+
+            // ⚠️ 两个丢帧数**没有就不出现**（而不是显示 0）：健康时这一行只有帧率，
+            // 挂一串 0 会把「有东西要看了」这个信号淹掉 —— 而这行存在的全部意义
+            // 就是让人**一眼**看出哪一格不对劲。
+            //
+            // ⚠️ 两个名字要分得开：「这边丢」是**这台电脑没跟上**（解码/贴图慢了，
+            // 与网线无关），「手机丢」是**手机编码器整段扔掉**（网线再好也救不回来）。
+            AppendLoss("这边丢", Tile?.ScreenDropped ?? 0);
+            AppendLoss("手机丢", counts?.PhoneDropped ?? 0);
+
+            Counts.Inlines.Add(new LineBreak());
+
             Counts.Inlines.Add(new Run(
                 $"F {(counts is null ? "–" : counts.Outbound.ToString(CultureInfo.InvariantCulture))}")
             {
@@ -801,6 +845,19 @@ public partial class MultiViewWindow : Window
             });
 
             Counts.Visibility = Visibility.Visible;
+        }
+
+        /// <summary>丢帧数非零才把那一段追加上去（T11）。</summary>
+        private void AppendLoss(string label, long dropped)
+        {
+            if (dropped <= 0) return;
+
+            Counts.Inlines.Add(new Run(" · ") { Foreground = _countDim });
+            Counts.Inlines.Add(new Run(
+                $"{label} {dropped.ToString(CultureInfo.InvariantCulture)}")
+            {
+                Foreground = _countWarn,
+            });
         }
 
         private Brush FindResource(string key) => (Brush)_owner.FindResource(key);

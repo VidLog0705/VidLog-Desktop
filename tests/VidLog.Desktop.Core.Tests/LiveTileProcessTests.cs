@@ -79,6 +79,70 @@ public class LiveTileProcessTests
         Assert.Equal(3, tile.Counts.Returned);
         Assert.Equal(480, tile.Counts.ReportedQuality);
         Assert.Null(tile.Problem);
+
+        // 编码侧丢帧（T11 的 `d`）真的被读进来了。
+        Assert.Equal(5, tile.Counts.PhoneDropped);
+
+        // ⚠️ 老手机端（改造之前那一版）报文里**没有 `d`**：要读成 0，
+        // 不是「未知」。理由见 `LiveTile.RefreshStatusAsync` 里那一行注释 ——
+        // 多一个界面上分不出来的「未知」态，只会让人去查一个不存在的问题。
+        phone.Dropped = null;
+
+        await tile.RefreshStatusAsync();
+
+        Assert.Equal(0, tile.Counts!.PhoneDropped);
+    }
+
+    [RequiresFfmpegFact]
+    public async Task 帧率是量出来的_手机一停它就掉到零()
+    {
+        // ★ T11 的这一条：它是「帧率」这两个字**唯一**的判据。
+        //
+        // ⚠️ 它挡的是「把 `LiveTileProcess.Fps` 那个 12 直接当成帧率」那种实现 ——
+        // 它画面正常时看起来**完全正确**，只有在坏掉的时候才露出破绽，
+        // 而「坏掉的时候」正是这一行字唯一要让人看见的时刻。
+        var ffmpeg = FfmpegLocator.TryFind();
+        Assert.NotNull(ffmpeg);
+
+        using var dir = new TempDir();
+        var h264 = await EncodeAsync(ffmpeg!, dir.File("stream.h264"));
+        using var phone = new FakePhone(h264);
+
+        await using var tile = LiveTile.Start(ffmpeg!, phone.BaseUrl, "1 号机位");
+
+        Assert.True(await WaitForFrameAsync(tile, TimeSpan.FromSeconds(30)) is not null);
+
+        // ⚠️ 第一次采样**只能记底数**（没有上一次的数就没有差值）——
+        // 这时必须是 `null` 而不是 0：0 会被画成「0.0 fps」，
+        // 而「刚开、还没量」与「这条管子已经死了」在屏幕上必须是两句话。
+        tile.SampleReceiveRate();
+
+        Assert.True(tile.ReceiveFps is null, $"刚开就报了个帧率：{tile.ReceiveFps}");
+
+        await Task.Delay(700);
+        tile.SampleReceiveRate();
+
+        Assert.True(
+            tile.ReceiveFps is > 0,
+            $"画面在动、帧率却是 {tile.ReceiveFps?.ToString(CultureInfo.InvariantCulture) ?? "null"}");
+
+        // 手机整个消失：管子死了，这个数**必须跟着掉到 0**。
+        phone.Dispose();
+
+        var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(20);
+        while (DateTime.UtcNow < deadline && tile.Latest() is not null) await Task.Delay(50);
+
+        Assert.Null(tile.Latest());
+
+        // ⚠️ 采两次：第一次那一段窗口有一半还是**断之前**的，算出来会是个假的非零数。
+        await Task.Delay(400);
+        tile.SampleReceiveRate();
+        await Task.Delay(400);
+        tile.SampleReceiveRate();
+
+        Assert.True(
+            tile.ReceiveFps is 0,
+            $"手机已经停了，帧率还报着 {tile.ReceiveFps?.ToString(CultureInfo.InvariantCulture) ?? "null"}");
     }
 
     [RequiresFfmpegFact]
@@ -431,6 +495,13 @@ public class LiveTileProcessTests
 
         public int Returned { get; set; } = 2;
 
+        /// <summary>
+        /// 手机报上来的编码侧丢帧（T11 的 <c>d</c>）。
+        /// ⚠️ <b><see langword="null"/> = 报文里**不带这个键**</b> —— 用来演
+        /// 「老的手机端」（改造之前那一版只会报 f/t/p）。
+        /// </summary>
+        public int? Dropped { get; set; } = 5;
+
         /// <summary>手机现在这一档。</summary>
         public int Quality { get; private set; } = 480;
 
@@ -501,7 +572,9 @@ public class LiveTileProcessTests
                     await WriteAsync(
                         stream,
                         200,
-                        $$"""{"f":{{Outbound}},"t":{{Returned}},"p":{{Quality}}}""");
+                        Dropped is { } d
+                            ? $$"""{"f":{{Outbound}},"t":{{Returned}},"p":{{Quality}},"d":{{d}}}"""
+                            : $$"""{"f":{{Outbound}},"t":{{Returned}},"p":{{Quality}}}""");
                     return;
                 }
 
