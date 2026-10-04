@@ -1,6 +1,7 @@
 using System.ComponentModel;
 using System.IO;
 using System.Windows;
+using System.Windows.Input;
 using System.Windows.Media.Imaging;
 using System.Windows.Threading;
 
@@ -154,6 +155,11 @@ public partial class MainWindow : Window
             _clockTicker.Stop();
             _previewTimer.Stop();
             _renameWatch.Stop();
+
+            // ⚠️ 热键**必须撤**（T15）：`RegisterHotKey` 是系统级的独占注册，
+            // 不退的话这台机器上那个组合键从此刻起谁都用不了 —— 而我们的窗口已经没了。
+            _hotKeys?.Dispose();
+            _hotKeys = null;
         };
 
         _host.Notice += OnNotice;
@@ -219,6 +225,8 @@ public partial class MainWindow : Window
     {
         // 装钩子 —— 装不上要给用户看见（I3），不能让他一直奇怪扫码枪怎么没反应。
         _host.StartKeyboardHook();
+
+        AttachHotKeys();
 
         ShowStatusSummaries();
 
@@ -790,6 +798,9 @@ public partial class MainWindow : Window
     /// </remarks>
     private MultiViewWindow? _multiView;
 
+    /// <summary>全局热键（T15）。`Loaded` 上挂，窗口关闭时撤。</summary>
+    private GlobalHotKeys? _hotKeys;
+
     /// <summary>
     /// 【实时多画面】（设计图 `_50`，规格 §3.8）—— 摆开每一台手机现在的画面。
     /// </summary>
@@ -855,6 +866,46 @@ public partial class MainWindow : Window
 
         _multiView.Closed += (_, _) => _multiView = null;
         _multiView.Show();
+    }
+
+    // ─────────────────────────────────────────────
+    // 全局热键（T15）
+    // ─────────────────────────────────────────────
+
+    /// <summary>
+    /// 挂上全局热键。<b>VidLog 不在前台时也收得到。</b>
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// 选择 <c>Ctrl+Alt+…</c> 而不是 OBS 那样光秃秃的 F9/F10：`RegisterHotKey` 是
+    /// <b>系统级独占</b>的，按下去前台程序收不到 —— 而工位电脑上多半同时开着表格、
+    /// 浏览器、ERP，F9 在表格里是重算、F10 在老程序里是菜单栏。
+    /// 带修饰键才谈得上「不打扰旁边的软件」。
+    /// </para>
+    /// <para>
+    /// ⚠️ <b>清单里那句「开始/停止录制或推流」的「推流」在电脑端没有对应物</b>：
+    /// 推流是手机在做，电脑端只是接收方。所以这里只有录制与多画面两个。
+    /// </para>
+    /// </remarks>
+    private void AttachHotKeys()
+    {
+        var keys = new GlobalHotKeys(this, _host.Logger);
+        _hotKeys = keys;
+
+        // ⚠️ 多画面**两种用途下都挂**：那面墙是「看每台手机现在在拍什么」，
+        // 与这台电脑录不录像无关（备份主机上也照样看）。
+        keys.TryAdd(
+            "实时多画面", ModifierKeys.Control | ModifierKeys.Alt, Key.M,
+            () => OnOpenMultiView(this, new RoutedEventArgs()));
+
+        // ⚠️ 录像那一个**只在本机真的录像时才挂**：备份主机那两档按下去什么动静
+        // 都不会有，而一个按下去没反应的键比没有这个键更让人费解。
+        if (_host.Settings.Role.Records)
+        {
+            keys.TryAdd(
+                "开始/停止录像", ModifierKeys.Control | ModifierKeys.Alt, Key.R,
+                () => OnStartOrStopWork(this, new RoutedEventArgs()));
+        }
     }
 
     /// <summary>给多画面建一格：机位名从设备表来（§3.4.5），拿不到就退回设备号。</summary>
