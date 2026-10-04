@@ -54,8 +54,19 @@
         **两层各自完整，靠 Visibility 二选一** —— 不把录制台里那近九十个
         `x:Name` 搬来搬去（那正是最容易搬崩的地方，而 App 层没有测试挡得住）。
     -->
+    <!--
+        ⚠️ 2026-10-04（改造清单 T13）：外面这层多了第 2 行 —— **常驻状态栏**。
+        它挂在 `RecordingRoot` / `BackupRoot` **之外**，所以两种用途下都在：
+        切到「备份主机」时左边那一栏整个没了，那时磁盘余量、在线机位、
+        端口这三样本来**一处都看不到**。
+    -->
     <Grid>
-    <Grid x:Name="RecordingRoot">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+    <Grid x:Name="RecordingRoot" Grid.Row="0">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="*"/>
@@ -513,7 +524,7 @@
          ⚠️ 图上那六颗按钮里有三颗（安装订单联动 / 发送测试订单 / 实时多画面）
          VidLog 没有对应能力，按裁决**禁用 + 悬停写明原因**，不是画个假的。
          ══════════════════════════════════════════════════════════════ -->
-    <Grid x:Name="BackupRoot" Visibility="Collapsed">
+    <Grid x:Name="BackupRoot" Grid.Row="0" Visibility="Collapsed">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="*"/>
@@ -745,5 +756,38 @@
             </Grid>
         </Border>
     </Grid>
+
+    <!-- ══ 常驻状态栏（T13）══════════════════════════════════════════
+         ⚠️ 五项一律走**已有的**数据源，一项都不另算 ——
+            录制状态 = `RecordingCoordinator`（与右栏同一处）、
+            机位 = `Live.Active()`（内存里的表）、
+            磁盘 = `Storage.ActiveRoot` 上那个已经在用的 `FormatFreeSpace`、
+            许可 = `StatusSummaries.License`（**完整那句话，不是另写一句短的**；
+                   两句话迟早会打架，而「侧栏说已激活、状态栏说未激活」
+                   比哪一边说错都更让人不敢信这个界面）、
+            端口 = `Services.PlaybackPort`。
+         ⚠️ 没有分隔符点心：点太浅（`CardBorder` 压在 `Surface` 上几乎看不见），
+            改成左边距 18 —— 状态栏本来就该是几段各自独立的文字。
+         ════════════════════════════════════════════════════════════ -->
+    <Border Grid.Row="1" Background="{StaticResource Surface}"
+            BorderBrush="{StaticResource CardBorder}" BorderThickness="0,1,0,0"
+            Padding="16,7">
+        <Grid>
+            <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                <TextBlock x:Name="StatusRecordingText" Style="{StaticResource Caption}"
+                           FontWeight="SemiBold" Text="空闲"/>
+                <TextBlock x:Name="StatusSeatsText" Style="{StaticResource Caption}"
+                           Margin="18,0,0,0" Text="在线机位 —"/>
+                <TextBlock x:Name="StatusDiskText" Style="{StaticResource Caption}"
+                           Margin="18,0,0,0" Text="本机存档盘 —"/>
+                <TextBlock x:Name="StatusLicenseText" Style="{StaticResource Caption}"
+                           Margin="18,0,0,0" Text="许可 —"/>
+            </StackPanel>
+
+            <TextBlock x:Name="StatusPortText" Style="{StaticResource Caption}"
+                       HorizontalAlignment="Right" VerticalAlignment="Center"
+                       Text="端口 —"/>
+        </Grid>
+    </Border>
     </Grid>
 </Window>

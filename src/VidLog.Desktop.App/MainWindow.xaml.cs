@@ -119,6 +119,11 @@ public partial class MainWindow : Window
         {
             UpdatePreviewClock();
 
+            // ⚠️ 状态栏搭这一趟车，不搭 `_ticker` —— 那个是**录制时按需启停**的，
+            // 而磁盘余量、在线机位数在空闲时照样在变（`_clockTicker` 自己那条
+            // 「不该在空闲时停住」的理由，这里同样成立）。
+            UpdateStatusBar();
+
             // ⚠️ 相机回来之后自动重探（补上 §3.1.7「改了下次开始工作才生效」之外的
             // 那一种：用户什么都没改，是相机自己回来了）。**不 await** ——
             // 它可能真要开一次相机、卡住十秒，而这一跳还得去刷屏幕上的时钟。
@@ -257,6 +262,7 @@ public partial class MainWindow : Window
         await RunStartupCleanupAsync();
 
         UpdateRecordingStatus();
+        UpdateStatusBar();
 
         // 「本机录制动态」的数要算一次。**排在清理之后** ——
         // 否则刚清完的那批还挂在「待清理」上。
@@ -1157,6 +1163,50 @@ public partial class MainWindow : Window
         var clock = $"{(int)elapsed.TotalHours:00}:{elapsed.Minutes:00}:{elapsed.Seconds:00}";
 
         RecordingStatus.Text = $"录制中 {clock} · {waybill.Value}";
+    }
+
+    /// <summary>
+    /// 底部那条常驻状态栏（改造清单 T13）。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// ⚠️ 五项**全走已有的数据源**，一项都不另算：录制状态读
+    /// <see cref="RecordingCoordinator"/>（与右栏同一个）、机位读
+    /// <c>Live.Active()</c>（内存里的表，一秒一问不心疼）、磁盘读
+    /// <see cref="StorageLocations.ActiveRoot"/> 上那个已经在用的
+    /// <see cref="FormatFreeSpace"/>、许可读 <see cref="StatusSummaries"/>。
+    /// <b>许可那句是完整的一句，不是另写的短句</b> —— 两句话迟早会打架，
+    /// 而「右栏说已激活、状态栏说未激活」比哪一边说错都更让人不敢信这个界面。
+    /// </para>
+    /// <para>
+    /// ⚠️ 机位的分母是**许可允许的机位数**，不是写死 9：只写「在线 2 台」看不出
+    /// 「还能接几台」，而 4 机位的许可接第 5 台是会被挡下的 —— 那才是这条栏
+    /// 值得一直摆在那儿的理由。许可读不出来（没配公钥）时**不编一个分母**。
+    /// </para>
+    /// <para>
+    /// ⚠️ 磁盘读不到时**如实说读不到**，不显示 0 —— 与
+    /// <see cref="FormatFreeSpace"/> 自己的口径一致（「读不到」不是「没有空间」）。
+    /// </para>
+    /// </remarks>
+    private void UpdateStatusBar()
+    {
+        var waybill = _host.Coordinator.CurrentWaybill;
+        var elapsed = _host.Coordinator.Elapsed;
+
+        StatusRecordingText.Text = waybill is null
+            ? "空闲"
+            : $"录制中 {(int)elapsed.TotalHours:00}:{elapsed.Minutes:00}:{elapsed.Seconds:00}";
+        StatusRecordingText.Foreground =
+            (Brush)FindResource(waybill is null ? "TextSecondary" : "Success");
+
+        var online = _host.Services.Live.Active().Count;
+        StatusSeatsText.Text = _host.Services.License?.Status.Slots is { } limit
+            ? $"在线机位 {online}/{limit}"
+            : $"在线机位 {online}";
+
+        StatusDiskText.Text = "本机存档盘 " + FormatFreeSpace(_host.Services.Storage.ActiveRoot);
+        StatusLicenseText.Text = StatusSummaries.License(_host);
+        StatusPortText.Text = $"端口 {_host.Services.PlaybackPort}";
     }
 
     // ─────────────────────────────────────────────
