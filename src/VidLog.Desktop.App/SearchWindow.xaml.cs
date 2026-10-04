@@ -105,6 +105,9 @@ public partial class SearchWindow : Window
     {
         if (e.Key == Key.Enter)
         {
+            // 标成已处理：不然将来谁给这个窗口加一颗 `IsDefault` 按钮，
+            // 回车会**同时**触发检索与那颗按钮（本窗口现在没有，纯防御）。
+            e.Handled = true;
             await SearchAsync();
         }
     }

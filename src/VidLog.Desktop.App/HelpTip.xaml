@@ -76,7 +76,7 @@
                     BorderBrush="{StaticResource CardBorder}" BorderThickness="1">
                 <Border.Effect>
                     <DropShadowEffect BlurRadius="10" ShadowDepth="2"
-                                      Opacity="0.16" Color="#FF000000"/>
+                                      Opacity="0.16" Color="{StaticResource ShadowColor}"/>
                 </Border.Effect>
                 <TextBlock TextWrapping="Wrap" FontSize="12" LineHeight="19"
                            Foreground="{StaticResource TextPrimary}"

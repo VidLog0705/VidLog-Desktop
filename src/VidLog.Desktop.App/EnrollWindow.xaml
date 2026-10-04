@@ -68,10 +68,13 @@
         </StackPanel>
 
         <StackPanel Grid.Row="5" Orientation="Horizontal" Margin="0,14,0,0">
+            <!-- ⚠️ **回车刻意不绑任何按钮**：这个窗口的主按钮是「重新生成二维码」，
+                 回车重发会让已经投在屏幕上、手机正要扫的那一张当场失效。
+                 Esc 绑「关掉」是安全的（关闭不影响已经生成过的码）。 -->
             <Button x:Name="RegenerateButton" Content="重新生成二维码"
                     Style="{StaticResource PrimaryButton}" Click="OnRegenerate"/>
             <Button Content="关掉" Style="{StaticResource SecondaryButton}"
-                    Margin="8,0,0,0" Click="OnClose"/>
+                    Margin="8,0,0,0" Click="OnClose" IsCancel="True"/>
             <TextBlock x:Name="FootNote" Margin="12,0,0,0" VerticalAlignment="Center"
                        TextWrapping="Wrap" Foreground="{StaticResource TextSecondary}"/>
         </StackPanel>

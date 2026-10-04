@@ -1460,13 +1460,14 @@
                     <StackPanel Grid.Column="1" Orientation="Horizontal" HorizontalAlignment="Right">
                         <Button x:Name="OkButton" Content="确定"
                                 Style="{StaticResource PrimaryButtonStrong}"
-                                MinWidth="88" Click="OnOk"/>
+                                MinWidth="88" Click="OnOk" IsDefault="True"/>
                         <Button x:Name="ApplyButton" Content="应用"
                                 Style="{StaticResource SecondaryButton}"
                                 MinWidth="88" Margin="8,0,0,0" Click="OnApply"/>
                         <Button x:Name="CancelButton" Content="取消"
                                 Style="{StaticResource SecondaryButton}"
-                                MinWidth="88" Margin="8,0,0,0" Click="OnCancel"/>
+                                MinWidth="88" Margin="8,0,0,0" Click="OnCancel"
+                                IsCancel="True"/>
                     </StackPanel>
                 </Grid>
             </Border>

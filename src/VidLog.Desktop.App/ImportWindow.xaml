@@ -100,11 +100,15 @@
                 <!-- ── 按钮 ──────────────────────────────────────────── -->
                 <StackPanel Grid.Row="5" Orientation="Horizontal"
                             HorizontalAlignment="Right" Margin="0,18,0,0">
+                    <!-- ⚠️ `IsDefault` 加在这颗上：它**初始是禁用的**，而 WPF 在
+                         IsDefault 按钮禁用时不会吞掉回车 —— 选文件那一步的回车
+                         照旧归系统文件对话框。 -->
                     <Button x:Name="CancelButton" Content="取消" MinWidth="88"
-                            Style="{StaticResource SecondaryButton}" Click="OnCancel"/>
+                            Style="{StaticResource SecondaryButton}" Click="OnCancel"
+                            IsCancel="True"/>
                     <Button x:Name="ImportButton" Content="导入" MinWidth="88" Margin="8,0,0,0"
                             Style="{StaticResource PrimaryButton}" IsEnabled="False"
-                            Click="OnImport"/>
+                            Click="OnImport" IsDefault="True"/>
                 </StackPanel>
             </Grid>
         </Border>

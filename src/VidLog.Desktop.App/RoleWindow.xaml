@@ -262,10 +262,11 @@
         <StackPanel Grid.Row="1" Orientation="Horizontal" HorizontalAlignment="Right"
                     Margin="34,18,34,22">
             <Button x:Name="CancelButton" Content="取消" Padding="22,8"
-                    Style="{StaticResource SecondaryButton}" Click="OnCancel"/>
+                    Style="{StaticResource SecondaryButton}" Click="OnCancel"
+                    IsCancel="True"/>
             <Button x:Name="ConfirmButton" Content="确认用途" Padding="22,8" Margin="12,0,0,0"
                     Style="{StaticResource PrimaryButton}" IsEnabled="False"
-                    Click="OnConfirm"/>
+                    Click="OnConfirm" IsDefault="True"/>
         </StackPanel>
     </Grid>
 </Window>

@@ -92,6 +92,20 @@
     <SolidColorBrush x:Key="VideoBackground" Color="#FF0F172A"/>
 
     <!--
+        预览区上浮着的那块半透明提示方块。slate-800 兑到 80% 不透明 ——
+        图上量到的就是一个**带透明的**色，不是不透明色的另一种写法。
+        ⚠️ 它压在 `VideoBackground` 上，两者相差只有一档；换底色时这块要跟着复核。
+    -->
+    <SolidColorBrush x:Key="OverlayPillBackground" Color="#CC1E293B"/>
+
+    <!--
+        投影色。`DropShadowEffect.Color` 要的是 `Color` 而不是 `Brush`，所以这条
+        不是上面那种 `SolidColorBrush`。**投影不参与主题**（暗色主题下投影仍是黑的），
+        放这里只是让「除 Theme.xaml 外零处 hex」这条绊线成立。
+    -->
+    <Color x:Key="ShadowColor">#FF000000</Color>
+
+    <!--
         字体只用**系统自带**的，不引任何字体/图片素材文件 ——
         本仓至今一张资源文件都没有（托盘图标还是借系统的），这条保持。
         微软雅黑排中文比 Segoe UI 明显好，放在最前面。

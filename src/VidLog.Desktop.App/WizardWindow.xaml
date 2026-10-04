@@ -168,7 +168,7 @@
             TextBlock 的 `x:Name`，两者同名的话读起来永远要猜这句指的是哪个。
         -->
         <Style x:Key="OverlayPill" TargetType="Border">
-            <Setter Property="Background" Value="#CC1E293B"/>
+            <Setter Property="Background" Value="{StaticResource OverlayPillBackground}"/>
             <Setter Property="CornerRadius" Value="4"/>
             <Setter Property="Padding" Value="10,5"/>
             <Setter Property="HorizontalAlignment" Value="Center"/>
@@ -412,10 +412,13 @@
                                                    Foreground="White" TextWrapping="Wrap"
                                                    Text="未检测到可用摄像头"/>
                                     </Border>
+                                    <!-- 设备名。压在预览区深底上，用的是 slate-300；
+                                         与 `BorderStrong` 同值（Tailwind 里本就是同一个色），
+                                         借它而不是为这一处单开一个键。 -->
                                     <TextBlock x:Name="RecognitionDeviceLabel"
                                                VerticalAlignment="Bottom" HorizontalAlignment="Left"
                                                Margin="10,0,0,8" FontSize="11"
-                                               Foreground="#FFCBD5E1"/>
+                                               Foreground="{StaticResource BorderStrong}"/>
                                     <Border x:Name="RecognitionResultBox"
                                             HorizontalAlignment="Right" VerticalAlignment="Bottom"
                                             Margin="0,0,10,8" Padding="8,4" CornerRadius="4"
@@ -630,9 +633,12 @@
             <Button x:Name="BackButton" Style="{StaticResource SecondaryButton}"
                     Width="96" Padding="0,8" Content="上一步" IsEnabled="False"
                     Click="OnBack"/>
+            <!-- 回车 = 下一步（最后一步是「完成」，同一颗按钮）。
+                 ⚠️ **刻意没有 `IsCancel`**：向导中途被 Esc 关掉会把这一遍填的全丢掉，
+                 而「回到哪一步」在这个控件里没有对应状态。要退出只能点窗口的 ✕。 -->
             <Button x:Name="NextButton" Style="{StaticResource PrimaryButtonStrong}"
                     Width="96" Padding="0,8" Margin="8,0,0,0" Content="下一步"
-                    Click="OnNext"/>
+                    Click="OnNext" IsDefault="True"/>
         </StackPanel>
     </Grid>
 </Window>

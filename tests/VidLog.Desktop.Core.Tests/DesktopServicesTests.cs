@@ -699,6 +699,51 @@ public class DesktopServicesTests
         Assert.Contains("new ScanErrorLog(layout.ScanErrorsPath)", code, StringComparison.Ordinal);
     }
 
+    /// <summary>
+    /// 钉住「XAML 里一个硬编码颜色都没有 —— 颜色只许从 <c>Theme.xaml</c> 里取」。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// 为什么要有它：2026-10-04 逐个文件核过一遍，散在外面的 hex 是**设计图那阵子
+    /// 留下来的**（<c>WizardWindow.xaml</c> 两处、<c>HelpTip.xaml</c> 一处）。
+    /// 它本身是暗色主题的前置债 —— 40 处不清零，暗色就得逐个打补丁
+    /// （ZoneMinder 那个反面教材就是这个形状）。
+    /// </para>
+    /// <para>
+    /// ⚠️ <c>Theme.xaml</c> 自己**豁免**（它就是唯一的定义处）。
+    /// **注释里的色值也豁免** —— 那是在说「这个令牌长得像什么」，
+    /// 2026-10-04 核实时发现几个文件里的 hex 全部落在注释里，真在写代码的只有 3 处。
+    /// </para>
+    /// <para>
+    /// ⚠️ 天花板：只挡「新写了一个裸色」，**挡不住「引用了一个错的令牌」**
+    /// （比如把边框色当文字色用）。那要人看，扫文本扫不出来。
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public void 界面里没有硬编码颜色()
+    {
+        var app = Path.Combine(RepoRoot(), "src", "VidLog.Desktop.App");
+        var offenders = new List<string>();
+
+        foreach (var file in Directory.EnumerateFiles(app, "*.xaml", SearchOption.AllDirectories))
+        {
+            if (Path.GetFileName(file) == "Theme.xaml") continue;
+
+            var text = Regex.Replace(
+                File.ReadAllText(file), "<!--.*?-->", string.Empty, RegexOptions.Singleline);
+
+            foreach (Match hit in Regex.Matches(text, "#[0-9A-Fa-f]{6,8}"))
+            {
+                offenders.Add($"{Path.GetFileName(file)}: {hit.Value}");
+            }
+        }
+
+        Assert.True(
+            offenders.Count == 0,
+            "XAML 里出现了硬编码颜色，改成引用 Theme.xaml 里的令牌：\n  "
+                + string.Join("\n  ", offenders));
+    }
+
     /// <summary>从测试程序集往上找到仓库根（含 <c>src</c> 与 <c>tests</c> 的那一层）。</summary>
     /// <summary><paramref name="needle"/> 在 <paramref name="haystack"/> 里出现了几次。</summary>
     private static int CountOf(string haystack, string needle)

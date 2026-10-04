@@ -25,9 +25,12 @@
                                VerticalAlignment="Center" TextWrapping="Wrap" MaxWidth="640"
                                Text="双击某一格进入全屏（全屏里能换画质），按 Esc 返回；右键选择画面数；每格右上角那颗按钮转 90°。"/>
                 </StackPanel>
+                <!-- ⚠️ `IsCancel` 与 `OnPreviewKeyDown` 里那个 Esc **互补，不冲突**：
+                     全屏时 PreviewKeyDown（隧道）先接住并 `Handled = true`，事件不再冒泡；
+                     网格态它什么都不做，这一颗才轮到 —— 补上了「在网格里按 Esc 没反应」。 -->
                 <Button Grid.Column="0" x:Name="CloseButton" Content="关闭"
                         Style="{StaticResource SecondaryButton}" MinWidth="88"
-                        HorizontalAlignment="Right" Click="OnClose"/>
+                        HorizontalAlignment="Right" Click="OnClose" IsCancel="True"/>
             </Grid>
         </Border>
 
