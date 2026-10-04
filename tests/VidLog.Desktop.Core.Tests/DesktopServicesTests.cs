@@ -744,6 +744,93 @@ public class DesktopServicesTests
                 + string.Join("\n  ", offenders));
     }
 
+    /// <summary>
+    /// 改造清单 T4。改版前 App 下 8 个窗口 XAML 里散着 31 处写死的 <c>CornerRadius</c>。
+    /// 数过一遍：<b>6 出现 16 次、8 十四次、4 五次</b> —— 那是三档有角色的；
+    /// 再往后就是断崖（5 / 3 / 9 / 11 各一两次），每一个都只出现在
+    /// <c>ControlTemplate</c> 里。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// ⚠️ <b>模板内部豁免</b>：那里的圆角是控件的<b>形状</b>，而且多半是<b>算出来的</b>
+    /// （`Height / 2` 的胶囊、滚动条的槽）。给它编一个令牌，等于把「22 的一半」
+    /// 抄成一个看起来可调的数。
+    /// </para>
+    /// <para>
+    /// ⚠️ <c>Theme.xaml</c> 自己豁免（令牌定义处），与上面那条颜色绊线同一个路数。
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public void 界面里没有写死的圆角()
+    {
+        var app = Path.Combine(RepoRoot(), "src", "VidLog.Desktop.App");
+        var offenders = new List<string>();
+        var missing = new List<string>();
+
+        // 模板内部的圆角**必须是真令牌**才允许 —— 所以先把 Theme.xaml 里定义过的键收齐。
+        var defined = new HashSet<string>(StringComparer.Ordinal);
+        foreach (Match hit in Regex.Matches(
+            File.ReadAllText(Path.Combine(app, "Theme.xaml")), @"x:Key=""(Radius[A-Za-z]*)"""))
+        {
+            defined.Add(hit.Groups[1].Value);
+        }
+
+        foreach (var file in Directory.EnumerateFiles(app, "*.xaml", SearchOption.AllDirectories))
+        {
+            if (Path.GetFileName(file) == "Theme.xaml") continue;
+
+            var text = Regex.Replace(
+                File.ReadAllText(file), "<!--.*?-->", string.Empty, RegexOptions.Singleline);
+
+            // ⚠️ 深度得按**位置**算，不能按行算：`<ControlTemplate ...>` 与
+            // `</ControlTemplate>` 可能落在同一行（空模板），按行算深度就永远回不到零，
+            // 后面半张文件全被误判成「模板内」—— 一个不报错的假绿。
+            var depth = 0;
+
+            foreach (Match hit in Regex.Matches(
+                text, @"<ControlTemplate[ >]|</ControlTemplate>|CornerRadius=""\d[^""]*""|""\{StaticResource (Radius[A-Za-z]*)\}"""))
+            {
+                if (hit.Groups[1].Success)
+                {
+                    // ⚠️ 引用了一个**不存在的键**在 WPF 里是**运行期**才炸的
+                    // （StaticResource 与类型转换都不是编译期检查），
+                    // `dotnet build` 全绿也照样在启动时抛 —— 所以它值得一条绊线。
+                    var key = hit.Groups[1].Value;
+                    if (!defined.Contains(key))
+                    {
+                        missing.Add($"{Path.GetFileName(file)}: {key}");
+                    }
+                }
+                else if (hit.Value.StartsWith("</", StringComparison.Ordinal))
+                {
+                    depth--;
+                }
+                else if (hit.Value.StartsWith("CornerRadius", StringComparison.Ordinal))
+                {
+                    if (depth == 0)
+                    {
+                        offenders.Add($"{Path.GetFileName(file)}: {hit.Value}");
+                    }
+                }
+                else
+                {
+                    depth++;
+                }
+            }
+        }
+
+        Assert.True(
+            missing.Count == 0,
+            "引用了 Theme.xaml 里没有的圆角令牌（**编译能过、启动时才抛**）：\n  "
+                + string.Join("\n  ", missing));
+
+        Assert.True(
+            offenders.Count == 0,
+            "XAML 里出现了写死的圆角，改成引用 Theme.xaml 里的令牌"
+                + "（4 → RadiusTag，6 → RadiusControl，8 → RadiusCard，4,4,0,0 → RadiusTab）：\n  "
+                + string.Join("\n  ", offenders));
+    }
+
     /// <summary>从测试程序集往上找到仓库根（含 <c>src</c> 与 <c>tests</c> 的那一层）。</summary>
     /// <summary><paramref name="needle"/> 在 <paramref name="haystack"/> 里出现了几次。</summary>
     private static int CountOf(string haystack, string needle)

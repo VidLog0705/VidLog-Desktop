@@ -547,11 +547,11 @@
                                 <ColumnDefinition Width="Auto"/>
                             </Grid.ColumnDefinitions>
                             <Border x:Name="CapacityTrack" Grid.Column="0" Height="8"
-                                    CornerRadius="4" Margin="0,0,12,0"
+                                    CornerRadius="{StaticResource RadiusTag}" Margin="0,0,12,0"
                                     VerticalAlignment="Center"
                                     SizeChanged="OnCapacityTrackSized"
                                     Background="{StaticResource BorderStrong}">
-                                <Border x:Name="CapacityFill" Width="0" CornerRadius="4"
+                                <Border x:Name="CapacityFill" Width="0" CornerRadius="{StaticResource RadiusTag}"
                                         HorizontalAlignment="Left"
                                         Background="{StaticResource AccentStrong}"/>
                             </Border>
@@ -600,7 +600,7 @@
                                    Text="本地磁盘直接保存录像，空间不足时按保护期自动循环清理"/>
 
                         <Border Background="{StaticResource SurfaceAlt}"
-                                CornerRadius="4,4,0,0" Padding="12,7" Margin="0,10,0,0">
+                                CornerRadius="{StaticResource RadiusTab}" Padding="12,7" Margin="0,10,0,0">
                             <Grid>
                                 <Grid.ColumnDefinitions>
                                     <ColumnDefinition Width="*"/>
@@ -671,7 +671,7 @@
                         <StackPanel x:Name="ArchivePathPanel" Margin="0,10,0,0"
                                     Visibility="Collapsed">
                             <Border Background="{StaticResource SurfaceAlt}"
-                                    CornerRadius="4,4,0,0" Padding="12,7">
+                                    CornerRadius="{StaticResource RadiusTab}" Padding="12,7">
                                 <Grid>
                                     <Grid.ColumnDefinitions>
                                         <ColumnDefinition Width="*"/>
@@ -848,7 +848,7 @@
                                          用 Surface 或 PageBackground 那种带灰的底色会降低对比度。理由同 EnrollWindow。 -->
                                     <Border Margin="0,8,0,0" Padding="10" Background="White"
                                             BorderBrush="{StaticResource CardBorder}" BorderThickness="1"
-                                            CornerRadius="6" HorizontalAlignment="Left">
+                                            CornerRadius="{StaticResource RadiusControl}" HorizontalAlignment="Left">
                                         <!-- 一个模块一个像素，靠最近邻放大成方块。
                                              换成插值会把模块边缘糊成灰边 —— 糊掉的码在屏幕上看着正常、扫不出来。 -->
                                         <Image x:Name="CloudQrImage" Width="240" Height="240" Stretch="Uniform"

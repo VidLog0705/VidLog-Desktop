@@ -33,7 +33,7 @@
              二维码要求高对比（码是黑的、底得是白的），
              用 Surface 或 PageBackground 那种带灰的底色会降低对比度。 -->
         <Border Grid.Row="2" Margin="0,14,0,0" Padding="10" Background="White"
-                BorderBrush="{StaticResource CardBorder}" BorderThickness="1" CornerRadius="6"
+                BorderBrush="{StaticResource CardBorder}" BorderThickness="1" CornerRadius="{StaticResource RadiusControl}"
                 HorizontalAlignment="Center">
             <!-- 一个模块一个像素，靠最近邻放大成方块。
                  用别的方式缩放会把模块边缘糊成灰边 —— 糊掉的码在屏幕上看着正常、扫不出来。 -->

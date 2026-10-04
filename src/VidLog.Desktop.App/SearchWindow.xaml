@@ -156,7 +156,7 @@
                     <!-- 结果列表。⚠️ 左边栏窄，所以是「一行一条」的列表而不是表格。 -->
                     <Border Grid.Row="1" Margin="0,12,0,0"
                             BorderBrush="{StaticResource CardBorder}" BorderThickness="1"
-                            CornerRadius="6">
+                            CornerRadius="{StaticResource RadiusControl}">
                         <ListBox x:Name="ResultsList" BorderThickness="0"
                                  Background="Transparent"
                                  HorizontalContentAlignment="Stretch"

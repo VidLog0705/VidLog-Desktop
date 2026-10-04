@@ -129,10 +129,18 @@
         ⚠️ `ToggleSwitch` 那个 `CornerRadius="11"` **故意不进令牌**：
         它是 `Height / 2`（高 22 的胶囊），是**算出来的**不是选出来的；
         给它编一个令牌，等于把「22 的一半」抄成一个看起来可调的数。
+        **同一条规矩适用于所有 `ControlTemplate` 内部**，见 `RadiusTab` 上面那段。
     -->
     <CornerRadius x:Key="RadiusControl">6</CornerRadius>
     <CornerRadius x:Key="RadiusCard">8</CornerRadius>
     <CornerRadius x:Key="RadiusTag">4</CornerRadius>
+
+    <!--
+        表头那种「上圆下直」——设置窗里两块存储路径表用的（`SettingsWindow.xaml`
+        两处），是**一支真令牌**不是拼出来的：`<CornerRadius>` 是一整个值，
+        没法拿 `RadiusTag` 再改两个角。
+    -->
+    <CornerRadius x:Key="RadiusTab">4,4,0,0</CornerRadius>
 
     <!-- ── 文字 ──────────────────────────────────────────────────── -->
     <Style x:Key="PageTitle" TargetType="TextBlock">

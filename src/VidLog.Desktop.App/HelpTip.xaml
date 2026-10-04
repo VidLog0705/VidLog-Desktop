@@ -71,7 +71,7 @@
                Placement="Bottom" PlacementTarget="{Binding ElementName=Toggle}"
                HorizontalOffset="-12" VerticalOffset="4"
                Closed="OnTipClosed">
-            <Border MaxWidth="440" Padding="12,10" CornerRadius="6"
+            <Border MaxWidth="440" Padding="12,10" CornerRadius="{StaticResource RadiusControl}"
                     Background="{StaticResource Surface}"
                     BorderBrush="{StaticResource CardBorder}" BorderThickness="1">
                 <Border.Effect>

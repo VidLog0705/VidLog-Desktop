@@ -173,7 +173,7 @@
                 </Grid.RowDefinitions>
 
                 <Border Grid.Row="0" Background="{StaticResource VideoBackground}"
-                        CornerRadius="8">
+                        CornerRadius="{StaticResource RadiusCard}">
                     <Grid>
                         <!-- 取景画面（§62）。帧从**两个**源头来，但都投进同一只单槽：
                              录制中＝采集进程的第二路输出（彩色、12 fps），
@@ -217,7 +217,7 @@
                      ⚠️ 措辞与手机端**逐字一致**（【停止】/【继续】）。
                      ⚠️ 它**不打断录制** —— 只是页面里的一条，不弹窗、不挡取景。 -->
                 <Border x:Name="DurationPromptPanel" Grid.Row="1" Margin="0,10,0,0"
-                        Padding="14,10" CornerRadius="6"
+                        Padding="14,10" CornerRadius="{StaticResource RadiusControl}"
                         Background="{StaticResource WarningSurface}"
                         BorderBrush="{StaticResource Warning}" BorderThickness="1"
                         Visibility="Collapsed">
@@ -239,7 +239,7 @@
                 <!-- 底部统计条 -->
                 <Border Grid.Row="2" Background="{StaticResource Surface}"
                         BorderBrush="{StaticResource CardBorder}" BorderThickness="1"
-                        CornerRadius="8" Padding="16,10" Margin="0,10,0,0">
+                        CornerRadius="{StaticResource RadiusCard}" Padding="16,10" Margin="0,10,0,0">
                     <Grid>
                         <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
                             <TextBlock x:Name="TodayCountText" Style="{StaticResource Body}"
@@ -304,7 +304,7 @@
                                            HorizontalAlignment="Center" TextAlignment="Center"
                                            TextWrapping="Wrap"/>
                                 <Border Background="White" Padding="8" Margin="0,8,0,0"
-                                        CornerRadius="6" HorizontalAlignment="Center"
+                                        CornerRadius="{StaticResource RadiusControl}" HorizontalAlignment="Center"
                                         BorderBrush="{StaticResource CardBorder}"
                                         BorderThickness="1">
                                     <Image x:Name="BusinessBarcodeImage" Height="64"
@@ -322,7 +322,7 @@
                              必须有新家 —— 不然「现在到底在不在录」就没地方看了。 -->
                         <Border Background="{StaticResource SurfaceMuted}"
                                 BorderBrush="{StaticResource CardBorder}" BorderThickness="1"
-                                CornerRadius="6" Padding="12,10">
+                                CornerRadius="{StaticResource RadiusControl}" Padding="12,10">
                             <StackPanel>
                                 <TextBlock x:Name="NavRecordingText" FontSize="13"
                                            FontWeight="SemiBold"
@@ -430,7 +430,7 @@
 
                         <!-- 待办：没有内容时整张卡藏起来，不摆一个「0 条」占地方 -->
                         <Border x:Name="OvTodoCard" Margin="0,14,0,0" Padding="12,10"
-                                CornerRadius="6" Background="{StaticResource WarningSurface}"
+                                CornerRadius="{StaticResource RadiusControl}" Background="{StaticResource WarningSurface}"
                                 BorderBrush="{StaticResource Warning}" BorderThickness="1"
                                 Visibility="Collapsed">
                             <StackPanel>
@@ -485,7 +485,7 @@
                                            TextWrapping="Wrap"
                                            Text="等同于按一下上面的【开始录制】；之后扫面单才会开录。（那一颗要求单号框里已经有单号。）"/>
                                 <Border Background="White" Padding="8" Margin="0,8,0,0"
-                                        CornerRadius="6" HorizontalAlignment="Center"
+                                        CornerRadius="{StaticResource RadiusControl}" HorizontalAlignment="Center"
                                         BorderBrush="{StaticResource CardBorder}"
                                         BorderThickness="1">
                                     <Image x:Name="RecordBarcodeImage" Height="64"

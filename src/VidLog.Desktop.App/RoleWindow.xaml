@@ -233,7 +233,7 @@
                         <ColumnDefinition Width="*"/>
                     </Grid.ColumnDefinitions>
 
-                    <Border Grid.Column="0" Width="44" Height="44" CornerRadius="8"
+                    <Border Grid.Column="0" Width="44" Height="44" CornerRadius="{StaticResource RadiusCard}"
                             Background="{StaticResource SurfaceAlt}" VerticalAlignment="Top">
                         <Path x:Name="ResultGlyph" Width="22" Height="22"
                               Stroke="{StaticResource Accent}" StrokeThickness="1.6"
