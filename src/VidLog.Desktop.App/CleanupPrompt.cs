@@ -30,7 +30,14 @@ internal sealed record CleanupOutcome(bool Ran, string Message);
 /// 而它是**不可逆动作的唯一一句解释**。
 /// </para>
 /// <para>
-/// ⚠️ 预告那三行**逐字保留**：
+/// ⚠️ <b>本文件是外壳，不是逻辑</b>：预告框说什么、图标挑哪一档、点【是】之后
+/// 该不该带 <c>force</c>，全都在 <see cref="CleanupAsk.For"/> 里算好了。
+/// 留在这里的只有 <c>MessageBox.Show</c> 这一句 API 调用、以及它的参数怎么摆。
+/// 原因是这个工程没有测试工程（T27）—— 把决定留在这一层，
+/// 「界面把 force 传下去」这条线就永远是读出来对的、不是测出来的。
+/// </para>
+/// <para>
+/// ⚠️ 预告那三行**逐字保留**（见 <see cref="CleanupAsk"/>）：
 /// </para>
 /// <list type="bullet">
 /// <item>回查归档层（I8：查不到或查不了都不删）</item>
@@ -38,61 +45,32 @@ internal sealed record CleanupOutcome(bool Ran, string Message);
 /// <item>已锁定 / 24 小时内的不动（§3.5.3② 的硬豁免）</item>
 /// </list>
 /// </remarks>
-/// <param name="headline">
-/// 第一句，由调用方拼 —— 三个入口要说的**是同一件事的不同算法**
-/// （「保留期到了的 N 条」/「盘还剩多少、拟清 N 条」），而底下那三条一模一样。
-/// </param>
 internal static class CleanupPrompt
 {
     public static async Task<CleanupOutcome> AskAndRunAsync(
         Window owner, AppHost host, CleanupPlan plan, string headline)
     {
-        // ── T6 安全阀 ────────────────────────────────────────────────
-        //
-        // 这一次会删掉这份计划里**一半以上**吗。判据走的是执行层同一个函数
-        // （`CleanupExecutor.TripsSafetyValve`）—— **一处定义、两处用**：
-        // 界面这道是「不让用户在不知情的情况下点下去」，执行层那道是
-        // 「就算被绕过了也不许删」。两处各写一遍的话，改了门槛只改一处就会对不上。
-        var trips = CleanupExecutor.TripsSafetyValve(plan);
-        var total = plan.Candidates.Count + plan.Exempted.Count;
+        var ask = CleanupAsk.For(plan, headline);
 
         var answer = MessageBox.Show(
             owner,
-            $"{headline}\n\n"
-            // ⚠️ 这段只在安全阀跳起来时插进去，**底下那三条逐字不动**。
-            + (trips
-                ? $"⚠️ 这一次要删 {plan.Candidates.Count} 条，而这份计划里一共只有 {total} 条"
-                  + " —— 超过一半。\n"
-                  + "这个比例多半是算错了（保留期设成了「不保留」、索引读漏了一截、"
-                  + "或者【按空间释放】碰上一个探错的剩余空间），不是真的该删这么多。\n"
-                  + "建议先点【否】，回设置里核一下保留期，然后再来。\n\n"
-                : "")
-            + "要现在清理吗？\n"
-            + "· 清理前会逐条回查归档层，查不到或查不了的那条不会删；\n"
-            + "· 删掉的是本机上这一份，归档层上的那份不动；\n"
-            + "· 已锁定与最近 24 小时内录的一条都不会动。",
-            trips ? "删除比例异常，请再确认一次" : "清理本地副本",
+            ask.Body,
+            ask.Title,
             MessageBoxButton.YesNo,
+            ask.Severity == CleanupSeverity.Stop ? MessageBoxImage.Stop : MessageBoxImage.Warning,
             // 默认是「否」——不可逆的动作不该让回车键替用户点头。
-            // 比例异常时图标也升一档（Warning → Stop）。
-            trips ? MessageBoxImage.Stop : MessageBoxImage.Warning,
             MessageBoxResult.No);
 
+        // ⚠️ 只有安全阀真的跳起来时这个布尔才可能为 true（`CleanupAsk.ForceOnAccept`
+        // 恒等于 `TripsSafetyValve`），所以这里不需要第三个分支，
+        // 也就没有「手滑传了 force」的余地。
         if (answer != MessageBoxResult.Yes)
         {
-            return new CleanupOutcome(false, trips
-                ? $"这次没清理：要删 {plan.Candidates.Count} / {total} 条（超过一半），"
-                  + "按安全阀中止，一条都没删。"
-                : $"这次没清理（{plan.Candidates.Count} 条仍在盘上）。");
+            return new CleanupOutcome(false, ask.DeclinedMessage);
         }
 
-        // ⚠️ 只有安全阀真的跳起来时才可能带 force —— 别的计划根本没有「覆盖」这回事，
-        // 所以这里不需要第三个分支，也就没有「手滑传了 force」的余地。
-        var report = await host.Services.Cleanup.RunAsync(plan, force: trips);
+        var report = await host.Services.Cleanup.RunAsync(plan, force: ask.ForceOnAccept);
 
-        return new CleanupOutcome(true,
-            $"清理完成：删了 {report.Deleted.Count} 条"
-            + $"（约 {report.FreedBytes / 1024 / 1024} MB），"
-            + $"回查没通过、因此保留的有 {report.Refused.Count} 条（明细见清理流水）。");
+        return new CleanupOutcome(true, CleanupAsk.CompletedMessage(report));
     }
 }

@@ -566,6 +566,90 @@ public class CleanupTests
     }
 
     // ─────────────────────────────────────────────
+    // 预告框（补 T27 的缺口）
+    //
+    // ⚠️ 这一节测的是**从 `CleanupPrompt` 搬出来的那部分**。搬之前它长在 WPF 外壳里，
+    // 而那个工程没有测试工程 ⇒ 「界面究竟把哪个布尔传给了 force」**读得出、测不了**。
+    // 现在决定权在 `CleanupAsk.For` 里，于是这句话第一次有了能红的检查。
+    // 外壳里剩下的只有 `MessageBox.Show` 那一句 API 调用 —— 那是微软的代码，不是我们的。
+    // ─────────────────────────────────────────────
+
+    [Fact]
+    public void 安全阀没跳时不给覆盖权_也不吓唬人()
+    {
+        var ask = CleanupAsk.For(PlanOf(candidates: 1, exempted: 5), "保留期到了的 1 条");
+
+        // ★ 本条用例的全部意义：**界面点【是】之后不会带 force**。
+        // 这个布尔写反了就是「用户随口点一下就绕过了安全阀」，而那正是 T6 要挡的事。
+        Assert.False(ask.ForceOnAccept);
+        Assert.Equal(CleanupSeverity.Warning, ask.Severity);
+        Assert.Equal("清理本地副本", ask.Title);
+        Assert.DoesNotContain("超过一半", ask.Body);
+    }
+
+    [Fact]
+    public void 安全阀跳起来时_界面点是就等于覆盖()
+    {
+        var ask = CleanupAsk.For(PlanOf(candidates: 2, exempted: 1), "保留期到了的 2 条");
+
+        Assert.True(ask.TripsSafetyValve);
+        Assert.True(ask.ForceOnAccept, "安全阀跳起来时，用户在框里点【是】就是在明确覆盖它");
+        Assert.Equal(CleanupSeverity.Stop, ask.Severity);
+        Assert.Equal("删除比例异常，请再确认一次", ask.Title);
+        // 比例必须摆出来 —— 用户是**看着这两个数字**点的【是】。
+        Assert.Contains("要删 2 条", ask.Body);
+        Assert.Contains("一共只有 3 条", ask.Body);
+    }
+
+    [Fact]
+    public void 预告那三条无论安不安全阀都得在()
+    {
+        // ⚠️ 这三条是「不可逆动作的唯一一句解释」（规格 §3.5.5），
+        // 安全阀那段是**插进去**的，不许把它顶掉。
+        string[] 三条 =
+        [
+            "清理前会逐条回查归档层，查不到或查不了的那条不会删；",
+            "删掉的是本机上这一份，归档层上的那份不动；",
+            "已锁定与最近 24 小时内录的一条都不会动。",
+        ];
+
+        foreach (var plan in new[] { PlanOf(1, 5), PlanOf(2, 1) })
+        {
+            var body = CleanupAsk.For(plan, "随便一句开头").Body;
+            foreach (var line in 三条)
+            {
+                Assert.Contains(line, body);
+            }
+        }
+    }
+
+    [Fact]
+    public void 点否之后那句话_跳阀时要说清是安全阀拦的()
+    {
+        var tripped = CleanupAsk.For(PlanOf(2, 1), "h");
+        var normal = CleanupAsk.For(PlanOf(1, 5), "h");
+
+        Assert.Contains("按安全阀中止", tripped.DeclinedMessage);
+        Assert.Contains("2 / 3", tripped.DeclinedMessage);
+        // 没跳阀的那条**不该**提安全阀 —— 否则用户以为出了事，而其实只是他点了【否】。
+        Assert.DoesNotContain("安全阀", normal.DeclinedMessage);
+        Assert.Contains("1 条仍在盘上", normal.DeclinedMessage);
+    }
+
+    [Fact]
+    public void 删完之后那句话报的是真删了多少_不是打算删多少()
+    {
+        var report = new CleanupReport(
+            [Entry("d0", Now.AddDays(-365))], []) { FreedBytes = 3 * 1024 * 1024 };
+
+        var message = CleanupAsk.CompletedMessage(report);
+
+        Assert.Contains("删了 1 条", message);
+        Assert.Contains("3 MB", message);
+        Assert.Contains("保留的有 0 条", message);
+    }
+
+    // ─────────────────────────────────────────────
     // 脚手架
     // ─────────────────────────────────────────────
 
