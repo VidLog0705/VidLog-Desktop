@@ -145,6 +145,79 @@ public class LiveTileProcessTests
             $"手机已经停了，帧率还报着 {tile.ReceiveFps?.ToString(CultureInfo.InvariantCulture) ?? "null"}");
     }
 
+    [Fact]
+    public void 进度行与告警行分得开()
+    {
+        // ⚠️ 分错的**两次**都贵：进度行每秒都来，判成告警就会把 `ErrorTail`
+        // （16 KB）灌满 —— 而真出问题时 ffmpeg 说的那几句原话是 I3 唯一的证据；
+        // 反过来把告警判成进度，那一句就**永远看不见**。
+        //
+        // 下面这些字符串是**真的**（2026-10-05 拿本机 ffmpeg 跑出来抄的）。
+        Assert.Equal(("fps", "12.00"), LiveTileProcess.ParseProgressLine("fps=12.00"));
+        Assert.Equal(("frame", "122"), LiveTileProcess.ParseProgressLine("frame=122"));
+        Assert.Equal(("dup_frames", "3"), LiveTileProcess.ParseProgressLine("dup_frames=3"));
+        Assert.Equal(("drop_frames", "28"), LiveTileProcess.ParseProgressLine("drop_frames=28"));
+
+        // `stream_0_0_q` 那种带数字的键也算（ffmpeg 就这么发的）。
+        Assert.Equal(("stream_0_0_q", "-0.0"), LiveTileProcess.ParseProgressLine("stream_0_0_q=-0.0"));
+        Assert.Equal(("progress", "end"), LiveTileProcess.ParseProgressLine("progress=end"));
+
+        // 只切第一个等号，值照原样给。
+        Assert.Equal(("out_time", "00:00:10.166667"), LiveTileProcess.ParseProgressLine("out_time=00:00:10.166667"));
+
+        foreach (var warning in new[]
+                 {
+                     "[tcp @ 000001ee0ab63cc0] Connection to tcp://127.0.0.1:9 failed: Error number -138 occurred",
+                     "[in#0 @ 000001ee0abd2500] Error opening input: Error number -138 occurred",
+                     "Error opening input file http://127.0.0.1:9/live.",
+                     "Invalid data found when processing input",
+                     string.Empty,
+                 })
+        {
+            Assert.Null(LiveTileProcess.ParseProgressLine(warning));
+        }
+    }
+
+    [RequiresFfmpegFact]
+    public async Task 这一格把自己量到的帧率与复帧数写进日志()
+    {
+        // ★ T16 取证：这一格「卡不卡」，我们这一头只有「收到多少帧」「界面丢多少帧」
+        // 两个数 —— 它们分不出「手机推得慢」与「ffmpeg 在按 `-r 12` 凑帧」。
+        // 而后者（源 15 fps、输出钉死 12 fps）在画面上就是**有规律的顿挫**。
+        var ffmpeg = FfmpegLocator.TryFind();
+        Assert.NotNull(ffmpeg);
+
+        using var dir = new TempDir();
+        var h264 = await EncodeAsync(ffmpeg!, dir.File("stream.h264"));
+        using var phone = new FakePhone(h264);
+        var logger = new CapturingLogger();
+
+        // ⚠️ 这里起的是**进程那一层**（不是 `LiveTile`）：`ErrorTail` 只有它有，
+        // 而「进度行有没有灌进错误尾巴」正是这条用例的另一半。
+        await using var tile = LiveTileProcess.Start(ffmpeg!, phone.LiveUrl, 320, 180, logger);
+        Assert.NotNull(tile);
+
+        Assert.True(await WaitForFrameAsync(tile!, TimeSpan.FromSeconds(30)) is not null);
+
+        // 攒够一段才报（10 秒），所以这里等得比别的用例久一点。
+        var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(30);
+
+        while (DateTime.UtcNow < deadline && !logger.Messages.Any(m => m.Contains("ffmpeg 自报")))
+        {
+            await Task.Delay(100);
+        }
+
+        var line = logger.Messages.FirstOrDefault(m => m.Contains("ffmpeg 自报"));
+
+        Assert.NotNull(line);
+        Assert.Contains("我们收到", line);
+        Assert.Contains("复制", line);
+
+        // ⚠️ 还有一半是**反向**的：进度那几行不许落在错误尾巴里。
+        // 落在里面的话，真断线时那一格说的原因会被进度刷掉（尾巴只有 16 KB）。
+        Assert.DoesNotContain("fps=", tile!.ErrorTail);
+    }
+
     [RequiresFfmpegFact]
     public async Task 改档要先告诉手机_成了本地才按新尺寸重来()
     {

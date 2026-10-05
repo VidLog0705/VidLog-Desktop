@@ -743,11 +743,14 @@ public sealed class BoundedTextTail
     private readonly Lock _gate = new();
     private readonly System.Text.StringBuilder _tail = new();
 
-    public void Append(char[] buffer, int count)
+    public void Append(char[] buffer, int count) => Append(new string(buffer, 0, count));
+
+    /// <summary>追加一段（一般是一行）。</summary>
+    public void Append(string text)
     {
         lock (_gate)
         {
-            _tail.Append(buffer, 0, count);
+            _tail.Append(text);
 
             if (_tail.Length > Capacity)
             {

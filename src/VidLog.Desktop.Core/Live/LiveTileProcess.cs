@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Text;
 using VidLog.Desktop.Core.Diagnostics;
 using VidLog.Desktop.Core.Media;
 using VidLog.Desktop.Core.Recording;
@@ -62,6 +63,9 @@ public sealed class LiveTileProcess : IAsyncDisposable
     private long _received;
     private int _stopped;
     private bool _hadFrame;
+
+    /// <summary>ffmpeg 自报的那几个数（`-progress pipe:2`）。见 <see cref="DrainErrorsAsync"/>。</summary>
+    private readonly ProgressWatch _progress = new();
 
     /// <summary>读帧那一趟。⚠️ 它有**一次赋值、一次读**，都在同一线程的
     /// 构造与 <see cref="DisposeAsync"/> 上，所以不加锁。</summary>
@@ -182,29 +186,13 @@ public sealed class LiveTileProcess : IAsyncDisposable
             return null;
         }
 
-        // stderr 必须排空：一次刷屏就能把它灌满、把进程顶住。
-        var drainErrors = Task.Run(async () =>
-        {
-            var buffer = new char[4096];
-
-            try
-            {
-                int read;
-                while ((read = await process.StandardError.ReadAsync(buffer)) > 0)
-                {
-                    errors.Append(buffer, read);
-                }
-            }
-            catch (Exception ex) when (ex is IOException or ObjectDisposedException or InvalidOperationException)
-            {
-                // 进程收掉了 —— 正常路径。
-            }
-        });
-
         // ⚠️ 先建实例再起读循环，**而且只建一个**：读循环要挂在返回出去的那一个上。
         // （先前写成「建两个、循环挂在前一个上」，返回的那个永远读不到帧。）
         var tile = new LiveTileProcess(process, errors, log, onEnded);
         var startedAt = Environment.TickCount64;
+
+        // stderr 必须排空：一次刷屏就能把它灌满、把进程顶住。
+        var drainErrors = Task.Run(() => tile.DrainErrorsAsync(process));
 
         tile._readLoop = Task.Run(
             () => tile.ReadFramesAsync(
@@ -238,6 +226,15 @@ public sealed class LiveTileProcess : IAsyncDisposable
             "-hide_banner",
             "-loglevel", "warning",
 
+            // ⚠️ 每秒往 stderr 吐一段 `键=值`（`fps=` / `frame=` / `dup_frames=` /
+            // `drop_frames=` …）：**这一格自己是几帧、复制了几帧、丢了几帧**
+            // 只有 ffmpeg 说得清（T16 取证）。读它的那一行在 `DrainErrorsAsync`。
+            //
+            // ⚠️ 只用 `-progress`，**不把 `-loglevel` 抬到 `info`**：info 会把
+            // 输入/输出流的描述与那条人性化的进度行也一起倒进来，而它们与
+            // 真正的告警混在一起、分不开 —— 那正是下面要避免的。
+            "-progress", "pipe:2",
+
             // ⚠️ 读超时（微秒）：手机相机没开时那条 HTTP 连接会一直挂着，
             // 没有它这一格的 ffmpeg 就永远等下去。
             "-rw_timeout", "5000000",
@@ -261,6 +258,104 @@ public sealed class LiveTileProcess : IAsyncDisposable
             "-pix_fmt", "rgb24",
             "pipe:1",
         ];
+    }
+
+    /// <summary>
+    /// 排空 stderr，顺带把 `-progress pipe:2` 那几行挑出来（T16 取证）。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// ⚠️ <b>排空本身是必须的</b>：不读的话管道一满，ffmpeg 就被顶住
+    /// （那一格会停住，看起来像手机掉线）。
+    /// </para>
+    /// <para>
+    /// ⚠️ <b>进度那几行绝不能进 <see cref="ErrorTail"/></b>：它每秒都来一段，
+    /// 而那个尾巴只有 16 KB —— 攒进去的话，真出问题时 ffmpeg 说的那几句原话
+    /// 会被挤掉，而那是 I3 唯一的证据（「这一格为什么黑着」）。
+    /// </para>
+    /// </remarks>
+    private async Task DrainErrorsAsync(Process process)
+    {
+        var buffer = new char[4096];
+        var line = new StringBuilder();
+
+        try
+        {
+            int read;
+            while ((read = await process.StandardError.ReadAsync(buffer)) > 0)
+            {
+                for (var i = 0; i < read; i++)
+                {
+                    // `-progress` 是**一行一个键值**；`\r` 一起当断行（万一将来
+                    // 谁把 `-loglevel` 抬上去，那条人性化进度行是 `\r` 结尾的）。
+                    if (buffer[i] is not ('\n' or '\r'))
+                    {
+                        line.Append(buffer[i]);
+                        continue;
+                    }
+
+                    var text = line.ToString();
+                    line.Clear();
+
+                    if (ParseProgressLine(text) is { } progress)
+                    {
+                        ReportProgress(progress.Key, progress.Value);
+                    }
+                    else if (text.Length > 0)
+                    {
+                        _errors.Append(text + "\n");
+                    }
+                }
+            }
+        }
+        catch (Exception ex) when (ex is IOException or ObjectDisposedException or InvalidOperationException)
+        {
+            // 进程收掉了 —— 正常路径。
+        }
+    }
+
+    /// <summary>
+    /// `键=值` 的一行（`-progress` 吐的）；**不是**就返回 <see langword="null"/>。
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ <b>认法是「小写键 + 等号」而不是列一份键名清单</b>：ffmpeg 那边加一个键
+    /// （它确实会加），清单派就会把那一行判成告警、灌进 <see cref="ErrorTail"/> ——
+    /// 正是这个方法要防的那件事。反过来，告警行几乎都以 `[组件 @ 地址]` 或者
+    /// 一个大写词开头，两边都能分开。判错的代价也小：丢的是一条进度，
+    /// 不是一句「为什么没画面」。
+    /// <para>
+    /// 公开是为了能被测（与 <see cref="BuildArguments"/> 同一条理由）。
+    /// </para>
+    /// </remarks>
+    public static (string Key, string Value)? ParseProgressLine(string line)
+    {
+        var cut = line.IndexOf('=');
+
+        if (cut <= 0) return null;
+
+        for (var i = 0; i < cut; i++)
+        {
+            var ch = line[i];
+
+            // 键是 `[a-z0-9_]`（`stream_0_0_q` 也算），别的都不算。
+            var isKeyChar = (ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9') || ch == '_';
+
+            if (!isKeyChar) return null;
+        }
+
+        return (line[..cut], line[(cut + 1)..]);
+    }
+
+    /// <summary>收下 `-progress` 的一个键值；到点了就留一条。</summary>
+    private void ReportProgress(string key, string value)
+    {
+        if (!_progress.Take(key, value)) return;
+
+        _logger.Log(
+            LogLevel.Info, "多画面",
+            $"这一格：ffmpeg 自报 {_progress.Fps} fps（累计出 {_progress.Frames} 帧、"
+            + $"复制 {_progress.Dup}、丢 {_progress.Drop}），"
+            + $"我们收到 {ReceivedCount} 帧、界面丢了 {DroppedCount}");
     }
 
     private async Task ReadFramesAsync(
@@ -407,6 +502,76 @@ public sealed class LiveTileProcess : IAsyncDisposable
             _logger.Log(
                 LogLevel.Info, "多画面",
                 $"这一格收了（丢过 {DroppedCount} 帧）");
+        }
+    }
+
+    /// <summary>
+    /// 攒 ffmpeg 自报的那几个数，每 <see cref="IntervalMs"/> 毫秒放一条出去（T16 取证）。
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ <b>为什么要看 ffmpeg 自己那几个数</b>：这一格「卡不卡」，
+    /// 我们这一头只有「收到多少帧」「界面丢了多少帧」两个数，
+    /// 它们分不出「手机推得慢」与「ffmpeg 在按 <c>-r 12</c> 凑帧」——
+    /// 而 <c>dup_frames</c> / <c>drop_frames</c> 正是那件事的两个计数器：
+    /// 源是 15 fps 而输出钉死 12 fps 时，ffmpeg 要么复制、要么丢，
+    /// 两边都会在画面上变成**有规律的顿挫**（2026-10-04 T16 的 A 形态）。
+    /// </remarks>
+    private sealed class ProgressWatch
+    {
+        /// <summary>多久放一条。</summary>
+        /// <remarks>
+        /// 10 秒：ffmpeg 每秒来一段，这个节奏既够看清「哪一段时间不对」，
+        /// 又不至于把日志淹掉（9 格 × 6 条/分）。窗口再短，量出来的也只是噪声。
+        /// </remarks>
+        private const long IntervalMs = 10_000;
+
+        private long _atMs;
+
+        /// <summary>ffmpeg 自报的输出帧率。</summary>
+        public string Fps { get; private set; } = "?";
+
+        /// <summary>累计编出来的帧数。</summary>
+        public string Frames { get; private set; } = "?";
+
+        /// <summary>累计**复制**的帧数（凑 CFR 补出来的）。</summary>
+        public string Dup { get; private set; } = "?";
+
+        /// <summary>累计**丢掉**的帧数（源比输出快，多余的不要了）。</summary>
+        public string Drop { get; private set; } = "?";
+
+        /// <summary>
+        /// 吃进一个键值。返回 <see langword="true"/> = 该放一条了。
+        /// </summary>
+        /// <remarks>
+        /// ⚠️ 到点那一刻取的是**上一块的数**：`progress` 这个键写在每一段的末尾，
+        /// 而上面几个键在它前面 —— 顺序对了，取到的才是完整的一段。
+        /// </remarks>
+        public bool Take(string key, string value)
+        {
+            switch (key)
+            {
+                case "fps": Fps = value; return false;
+                case "frame": Frames = value; return false;
+                case "dup_frames": Dup = value; return false;
+                case "drop_frames": Drop = value; return false;
+                case "progress": break;
+                default: return false;
+            }
+
+            var now = Environment.TickCount64;
+
+            // 第一段只记底数、不报 —— 那一段的 `fps` 常常还是 0.00
+            //（ffmpeg 要等它自己算得出来），报出去就是一句假话。
+            if (_atMs == 0)
+            {
+                _atMs = now;
+                return false;
+            }
+
+            if (now - _atMs < IntervalMs) return false;
+
+            _atMs = now;
+            return true;
         }
     }
 }
