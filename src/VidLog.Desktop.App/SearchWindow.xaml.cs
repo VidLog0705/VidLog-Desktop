@@ -172,6 +172,14 @@ public partial class SearchWindow : Window
 
         CountText.Text = "正在检索…";
 
+        // 结果区本来就空着的话，也把「正在检索」摆上去 —— 不然用户按了检索，
+        // 那一屏却还写着「还没有检索」，看起来像按钮没反应。
+        // （上一轮有结果时**不动**它：那几行还在，盖一层字上去只会闪。）
+        if (_hits.Count == 0)
+        {
+            ResultsPlaceholder.Text = "正在检索…";
+        }
+
         try
         {
             _hits = await _host.Services.Search.SearchAsync(query);
@@ -183,6 +191,7 @@ public partial class SearchWindow : Window
             _hits = [];
             RenderPage();
             CountText.Text = $"检索出错：{ex.Message}";
+            ResultsPlaceholder.Text = "检索没能完成。原因写在结果框下面那一行里。";
         }
     }
 
@@ -218,6 +227,21 @@ public partial class SearchWindow : Window
         CountText.Text = _hits.Count == 0
             ? "共 0 条"
             : $"共 {_hits.Count} 条，第 {_page + 1} / {PageCount()} 页";
+
+        // T10 空态。⚠️ 一片空白说不出「查过了没有」「还没查」「坏了」的区别，
+        // 而这三种情况下用户该做的事**不一样**（换条件 / 动手查 / 报缺陷）。
+        // 走到这里只可能是「查过了没有」：构造函数不渲染，那一屏由 XAML 的初值负责。
+        if (_hits.Count > 0)
+        {
+            ResultsPlaceholder.Visibility = Visibility.Collapsed;
+        }
+        else
+        {
+            // ⚠️ 「这段时间」不能说死：单号那一栏也能单独当条件（日期两格是可以空着的）。
+            ResultsPlaceholder.Text =
+                "没有符合条件的录像。\n换个日期，或者把单号改成「模糊」再试。";
+            ResultsPlaceholder.Visibility = Visibility.Visible;
+        }
 
         PrevPageButton.IsEnabled = _page > 0;
         NextPageButton.IsEnabled = _page + 1 < PageCount();

@@ -832,7 +832,7 @@ public partial class MainWindow : Window
     /// <para>
     /// 机位从 <see cref="DesktopServices.Live"/> 那张表来 —— 那是手机自己报到的
     /// （`/api/v1/live/announce`）。**表空不是错误**：那就是「还没有手机打开实时共享」，
-    /// 窗口里会摆出几格「无信号输入」，而那是设计图里正常的一种样子。
+    /// 窗口里会摆出几格浅底的「未接入」（T10），而那是设计图里正常的一种样子。
     /// </para>
     /// <para>
     /// ⚠️ <b>非模态</b>（<c>Show()</c> 而不是本仓其它窗口那种 <c>ShowDialog()</c>）：

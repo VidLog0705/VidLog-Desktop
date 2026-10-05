@@ -293,6 +293,17 @@
                     <Border Grid.Row="1" Margin="0,12,0,0"
                             BorderBrush="{StaticResource CardBorder}" BorderThickness="1"
                             CornerRadius="{StaticResource RadiusControl}">
+                      <Grid>
+                        <!--
+                            T10 的空态。⚠️ 一片空白等于「不知道是没查到、还没查、还是坏了」——
+                            这三件事用户要做的事**不一样**（换条件 / 动手查 / 报缺陷），
+                            所以各有各的一句话，由 `RenderPage` 挑。
+                        -->
+                        <TextBlock x:Name="ResultsPlaceholder" Margin="18"
+                                   TextWrapping="Wrap" TextAlignment="Center"
+                                   HorizontalAlignment="Center" VerticalAlignment="Center"
+                                   Foreground="{StaticResource TextDisabled}"
+                                   Text="还没有检索。&#x0a;左边挑个日期、或者打上单号，再点【检索】。"/>
                         <ListBox x:Name="ResultsList" BorderThickness="0"
                                  Background="Transparent"
                                  HorizontalContentAlignment="Stretch"
@@ -347,6 +358,7 @@
                                 </DataTemplate>
                             </ListBox.ItemTemplate>
                         </ListBox>
+                      </Grid>
                     </Border>
 
                     <StackPanel Grid.Row="2" Margin="0,12,0,0">

@@ -34,7 +34,7 @@ namespace VidLog.Desktop.App;
 /// <remarks>
 /// <para>
 /// <b>默认九宫格；右键选画面数（2~9）；选几就摆几格</b>——机位不够时空格显示
-/// 「无信号输入」（不隐藏格子：格数是**用户选的**，不是机位数决定的）。
+/// 「未接入」（浅底；不隐藏格子：格数是**用户选的**，不是机位数决定的）。
 /// 每格右上角一颗转动按钮（点一次 90°），双击进全屏，全屏里能换画质。
 /// 每格下方居中显示 <c>F</c>（发货，绿）与 <c>T</c>（退货，红）。
 /// </para>
@@ -228,7 +228,7 @@ public partial class MultiViewWindow : Window
 
     /// <summary>墙上方那句「正在查找…」要不要露出来。</summary>
     /// <remarks>
-    /// ⚠️ 一台机位都没有时**格子照摆**（每格写「无信号输入」），另外补一句说明 ——
+    /// ⚠️ 一台机位都没有时**格子照摆**（每格写「未接入」），另外补一句说明 ——
     /// 曾经的做法是「没机位就把格子整体收掉」，那让整页只剩一句话、看着像坏了
     ///（需求方 2026-10-02：「改回原来我们自己的渲染」）。
     /// 这句话现在是**真的**：窗口自己在对账，有手机报到就会自己接上来。
@@ -280,7 +280,7 @@ public partial class MultiViewWindow : Window
     /// </summary>
     /// <remarks>
     /// ⚠️ <b>格数由用户选，不由机位数决定。</b>选了 3 格但只有 2 台手机时，
-    /// 第三格**照摆**、里面写「无信号输入」—— 把它藏掉的话，用户只会以为
+    /// 第三格**照摆**、浅底写「未接入」—— 把它藏掉的话，用户只会以为
     /// 自己选错了，而不知道是那台手机没开共享。
     /// </remarks>
     private void ApplyCellCount(int count)
@@ -550,17 +550,27 @@ public partial class MultiViewWindow : Window
     /// <summary>一格。</summary>
     /// <remarks>
     /// ⚠️ <see cref="Tile"/> 为 <see langword="null"/> 是**正常的一种格子**：
-    /// 用户选了 9 格而只有 2 台手机，剩下 7 格就是这样 —— 里面写「无信号输入」。
+    /// 用户选了 9 格而只有 2 台手机，剩下 7 格就是这样 —— 浅底、写「未接入」（T10）。
+    /// 它与「有机位、但画面没上来」（深底、写明原因）**必须一眼分得开**。
     /// 而它**每一拍都可能换**（见 <see cref="Adopt"/>）。
     /// </remarks>
     private sealed class Cell
     {
+        /// <summary>这一格没有机位时写的那句话（T10）。</summary>
+        private const string NoSeat = "未接入";
+
+        /// <summary>有机位、但一帧都还没上来时兜底的那句话。</summary>
+        private const string NoSignal = "无信号输入";
+
         private readonly MultiViewWindow _owner;
         private readonly int _index;
         private readonly Brush _countGreen;
         private readonly Brush _countRed;
         private readonly Brush _countDim;
         private readonly Brush _countWarn;
+        private readonly Brush _textSub;
+        private readonly Brush _videoBg;
+        private readonly Brush _slotBg;
         private readonly TextBlock _name;
         private readonly Button _rotate;
         private long _shownAt;
@@ -580,6 +590,12 @@ public partial class MultiViewWindow : Window
             _countDim = (Brush)owner.FindResource("TextDisabled");
             _countWarn = (Brush)owner.FindResource("Warning");
 
+            // ★ T10 的两种格子各有各的脸色（见 `Paint`）：空位是浅底 + 次级灰字，
+            // 「有机位没画面」是黑底 + 白字 —— 两句话之外再给一眼就能看出的底色差。
+            _textSub = (Brush)owner.FindResource("TextSecondary");
+            _videoBg = (Brush)owner.FindResource("VideoBackground");
+            _slotBg = (Brush)owner.FindResource("SurfaceMuted");
+
             Surface = new Image
             {
                 Stretch = Stretch.Uniform,
@@ -591,10 +607,9 @@ public partial class MultiViewWindow : Window
 
             UseSmoothScaling(Surface);
 
+            // ⚠️ 这里**不写**脸色与那句话：由构造最后那一步 `Paint(true, NoSeat)` 统一画。
             Empty = new TextBlock
             {
-                Text = "无信号输入",
-                Foreground = (Brush)((FrameworkElement)owner).FindResource("TextDisabled"),
                 HorizontalAlignment = HorizontalAlignment.Center,
                 VerticalAlignment = VerticalAlignment.Center,
                 Visibility = Visibility.Visible,
@@ -608,7 +623,6 @@ public partial class MultiViewWindow : Window
             _name = new TextBlock
             {
                 Text = $"机位 {index + 1}",
-                Foreground = Brushes.White,
                 Margin = new Thickness(8, 6, 8, 0),
                 HorizontalAlignment = HorizontalAlignment.Left,
                 VerticalAlignment = VerticalAlignment.Top,
@@ -661,7 +675,6 @@ public partial class MultiViewWindow : Window
             {
                 Margin = new Thickness(4),
                 CornerRadius = new CornerRadius(6),
-                Background = (Brush)((FrameworkElement)owner).FindResource("VideoBackground"),
                 BorderBrush = (Brush)((FrameworkElement)owner).FindResource("CardBorder"),
                 BorderThickness = new Thickness(1),
                 Child = inner,
@@ -669,6 +682,11 @@ public partial class MultiViewWindow : Window
             };
 
             Root.MouseLeftButtonDown += OnMouseDown;
+
+            // ⚠️ 新格子生下来就是**空位** —— 而且必须现在画：格子是先摆好、后对账的，
+            // 对账那一路碰上「本来就没有机位」会被 `Adopt` 的同对象判断直接跳掉
+            //（`null` 与初值 `null` 相等），不在这儿画就永远是裸的默认色。
+            Paint(empty: true, NoSeat);
         }
 
         /// <summary>
@@ -693,7 +711,10 @@ public partial class MultiViewWindow : Window
             Tile = tile;
 
             _name.Text = tile?.Name ?? $"机位 {_index + 1}";
-            _rotate.Visibility = tile is null ? Visibility.Collapsed : Visibility.Visible;
+
+            // ★ T10：**空位**（用户选了 9 格、手机只有 2 台）与**有机位但画面没上来**
+            // 原来是同一副样子 —— 都是一块深色 + 一句话，用户分不出今晚该去查哪一格。
+            Paint(tile is null, tile is null ? NoSeat : tile.Problem ?? NoSignal);
 
             Surface.Source = null;
             Counts.Inlines.Clear();
@@ -702,15 +723,35 @@ public partial class MultiViewWindow : Window
             // 0 不可能等于任何一帧的时间戳 ⇒ 下一帧一定画得上（`Pump` 拿它去重）。
             _shownAt = 0;
 
-            Empty.Text = tile?.Problem ?? "无信号输入";
-            Empty.Visibility = Visibility.Visible;
-
             // 正全屏看着的那一格被收了（机位过期了）：退出来 —— 不退的话全屏层会
             // 冻在最后一帧上，标题还写着那台机位，而它已经不在了。
             if (tile is null && ReferenceEquals(_owner._fullscreen, this))
             {
                 _ = _owner.ExitFullscreenAsync();
             }
+        }
+
+        /// <summary>
+        /// 把这一格的**脸色**画成 <paramref name="empty"/> 那一种，并写上 <paramref name="note"/>。
+        /// </summary>
+        /// <remarks>
+        /// ⚠️ 全仓**只有这一处**决定「空位」与「有机位、画面没上来」各长什么样（T10：
+        /// 原来两者都是一块深色 + 一句话，用户分不出今晚该去查哪一格）。构造函数也走它 ——
+        /// 别把这几行抄回构造里：抄一份，两边就会慢慢长歪，而歪掉的那一种（永远没接过
+        /// 机位的格子）正是最不容易被看见的。
+        /// </remarks>
+        private void Paint(bool empty, string note)
+        {
+            Root.Background = empty ? _slotBg : _videoBg;
+            _name.Foreground = empty ? _textSub : Brushes.White;
+            _rotate.Visibility = empty ? Visibility.Collapsed : Visibility.Visible;
+
+            Empty.Foreground = empty ? _textSub : _countDim;
+            Empty.Text = note;
+
+            // ⚠️ 必须重新露出来：`Pump` 在出了第一帧之后把它按下去了，
+            //     而这句话现在可能刚换成**另一句**（换了一路机位）。
+            Empty.Visibility = Visibility.Visible;
         }
 
         public Border Root { get; }
