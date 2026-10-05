@@ -316,6 +316,74 @@ public class OrphanRecoveryTests
     }
 
     // ─────────────────────────────────────────────
+    // T21：一段都没录到的空会话目录
+    // ─────────────────────────────────────────────
+
+    [Fact]
+    public async Task 空会话目录过了冷静期就被清掉_并且留一条日志()
+    {
+        using var dir = new TempDir();
+        var logger = new CapturingLogger();
+        var workspace = new RecordingWorkspace(dir.Dir("work"), logger);
+        var sessionDir = workspace.SessionDirectory("session-empty");
+        Directory.CreateDirectory(sessionDir);
+
+        // 起录之后、第一段封闭之前被杀：有 session.json，里面一段都没有。
+        await workspace.WriteManifestAsync(ManifestFor("session-empty"));
+
+        // 把 manifest 的写入时刻拨到 25 小时前（冷静期是 24 小时）。
+        File.SetLastWriteTimeUtc(
+            Path.Combine(sessionDir, "session.json"), DateTime.UtcNow.AddHours(-25));
+
+        Assert.Empty(await workspace.ListOrphansAsync());
+
+        // ⚠️ T21 之前：这种目录**收不了尾**（没有分段可收）⇒ 也永远写不上
+        // finalized.json ⇒ 孤儿扫瞄每次静默跳过它 ⇒ 谁都不会碰它一下。
+        Assert.False(Directory.Exists(sessionDir), "空会话目录过了冷静期应当被清掉");
+        Assert.Contains(
+            logger.Entries, e => e.Message.Contains("空会话目录", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task 刚起录的空会话目录不会被清掉()
+    {
+        using var dir = new TempDir();
+        var workspace = new RecordingWorkspace(dir.Dir("work"));
+        var sessionDir = workspace.SessionDirectory("session-fresh");
+        Directory.CreateDirectory(sessionDir);
+        await workspace.WriteManifestAsync(ManifestFor("session-fresh"));
+
+        Assert.Empty(await workspace.ListOrphansAsync());
+
+        // ⚠️ 冷静期就是为这一刻留的：**刚起录时会话目录也是空的**
+        // （第一段封闭之前不写任何分段）。立刻删等于把正在录的那一场连根拔了。
+        Assert.True(Directory.Exists(sessionDir), "还没过冷静期的空会话目录不许动");
+    }
+
+    [Fact]
+    public async Task 源分段一个都不在了要说一声_而不是静默跳过()
+    {
+        using var dir = new TempDir();
+        var logger = new CapturingLogger();
+        var workspace = new RecordingWorkspace(dir.Dir("work"), logger);
+        var sessionDir = workspace.SessionDirectory("session-gone");
+        Directory.CreateDirectory(sessionDir);
+
+        // manifest 里记着一段，但那个文件不在盘上（被手工删了 / 盘坏了）。
+        await workspace.WriteManifestAsync(ManifestFor("session-gone", "segment-000.mkv"));
+
+        Assert.Empty(await workspace.ListOrphansAsync());
+
+        // ⚠️ 这不是「一条噪声」——它意味着**这一场再也收不了尾**（I2 的方向是丢证据），
+        // 而 T21 之前这里是一个不声不响的 continue。
+        Assert.Contains(logger.Entries, e =>
+            e.Level == LogLevel.Warn && e.Message.Contains("一个都不在了", StringComparison.Ordinal));
+
+        // 没到冷静期 ⇒ 目录先留着（它还可能被手工捞回来）。
+        Assert.True(Directory.Exists(sessionDir));
+    }
+
+    // ─────────────────────────────────────────────
     // 收尾行为
     // ─────────────────────────────────────────────
 

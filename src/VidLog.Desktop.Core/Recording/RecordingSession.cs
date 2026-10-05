@@ -773,6 +773,17 @@ public sealed class RecordingSession : IAsyncDisposable
             if (outcome.Succeeded)
             {
                 await _workspace.MarkFinalizedAsync(SessionId, cancellationToken);
+
+                // ★ T21：成品已经进归档层了 ⇒ `work/` 里那份源 MKV 只剩下一个身份：占地方。
+                // 清理层只清归档层的成品、从来不碰 `work/`，留着它就是无界增长。
+                //
+                // ⚠️ **没发上去就不丢** —— 那时留着它是 I2 的方向（宁可多占地方）。
+                // 那件事已经有人记了：`ArchiveRelay.PublishAsync` 记一条 Warn，
+                // 界面还会在设置页挂一条（`ShowArchiveRelayFailure`）。
+                if (outcome.ArchiveComplete)
+                {
+                    _workspace.DiscardSessionDirectory(SessionId);
+                }
             }
             else
             {

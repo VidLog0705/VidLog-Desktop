@@ -42,6 +42,17 @@ public sealed record FinalizedSegment(
     /// </remarks>
     public bool IsPublished =>
         PublishedPath is not null && ContentHash is not null && FailureReason is null;
+
+    /// <summary>这一段有没有成功发到归档层（**没配归档层——归档层就是本机——时恒真**）。</summary>
+    /// <remarks>
+    /// 发布于否**不影响** <see cref="IsPublished"/>：本机那一份已经在索引里、能播能检索，
+    /// 归档层没上去的代价是「这条还不能被清理」，不是「这条没了」。
+    /// <para>
+    /// 它是 T21 的判据之一：收尾后要不要丢掉 <c>work/</c> 里的源 MKV，
+    /// 就看这里（发不上去就先留着，见 <see cref="FinalizeOutcome.ArchiveComplete"/>）。
+    /// </para>
+    /// </remarks>
+    public bool ArchivePublished { get; init; } = true;
 }
 
 /// <summary>一次收尾的结果。</summary>
@@ -52,6 +63,13 @@ public sealed record FinalizeOutcome(
     string? FailureReason)
 {
     public bool Succeeded => State == RecordingSessionState.Indexed;
+
+    /// <summary>每一段都成功发到归档层了（没配归档层时恒真）。</summary>
+    /// <remarks>
+    /// ⚠️ 只有 <see cref="Succeeded"/> **且**它成立，源 MKV 才真的可以丢 ——
+    /// 缺了它，`work/` 里那份就是归档层上那份的替身（T21）。
+    /// </remarks>
+    public bool ArchiveComplete => Segments.All(s => s.ArchivePublished);
 }
 
 /// <summary>
@@ -358,12 +376,19 @@ public sealed class SessionFinalizer
         // 能播能检索 —— 它是这个系统的第一份。归档层那份没上去的代价是
         // 「这条还不能被清理」（回查会不通过 ⇒ 拒删），而不是「这条录像没了」。
         // 这正是 I2 的方向：**宁可多占地方，不可少一份证据**。
+        // ⚠️ 结果**要带出去**（T21）：没发上去的话 `work/` 里那份源 MKV 得留着。
+        // 原来是丢掉的 —— 于是会话那一头根本无从判断能不能丢工作目录。
+        var archived = true;
         if (_relay is not null)
         {
-            await _relay.PublishAsync(location, destination, cancellationToken);
+            var published = await _relay.PublishAsync(location, destination, cancellationToken);
+            archived = published.Published;
         }
 
-        return new FinalizedSegment(segment, destination, location, contentHash, null);
+        return new FinalizedSegment(segment, destination, location, contentHash, null)
+        {
+            ArchivePublished = archived,
+        };
     }
 
     /// <summary>

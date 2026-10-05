@@ -71,6 +71,13 @@ public sealed class OrphanRecovery
             if (outcome.Succeeded)
             {
                 await _workspace.MarkFinalizedAsync(orphan.SessionId, cancellationToken);
+
+                // ★ T21：与正常停录那边同一条判据（收尾成功 **且** 发了归档层）——
+                // 否则这份源 MKV 会一直留在 `work/` 里，再也没人碰它。
+                if (outcome.ArchiveComplete)
+                {
+                    _workspace.DiscardSessionDirectory(orphan.SessionId);
+                }
             }
 
             outcomes.Add(outcome);

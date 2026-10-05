@@ -1,4 +1,5 @@
 using System.Text.Json;
+using VidLog.Desktop.Core.Cleanup;
 using VidLog.Desktop.Core.Index;
 using VidLog.Desktop.Core.Media;
 using VidLog.Desktop.Core.Recording;
@@ -297,6 +298,11 @@ public class RecordingSessionTests
         var capture = new FakeCapture();
         var clock = new FakeClock();
 
+        // ⚠️ 盘上那份 manifest 要**在收尾之前**读（T21 之后收尾成功就把工作目录丢了）。
+        // 而这恰好更贴近这条测试要验的处境：「进程被杀」正是发生在**录到一半**的时候。
+        // 撞上时长兜底那一刻（还没收尾）就是最接近「被杀」的那个时刻。
+        string? manifestBeforeFinalize = null;
+
         // 段 1 分钟、上限 2.5 分钟、每次推进 1 分钟：
         // 第 2 分钟滚出第 2 段；第 3 分钟撞上兜底 ⇒ **先问**（规格 §3.3.4），
         // 没人理 ⇒ 再过宽限期（默认 1 分钟，1 圈）于第 4 分钟收尾。
@@ -304,20 +310,17 @@ public class RecordingSessionTests
             SegmentDuration: TimeSpan.FromMinutes(1),
             MaxDuration: TimeSpan.FromMinutes(2.5),
             StopGracePeriod: TimeSpan.FromSeconds(1),
-            PollInterval: TimeSpan.FromMinutes(1)));
+            PollInterval: TimeSpan.FromMinutes(1)),
+            onPrompt: () => manifestBeforeFinalize = File.ReadAllText(
+                Directory.EnumerateFiles(dir.WorkspaceRoot, "session.json", SearchOption.AllDirectories).Single()));
 
         await session.StartAsync(WaybillNumber.Parse("SF1"), "libx264");
         await session.RunAsync("libx264");
 
-        // 读盘上留下了什么 —— 这相当于「进程被杀」时孤儿恢复能看到的东西。
-        // 收尾在 RunAsync 里已经跑过了，所以这里先看它在收尾**之前**写下的 manifest：
-        // 用一个新的工作区读同一批文件即可（finalized.json 已写，孤儿查不出来，
-        // 因此直接查 manifest 里的分段，那正是恢复链路依赖的输入）。
-        var manifestPath = Path.Combine(dir.WorkspaceRoot, session.SessionId, "session.json");
-        var json = await File.ReadAllTextAsync(manifestPath);
-
-        Assert.Contains("segment-000.mkv", json, StringComparison.Ordinal);
-        Assert.Contains("segment-001.mkv", json, StringComparison.Ordinal);
+        // 孤儿恢复依赖的输入就是它：**每滚一段就更新一次**，被杀的进程才有东西可恢复。
+        Assert.NotNull(manifestBeforeFinalize);
+        Assert.Contains("segment-000.mkv", manifestBeforeFinalize, StringComparison.Ordinal);
+        Assert.Contains("segment-001.mkv", manifestBeforeFinalize, StringComparison.Ordinal);
     }
 
     // ─────────────────────────────────────────────
@@ -437,8 +440,10 @@ public class RecordingSessionTests
         Assert.NotEqual(RecordingSessionState.Finalizing, session.State);
         Assert.Equal(RecordingSessionState.Indexed, session.State);
 
-        // finalized.json 写了，说明确实走完了唯一那条收尾路径。
-        Assert.True(File.Exists(Path.Combine(dir.WorkspaceRoot, session.SessionId, "finalized.json")));
+        // 收尾走通了（状态是 Indexed）⇒ T21 之后工作目录已经被丢掉。
+        // ⚠️ 这条**同时**守着「唯一那条收尾路径走完了」：丢掉目录只发生在
+        // `MarkFinalizedAsync`（写了 finalized.json）**之后**那一步。
+        Assert.False(Directory.Exists(Path.Combine(dir.WorkspaceRoot, session.SessionId)));
     }
 
     // ─────────────────────────────────────────────
@@ -464,8 +469,34 @@ public class RecordingSessionTests
         Assert.Equal(RecordingSessionState.Indexed, session.State);
         Assert.Equal(StopReason.Manual, session.StoppedBecause);
 
-        // 收尾成功 → 必须写 finalized.json，否则下次启动会把它当孤儿重收一遍。
-        Assert.True(File.Exists(Path.Combine(dir.WorkspaceRoot, session.SessionId, "finalized.json")));
+        // 收尾成功 → 必须写 finalized.json（否则下次启动会把它当孤儿重收一遍），
+        // 然后 T21 把整个工作目录丢掉 —— 成品已经在归档层上了，源 MKV 只剩占地方。
+        Assert.False(Directory.Exists(Path.Combine(dir.WorkspaceRoot, session.SessionId)));
+    }
+
+    [Fact]
+    public async Task 归档层那一份没发上去时_工作目录留着()
+    {
+        using var dir = new TempDir();
+        var capture = new FakeCapture();
+        var clock = new FakeClock();
+
+        // 归档层是 NAS，而且发不上去（发布失败**不影响**收尾成败）。
+        await using var session = Build(
+            dir, capture, clock: clock, relay: new ArchiveRelay(new FailingPublisher(), "NAS"));
+
+        await session.StartAsync(WaybillNumber.Parse("SF1"), "libx264");
+        clock.Advance(TimeSpan.FromSeconds(5));
+        var outcome = await session.StopAsync(StopReason.Manual);
+
+        // 本机这一份是好的：索引里有、能播能检索。
+        Assert.True(outcome.Succeeded, outcome.FailureReason);
+        Assert.False(outcome.ArchiveComplete);
+
+        // ★ T21：归档层上那份没上去 ⇒ **源 MKV 留着**。
+        // I2 的方向是「宁可多占地方，不可少一份证据」—— 这条判据错了的话，
+        // 删掉的可能是归档层那一份的替身。
+        Assert.True(Directory.Exists(Path.Combine(dir.WorkspaceRoot, session.SessionId)));
     }
 
     [Fact]
@@ -847,7 +878,8 @@ public class RecordingSessionTests
         RecordingIndexSpy? index = null,
         RecordingSessionOptions? options = null,
         Action? onPrompt = null,
-        Action<string>? problemReported = null)
+        Action<string>? problemReported = null,
+        ArchiveRelay? relay = null)
     {
         // 方法组不能直接配合 ?. —— 显式判空，让类型明确是 Func<TimeSpan>?。
         Func<TimeSpan>? effectiveClock = clock is null ? null : clock.Read;
@@ -855,7 +887,7 @@ public class RecordingSessionTests
         return new RecordingSession(
             new RecordingWorkspace(dir.WorkspaceRoot),
             capture,
-            BuildFinalizer(dir, runner ?? new SucceedingRunner(), index ?? new RecordingIndexSpy()),
+            BuildFinalizer(dir, runner ?? new SucceedingRunner(), index ?? new RecordingIndexSpy(), relay),
             new DiskSpaceGuard(new PlentyOfSpaceProbe()),
             CameraSource.Local("Lenovo EasyCamera"),
             "device-1",
@@ -930,12 +962,25 @@ public class RecordingSessionTests
         StopGracePeriod: TimeSpan.FromSeconds(1),
         PollInterval: TimeSpan.FromSeconds(1));
 
+    /// <param name="relay">
+    /// 归档层不是本机时才传。默认 <see langword="null"/> = 归档层就是本机
+    /// （发布是空操作，<c>ArchiveComplete</c> 恒真）。
+    /// </param>
     private static SessionFinalizer BuildFinalizer(
-        TempDir dir, IProcessRunner runner, RecordingIndexSpy index) =>
+        TempDir dir, IProcessRunner runner, RecordingIndexSpy index, ArchiveRelay? relay = null) =>
         new(new RemuxPipeline(Ffmpeg, runner),
             new DecodeVerifier(Ffmpeg, runner),
             index,
-            Path.Combine(dir.Path, "archive"));
+            Path.Combine(dir.Path, "archive"),
+            relay: relay);
+
+    /// <summary>归档层永远发不上去的那种替身（NAS 断了、盘没挂上）。</summary>
+    private sealed class FailingPublisher : IArchivePublisher
+    {
+        public Task<ArchivePublishResult> PublishAsync(
+            RelativePath location, string localPath, CancellationToken cancellationToken = default) =>
+            Task.FromResult(ArchivePublishResult.Failed("网络不通"));
+    }
 
     /// <summary>可控的单调时钟。</summary>
     private sealed class FakeClock

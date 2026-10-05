@@ -107,6 +107,12 @@ public sealed class RecordingWorkspace
     private const string ManifestFileName = "session.json";
     private const string FinalizedFileName = "finalized.json";
 
+    /// <summary>
+    /// 空会话目录的冷静期（T21）：<c>session.json</c> 静了这么久、又一段都没留下，
+    /// 就认定它不会再长出分段来了。
+    /// </summary>
+    private static readonly TimeSpan EmptySessionCoolDown = TimeSpan.FromHours(24);
+
     private static readonly JsonSerializerOptions SerializerOptions = new() { WriteIndented = false };
 
     private readonly string _root;
@@ -163,11 +169,54 @@ public sealed class RecordingWorkspace
     }
 
     /// <summary>
+    /// 丢掉一个会话的工作目录。
+    /// </summary>
+    /// <remarks>
+    /// ★ T21：收尾成功之后，<c>work/</c> 里那些源 MKV 只剩一个身份 —— **占地方**。
+    /// 清理层只清归档层的成品 MP4，从来不碰 <c>work/</c>，留着就是无界增长。
+    /// <para>
+    /// ⚠️ <b>什么时候能丢是调用方的判据</b>（收尾成功 **且** 已发到归档层，
+    /// 见 <see cref="FinalizeOutcome.ArchiveComplete"/>），这个方法只管丢干净。
+    /// </para>
+    /// <para>
+    /// ⚠️ 删不掉**不是事故**：目录留着，占点地方而已。真抛出去的话会把一次
+    /// **成功的**收尾报成失败 —— 那比多占几兆坏得多。
+    /// </para>
+    /// </remarks>
+    public void DiscardSessionDirectory(string sessionId)
+    {
+        var directory = SessionDirectory(sessionId);
+
+        try
+        {
+            if (Directory.Exists(directory))
+            {
+                Directory.Delete(directory, recursive: true);
+            }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            _logger.Log(Diagnostics.LogLevel.Warn, "录制",
+                $"会话工作目录没删掉，源分段还占着地方（{directory}）：{ex.Message}");
+        }
+    }
+
+    /// <summary>
     /// 列出所有没走完收尾的会话。
     /// </summary>
     /// <remarks>
-    /// 分段文件已经不在了的会话会被跳过 —— 那种情况没有东西可以收尾，
-    /// 硬报一条只会是噪声。
+    /// <para>
+    /// 分段文件已经不在了的会话不会被列出来 —— 那种情况没有东西可以收尾，
+    /// 硬报一条只会是噪声。**但不会再静默地什么都不做**（T21）：
+    /// 没有任何分段的会话目录收不了尾、也就永远写不上 <c>finalized.json</c>，
+    /// 于是原来每次启动都跳过它、谁都不会碰它一下。
+    /// 现在过冷静期就删掉，没到就记一条。
+    /// </para>
+    /// <para>
+    /// ⚠️ 所以这个方法**有副作用**（会删陈年的空会话目录）。
+    /// 它只在启动扫瞄时被调（<see cref="OrphanRecovery.RecoverAsync"/>），
+    /// 别拿去当纯查询用。
+    /// </para>
     /// </remarks>
     public async Task<IReadOnlyList<OrphanSession>> ListOrphansAsync(
         CancellationToken cancellationToken = default)
@@ -214,6 +263,7 @@ public sealed class RecordingWorkspace
 
             if (segments.Count == 0)
             {
+                SweepSegmentsGoneSession(sessionId, manifestPath, manifest);
                 continue;
             }
 
@@ -241,6 +291,50 @@ public sealed class RecordingWorkspace
         }
 
         return orphans;
+    }
+
+    /// <summary>没有任何分段留在盘上的会话目录：记一条，过了冷静期就删掉（T21）。</summary>
+    /// <remarks>
+    /// <para>
+    /// 走到这里的是两种情形，**必须分得开**：
+    /// ① <c>session.json</c> 里本来就没记过分段（起录之后、第一段封闭之前被杀）—— 什么都没丢；
+    /// ② 记过，但那些文件现在一个都不在了 —— 那是**丢证据**（I2），要喊一声。
+    /// </para>
+    /// <para>
+    /// ⚠️ 冷静期是给「正在录的那一场」留的：刚起录时会话目录也是空的，
+    /// 立刻删就等于把正在录的连根拔了。启动扫瞄时不会有正在录的，
+    /// 但这条判据让这个方法**在别处被调也安全**。
+    /// </para>
+    /// </remarks>
+    private void SweepSegmentsGoneSession(string sessionId, string manifestPath, SessionManifest manifest)
+    {
+        var counted = manifest.Segments.Count;
+        var cooled = DateTimeOffset.UtcNow - File.GetLastWriteTimeUtc(manifestPath)
+            >= EmptySessionCoolDown;
+
+        if (counted > 0)
+        {
+            // ⚠️ 文件没了是**事实**，而它是「这条录像再也收不了尾」唯一的一句话。
+            // 删不删都要喊这一声。
+            _logger.Log(Diagnostics.LogLevel.Warn, "录制",
+                $"{manifest.Waybill} 的源分段一个都不在了，这一场收不了尾（{sessionId}）："
+                + $"session.json 里记着 {counted} 段");
+        }
+
+        if (!cooled)
+        {
+            return;
+        }
+
+        DiscardSessionDirectory(sessionId);
+
+        if (counted == 0)
+        {
+            // 空的壳：收不了尾（没有分段可收）⇒ 也永远写不上 finalized.json
+            // ⇒ 孤儿扫瞄每次都跳过它。T21 之前它会一直待在那儿。
+            _logger.Log(Diagnostics.LogLevel.Info, "录制",
+                $"清掉一个空会话目录（{sessionId}）：里面一段都没录到");
+        }
     }
 
     private async Task<SessionManifest?> ReadManifestAsync(
