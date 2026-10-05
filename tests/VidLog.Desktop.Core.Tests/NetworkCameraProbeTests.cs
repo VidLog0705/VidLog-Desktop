@@ -242,9 +242,17 @@ public class NetworkCameraProbeTests
         Assert.True(info.Connected, info.FailureReason);
         Assert.True(info.SizeKnown, "应读出对端的分辨率");
 
-        // 裁决要用的那个数就是它（够不够 1080P）。
-        Assert.Equal(1920, info.Width);
-        Assert.Equal(1080, info.Height);
-        Assert.Equal(CameraSizeVerdict.Enough, CameraSizePolicy.Judge(info.Width, info.Height, VideoResolution.P1080));
+        // ⚠️ 基准**不能写死**：2026-10-05 换一路源（笔记本摄像头，640x480）时就是撞在这儿 ——
+        // 探测读出来的 640x480 正是对的，红的是「当时那台恰好是 1080P」这个巧合。
+        var expected = RequiresRtspFactAttribute.ExpectedCameraSize;
+        Assert.True(
+            info.Width == expected.Width && info.Height == expected.Height,
+            $"读到的是 {info.Width}x{info.Height}，基准是 {expected.Width}x{expected.Height}。"
+                + $"换过源就设 {RequiresRtspFactAttribute.SizeEnvironmentVariable}"
+                + $"（要写成「宽x高」）。");
+
+        // ⚠️ 「够不够 1080P」那条裁决**不在这儿断** —— 它是 `CameraSizePolicy` 的纯函数，
+        // 自己有一组用例。写在这儿就得再写死一个「这路源够 1080P」的假设，
+        // 而 2026-10-05 那台 640x480 的源恰好把它证伪了（裁决是 `NeedsUpscale`）。
     }
 }

@@ -48,7 +48,7 @@ public class CameraSourceTests
     }
 
     [Fact]
-    public void http源一个rtsp选项都不许带()
+    public void http源带墙钟打戳但不带rtsp选项()
     {
         // ⚠️ `-rtsp_transport` 是 **rtsp 解复用器的私有选项**，不是「网络源」的公共选项：
         // 给 http 源加上它，ffmpeg 直接报 `Option rtsp_transport not found` ——
@@ -58,9 +58,18 @@ public class CameraSourceTests
         // ⚠️ 这条尤其要守：`ConfigurationProblem` **本来就收 `http://`**
         // ⇒ 在修之前，界面说「地址没问题」、而一录就起不来。
         var arguments = CameraSource.Network("http://192.168.101.66:8081")
-            .InputArguments("256M", "1920x1080");
+            .InputArguments("256M", "1920x1080")
+            .ToList();
 
-        Assert.Equal(["-i", "http://192.168.101.66:8081"], arguments);
+        // ★ 2026-10-05 起 http 那一路多一个**输入侧**选项：MJPEG 这类流不带时间戳，
+        // 不按墙钟打戳的话，ffmpeg 会按 mpjpeg 解复用器写死的 25fps 发时间戳 ——
+        // 而真源实测是 28~32fps ⇒ 录出来的东西慢动作、比事件长、水印时钟偏快。
+        Assert.Equal(
+            ["-use_wallclock_as_timestamps", "1", "-i", "http://192.168.101.66:8081"],
+            arguments);
+
+        // ⚠️ 顺序是承重的：它是**输入**选项，落在 `-i` 之后会被当成输出选项静默失效。
+        Assert.True(arguments.IndexOf("-i") > arguments.IndexOf("-use_wallclock_as_timestamps"));
 
         // dshow 那几个选项对 http 同样不存在（与 RTSP 那条同一顶帽子）。
         Assert.DoesNotContain("-video_size", arguments);
@@ -70,6 +79,19 @@ public class CameraSourceTests
         Assert.Contains(
             "-rtsp_transport",
             CameraSource.Network("rtsps://h/s").InputArguments("256M"));
+    }
+
+    [Fact]
+    public void rtsp源不带墙钟打戳()
+    {
+        // ⚠️ RTSP 流**自带真时间戳**，没有 MJPEG 那个病 ——
+        // 给它加 `-use_wallclock_as_timestamps 1` 是多余的，而且它在 rtsp 解复用器上
+        // 的行为**没验过**（局域网里那台 RTSP 真源已不在网里）。
+        // 这条钉住「别顺手改成两只都加」。
+        var arguments = CameraSource.Network("rtsp://h/s").InputArguments("256M");
+
+        Assert.DoesNotContain("-use_wallclock_as_timestamps", arguments);
+        Assert.Contains("-rtsp_transport", arguments);
     }
 
     [Fact]

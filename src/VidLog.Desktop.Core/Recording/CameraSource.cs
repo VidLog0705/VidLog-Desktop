@@ -146,8 +146,8 @@ public sealed record CameraSource(CameraSourceKind Kind, string Address)
     /// <list type="bullet">
     /// <item><b>本机设备</b>：`-video_size` / `-framerate` 是**输入**选项 ——
     /// 对 dshow 来说是「按这个模式打开设备」，打不开就报错（那正是探测要的）。</item>
-    /// <item><b>网络地址</b>：**一个都不能带**。RTSP 没法要求对端发多大就是多大，
-    /// 而 `-video_size` 对 rtsp 解复用器来说是个**不存在的选项** ⇒
+    /// <item><b>网络地址</b>：**尺寸与帧率的选项一个都不能带**。RTSP 没法要求对端
+    /// 发多大就是多大，而 `-video_size` 对 rtsp 解复用器来说是个**不存在的选项** ⇒
     /// 写上它 ffmpeg 直接报 `Option not found`、起都起不来。
     /// 所以网络那一路的尺寸改在**输出侧**做（<c>-vf scale</c>，见
     /// <see cref="FfmpegCameraCapture.BuildArguments"/>）。</item>
@@ -156,6 +156,29 @@ public sealed record CameraSource(CameraSourceKind Kind, string Address)
     /// ⚠️ <c>-rtsp_transport tcp</c>：UDP 在很多现场网络里被防火墙丢掉，
     /// 表现为「偶尔能连、多数时候连不上」—— 那种故障极难排查。
     /// TCP 慢一点但稳，工位上要的是稳。
+    /// </para>
+    /// <para>
+    /// ⚠️ <b>反过来，只有**非** RTSP 的网络源才带
+    /// <c>-use_wallclock_as_timestamps 1</c></b>。
+    /// </para>
+    /// <para>
+    /// 理由：MJPEG over HTTP 这类流**自己不带时间戳**（就是一段段 JPEG，没有 pts），
+    /// ffmpeg 只能按流里声明的 <c>r_frame_rate</c> 发时间戳，而 <c>mpjpeg</c>
+    /// 解复用器**写死假定 25fps**、根本不看对端实际推多少。
+    /// 2026-10-05 两条真源实测：手机那台声明 25 / 实际 ~30，笔记本那台声明 25 /
+    /// 实际 28~32 ⇒ **媒体时钟比墙钟快 14%~28%**，录出来的文件**比事件长、
+    /// 播放时慢动作、烧进画面的水印时钟比真实时间快**，索引里的时刻全偏。
+    /// 让它按**到包那一刻的墙钟**打戳，媒体时钟就回到与墙钟一致
+    /// （同一台源、按录制那份 argv 实测：墙钟 46.205 秒 ↔ 媒体 46.033 秒，差 0.4%）。
+    /// </para>
+    /// <para>
+    /// ⚠️ 两个前提不能动：它必须在 <c>-i</c> **之前**（输入侧选项）；而输出侧那个
+    /// <c>-r 30</c>（见 <see cref="FfmpegCameraCapture.BuildArguments"/>）**必须留着**
+    /// —— 只加这个选项、不给 <c>-r</c>，实测**丢掉 16% 的帧**。
+    /// </para>
+    /// <para>
+    /// ⚠️ <b>RTSP 不加它</b>：RTSP 流自带真时间戳，本来就没有这个病；
+    /// 而且它在 RTSP 解复用器上的行为**没验过**（局域网里那台 RTSP 真源已不在）。
     /// </para>
     /// </remarks>
     /// <param name="bufferSize">本机设备那一路的 DirectShow 缓冲（两个调用点取值不同）。</param>
@@ -172,13 +195,12 @@ public sealed record CameraSource(CameraSourceKind Kind, string Address)
     {
         if (IsNetwork)
         {
-            // ⚠️ 只有 RTSP 系才带 `-rtsp_transport tcp`（见 IsRtsp 的说明）。
-            // UDP 在很多现场网络里被防火墙丢掉，表现是「偶尔能连、多数连不上」——
-            // 那种故障极难排查，所以 RTSP 一律走 TCP。而 http 那一路
-            // **一个输入选项都不能带**。
+            // ⚠️ 两边的输入选项**不一样，这是承重的**（上面 remarks 里逐条写了理由）：
+            //   RTSP 系 → 走 TCP，且**不带** wallclock（它自带真时间戳）；
+            //   其余的 → 带 wallclock（它们没有时间戳，不带就会按写死的 25fps 打戳）。
             return IsRtsp
                 ? ["-rtsp_transport", "tcp", "-i", Address]
-                : ["-i", Address];
+                : ["-use_wallclock_as_timestamps", "1", "-i", Address];
         }
 
         var arguments = new List<string> { "-f", "dshow", "-rtbufsize", bufferSize };

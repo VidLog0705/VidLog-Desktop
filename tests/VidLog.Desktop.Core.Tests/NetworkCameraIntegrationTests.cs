@@ -145,10 +145,13 @@ public class NetworkCameraIntegrationTests
     /// 直接起 Core 会话；「界面 → 录制」那一路要等批次 3 之后才走得通。
     /// </para>
     /// <para>
-    /// ⚠️ <b>判据要按源的时钟分档</b>：像用户那台手机这样「声明 25fps、实际推 30fps」的
-    /// MJPEG 源，光是它自己的时钟偏差就有 19%，而段边界那点空洞只占 2% ——
-    /// 差一个数量级，硬套「媒体 ≈ 墙钟」会得到一条恒红的用例。所以先标定
-    /// （<see cref="MediaPerSecondAsync"/>）再比，并把标定值写进报告。
+    /// ⚠️ <b>2026-10-05 起这条判据不再按源分档</b>：同一天修掉了「MJPEG over HTTP
+    /// 的媒体时钟比对端快 14%~28%」那个缺陷（<c>CameraSource.InputArguments</c> 里
+    /// 那个 <c>-use_wallclock_as_timestamps 1</c>）⇒ 修好之后**任何**源的媒体时长
+    /// 都该与墙钟对齐，这条恒等式于是成了**无条件硬闸**。
+    /// 标定值（<see cref="MediaPerSecondAsync"/>）仍然量、仍然写进报告，但它现在只回答
+    /// 「这条源自己声明得准不准」，不再决定判据走哪一档 —— 它量的是**不修**时的那个偏差，
+    /// 所以反过来也是「修复还生效着吗」的旁证。
     /// </para>
     /// <para>
     /// 时长默认 600 秒；要冒烟就设 <see cref="SecondsVariable"/>（比如 <c>120</c>）。
@@ -184,6 +187,10 @@ public class NetworkCameraIntegrationTests
             Source,
             "device-net",
             RecordingSessionOptions.Default with { SegmentDuration = TimeSpan.FromSeconds(60) });
+
+        // ⚠️ 与刚才那次标定之间要隔一段：那个客户端刚断，对端（单客户端的推流）
+        // 要几秒才重新可连 —— 不等的话**这一次连接直接被拒**，整个会话起不来。
+        await Task.Delay(TimeSpan.FromSeconds(ListenerRecoverySeconds));
 
         await session.StartAsync(WaybillNumber.Parse("SF-T17"), encoder!);
 
@@ -233,16 +240,33 @@ public class NetworkCameraIntegrationTests
                 + $"{new FileInfo(path).Length / 1024 / 1024.0:0.0} MB");
         }
 
-        var wallSeconds = wall.Elapsed.TotalSeconds;
+        var stopwatchSeconds = wall.Elapsed.TotalSeconds;
+
+        // ⚠️ **产品自己记的录制窗口**：首段起 → 末段止。末段那个「止」是采集停下
+        // **那一刻**取的（`CloseCurrentSegmentAsync` 里先取 `endedAt = Elapsed`、
+        // 再放掉采集），所以它**不含收尾**。
+        //
+        // ⚠️ 这也正是上面那条秒表**不能直接当判据**的原因：秒表从 `StartAsync` 之后起、
+        // 到 `StopAsync` **返回**为止，而 `StopAsync` 返回之前要把每一段逐个
+        // remux + 解码校验 + 算哈希 + 写索引。2026-10-05 那轮 600 秒实测：
+        // 秒表 605.954 秒、会话窗口 600.021 秒 —— **差的 5.933 秒全是收尾**（11 段）。
+        // 拿秒表当判据会得到一条**假红**（那一轮就是这么红的）。
+        var sessionSeconds = (
+            outcome.Segments.Max(s => s.Source.EndedAt)
+            - outcome.Segments.Min(s => s.Source.StartedAt)).TotalSeconds;
+
         var report =
             $"""
             源：{Source.Address}
             请求时长：{seconds}s
-            墙钟耗时：{wallSeconds:0.000}s
+            秒表耗时（**含收尾**，别拿它当录制时长）：{stopwatchSeconds:0.000}s
+            会话自己记的录制窗口（首段起 → 末段止）：{sessionSeconds:0.000}s
             源的媒体/墙钟比：{rate:0.000}（标定值；1.000 = 源的时间戳与墙钟一致）
             分段数：{outcome.Segments.Count}
             媒体总时长：{total:0.000}s
-            差（媒体 − 墙钟）：{total - wallSeconds:+0.000;-0.000}s
+            差（媒体 − 请求时长）：{total - seconds:+0.000;-0.000}s
+            差（媒体 − 会话窗口）：{total - sessionSeconds:+0.000;-0.000}s
+            差（媒体 − 秒表，含收尾）：{total - stopwatchSeconds:+0.000;-0.000}s
             全部段都入库：{outcome.Segments.All(s => s.IsPublished)}
             会话状态：{outcome.State}
 
@@ -271,48 +295,76 @@ public class NetworkCameraIntegrationTests
                 $"第 {sequence} 段长 {duration:0.000} 秒，不是整整 60 秒。{report}");
         }
 
-        // 判据四（**这条才是 T17 的核心**）：媒体总时长与墙钟对齐。
+        // 判据四（**这条才是 T17 的核心**）：媒体总时长要与**录了多久**对得上。
         // 旧行为每段边界丢 1~1.5 秒（重开摄像头），10 段少 10~15 秒 ⇒ 当场红。
         // 允许 5 秒余量是留给「起流到第一帧」与分段关闭抖动，不是留给空洞的。
         //
-        // ⚠️ **这条判据只在源的时钟可信时才有分辨力**：空洞本身只占 2% 左右
-        // （600 秒丢 10~15 秒），而像用户那台手机这样「声明 25fps、实际推 30fps」的源
-        // 光自身的时钟偏差就 19% —— 两者差一个数量级，硬套会得到一条恒红的用例。
-        // 所以标定之后分开判：源可信时用 5 秒的硬闸，源不可信时只留一条粗判防灾难性回归，
-        // 并把「这条源上分辨力不足」写进报告 —— 那是**说清楚适用边界**，不是放松判据。
-        var drift = Math.Abs(total - rate * wallSeconds);
-        if (Math.Abs(rate - 1.0) <= 0.02)
-        {
-            Assert.True(
-                drift <= 5,
-                $"媒体总时长与墙钟差了 {total - wallSeconds:0.000} 秒 —— 段边界有空洞。{report}");
-        }
-        else
-        {
-            Assert.True(
-                drift <= 0.10 * total,
-                $"媒体总时长与标的差了 {drift:0.000} 秒（源自身偏差 {rate:0.000}）—— 不像是抖动。{report}");
-        }
+        // ⚠️ 基准是**请求的时长**（`seconds`），**不是**上面那条秒表 —— 秒表含收尾
+        // （见 `sessionSeconds` 那段说明）。报告里三个差都列着，谁在漂一眼能看出来。
+        //
+        // ⚠️ 从 2026-10-05 起这条是**无条件**的：修掉 MJPEG 那个时钟缺陷之后
+        // （`-use_wallclock_as_timestamps 1`），**再歪的源**录出来也该与墙钟对齐
+        // —— 那正是那个修复做的事。所以这里不再看 `rate`：源声明得准不准
+        // 只写进报告，不放进判据（按源放松的话，修复一旦失效判据会跟着一起松，
+        // 那才是真的没人看得出来）。
+        Assert.True(
+            Math.Abs(total - seconds) <= 5,
+            $"媒体总时长与请求的 {seconds} 秒差了 {total - seconds:0.000} 秒 —— 段边界有空洞"
+                + $"（或源自身的时钟没被按墙钟对齐；标定值 {rate:0.000}）。{report}");
     }
 
     /// <summary>
-    /// 标定这条源**一秒墙钟产出多少秒媒体**（正常的网络摄像头 = 1.000）。
+    /// 标定这条源**一秒墙钟产出多少秒媒体**，量的其实是它**自己声明**的帧率准不准。
     /// </summary>
     /// <remarks>
-    /// ⚠️ MJPEG over HTTP 这类源**自己不带时间戳**，ffmpeg 只能按流里声明的
-    /// <c>r_frame_rate</c> 发时间戳。实测用户那台手机声明 <c>25 tbr/tbn</c>、
-    /// 实际推 <b>~30fps</b>（同一时刻 <c>-f null -</c> 数出来 721 帧 / 24.2 秒），
-    /// 于是媒体时钟比墙钟快 19% —— 录下来的东西**整体播快 19%、时长也多 19%**。
-    /// 那是源的问题，不是录制的问题，但它会让「媒体时长 ≈ 墙钟」这条判据在这类源上
-    /// 必然红，所以先量出比值再比。
     /// <para>
-    /// ⚠️ 这里直接 <c>-i &lt;地址&gt;</c>，不带 <c>-rtsp_transport tcp</c>
-    /// （那是 <c>CameraSource.IsRtsp</c> 在生产采集里加的）。对 RTSP 源它走默认的 UDP
-    /// —— 本机用过的两条源都是 <c>http://</c>，没撞上过；真拿 RTSP 相机跑这条时若标定失败，
-    /// 先看这里。
+    /// ⚠️ MJPEG over HTTP 这类源**自己不带时间戳**，ffmpeg 只能按流里声明的
+    /// <c>r_frame_rate</c> 发时间戳，而 <c>mpjpeg</c> 解复用器**写死假定 25fps**、
+    /// 对端实际推多少根本不看。2026-10-05 两条真源实测都是「声明 25 / 实际 28~32」
+    /// ⇒ 媒体时钟比墙钟快 **14%~28%**，后果是文件**比事件长、播放时慢动作、
+    /// 烧进画面的水印时钟比真实时间快**（不是「播快」——方向别记反，那是这条最容易被
+    /// 想当然的一处）。
+    /// </para>
+    /// <para>
+    /// ⚠️ <b>这里故意走**裸**的 <c>-i &lt;地址&gt;</c>，两个输入选项都不带</b>：
+    /// 不带 <c>-rtsp_transport tcp</c>（那是 <c>CameraSource.IsRtsp</c> 在生产里加的），
+    /// 也**不带** <c>-use_wallclock_as_timestamps 1</c>（那是同日修 MJPEG 那个缺陷时
+    /// 加进 <c>CameraSource.InputArguments</c> 的）。因为这条要量的**正是「不修时会歪多少」**：
+    /// 它现在只进报告、不决定判据，是那处修复**还生不生效**的旁证 ——
+    /// 带上修复选项来量，它恒等于 1.000，什么都看不出来。
+    /// </para>
+    /// <para>
+    /// ⚠️ 对 RTSP 源，裸 <c>-i</c> 走的是默认 UDP —— 本机用过的源都是 <c>http://</c>，
+    /// 没撞上过；真拿 RTSP 相机跑这条时若标定失败，先看这里。
     /// </para>
     /// </remarks>
     private static async Task<double> MediaPerSecondAsync(IProcessRunner runner, string address)
+    {
+        // ⚠️ **先打一个丢弃的连接，把对端的积压排掉** —— 这不是可选的。
+        //
+        // 对端是 `-listen 1` 这类**单客户端**推流时，没人连着的那段时间它照样在采，
+        // 帧堆在缓冲里；第一个客户端会被**一次灌一大坨**：2026-10-05 实测，
+        // 250 帧（= 10 秒媒体）只用了 **1.556 秒** —— 折算 157fps，而那台摄像头
+        // 真实只有 28~32fps。这条函数是「连上就掐表」，不排积压就会把源量成 100fps 以上。
+        //
+        // ⚠️ 对**多客户端**的源（比如手机那个 App）这一步是白打一次连接，
+        // 6 秒的事，换掉一整类假读数。
+        await SampleAsync(runner, address);
+
+        // 对端断掉一个客户端之后要几秒才重新可用（实测 2~4 秒，取 6 留余量）。
+        // 不等的话第二次连接直接 `Connection refused`。
+        await Task.Delay(TimeSpan.FromSeconds(ListenerRecoverySeconds));
+
+        var (media, wall) = await SampleAsync(runner, address);
+
+        // 这次才是真节拍。（修了墙钟打戳之后它应当回到 1.000 附近；
+        // 量出来明显偏离 1 说明这条源**自己声明的帧率**是错的 —— 写进报告。）
+        return media / wall;
+    }
+
+    /// <summary>连一次、采固定一段，返回（媒体时长, 墙钟耗时）。</summary>
+    private static async Task<(double Media, double Wall)> SampleAsync(
+        IProcessRunner runner, string address)
     {
         var sample = Path.Combine(Path.GetTempPath(), "vidlog-rate-" + Guid.NewGuid().ToString("N") + ".mkv");
 
@@ -337,7 +389,7 @@ public class NetworkCameraIntegrationTests
             var media = double.Parse(probe.StandardOutput.Trim(), CultureInfo.InvariantCulture);
             Assert.True(media > 0, "标定没量到媒体时长");
 
-            return media / wall.Elapsed.TotalSeconds;
+            return (media, wall.Elapsed.TotalSeconds);
         }
         finally
         {
@@ -350,6 +402,12 @@ public class NetworkCameraIntegrationTests
 
     /// <summary>冒烟时把这一条录短一点（秒）。不设 = 600。</summary>
     private const string SecondsVariable = "VIDLOG_TEST_T17_SECONDS";
+
+    /// <summary>
+    /// 单客户端推流（`-listen 1` 这类）断掉一个客户端之后、重新可连所需的秒数。
+    /// </summary>
+    /// <remarks>2026-10-05 实测：断开后 +2s 没人听、+4s 起听得到。取 6 留余量。</remarks>
+    private const int ListenerRecoverySeconds = 6;
 
     /// <summary>量出来的数落在这里 —— 通过时也写，回归证据要看它。</summary>
     private static string ReportPath =>
