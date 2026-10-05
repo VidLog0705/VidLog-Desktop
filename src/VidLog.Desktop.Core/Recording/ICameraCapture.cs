@@ -29,6 +29,26 @@ public interface ICameraCapture
     /// <see cref="ICaptureProcess.StartupWarning"/>，**不得**让它变成异常或空段。
     /// </para>
     /// </param>
+    /// <param name="segmentSeconds">
+    /// 非 <see langword="null"/> 时**一个进程跑到底、由它自己按时长滚段**（T17）：
+    /// <paramref name="outputPath"/> 因此是一个**模式**（如 <c>segment-%03d.mkv</c>），
+    /// 单片秒数就是它。
+    /// <para>
+    /// ⚠️ 这个参数存在是要消灭**段边界那 1~2 秒的画面空洞**：按老的走法，到点要
+    /// 「停 ffmpeg（释放相机）→ 重开 ffmpeg（重开相机）」，而开一次相机实测
+    /// 1~1.5 秒（见 <c>FfmpegCameraCapture</c>），默认 1 分钟一段 ⇒ 一小时少 60~120 秒。
+    /// </para>
+    /// <para>
+    /// ⚠️ 为 <see langword="null"/>（默认）时**行为与本次改动之前逐字一致**：
+    /// 一个输出路径一个文件，段边界照旧靠停进程、重开进程。
+    /// </para>
+    /// </param>
+    /// <param name="segmentStartNumber">
+    /// 第一片从几号起（<c>-segment_start_number</c>）。**滚段时它不是可选项**：
+    /// 采纳了预录缓冲时会话目录里**已经躺着** <c>segment-000.mkv</c>，而 ffmpeg
+    /// 默认从 0 起、又带 <c>-y</c> —— 2026-10-05 本机实测，那会把开场那几秒
+    /// **直接覆盖掉**，且不报任何错。
+    /// </param>
     /// <returns>可等待、可优雅停止的采集进程。</returns>
     /// <remarks>
     /// ⚠️ <b>方向不在这里</b>：它在实现方构造时拿到的
@@ -40,5 +60,7 @@ public interface ICameraCapture
         string outputPath,
         string encoder,
         string? microphone = null,
-        CancellationToken cancellationToken = default);
+        CancellationToken cancellationToken = default,
+        int? segmentSeconds = null,
+        int segmentStartNumber = 0);
 }

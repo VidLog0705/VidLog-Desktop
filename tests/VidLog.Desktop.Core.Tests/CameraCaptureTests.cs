@@ -635,6 +635,13 @@ public class CameraCaptureTests
         Assert.Equal("120", args[args.IndexOf("-segment_time") + 1]);
         Assert.Equal("1", args[args.IndexOf("-reset_timestamps") + 1]);
 
+        // 不指定就是 0（新起一场录制时的样子）。
+        Assert.Equal("0", args[args.IndexOf("-segment_start_number") + 1]);
+
+        // ⚠️ 它必须紧挨着 `-reset_timestamps 1` —— 这两条是**配套**的：
+        // `-y` 会静默覆盖同名文件，所以「从几号开始」与「覆盖允许」得摆在一起看。
+        Assert.Equal("-segment_start_number", args[args.IndexOf("-reset_timestamps") + 2]);
+
         // ⚠️ **关键帧间隔是承重的**：采纳缓冲时要从片子尾巴上 `-sseof -N -c copy` 裁，
         // 而 `-c copy` 只能从关键帧切 ⇒ 不钉它就按默认 GOP（约 250 帧 ≈ 8 秒）裁，
         // 设 5 秒的缓冲会裁出十几秒。30 帧 = 1 秒（帧率固定 30，规格 §3.1.7）。
@@ -642,6 +649,22 @@ public class CameraCaptureTests
 
         // 分片那一档仍然紧挨着 `-y`（模式串，不是文件名）。
         Assert.Equal(@"C:\work\pre-%03d.mkv", args[args.IndexOf("-y") + 1]);
+    }
+
+    [Fact]
+    public void 采纳了预录段时分片序号从1起_否则y会把000那片静默盖掉()
+    {
+        // 场景（规格 §3.1.3 + T17）：采纳预录缓冲 ⇒ 会话目录里已经躺着
+        // `segment-000.mkv`（那几秒预录画面），正式录制从它后面接着写。
+        // ⚠️ 这个输出带 `-y`，ffmpeg 又默认从 0 起 —— 2026-10-05 本机实测，
+        // 重号**不报任何错**，直接把刚采纳的预录画面覆盖掉。
+        var args = FfmpegCameraCapture.BuildArguments(
+            CameraSource.Local("Cam"), @"C:\work\segment-%03d.mkv", "libx264",
+            new RecordingSpec(VideoCodec.H264, VideoResolution.P720),
+            segmentSeconds: 120, segmentStartNumber: 1)
+            .ToList();
+
+        Assert.Equal("1", args[args.IndexOf("-segment_start_number") + 1]);
     }
 
     [Fact]

@@ -316,6 +316,51 @@ public sealed class RecordingWorkspace
         return orphans;
     }
 
+    /// <summary>
+    /// 会话目录里 <c>segment-*.mkv</c> 的段号（升序）。
+    /// </summary>
+    /// <remarks>
+    /// ★ T17：按时长滚段改成「一个 ffmpeg 进程跑到底、由它自己滚」之后，会话**不再有
+    /// 「段封闭」那一刻可以挂钩** —— 分段什么时候滚出来只有盘知道。所以收尾时的
+    /// 段清单从目录里读，而不是从内存里攒。
+    /// <para>
+    /// ⚠️ <b>0 字节的一律不算</b>，理由与 <see cref="RescueUnregisteredSegments"/>
+    /// 逐字相同：封装器攒够一块才落盘，空壳收进收尾会让**整场**判失败（规格 §4.1）。
+    /// </para>
+    /// </remarks>
+    public IReadOnlyList<int> ListSegmentSequences(string sessionId) =>
+        ListSegmentFiles(SessionDirectory(sessionId)).ConvertAll(s => s.Sequence);
+
+    /// <summary>目录里的分片：段号 + 路径（按段号升序）。0 字节的不算。</summary>
+    private static List<(int Sequence, string Path)> ListSegmentFiles(string directory)
+    {
+        var files = new List<(int Sequence, string Path)>();
+
+        if (!Directory.Exists(directory))
+        {
+            return files;
+        }
+
+        foreach (var path in Directory.EnumerateFiles(directory, SegmentFilePattern))
+        {
+            if (!TryParseSequence(Path.GetFileName(path), out var sequence))
+            {
+                continue;
+            }
+
+            if (new FileInfo(path).Length == 0)
+            {
+                continue;
+            }
+
+            files.Add((sequence, path));
+        }
+
+        files.Sort((a, b) => a.Sequence.CompareTo(b.Sequence));
+
+        return files;
+    }
+
     /// <summary>没有任何分段留在盘上的会话目录：记一条，过了冷静期就删掉（T21）。</summary>
     /// <remarks>
     /// <para>
@@ -428,19 +473,9 @@ public sealed class RecordingWorkspace
 
         var sessionStart = ParseTimestamp(manifest.StartedAt);
 
-        foreach (var path in Directory.EnumerateFiles(directory, SegmentFilePattern))
+        foreach (var (sequence, path) in ListSegmentFiles(directory))
         {
             if (known.Contains(Path.GetFileName(path)))
-            {
-                continue;
-            }
-
-            if (!TryParseSequence(Path.GetFileName(path), out var sequence))
-            {
-                continue;
-            }
-
-            if (new FileInfo(path).Length == 0)
             {
                 continue;
             }
@@ -483,7 +518,11 @@ public sealed class RecordingWorkspace
     /// <remarks>
     /// <b>Windows 上「改名覆盖已存在的文件」会被拒绝</b>（实测 <c>errno = 5 拒绝访问</c>）——
     /// Defender 扫新写的文件时会短暂持有句柄。而 manifest 是**反复写同一个文件**的
-    /// （开录写一次、每个分段封闭再写一次），所以正好每次都撞上。
+    /// （开录写一次、收尾登记分段时再写一次），所以正好每次都撞上。
+    /// <para>
+    /// ⚠️ T17 之前这里写的是「每个分段封闭再写一次」—— 那条路随「一个进程跑到底」没了
+    /// （见 <c>RecordingSession.StartCaptureAsync</c>），重写的次数少了很多。
+    /// </para>
     /// <para>
     /// 手机端先踩到这个坑。后果是 manifest 写不进去、那段录像重启后收不了尾。
     /// 这里同样重试；仍不行就**退化成直接写** —— 宁可失去「原子替换」这层保护，

@@ -164,9 +164,11 @@ public sealed record AdoptedClip(string Path, DateTimeOffset StartedAt, TimeSpan
 /// 「起点 + 单调偏移」—— 用户改系统时间因此伪造不出更早的证据时间。
 /// </para>
 /// <para>
-/// <b>manifest 必须在每段封闭时立刻落盘</b>。孤儿判定是「有 session.json 但没有
-/// finalized.json」，而 <see cref="RecordingWorkspace.ListOrphansAsync"/> 只认 manifest
-/// 里列出的分段 —— 不写 manifest 的话，进程被杀后那批文件**对恢复链路完全不可见**。
+/// <b>manifest 要尽早在盘上有一份。</b>孤儿判定是「有 session.json 但没有
+/// finalized.json」；录制期它是**随分段滚出来的**（T17 之后由 ffmpeg 自己滚、
+/// 会话在收尾时才数，见 <see cref="CloseCurrentSegmentAsync"/>），进程被杀时
+/// 靠 <see cref="RecordingWorkspace.ListOrphansAsync"/> 那条「扫目录捞没登记的分段」
+/// 的路兜底（T20）—— 分段不会丢，只是那一路的时间戳只能取文件时间。
 /// </para>
 /// </remarks>
 public sealed class RecordingSession : IAsyncDisposable
@@ -208,24 +210,51 @@ public sealed class RecordingSession : IAsyncDisposable
 
     private SessionManifest? _manifest;
     private ICaptureProcess? _currentProcess;
-    /// <summary>一段尚未封闭的分段。</summary>
+
+    /// <summary>滚动分片那一路的输出**模式**（T17）。</summary>
+    /// <remarks>
+    /// ⚠️ <c>%03d</c> 是 ffmpeg 的 printf 风格占位符，段号由它自己填；起始号走
+    /// <c>-segment_start_number</c>（见 <c>ICameraCapture.StartAsync</c>）。
+    /// <b>它与 <see cref="SegmentFileName"/> 必须保持同一套写法</b> ——
+    /// 一个给 ffmpeg 一个给收尾，对不上就会「收尾按名字去找、什么都找不到」，
+    /// 而那正是最难看的一种：录了、也留在盘上，就是没人认。
+    /// </remarks>
+    private const string SegmentFilePattern = "segment-%03d.mkv";
+
+    /// <summary>滚动分片里第 <paramref name="sequence"/> 片的文件名。</summary>
+    private static string SegmentFileName(int sequence) => $"segment-{sequence:D3}.mkv";
+
+    /// <summary>一场尚未收尾的采集。</summary>
     /// <remarks>
     /// 刻意做成**引用类型**：它要被 <see cref="Interlocked.Exchange{T}(ref T, T)"/> 交换，
-    /// 而那个泛型只接受引用类型／基元／枚举 —— 换成 <c>(string, int)?</c> 这种值类型，
+    /// 而那个泛型只接受引用类型／基元／枚举 —— 换成 <c>int?</c> 这种值类型，
     /// 编译能过，运行时抛 <see cref="NotSupportedException"/>（2026-09-23 踩过）。
     /// </remarks>
-    private sealed record OpenSegment(string FileName, int Sequence);
+    /// <param name="FirstSequence">
+    /// 这一场采集的**第 0 片**是几号。采纳了预录缓冲时它是 1（0 号被预录那一段占了）。
+    /// </param>
+    private sealed record OpenSegment(int FirstSequence);
 
     /// <summary>
-    /// 当前**尚未封闭**的分段。<c>null</c> 表示没有待登记的段。
+    /// 这一场**还没收尾**的采集。<c>null</c> = 没有可认领的。
     /// </summary>
     /// <remarks>
-    /// 文件名与序号挤在一个字段里，是为了能用**一次**交换原子地认领它 ——
-    /// 拆成两个字段的话，「认领的瞬间」可能读到上一段的序号，
-    /// 而重号会让时间轴错位（见 <see cref="CloseCurrentSegmentAsync"/> 的注释）。
+    /// ⚠️ 用一次原子交换认领它，而不是「先读、后面再清」：编排循环与
+    /// <see cref="StopAsync"/> 可能在同一瞬间都想收这一场（用户正好点【结束】），
+    /// 先读后清会让两边都通过判据，把同一批分段登记两次 —— 重号会让时间轴错位。
     /// </remarks>
     private OpenSegment? _openSegment;
-    private TimeSpan _segmentStartedAt;
+
+    /// <summary>
+    /// 这一场采集是从**哪个偏移**开始的（<see cref="Elapsed"/> 的刻度）。
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ 它原来叫「换段时段的计时归零」—— 那时每滚一段就重开一个进程、这里跟着重取。
+    /// T17 之后**一个进程跑到底**，所以它只在开录那一刻取一次，含义变成了
+    /// 「分段的第 0 片从哪儿起」：收尾时按 <c>它 + 段号 × 单段时长</c> 推每一段的起止。
+    /// </remarks>
+    private TimeSpan _captureStartedOffset;
+
     private DateTimeOffset _startedAt;
     private CancellationTokenSource? _loopCancellation;
 
@@ -535,7 +564,7 @@ public sealed class RecordingSession : IAsyncDisposable
         await _workspace.WriteManifestAsync(_manifest, cancellationToken);
 
         State = RecordingSessionState.Recording;
-        await StartSegmentAsync(encoder, cancellationToken);
+        await StartCaptureAsync(encoder, cancellationToken);
     }
 
     /// <summary>采纳段在清单里的那一行。文件名与序号在 <see cref="AdoptLeadingClip"/> 里。</summary>
@@ -549,9 +578,11 @@ public sealed class RecordingSession : IAsyncDisposable
     /// </summary>
     /// <remarks>
     /// <para>
-    /// ⚠️ <b>它占掉序号 0</b>，所以正式的第一次开录自然变成 <c>segment-001.mkv</c>
-    /// —— 靠的是 <see cref="StartSegmentAsync"/> 用 <see cref="ClosedSegmentCount"/>
-    /// 算序号，不是硬写。两处各写一个数字的话，将来加一段顺序会撞号。
+    /// ⚠️ <b>它占掉序号 0</b>，所以正式的第一次开录自然从 <c>segment-001.mkv</c> 起
+    /// —— 靠的是 <see cref="StartCaptureAsync"/> 把 <see cref="ClosedSegmentCount"/>
+    /// 交给 ffmpeg 当 `<c>-segment_start_number</c>`，不是硬写。
+    /// 两处各写一个数字的话，将来加一段顺序会撞号；而这里撞号的后果比从前更重 ——
+    /// 输出带 `-y`，同号会把预录那几秒**直接覆盖掉**（2026-10-05 实测）。
     /// </para>
     /// <para>
     /// ⚠️ <b>它不经过 <c>ICameraCapture</c></b>（本来就录好了，只是一个文件），
@@ -583,7 +614,7 @@ public sealed class RecordingSession : IAsyncDisposable
         lock (_gate)
         {
             // ⚠️ `ClosedSegmentCount` 是后面算序号的依据 —— 它必须在这里就变，
-            // 而不是等收尾（`StartSegmentAsync` 紧随其后）。
+            // 而不是等收尾（`StartCaptureAsync` 紧随其后）。
             _closedSegments.Add(new SegmentProduct(
                 LeadingSegmentSequence, destination,
                 buffered.StartedAt, buffered.StartedAt + buffered.Duration));
@@ -667,11 +698,10 @@ public sealed class RecordingSession : IAsyncDisposable
                     _durationPrompted?.Invoke();
                 }
 
-                if (Elapsed - _segmentStartedAt >= _options.SegmentDuration)
-                {
-                    await CloseCurrentSegmentAsync(CancellationToken.None);
-                    await StartSegmentAsync(encoder, CancellationToken.None);
-                }
+                // ⚠️ 这里原来还有一段「到点滚下一段」：关掉旧进程、重开新进程。
+                // T17 起**没有了** —— 分段由 ffmpeg 自己按时长滚（`-f segment`），
+                // 中途停进程正是段边界那 1~2 秒画面空洞的来头。
+                // 循环于是只剩一个职责：**决定该不该停**（上面那几条 break）。
             }
         }
         catch (OperationCanceledException)
@@ -801,26 +831,57 @@ public sealed class RecordingSession : IAsyncDisposable
         }
     }
 
-    private async Task StartSegmentAsync(string encoder, CancellationToken cancellationToken)
+    /// <summary>
+    /// 起这一场的采集：**一个 ffmpeg 进程跑到底，由它自己按时长滚段**（T17）。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// ⚠️ <b>原来的走法是「每段一个进程」</b>：到点先关旧的（停 ffmpeg ⇒ 相机被放开），
+    /// 再开新的（重开 ffmpeg ⇒ 重开相机）。而开一次相机实测 1~1.5 秒
+    /// （见 <c>FfmpegCameraCapture.ConfirmStartedAsync</c>）⇒
+    /// <b>每段边界有 1~2 秒真实的画面空洞</b>：默认 1 分钟一段 ⇒ 一小时少 60~120 秒，
+    /// 而且少在哪儿不可知。手机端没有这个问题（编码器全程不停、只换封装器）。
+    /// </para>
+    /// <para>
+    /// ⚠️ <b>代价说清楚（这一条不能只写在提交信息里）</b>：分段什么时候滚出来
+    /// 只有 ffmpeg 与盘知道，会话**不再有「段封闭」那一刻可挂钩** ⇒
+    /// 录制中不再逐段更新 <c>session.json</c>，收尾时改从目录里数
+    /// （见 <see cref="CapturedSegments"/>）。进程被杀时那批分段**照样进得了收尾**
+    /// —— 走的是 T20 那条「扫目录捞没登记的分段」的路，只是那时的时间戳只能取
+    /// 文件时间（进程都没了，可信时钟的读数也没了），不是这一次这条路上的口径。
+    /// </para>
+    /// <para>
+    /// ⚠️ <b>顺带消掉一个已知竞态</b>：原来「先关旧段 → 等新进程起来（几十毫秒）→
+    /// 才发布新段」，收尾正好挤进那个窗口时谁都认领不到（见
+    /// <see cref="CloseCurrentSegmentAsync"/> 的旧注释）。现在段在会话开始时就发布一次，
+    /// 没有那个窗口了。
+    /// </para>
+    /// </remarks>
+    private async Task StartCaptureAsync(string encoder, CancellationToken cancellationToken)
     {
-        var sequence = ClosedSegmentCount;
-        var fileName = $"segment-{sequence:D3}.mkv";
-        var outputPath = Path.Combine(_workspace.SessionDirectory(SessionId), fileName);
+        var firstSequence = ClosedSegmentCount;
 
-        // 换段时段的计时归零。
-        _segmentStartedAt = Elapsed;
+        // 这一场采集从哪儿起 —— 收尾时按它 + 段号推每一段的起止。
+        _captureStartedOffset = Elapsed;
 
-        WriteWatermark(outputPath);
+        WriteWatermark();
 
         _currentProcess = await _capture.StartAsync(
-            _source, outputPath, encoder, _options.Microphone, cancellationToken);
+            _source,
+            Path.Combine(_workspace.SessionDirectory(SessionId), SegmentFilePattern),
+            encoder,
+            _options.Microphone,
+            cancellationToken,
+            segmentSeconds: (int)Math.Ceiling(_options.SegmentDuration.TotalSeconds),
+            // ⚠️ **必须给**：采纳了预录缓冲时 0 号已经躺在目录里，
+            // 而 ffmpeg 默认从 0 起、这个输出又带 `-y` —— 不加它会把开场那几秒覆盖掉。
+            segmentStartNumber: firstSequence);
 
-        // 一次交换把两个值一起发布 —— 见 _openSegment 的说明。
-        Interlocked.Exchange(ref _openSegment, new OpenSegment(fileName, sequence));
+        Interlocked.Exchange(ref _openSegment, new OpenSegment(firstSequence));
     }
 
     /// <summary>
-    /// 给这一段写一份水印字幕（规格 §3.6.2）。
+    /// 给这一场写一份水印字幕（规格 §3.6.2）。
     /// </summary>
     /// <remarks>
     /// <para>
@@ -833,29 +894,52 @@ public sealed class RecordingSession : IAsyncDisposable
     /// 所以这里吞掉异常，只记一条。
     /// </para>
     /// <para>
-    /// 覆盖时长取「单段时长 + 2 分钟余量」：段会按时长滚动，但最后一段可能超出
-    /// 一点（滚动要等关键帧）。**少了余量就会出现「最后几秒没有水印」**——
+    /// ⚠️ <b>一**整场**一份</b>（T17）：段边界不再停进程，也就没机会换字幕
+    /// —— <c>ass</c> 滤镜在开进程那一刻就把文件读进去了。而秒针**跨段接着走**
+    /// （实测：`-reset_timestamps 1` 只动封装器写出的时间戳，滤镜看到的 pts 是连续的），
+    /// 所以一份覆盖整场是对的，不是将就。
+    /// </para>
+    /// <para>
+    /// 覆盖时长取「整场上限 + 2 分钟余量」：段会按时长滚动，最后一段可能超出一点
+    /// （滚动要等关键帧）。**少了余量就会出现「最后几秒没有水印」**——
     /// 而那种「部分缺失」比全都没有更难被发现。
     /// </para>
     /// </remarks>
-    private void WriteWatermark(string segmentPath)
+    private void WriteWatermark()
     {
         try
         {
             var start = _trustedClock?.Now ?? DateTimeOffset.UtcNow;
-            var coverage = _options.SegmentDuration + TimeSpan.FromMinutes(2);
 
             var (width, height) = _options.Spec?.Size ?? (1280, 720);
 
             File.WriteAllText(
-                AssWatermark.PathFor(segmentPath),
-                AssWatermark.Build(start, _waybill, coverage, width, height));
+                AssWatermark.PathFor(Path.Combine(
+                    _workspace.SessionDirectory(SessionId), SegmentFilePattern)),
+                AssWatermark.Build(start, _waybill, WatermarkCoverage, width, height));
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
-            LastProblem = $"这一段没有水印（字幕文件写不出来：{ex.Message}）";
+            LastProblem = $"这一场没有水印（字幕文件写不出来：{ex.Message}）";
         }
     }
+
+    /// <summary>
+    /// 水印字幕要覆盖多久。
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ <b>兜底档位是「关闭」时这一场没有上限</b>，而字幕得有个头
+    /// —— 它要按秒排下去（见 <see cref="AssWatermark.Build"/>）。
+    /// 取一个远够用的天花板：超出之后就没有水印了（画面照录），
+    /// 而「没有上限」这件事在产品上本来就是「用户自己会来停」的意思。
+    /// </remarks>
+    private TimeSpan WatermarkCoverage =>
+        (_options.MaxDuration == RecordingSessionOptions.NoFallback
+            ? WatermarkCeiling
+            : _options.MaxDuration) + TimeSpan.FromMinutes(2);
+
+    /// <summary>水印字幕覆盖时长的天花板。见 <see cref="WatermarkCoverage"/>。</summary>
+    private static readonly TimeSpan WatermarkCeiling = TimeSpan.FromHours(12);
 
     /// <summary>
     /// 只放掉相机，不做收尾。
@@ -894,7 +978,7 @@ public sealed class RecordingSession : IAsyncDisposable
 
         var exitCode = await process.StopAsync(_options.StopGracePeriod, cancellationToken);
 
-        // ⚠️ 降级也要**可见**（I3）：音频那一路没接上时这一段照录，但用户有权知道
+        // ⚠️ 降级也要**可见**（I3）：音频那一路没接上时这一场照录，但用户有权知道
         // 它没有声音 —— 否则「事后发现整批货都没声音」就成了一次静默失败。
         // 顺序在退出码之前：两句都成立时（比如摄像头真的坏了），
         // 退出码那句才是真正的原因，让它盖掉这里的降级说明。
@@ -908,64 +992,58 @@ public sealed class RecordingSession : IAsyncDisposable
             // 退出码非 0 说明采集中途出过事。文件可能仍在（ffmpeg 常留下部分内容），
             // 所以照样登记 —— 由收尾器的「实际解码校验」判它到底能不能用，
             // 而不是在这里替它下结论（那正是「编译绿≠正确」的翻版）。
-            LastProblem = $"采集进程以退出码 {exitCode} 结束，该段可能不完整。";
+            // ⚠️ 说的是「这一场」不是「这一段」：T17 起一个进程跑一整场，
+            // 它带着**这一场全部的分段**（分段由 ffmpeg 自己滚）。
+            LastProblem = $"采集进程以退出码 {exitCode} 结束，这一场可能不完整。";
         }
     }
 
+    /// <summary>
+    /// 收这一场采集：停进程，然后**从盘上**数出它落了哪些分段（T17）。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// 它是收尾唯一入口（<see cref="StopAsync"/>）的第一步，所以这里的分段清单
+    /// 就是 <c>outcome.Segments</c> 的全部来源（I9：不得有旁路）。
+    /// </para>
+    /// <para>
+    /// ⚠️ <b>认领用一次原子交换，不是「先读、后面再清」</b>：编排循环的 finally
+    /// 与 <see cref="StopAsync"/> 可能在同一瞬间都想收这一场（用户正好点【结束】）。
+    /// 先读后清会让两边都通过判据，把同一批分段登记两次 —— 重号会让时间轴错位。
+    /// </para>
+    /// <para>
+    /// ⚠️ <b>起点那次还有一个已知的、有界的竞态</b>（2026-10-01 查出来，没修）：
+    /// <see cref="StartCaptureAsync"/> 是「先发布 <c>_currentProcess</c>、再发布
+    /// <c>_openSegment</c>」，收尾正好挤进这两句之间时这里认领不到。后果有界 ——
+    /// 那个进程刚起来、几乎没有内容，且会被 <c>DisposeAsync</c> 收掉不留孤儿进程；
+    /// 留在目录里的空壳会被 T20 那条路按「0 字节不算」滤掉。
+    /// （**原来那个「先关旧段、再开新段」的竞态已经随 T17 消失**：段不再中途重开。）
+    /// </para>
+    /// </remarks>
     private async Task CloseCurrentSegmentAsync(CancellationToken cancellationToken)
     {
-        // 判据是**分段本身**而不是进程：ReleaseCaptureAsync 会把进程清空，
-        // 但段还没登记。拿错了判据就会把同一段登记两次（重号会让时间轴错位）。
-        //
-        // ⚠️ 用一次原子交换**认领**这一段，而不是「先读、后面再清」：编排循环与
-        // StopAsync 可能在同一瞬间都想封闭当前段（循环刚到滚段点、用户正好点
-        // 【结束】）。先读后清会让两边都通过判据，把同一段登记两次 ——
-        // 而循环在 2026-09-23 之前根本没被启动过，所以这条竞态是新暴露的。
-        // ⚠️ **还有一个已知的、有界的竞态**（2026-10-01 查出来的，没修）：
-        //
-        // 滚段那条路是「先关旧的 → `await _capture.StartAsync(...)` 真开一路 ffmpeg
-        // （几十毫秒）→ 才发布新的 `_openSegment`」。**收尾正好挤进这个窗口时，
-        // 这里认领不到任何段**，于是那一段不进 outcome。
-        //
-        // 后果是**有界**的，所以先记着不动它：
-        // ① 那个刚起来的段几乎没有内容（刚 `StartAsync` 完）；
-        // ② 它的 ffmpeg 会被 `DisposeAsync` → `ReleaseCaptureAsync` 收掉，**不留孤儿进程**；
-        // ③ 有内容的那几段全都正常封闭、正常进 outcome（I2 不受影响）。
-        // 留在这个目录里的那个文件，T20 起会被孤儿恢复的「捞没登记的分段」捡回来
-        // （只要它落了内容 —— 刚起来的壳是 0 字节，见 `RescueUnregisteredSegments`）。
-        //
-        // 真要修的话，得把「关段」与「开段」串起来（收尾那边等正在开的那一段落地）——
-        // 那是**碰 I9 那条路**，得单独一次改动、单独一轮真机回归，不混在别的事里做。
         var claimed = Interlocked.Exchange(ref _openSegment, null);
         if (claimed is not { } open)
         {
             return;
         }
 
-        var fileName = open.FileName;
-        var sequence = open.Sequence;
-        var startedAt = _segmentStartedAt;
-
+        // ⚠️ 先读停录时刻、**再**停进程：停进程要走优雅停机（发 q、等它写完），
+        // 那几百毫秒不是录制时间。这一条与 T17 之前逐字一致。
         var endedAt = Elapsed;
         await ReleaseCaptureAsync(cancellationToken);
 
-        var segmentPath = Path.Combine(_workspace.SessionDirectory(SessionId), fileName);
-
-        // 水印字幕**用完就删**：它是这一段的临时素材，不是产物。
+        // 水印字幕**用完就删**：它是这一场的临时素材，不是产物。
         // 留着的话它会跟着会话目录进归档（而归档里多一个 .ass 是垃圾），
         // 也会让「盘上占了多少」那个数字虚高一点。
         // 顺序在 `ReleaseCaptureAsync` **之后**：ffmpeg 还拿着它的话删不掉。
-        TryDeleteWatermark(segmentPath);
+        TryDeleteWatermark(Path.Combine(_workspace.SessionDirectory(SessionId), SegmentFilePattern));
 
-        var segment = new SegmentProduct(
-            sequence,
-            segmentPath,
-            _startedAt + startedAt,
-            _startedAt + endedAt);
+        var segments = CapturedSegments(open, endedAt);
 
         lock (_gate)
         {
-            _closedSegments.Add(segment);
+            _closedSegments.AddRange(segments);
 
             if (_manifest is not null)
             {
@@ -974,19 +1052,88 @@ public sealed class RecordingSession : IAsyncDisposable
                     Segments =
                     [
                         .. _manifest.Segments,
-                        new SegmentManifest(
-                            sequence, fileName,
-                            segment.StartedAt.ToString("O"), segment.EndedAt.ToString("O")),
+                        .. segments.Select(s => new SegmentManifest(
+                            s.Sequence, Path.GetFileName(s.SourcePath),
+                            s.StartedAt.ToString("O"), s.EndedAt.ToString("O"))),
                     ],
                 };
             }
         }
 
-        // 立刻落盘：进程在这之后被杀，这批分段仍能被孤儿恢复找到。
+        // 立刻落盘：收尾中途进程被杀，这批分段仍能被孤儿恢复找到。
         if (_manifest is not null)
         {
             await _workspace.WriteManifestAsync(_manifest, cancellationToken);
         }
+    }
+
+    /// <summary>
+    /// 这一场采集落下来的分段 —— **从盘上数**，时刻是**算**出来的（T17）。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// ⚠️ <b>为什么从盘上数</b>：分段是 ffmpeg 自己按时长滚的，会话没有「段封闭」
+    /// 那一刻可挂钩（见 <see cref="StartCaptureAsync"/>）。目录里的
+    /// <c>segment-*.mkv</c> 就是这一段录下来的全部东西，包括最后那一片。
+    /// </para>
+    /// <para>
+    /// ⚠️ <b>为什么时刻是算的、不是读文件时间</b>：文件时间是**墙钟**，
+    /// 而本仓的时间轴只有一个来源 —— 可信时钟（I11：用户改系统时间不得改变
+    /// 视频里的时间）。两者差的可能远不止几毫秒（可信时钟锚在外部时间上）。
+    /// 分段既然是按名义时长滚的，第 k 片的起点就是「这一场采集的起点 + k × 单段时长」
+    /// —— 与「停下来重开」那套不同，这里没有开相机那 1~1.5 秒的空洞，
+    /// 所以中间那几段可以照名义算。<c>-segment_time</c> 在到点后的**下一个关键帧**
+    /// 上切，而 <c>-g</c> 是 30 帧 = 1 秒 ⇒ 误差在 1 秒以内（2026-10-05 实测：
+    /// 60 秒档下各片就是 60 秒上下，**不累积漂移**）。
+    /// </para>
+    /// <para>
+    /// ⚠️ 最后那一片的终点取**停录那一刻**：它通常比名义时长短一截。
+    /// </para>
+    /// </remarks>
+    private List<SegmentProduct> CapturedSegments(OpenSegment open, TimeSpan endedAt)
+    {
+        var directory = _workspace.SessionDirectory(SessionId);
+        var sequences = _workspace.ListSegmentSequences(SessionId);
+        var last = sequences.Count > 0 ? sequences[^1] : -1;
+
+        var products = new List<SegmentProduct>();
+
+        foreach (var sequence in sequences)
+        {
+            // 预录采纳的那一段（0 号）早在开录时就已经登记过了，这里不重来一遍。
+            if (sequence < open.FirstSequence)
+            {
+                continue;
+            }
+
+            var startedAt = _startedAt + _captureStartedOffset
+                + (sequence - open.FirstSequence) * _options.SegmentDuration;
+
+            var stoppedAt = sequence == last
+                ? _startedAt + endedAt
+                : startedAt + _options.SegmentDuration;
+
+            // 兜底：盘上多出一片不该在的、或者时刻对不上时，宁可时长记成 0，
+            // 也不能往索引里写一条**时间倒流**的证据。
+            //
+            // ⚠️ 但它**不许静默**（AGENTS §6.1）：走到这条支路说明**盘上出现了
+            // 对不上的东西**（同一会话目录里从前一次尝试留下的片、或者被人塞进来的），
+            // 而这种情况一旦发生，用户事后要问的正是「哪一片」。只说「录好了」是 I3 不允许的。
+            if (stoppedAt < startedAt)
+            {
+                LastProblem = $"收尾时发现一片对不上时间轴的分段（{SegmentFileName(sequence)}），"
+                    + "已按零时长登记。";
+                stoppedAt = startedAt;
+            }
+
+            products.Add(new SegmentProduct(
+                sequence,
+                Path.Combine(directory, SegmentFileName(sequence)),
+                startedAt,
+                stoppedAt));
+        }
+
+        return products;
     }
 
     /// <summary>删掉水印字幕。删不掉只是留个垃圾，不影响任何判定。</summary>

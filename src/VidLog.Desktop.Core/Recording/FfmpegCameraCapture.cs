@@ -100,7 +100,9 @@ public sealed class FfmpegCameraCapture : ICameraCapture
         string outputPath,
         string encoder,
         string? microphone = null,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        int? segmentSeconds = null,
+        int segmentStartNumber = 0)
     {
         var directory = Path.GetDirectoryName(outputPath);
         if (!string.IsNullOrEmpty(directory))
@@ -111,13 +113,18 @@ public sealed class FfmpegCameraCapture : ICameraCapture
         // 水印字幕（规格 §3.6.2）：**按约定**从输出路径推同一个名字。
         // 文件不在时 ffmpeg 会报错起不来 —— 所以只在它真的存在时才带上，
         // 让「没有水印」比「录不起来」先发生（会话那边写失败也是这个口径）。
+        //
+        // ⚠️ 滚段时 `outputPath` 是**模式**，推出来的也是模式
+        // （`segment-%03d.mkv` → `segment-%03d.ass`）—— 一**整场**一份字幕，
+        // 这正是 T17 要的（水印的秒针必须跨段接着走，不能每段跳回去）。
         var watermark = AssWatermark.PathFor(outputPath);
         var assPath = File.Exists(watermark) ? watermark : null;
 
         var wanted = string.IsNullOrWhiteSpace(microphone) ? null : microphone;
-        var process = Launch(source, outputPath, encoder, wanted, assPath);
+        var process = Launch(source, outputPath, encoder, wanted, assPath, segmentSeconds, segmentStartNumber);
 
-        var warning = await ConfirmStartedAsync(process, outputPath, wanted, cancellationToken);
+        var warning = await ConfirmStartedAsync(
+            process, ProducedPath(outputPath, segmentSeconds, segmentStartNumber), wanted, cancellationToken);
 
         if (warning is not null)
         {
@@ -128,8 +135,13 @@ public sealed class FfmpegCameraCapture : ICameraCapture
             //
             // ⚠️ 重开时**方向照旧**（它在 spec 里，与音频无关）：去掉音频是为了救
             // 这一段的画面，而画面该怎么转是用户的设置。
+            //
+            // ⚠️ 重开**覆盖**已经写出来的那几片（同一个模式、同一个起始号、带 `-y`）
+            // —— 那正是要的：试出来的那几秒没有音轨，留着它只会让第一片的时间轴
+            // 比实际长。相机的重开速度远快于「第一片攒够一块」，所以那些片本来就
+            // 几乎是空的。
             Kill(process);
-            process = Launch(source, outputPath, encoder, microphone: null, assPath);
+            process = Launch(source, outputPath, encoder, microphone: null, assPath, segmentSeconds, segmentStartNumber);
         }
 
         cancellationToken.ThrowIfCancellationRequested();
@@ -137,10 +149,28 @@ public sealed class FfmpegCameraCapture : ICameraCapture
         return new FfmpegCaptureProcess(process, () => _errorTail.ToString(), warning);
     }
 
+    /// <summary>
+    /// 「起来了没有」要看的那个**具体文件**。
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ <b>滚段时不能直接看 <paramref name="outputPath"/></b>：那是个模式
+    /// （<c>segment-%03d.mkv</c>），盘上永远不会有这么一个文件 ⇒
+    /// <c>Produced()</c> 恒假 ⇒ <b>接了麦克风时每一次都被判「没起来」</b>，
+    /// 被降级成无声重录（规格 §3.1.8 要的音轨等于没生效）。
+    /// 所以把 `%03d` 换成起始号，看的还是「产物出现」这个判据本身。
+    /// </remarks>
+    private static string ProducedPath(string outputPath, int? segmentSeconds, int startNumber) =>
+        segmentSeconds is null
+            ? outputPath
+            : outputPath.Replace(
+                "%03d",
+                startNumber.ToString("D3", System.Globalization.CultureInfo.InvariantCulture),
+                StringComparison.Ordinal);
+
     /// <summary>起一个 ffmpeg 采集进程，并把两条管道排空。</summary>
     private Process Launch(
         CameraSource source, string outputPath, string encoder, string? microphone,
-        string? watermarkAssPath)
+        string? watermarkAssPath, int? segmentSeconds = null, int segmentStartNumber = 0)
     {
         var startInfo = new ProcessStartInfo
         {
@@ -155,7 +185,8 @@ public sealed class FfmpegCameraCapture : ICameraCapture
 
         foreach (var argument in BuildArguments(
             source, outputPath, encoder, _spec, watermarkAssPath, microphone,
-            preview: _preview is not null, durationSeconds: null))
+            preview: _preview is not null, durationSeconds: null,
+            segmentSeconds: segmentSeconds, segmentStartNumber: segmentStartNumber))
         {
             startInfo.ArgumentList.Add(argument);
         }
@@ -427,8 +458,18 @@ public sealed class FfmpegCameraCapture : ICameraCapture
     /// <param name="segmentSeconds">
     /// 非 <see langword="null"/> 时，文件那一路改成**滚动分片**（<c>-f segment</c>，
     /// <paramref name="outputPath"/> 因此是一个**模式**，如 <c>pre-%03d.mkv</c>），
-    /// 单片的秒数就是它。规格 §3.1.3 的预录缓冲用它。
+    /// 单片的秒数就是它。规格 §3.1.3 的预录缓冲用它，T17 起按时长滚段也用它。
     /// <see langword="null"/>（默认）= 今天那种「一个输出路径一个文件」，argv 逐字不变。
+    /// </param>
+    /// <param name="segmentStartNumber">
+    /// 第一片从几号起（<c>-segment_start_number</c>）。只在
+    /// <paramref name="segmentSeconds"/> 非空时有意义。
+    /// <para>
+    /// ⚠️ <b>它不是「让人看着舒服」的可选项</b>：采纳了预录缓冲时（规格 §3.1.3）
+    /// 会话目录里**已经躺着** <c>segment-000.mkv</c>（那几秒预录画面），
+    /// 而 ffmpeg 默认从 0 起、这个输出又带 <c>-y</c> —— 2026-10-05 本机实测：
+    /// 不加这个参数，开场那几秒会被**直接覆盖**，退出码 0、没有任何报错。
+    /// </para>
     /// </param>
     /// <param name="grayTap">
     /// 要不要多出一路**灰度裸帧**（640×480，识码用）。
@@ -457,7 +498,8 @@ public sealed class FfmpegCameraCapture : ICameraCapture
     public static IReadOnlyList<string> BuildArguments(
         CameraSource source, string outputPath, string encoder, RecordingSpec? spec = null,
         string? watermarkAssPath = null, string? microphone = null, int? durationSeconds = null,
-        bool preview = false, int? segmentSeconds = null, bool grayTap = false)
+        bool preview = false, int? segmentSeconds = null, bool grayTap = false,
+        int segmentStartNumber = 0)
     {
         // ⚠️ 两路都要 `pipe:1` —— 而**一个 Process 只有一条 stdout**
         // （2026-10-02 定下的架构）。放过去的话不是报错，是两条输出互相咬：
@@ -643,7 +685,15 @@ public sealed class FfmpegCameraCapture : ICameraCapture
                 segmentLength.ToString(System.Globalization.CultureInfo.InvariantCulture),
                 // ⚠️ 每片从 0 起（与正式分段同形）：不重置的话第二片起时间戳接着上一片，
                 // 单独丢给 `RemuxPipeline` / `DecodeVerifier` 会被当成「缺了开头」。
+                // 它**只动封装器写出的时间戳**，滤镜看到的 pts 照旧是连续的
+                // —— 2026-10-05 本机实测（`showinfo`：3.966667 → 4.0 → 4.033333
+                // 跨过切点无跳变）⇒ 一整场一份 `.ass` 的秒针跨段接着走。
                 "-reset_timestamps", "1",
+                // ⚠️ 起始号**必须由调用方给**，不能吃默认的 0：采纳了预录缓冲时
+                // 目录里已经有 `segment-000.mkv`，而这个输出带 `-y` ——
+                // 2026-10-05 实测，重号会把那几秒**静默覆盖**掉。
+                "-segment_start_number",
+                segmentStartNumber.ToString(System.Globalization.CultureInfo.InvariantCulture),
                 // ⚠️ <b>输出的这个位置是**模式**，不是文件名</b>（`pre-%03d.mkv`）。
                 // `-y` 仍然紧挨着它 —— 测试替身靠那个位置定位产物。
                 "-y", outputPath,

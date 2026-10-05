@@ -434,19 +434,11 @@ public sealed class RecordingCoordinator : IAsyncDisposable
     /// <summary>当前段的会话标识；没有在录时为 <see langword="null"/>。</summary>
     public string? CurrentSessionId => _current?.SessionId;
 
-    /// <summary>
-    /// 当前这场工作已经**封闭**的分段数；没有在录时为零。
-    /// </summary>
-    /// <remarks>
-    /// ⚠️ 加它是为了**可观测性**：滚段是编排循环最重要的一件事，而在这之前
-    /// 外面**看不到它有没有发生** —— 界面上想显示「已录 N 段」也没得取，
-    /// 测试只能靠「等一段真实时间然后数段文件」，而那**等不准**（2026-09-29 实测：
-    /// Release 下约 1/3 概率红）。
-    /// <para>
-    /// 与 <see cref="CurrentSessionId"/> 同一路数：只读、不改任何状态。
-    /// </para>
-    /// </remarks>
-    public int CurrentClosedSegmentCount => _current?.ClosedSegmentCount ?? 0;
+    // ⚠️ 这里原来有一个 `CurrentClosedSegmentCount`（录制中的封闭段数），T17（2026-10-05）
+    // 起**删掉**：滚段交给 ffmpeg 自己做了，会话**不再有「段封闭」那一刻**
+    // （见 `RecordingSession.StartCaptureAsync` 的说明），它从此恒为 0 ——
+    // 留着就是一个「看着像可观测性、其实永远读 0」的假口子。
+    // 录制中「盘上现在有几片」仍旧看得到：`RecordingWorkspace.ListSegmentSequences`。
 
     public event Action<CoordinatorNotice>? Notice;
 

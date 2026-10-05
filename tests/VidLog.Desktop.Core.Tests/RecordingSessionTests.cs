@@ -89,7 +89,14 @@ public class RecordingSessionTests
         var start = Assert.Single(capture.Starts);
         Assert.Equal("Lenovo EasyCamera", start.Source.Address);
         Assert.Equal("h264_nvenc", start.Encoder);
-        Assert.EndsWith("segment-000.mkv", start.OutputPath);
+
+        // ⚠️ 给的是**模式**，不是文件名（T17）：分段由这一个进程自己按时长滚，
+        // 段号由 ffmpeg 填 `%03d`。写成 `segment-000.mkv` 的话那个进程只落一片。
+        Assert.EndsWith("segment-%03d.mkv", start.OutputPath);
+
+        // 单段秒数 = 段时长（本文件的 `DefaultOptions` 是 1 小时），起始号 0（没采纳预录段）。
+        Assert.Equal(3600, start.SegmentSeconds);
+        Assert.Equal(0, start.SegmentStartNumber);
     }
 
     // ─────────────────────────────────────────────
@@ -148,38 +155,10 @@ public class RecordingSessionTests
         Assert.Equal(["麦克风没能接上，这一段没有音轨。"], reported);
     }
 
-    [Fact]
-    public async Task 同一个问题重复出现时只回调一次()
-    {
-        // ⚠️ 不去重的话，长期录制里每段都会重设一次同一句话 ——
-        // 而**被刷满的日志等于没有日志**（与 `SystemProcessRunner`
-        // 「只在失败时记」是同一条理由）。
-        //
-        // 判据要**真的滚出两段**才算数（每段开头都会重新设一次那个问题）——
-        // 参数照本文件那条滚段用例。
-        using var dir = new TempDir();
-        var capture = new FakeCapture { StartupWarning = "麦克风没能接上，这一段没有音轨。" };
-        var clock = new FakeClock();
-
-        var reported = new List<string>();
-
-        await using var session = Build(
-            dir, capture, clock: clock,
-            options: new RecordingSessionOptions(
-                SegmentDuration: TimeSpan.FromMinutes(2),
-                MaxDuration: TimeSpan.FromMinutes(5),
-                StopGracePeriod: TimeSpan.FromSeconds(1),
-                PollInterval: TimeSpan.FromMinutes(1)).WithMicrophone("话筒"),
-            problemReported: reported.Add);
-
-        await session.StartAsync(WaybillNumber.Parse("SF1"), "libx264");
-        await session.RunAsync("libx264");
-
-        // 先证明这条路上**真的滚过段**（否则「只回调一次」可能只是因为只有一段）。
-        Assert.True(session.ClosedSegmentCount >= 2, $"应当滚过段，实际 {session.ClosedSegmentCount} 段");
-
-        Assert.Single(reported);
-    }
+    // ⚠️ 这里原来有一条「同一个问题重复出现时只回调一次」：它的判据是「真的滚出两段」，
+    // 因为**每段开头都会重开一次采集进程、把那句话重设一遍**。
+    // T17 之后一场只起一个进程 ⇒ 那句话一场只可能设一次，判据不再可达 ——
+    // 用例删掉，`LastProblem` 里那三行去重留着（它同时在防将来任何一条重复触发的路）。
 
     [Fact]
     public async Task 音频降级的那句话必须让用户看见()
@@ -262,14 +241,15 @@ public class RecordingSessionTests
     // ─────────────────────────────────────────────
 
     [Fact]
-    public async Task 到分段时长就滚下一段_序号递增且文件名不重()
+    public async Task 分段交给ffmpeg自己滚_收尾时按盘上那几片数出来()
     {
         using var dir = new TempDir();
-        var capture = new FakeCapture();
+        // 一个进程跑到底、盘上落 3 片（T17：片由 ffmpeg 按时长滚，会话只看它落了什么）。
+        var capture = new FakeCapture { SegmentsOnStop = 3 };
         var clock = new FakeClock();
 
         // 段 2 分钟、循环每次推进 1 分钟（见 AdvancingDelay）：
-        // 恰好滚 2 次，第 5 分钟撞上时长兜底 ⇒ **先问**（规格 §3.3.4，2026-09-27 起），
+        // 第 5 分钟撞上时长兜底 ⇒ **先问**（规格 §3.3.4，2026-09-27 起），
         // 没人理 ⇒ 再过宽限期（默认 1 分钟 = 1 圈）才自动收尾 —— 所以第 6 圈停下。
         await using var session = Build(dir, capture, clock: clock, options: new RecordingSessionOptions(
             SegmentDuration: TimeSpan.FromMinutes(2),
@@ -284,43 +264,102 @@ public class RecordingSessionTests
         // （所以这条测试不会空转）。
         Assert.Equal(StopReason.DurationFallback, session.StoppedBecause);
 
-        // 序号从 0 起、连续、不重 —— 收尾器按 Sequence 排序拼时间轴，
-        // 重号会让跨分段定位错位。
+        // ★ T17 最要紧的一条：**全程只起一个采集进程**。
+        // 原来是每段一个进程（关相机 → 开相机，实测 1~1.5 秒）⇒ 每个段边界
+        // 有 1~2 秒真的没画面。段数一多这条不成立，空洞就回来了。
+        var start = Assert.Single(capture.Starts);
+        Assert.EndsWith("segment-%03d.mkv", start.OutputPath);
+        Assert.Equal(120, start.SegmentSeconds);
+
+        // 序号从 0 起、连续 —— 收尾器按 Sequence 排序拼时间轴，重号会让跨分段定位错位。
+        var segments = session.Outcome!.Segments;
+        Assert.Equal([0, 1, 2], segments.Select(s => s.Source.Sequence));
+
+        // 时刻是**算**出来的（可信时钟 + 段号 × 单段时长），不是读文件时间：
+        // 中间几片是名义时长，最后那一片到「停录那一刻」为止（这里恰好也满了 2 分钟）。
+        var durations = segments
+            .Select(s => s.Source.EndedAt - s.Source.StartedAt)
+            .ToArray();
         Assert.Equal(
-            ["segment-000.mkv", "segment-001.mkv", "segment-002.mkv"],
-            capture.Starts.Select(s => Path.GetFileName(s.OutputPath)));
+            [TimeSpan.FromMinutes(2), TimeSpan.FromMinutes(2), TimeSpan.FromMinutes(2)],
+            durations);
+
+        // 最后那一片的终点 = 停录那一刻（第 6 分钟），不是「名义时长」硬加出来的。
+        Assert.Equal(
+            TimeSpan.FromMinutes(6), segments[2].Source.EndedAt - segments[0].Source.StartedAt);
     }
 
     [Fact]
-    public async Task 每滚一段就更新一次manifest_进程被杀后已封闭的段仍可恢复()
+    public async Task 收尾时把盘上每一片都补进manifest_下次启动只认它()
     {
         using var dir = new TempDir();
-        var capture = new FakeCapture();
-        var clock = new FakeClock();
+        var capture = new FakeCapture { SegmentsOnStop = 3 };
 
-        // ⚠️ 盘上那份 manifest 要**在收尾之前**读（T21 之后收尾成功就把工作目录丢了）。
-        // 而这恰好更贴近这条测试要验的处境：「进程被杀」正是发生在**录到一半**的时候。
-        // 撞上时长兜底那一刻（还没收尾）就是最接近「被杀」的那个时刻。
-        string? manifestBeforeFinalize = null;
-
-        // 段 1 分钟、上限 2.5 分钟、每次推进 1 分钟：
-        // 第 2 分钟滚出第 2 段；第 3 分钟撞上兜底 ⇒ **先问**（规格 §3.3.4），
-        // 没人理 ⇒ 再过宽限期（默认 1 分钟，1 圈）于第 4 分钟收尾。
-        await using var session = Build(dir, capture, clock: clock, options: new RecordingSessionOptions(
-            SegmentDuration: TimeSpan.FromMinutes(1),
-            MaxDuration: TimeSpan.FromMinutes(2.5),
-            StopGracePeriod: TimeSpan.FromSeconds(1),
-            PollInterval: TimeSpan.FromMinutes(1)),
-            onPrompt: () => manifestBeforeFinalize = File.ReadAllText(
-                Directory.EnumerateFiles(dir.WorkspaceRoot, "session.json", SearchOption.AllDirectories).Single()));
+        // ⚠️ 归档层发不上去 ⇒ 收尾之后工作目录**留着**（T21 只在发布成功时丢），
+        // 这一条才有东西可读。用「进程被杀」那条路读不到 —— 那时还没收尾。
+        await using var session = Build(
+            dir, capture, relay: new ArchiveRelay(new FailingPublisher(), "NAS"));
 
         await session.StartAsync(WaybillNumber.Parse("SF1"), "libx264");
-        await session.RunAsync("libx264");
+        var outcome = await session.StopAsync(StopReason.Manual);
+        Assert.True(outcome.Succeeded, outcome.FailureReason);
 
-        // 孤儿恢复依赖的输入就是它：**每滚一段就更新一次**，被杀的进程才有东西可恢复。
-        Assert.NotNull(manifestBeforeFinalize);
-        Assert.Contains("segment-000.mkv", manifestBeforeFinalize, StringComparison.Ordinal);
-        Assert.Contains("segment-001.mkv", manifestBeforeFinalize, StringComparison.Ordinal);
+        // ⚠️ **录制中不再逐段更新 manifest**（T17 的取舍）：段是 ffmpeg 自己滚的，
+        // 会话没有「段封闭」那一刻可挂钩。所以恢复链路的重心移到两条路上 ——
+        // ① 收尾这一刻把**盘上数到的每一片**补进 manifest（下面这条）；
+        // ② 进程被杀时走 T20 那条「扫目录捞没登记的分段」的路
+        //    （`OrphanRecoveryTests` 里那批用例钉着它）。
+        // 少了 ① 的话，收尾走到一半被杀 = 已经落盘的那几片没人认领。
+        var json = await File.ReadAllTextAsync(
+            Path.Combine(dir.WorkspaceRoot, session.SessionId, "session.json"));
+
+        foreach (var name in new[] { "segment-000.mkv", "segment-001.mkv", "segment-002.mkv" })
+        {
+            Assert.Contains(name, json, StringComparison.Ordinal);
+        }
+    }
+
+    /// <summary>
+    /// 盘上多出一片<b>对不上</b>的分段 ⇒ 按零时长登记，而且**用户看得见**。
+    /// </summary>
+    /// <remarks>
+    /// T17 起分段是**从盘上数**的（见 <c>CapturedSegments</c>），而目录里可能出现
+    /// 不属于这一场的片（同一会话目录里从前一次尝试留下的）。按名义时长算，
+    /// 那种片的起点会**晚于**停录时刻 —— 记下它就是往索引里塞一条**时间倒流**的证据，
+    /// 跨段定位会彻底错位，比丢掉它更坏。
+    /// </remarks>
+    [Fact]
+    public async Task 盘上那一片对不上时间轴时_按零时长登记而且说出来()
+    {
+        using var dir = new TempDir();
+        var capture = new FakeCapture { SegmentsOnStop = 2 };
+        var problems = new List<string>();
+
+        await using var session = Build(
+            dir, capture,
+            options: new RecordingSessionOptions(
+                SegmentDuration: TimeSpan.FromMinutes(1),
+                MaxDuration: TimeSpan.FromMinutes(1),
+                StopGracePeriod: TimeSpan.FromSeconds(1),
+                PollInterval: TimeSpan.FromMinutes(1)),
+            problemReported: problems.Add);
+
+        await session.StartAsync(WaybillNumber.Parse("SF1"), "libx264");
+
+        // 塞一片这一场**录不出来**的：一场才跑了几毫秒，而 7 号的起点按名义时长
+        // 落在 7 分钟之后 ⇒ 起点比停录时刻还晚。
+        await File.WriteAllTextAsync(
+            Path.Combine(dir.WorkspaceRoot, session.SessionId, "segment-007.mkv"), "stray");
+
+        var outcome = await session.StopAsync(StopReason.Manual);
+
+        Assert.True(outcome.Succeeded, outcome.FailureReason);
+
+        var stray = outcome.Segments.Single(s => s.Source.Sequence == 7).Source;
+        Assert.Equal(stray.StartedAt, stray.EndedAt);   // 零时长，不是负的
+
+        // I3：盘上出现了对不上的东西，用户有权知道 —— 不许静默。
+        Assert.Contains(problems, p => p.Contains("对不上时间轴", StringComparison.Ordinal));
     }
 
     // ─────────────────────────────────────────────
@@ -356,7 +395,9 @@ public class RecordingSessionTests
             await File.ReadAllTextAsync(Path.Combine(sessionDir, "segment-000.mkv")));
 
         // ② 正式首段从 001 起 —— 撞号会让收尾拼时间轴时错位。
-        Assert.Equal("segment-001.mkv", Path.GetFileName(capture.Starts[0].OutputPath));
+        //    ⚠️ 现在它表现为交给 ffmpeg 的**起始号**（T17）：输出是模式、段号由那边填，
+        //    所以判据从「文件名是 001」变成「起始号是 1」。
+        Assert.Equal(1, Assert.Single(capture.Starts).SegmentStartNumber);
 
         // ③ 第一版 manifest 里就得有它（进程被杀时恢复链路只认 manifest）。
         var json = await File.ReadAllTextAsync(Path.Combine(sessionDir, "session.json"));
@@ -394,7 +435,7 @@ public class RecordingSessionTests
         // 看起来完全正常的时间轴错误 —— 打点会偏、时长会多算，而且查不出来。
         Assert.Equal(TimeSpan.Zero, session.Elapsed);
         Assert.Equal(0, session.ClosedSegmentCount);
-        Assert.Equal("segment-000.mkv", Path.GetFileName(capture.Starts[0].OutputPath));
+        Assert.Equal(0, Assert.Single(capture.Starts).SegmentStartNumber);
 
         // I3：用户要看得见（那几秒没了是事实，不能静默）。
         Assert.Contains(problems, p => p.Contains("预录", StringComparison.Ordinal));
@@ -405,19 +446,20 @@ public class RecordingSessionTests
         using var dir = new TempDir();
         var capture = new FakeCapture();
         var clock = new FakeClock();
-        var thrown = false;
+        var rounds = 0;
 
-        // 让循环在滚出第 2 段之后抛一个非取消异常 —— 模拟编排途中出岔子。
-        Func<TimeSpan, CancellationToken, Task> rollThenFail = (interval, _) =>
+        // 让循环跑过两圈之后抛一个非取消异常 —— 模拟编排途中出岔子。
+        // ⚠️ 判据不能用「起过第 2 次采集」：T17 之后一场只起一个进程，那个条件**永远不成立**，
+        // 于是这个假 delay 从不抛 —— 而异常路径（循环里出岔子照样要收尾）就没人测了。
+        Func<TimeSpan, CancellationToken, Task> failOnThirdRound = async (interval, _) =>
         {
             clock.Advance(interval);
-            if (capture.Starts.Count >= 2 && !thrown)
+            if (++rounds >= 3)
             {
-                thrown = true;
                 throw new InvalidOperationException("模拟编排途中的意外");
             }
 
-            return Task.CompletedTask;
+            await Task.Yield();
         };
 
         await using var session = new RecordingSession(
@@ -430,7 +472,7 @@ public class RecordingSessionTests
                 MaxDuration: TimeSpan.FromHours(1),
                 StopGracePeriod: TimeSpan.FromSeconds(1),
                 PollInterval: TimeSpan.FromMinutes(1)),
-            clock.Read, rollThenFail);
+            clock.Read, failOnThirdRound);
 
         await session.StartAsync(WaybillNumber.Parse("SF1"), "libx264");
         await session.RunAsync("libx264");
@@ -659,17 +701,17 @@ public class RecordingSessionTests
     {
         using var dir = new TempDir();
         var clock = new FakeClock();
+        var steps = new StepDelay(clock);
         var asked = 0;
 
-        await using var session = Build(dir, new FakeCapture(), clock: clock,
+        await using var session = Build(dir, new FakeCapture(), clock: clock, steps: steps,
             options: new RecordingSessionOptions(
                 SegmentDuration: TimeSpan.FromHours(1),
                 MaxDuration: TimeSpan.FromMinutes(4),      // 首问时刻
                 StopGracePeriod: TimeSpan.FromSeconds(1),
                 PollInterval: TimeSpan.FromMinutes(1),     // 每圈推进 1 分钟
-                // ⚠️ 宽限期必须**远大于**一圈：假时钟下循环是**瞬间**跑完几十圈的，
-                // 宽限期若与 PollInterval 同量级，循环会在测试来得及「答」之前
-                // 就自己跨过宽限期收掉了（第一版就是这么红的）。
+                // ⚠️ 宽限期必须**远大于**一圈：循环跑一圈是**瞬间**的，宽限期若与
+                // PollInterval 同量级，放行的那几圈里它就自己跨过宽限期收掉了。
                 PromptGrace: TimeSpan.FromHours(10)),
             onPrompt: () => Interlocked.Increment(ref asked));
 
@@ -678,6 +720,7 @@ public class RecordingSessionTests
         // ⚠️ 不能 await 它：问到用户之后循环**故意不退出**，await 会把测试挂死。
         var loop = session.RunAsync("libx264");
 
+        steps.Release(4);   // 4 圈 = 4 分钟 = 首问时刻
         await WaitUntilAsync(() => Volatile.Read(ref asked) > 0, "第一次询问");
 
         Assert.Equal(1, Volatile.Read(ref asked));
@@ -691,7 +734,9 @@ public class RecordingSessionTests
         // 于是那条断言照样绿。**这是实测出来的**：把旧行为（问完就停）塞回去，
         // 这条用例当时**没红**。
         // 等时钟再走一段就不一样了：停了就没人推进它，`WaitUntilAsync` 必然抛。
+        // （循环卡在门外，所以这 6 圈要**放行**才走 —— 不止是「等」。）
         var before = clock.Read();
+        steps.Release(6);
         await WaitUntilAsync(
             () => clock.Read() > before + TimeSpan.FromMinutes(5),
             "询问之后循环继续推进（停了就不会再推进）");
@@ -699,6 +744,7 @@ public class RecordingSessionTests
         Assert.Equal(1, Volatile.Read(ref asked));   // 宽限期内不该重问
 
         session.AnswerDurationPrompt(continueRecording: false);
+        steps.Release(1);   // 下一圈才看得见【停止】
         await loop;
     }
 
@@ -708,9 +754,10 @@ public class RecordingSessionTests
     {
         using var dir = new TempDir();
         var clock = new FakeClock();
+        var steps = new StepDelay(clock);
         var asked = 0;
 
-        await using var session = Build(dir, new FakeCapture(), clock: clock,
+        await using var session = Build(dir, new FakeCapture(), clock: clock, steps: steps,
             options: new RecordingSessionOptions(
                 SegmentDuration: TimeSpan.FromHours(1),
                 MaxDuration: TimeSpan.FromMinutes(4),
@@ -724,18 +771,23 @@ public class RecordingSessionTests
         await session.StartAsync(WaybillNumber.Parse("SF1"), "libx264");
         var loop = session.RunAsync("libx264");
 
+        steps.Release(4);   // 4 圈 = 4 分钟 = 首问时刻
         await WaitUntilAsync(() => Volatile.Read(ref asked) > 0, "第一次询问");
 
         session.AnswerDurationPrompt(continueRecording: true);
 
+        // 循环卡在门外 ⇒ 这两句读的是**停住的**快照（用 AdvancingDelay 时它会抢跑，
+        // 实测断言里打出来的时钟已经走到「第二次询问之后」了）。
         Assert.False(session.IsAwaitingDurationAnswer, "答过了就不该还在问");
         Assert.False(loop.IsCompleted, "点了【继续】之后录制必须继续");
 
         // 隔 PromptRepeatEvery（2 分钟 = 2 圈）再问 —— 规格「再过 5 分钟再次询问（循环）」。
+        steps.Release(2);
         await WaitUntilAsync(() => Volatile.Read(ref asked) >= 2, "第二次询问");
         Assert.Equal(2, Volatile.Read(ref asked));
 
         session.AnswerDurationPrompt(continueRecording: false);
+        steps.Release(1);   // 下一圈才看得见【停止】
         await loop;
     }
 
@@ -806,10 +858,11 @@ public class RecordingSessionTests
     {
         using var dir = new TempDir();
         var clock = new FakeClock();
+        var steps = new StepDelay(clock);
         var asked = 0;
         using var cts = new CancellationTokenSource();
 
-        await using var session = Build(dir, new FakeCapture(), clock: clock,
+        await using var session = Build(dir, new FakeCapture(), clock: clock, steps: steps,
             options: new RecordingSessionOptions(
                 SegmentDuration: TimeSpan.FromHours(1),
                 MaxDuration: RecordingSessionOptions.NoFallback,   // 关闭
@@ -821,6 +874,7 @@ public class RecordingSessionTests
         var loop = session.RunAsync("libx264", cts.Token);
 
         // 跑够久 —— 若它真会问/真会停，这几圈之内必然发生。
+        steps.Release(10);
         await WaitUntilAsync(() => clock.Read() >= TimeSpan.FromMinutes(10), "循环跑过 10 圈");
 
         Assert.Equal(0, Volatile.Read(ref asked));
@@ -842,10 +896,11 @@ public class RecordingSessionTests
     {
         using var dir = new TempDir();
         var clock = new FakeClock();
+        var steps = new StepDelay(clock);
         var asked = 0;
         using var cts = new CancellationTokenSource();
 
-        await using var session = Build(dir, new FakeCapture(), clock: clock,
+        await using var session = Build(dir, new FakeCapture(), clock: clock, steps: steps,
             options: new RecordingSessionOptions(
                 SegmentDuration: TimeSpan.FromHours(1),
                 MaxDuration: TimeSpan.FromMinutes(4),
@@ -857,12 +912,13 @@ public class RecordingSessionTests
         await session.StartAsync(WaybillNumber.Parse("SF1"), "libx264");
         var loop = session.RunAsync("libx264", cts.Token);
 
-        // 一上来就答（此刻并没有在问）。
+        // 一上来就答（此刻并没有在问）—— 循环还卡在门外，什么都没发生过。
         session.AnswerDurationPrompt(continueRecording: true);
 
         Assert.False(session.IsAwaitingDurationAnswer);
 
         // 首问照样按时来 —— 证明上面那一下没把计时改掉。
+        steps.Release(4);   // 4 圈 = 4 分钟 = 首问时刻
         await WaitUntilAsync(() => Volatile.Read(ref asked) > 0, "第一次询问");
         Assert.Equal(1, Volatile.Read(ref asked));
 
@@ -879,10 +935,14 @@ public class RecordingSessionTests
         RecordingSessionOptions? options = null,
         Action? onPrompt = null,
         Action<string>? problemReported = null,
-        ArchiveRelay? relay = null)
+        ArchiveRelay? relay = null,
+        StepDelay? steps = null)
     {
         // 方法组不能直接配合 ?. —— 显式判空，让类型明确是 Func<TimeSpan>?。
         Func<TimeSpan>? effectiveClock = clock is null ? null : clock.Read;
+
+        Func<TimeSpan, CancellationToken, Task> delay =
+            steps is null ? AdvancingDelay(clock) : steps.WaitAsync;
 
         return new RecordingSession(
             new RecordingWorkspace(dir.WorkspaceRoot),
@@ -893,7 +953,7 @@ public class RecordingSessionTests
             "device-1",
             options ?? DefaultOptions,
             effectiveClock,
-            AdvancingDelay(clock),
+            delay,
             durationPrompted: onPrompt,
             problemReported: problemReported);
     }
@@ -912,7 +972,13 @@ public class RecordingSessionTests
     /// 只需一次 <c>await</c>，而 <c>Delay(5)</c> 会让循环在这 5 毫秒里**跑几千圈** ——
     /// 于是「询问之后、宽限到期之前」那个窗口**根本插不进去**：测试还没来得及答，
     /// 循环已经自己跨过宽限期收尾了（实测就是这么红的）。
-    /// Yield 只让出一次执行权，窗口才是可控的。
+    /// </para>
+    /// <para>
+    /// ⚠️ <b>Yield 也只是「够用」而不是「可控」</b>：循环跑在**别的线程**上，测试自己
+    /// 不说话的那几行（两条同步语句之间）它照样往前跑 —— 实测断言里打出来的时钟已经
+    /// 是「第二次询问之后」。所以凡是**要看某一刻快照**的用例，必须改用
+    /// <see cref="StepDelay"/> 把循环卡在门外，不能指望 Yield 让出一次就一定轮到测试。
+    /// 这个 helper 仍然留着：它只等条件成立，不保证条件成立那一刻循环停了。
     /// </para>
     /// <para>
     /// 上限用**圈数**而不是墙钟时间 —— 判据是「循环有没有往前跑」，与真实耗时无关。
@@ -934,7 +1000,7 @@ public class RecordingSessionTests
     }
 
     /// <summary>
-    /// 编排循环的等待：**不真等，但要把假时钟往前推**。
+    /// 编排循环的等待：**不真等，但要把假时钟往前推，并且让出一次执行权**。
     /// </summary>
     /// <remarks>
     /// <para>
@@ -947,14 +1013,67 @@ public class RecordingSessionTests
     /// 于是「取消之后循环退出」这条路在测试里**永远走不到**，用取消收尾的用例会
     /// `await` 到天荒地老（实测：挂到 600 秒超时）。
     /// </para>
+    /// <para>
+    /// ⚠️ <b>2026-10-05 补上 <see cref="Task.Yield"/>：真的 <c>Task.Delay</c> 一定让出执行权</b>，
+    /// 而这个假实现原来直接返回已完成的 Task ⇒ <c>await</c> 不让出 ⇒
+    /// **整个编排循环在调用 <see cref="RecordingSession.RunAsync"/> 的那条线程上同步跑完**
+    /// （<c>RunAsync</c> 要等循环退出才返回）。
+    /// </para>
+    /// <para>
+    /// 这个缺陷**直到 T17 才露出来**：原来循环体里唯一让出过的 <c>await</c> 是滚段那一路的
+    /// <c>WriteManifestAsync</c>（真文件 IO），所以每滚一段顺带让出一次，几条「循环还在跑」
+    /// 的用例才碰巧成立。T17 把滚段分支删了（改由 ffmpeg 自己滚），循环体**再没有任何
+    /// 让出点** ⇒ 「关闭档位」那条用例（循环没有退出条件）把测试挂死、另外几条读到的是
+    /// 「循环已经跑完」的快照。
+    /// </para>
+    /// <para>
+    /// 所以补在**假替身**上而不是往生产循环里塞一个 <c>Yield</c>：生产路径的
+    /// <c>_delay</c> 是 <see cref="Task.Delay(TimeSpan, CancellationToken)"/>，本来就让出。
+    /// </para>
     /// </remarks>
     private static Func<TimeSpan, CancellationToken, Task> AdvancingDelay(FakeClock? clock) =>
-        (interval, token) =>
+        async (interval, token) =>
         {
             clock?.Advance(interval);
             token.ThrowIfCancellationRequested();
-            return Task.CompletedTask;
+            await Task.Yield();
         };
+
+    /// <summary>
+    /// 一步一圈的假等待：<b>只有测试放行，循环才往下走</b>（每圈推 1 个 <c>PollInterval</c>）。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// 给「要看某一刻快照」的用例用。假时钟下循环是**瞬间**的，而它跑在别的线程上 ——
+    /// 用 <see cref="AdvancingDelay"/>（每圈只 Yield）时，测试自己那几行同步代码跑完之前
+    /// 循环早已冲过去几十上百圈，读到的快照根本没有意义（实测：断言里打出来的时钟已经是
+    /// 「第二次询问之后」，且每次跑的圈数都不一样）。
+    /// </para>
+    /// <para>
+    /// 用法：<c>steps.Release(4); await WaitUntilAsync(条件, "…");</c> ——
+    /// 放行 4 圈，等条件成立；循环用完这 4 圈就卡在门外，后面的断言都是**停住的**快照。
+    /// 凡是 <c>await loop</c> 收尾之前，记得再放行至少 1 圈，否则循环永远出不来。
+    /// </para>
+    /// <para>
+    /// 用 <see cref="SemaphoreSlim"/> 当门闸：<see cref="SemaphoreSlim.WaitAsync(CancellationToken)"/>
+    /// 在取消时会抛，与真的 <see cref="Task.Delay(TimeSpan, CancellationToken)"/> 同形，
+    /// 「取消收尾」那几条用例照旧走得通。
+    /// </para>
+    /// </remarks>
+    private sealed class StepDelay(FakeClock clock)
+    {
+        private readonly SemaphoreSlim _released = new(0);
+
+        /// <summary>放行 <paramref name="rounds"/> 圈。</summary>
+        public void Release(int rounds = 1) => _released.Release(rounds);
+
+        /// <summary>与生产路径的 <c>Task.Delay</c> 同签名的假等待。</summary>
+        public async Task WaitAsync(TimeSpan interval, CancellationToken token)
+        {
+            await _released.WaitAsync(token).ConfigureAwait(false);
+            clock.Advance(interval);   // 放行了才算「等了这么久」
+        }
+    }
 
     private static RecordingSessionOptions DefaultOptions => new(
         SegmentDuration: TimeSpan.FromHours(1),
@@ -994,7 +1113,7 @@ public class RecordingSessionTests
     /// <summary>记录型采集替身：记下每次起采的参数，并真的造出文件。</summary>
     private sealed class FakeCapture : ICameraCapture
     {
-        public List<(CameraSource Source, string OutputPath, string Encoder, string? Microphone)> Starts { get; } = [];
+        public List<Start> Starts { get; } = [];
 
         /// <summary>置 false 模拟「摄像头打不开」——进程起来了但没产物。</summary>
         public bool ProcessProducesFile { get; init; } = true;
@@ -1005,19 +1124,44 @@ public class RecordingSessionTests
         /// <summary>停止时报的退出码（非 0 模拟采集中途出过事）。</summary>
         public int ExitCode { get; init; }
 
+        /// <summary>滚段那一趟停下时，盘上落了**几片**（T17）。</summary>
+        public int SegmentsOnStop { get; init; } = 1;
+
+        /// <summary>一次起采。</summary>
+        public sealed record Start(
+            CameraSource Source,
+            string OutputPath,
+            string Encoder,
+            string? Microphone,
+            int? SegmentSeconds,
+            int SegmentStartNumber);
+
         public Task<ICaptureProcess> StartAsync(
             CameraSource source, string outputPath, string encoder, string? microphone = null,
-            CancellationToken cancellationToken = default)
+            CancellationToken cancellationToken = default,
+            int? segmentSeconds = null, int segmentStartNumber = 0)
         {
-            Starts.Add((source, outputPath, encoder, microphone));
-            return Task.FromResult<ICaptureProcess>(
-                new FakeProcess(outputPath, ProcessProducesFile, StartupWarning, ExitCode));
+            Starts.Add(new Start(
+                source, outputPath, encoder, microphone, segmentSeconds, segmentStartNumber));
+
+            return Task.FromResult<ICaptureProcess>(new FakeProcess(
+                outputPath,
+                ProcessProducesFile,
+                StartupWarning,
+                ExitCode,
+                segmentSeconds is null ? 1 : SegmentsOnStop,
+                segmentStartNumber));
         }
     }
 
     /// <summary>假的采集进程。停的时候按需留下产物。</summary>
     private sealed class FakeProcess(
-        string outputPath, bool producesFile, string? startupWarning = null, int exitCode = 0)
+        string outputPath,
+        bool producesFile,
+        string? startupWarning = null,
+        int exitCode = 0,
+        int files = 1,
+        int startNumber = 0)
         : ICaptureProcess
     {
         public bool HasExited { get; private set; }
@@ -1029,7 +1173,25 @@ public class RecordingSessionTests
             if (producesFile)
             {
                 Directory.CreateDirectory(Path.GetDirectoryName(outputPath)!);
-                File.WriteAllText(outputPath, "captured-bytes");
+
+                // 滚段那一趟（T17）`outputPath` 是**模式**，落下来的是一串文件；
+                // 老走法下它就是那唯一的产物。
+                if (outputPath.Contains("%03d", StringComparison.Ordinal))
+                {
+                    for (var i = 0; i < files; i++)
+                    {
+                        File.WriteAllText(
+                            outputPath.Replace(
+                                "%03d",
+                                (startNumber + i).ToString("D3", System.Globalization.CultureInfo.InvariantCulture),
+                                StringComparison.Ordinal),
+                            "captured-bytes");
+                    }
+                }
+                else
+                {
+                    File.WriteAllText(outputPath, "captured-bytes");
+                }
             }
 
             HasExited = true;

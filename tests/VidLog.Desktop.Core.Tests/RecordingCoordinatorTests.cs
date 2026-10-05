@@ -577,13 +577,18 @@ public class RecordingCoordinatorTests
     // ─────────────────────────────────────────────
 
     /// <summary>
-    /// 几百毫秒就能观察到滚段与时长兜底的参数。
+    /// 几百毫秒就能观察到分段与时长兜底的参数。
     /// </summary>
     /// <remarks>
     /// 协调器**不给**注入假时钟/假延时（那是会话层的口子，见
     /// <c>RecordingSessionTests</c> 里那批用 <c>FakeClock</c> 的用例），
-    /// 所以这里只能走真实时间。把段压到 80ms、循环 10ms 一次，
-    /// 整条用例仍是亚秒级，而验的正是**生产走的那条路**。
+    /// 所以这里只能走真实时间：档位压小、循环 10ms 一次，整条用例仍是亚秒级，
+    /// 而验的正是**生产走的那条路**。
+    /// <para>
+    /// ⚠️ <paramref name="segment"/> 是**秒**级：会话把它 `Ceiling` 成整秒交给
+    /// ffmpeg 的 `-segment_time`（见 <c>RecordingSession.StartCaptureAsync</c>），
+    /// 给个零点几秒的值只会被抬成 1 秒，看不出区别。
+    /// </para>
     /// </remarks>
     private static RecordingSessionOptions FastRolling(
         TimeSpan segment, TimeSpan max) => RecordingSessionOptions.Default with
@@ -594,58 +599,48 @@ public class RecordingCoordinatorTests
     };
 
     [Fact]
-    public async Task 分段时长到点会滚段()
+    public async Task 分段交给ffmpeg自己滚_整场只起一路采集()
     {
         // 规格 §3.1.1：连续分段录像，「长录不断、掉电不丢」。
-        // 段不滚的话，进程被杀时 manifest 里一段都没封闭 —— 什么都恢复不出来。
+        // 段不滚的话，进程被杀时盘上只有一个大文件、manifest 里一段都没登记。
         //
-        // ⚠️ 这条钉的是**协调器起没起编排循环**。会话层早已测透（见
-        // RecordingSessionTests 里那批 FakeClock 用例），但循环曾经根本没被启动：
-        // 整场只录一个永不滚动的段，而所有测试照样全绿。
+        // ⚠️ **T17（2026-10-05）改了这条的实现，所以要守的东西也变了。**
+        // 从前是「段到点了：关掉旧采集 → 再 `await` 起一路新的」，实测**每段之间
+        // 丢 1~2 秒画面**（关相机到重开完）。现在整场只起**一路** ffmpeg，
+        // 让它用 `-f segment` 自己按 N 秒切 —— 边界上不重开相机。
+        //
+        // 于是可测的就三件（会话层那几条 FakeClock 用例已经把「数盘上那几片、
+        // 按算出来的时间戳登记」测透了）：
+        //   ① 协调器真把「按 N 秒切」告诉了采集 —— 不给的话整场只有一个文件，
+        //      掉电全丢，而**所有测试照样绿**；
+        //   ② 整场只起**一路**（起两路 = 又把画面切断了，正是 T17 要修的）；
+        //   ③ 0 号那一片在收尾结果里（掉电时唯一能捞回来的就是它）。
         using var dir = new TempDir();
         var index = new RecordingIndexSpy();
+        var capture = new SpyCapture();
         await using var coordinator = Build(
-            dir, WorkMode.StopOnSameWaybill, new FakePunchLog(), index,
-            session: FastRolling(TimeSpan.FromMilliseconds(80), TimeSpan.FromSeconds(30)));
+            dir, WorkMode.StopOnSameWaybill, new FakePunchLog(), index, capture: capture,
+            session: FastRolling(TimeSpan.FromSeconds(2), TimeSpan.FromSeconds(30)));
 
         await coordinator.SubmitAsync(A, PunchSource.KeyboardScanner);
 
-        // ⚠️ 原来写的是「80ms 一段，固定等 500ms，应当滚了好几段」—— 那是在**赌墙钟**：
-        // 并行跑几百条测试时机器负载高，500ms 里可能只滚了 1 段，于是这条**随机红**
-        // （2026-09-29 实测 Release 下约 1/3 概率）。
-        //
-        // ⚠️ 我第一版改成「等**工作区里出现 ≥2 个 segment-*.mkv**」，而那个判据**不可靠**：
-        // 实测它会在「一段都没滚」时就成立（数到了别的东西），于是断言照样红 ——
-        // **判据本身没验过**，等于换了一种赌法。
-        //
-        // 现在读的是协调器自己的段数：**条件成立 ⟺ 真的滚过至少一段**。
-        await WaitUntilAsync(() => coordinator.CurrentClosedSegmentCount >= 1);
+        // 不用等过分段点：滚段那一刻已经没有我方代码可等了（ffmpeg 自己滚），
+        // 该验的是**开录时给的参数**。等「采集被叫起来」就够。
+        await WaitUntilAsync(() => capture.Starts.Count > 0);
+
+        // ① 采集被要求按 2 秒切，落成的是一串 `segment-000/001/…`。
+        var start = Assert.Single(capture.Starts);
+        Assert.Equal(2, start.SegmentSeconds);
+        Assert.EndsWith("segment-%03d.mkv", start.OutputPath);
 
         var outcome = await coordinator.StopWorkAsync();
 
         Assert.NotNull(outcome);
+        Assert.Contains(outcome!.Segments, segment => segment.Source.Sequence == 0);
 
-        // ⚠️ 判据是「**滚走的那一段在结果里**」，**不是**「段数 ≥ 2」。
-        //
-        // 原来那条写的是 `Count >= 2`（滚走的那段 + 停下时封闭的当前段），
-        // 而那**不是保证**：滚段那条路是「先关旧的 → `await` 真开一路 ffmpeg
-        // （几十毫秒）→ 才发布新的段」，收尾**正好挤进这个窗口**时就只交出 1 段 ——
-        // 因为那一瞬间本来就没有「当前段」可封闭（见 `CloseCurrentSegmentAsync`
-        // 里那次认领：认领不到就什么都不做）。
-        //
-        // 2026-10-01 实测：单跑 3/3 全过，**并发跑全量时红过两次**（报的就是这条）。
-        // 根因记在 `CloseCurrentSegmentAsync` 的注释里（有界：那个刚起来的段几乎
-        // 没有内容，而它的 ffmpeg 会被 `DisposeAsync` 收掉）。
-        //
-        // 这一条真正要守的是**「滚走的段没有被丢掉」** —— 那就直接断言它。
-        Assert.Contains(
-            outcome!.Segments,
-            segment => segment.Source.Sequence == 0);
-
-        // 顺带钉住「循环真的在跑」：等到滚过之后，段号至少到过 1。
-        Assert.True(
-            outcome.Segments.Count >= 1,
-            $"收尾一段都没有（封闭过 {coordinator.CurrentClosedSegmentCount} 段）");
+        // ② 整场就这一路 —— 收尾之后再数一遍，中途**没有**再起过第二个进程
+        //（从前每滚一段就重开一路，那 1~2 秒的空洞就是这么多出来的）。
+        Assert.Single(capture.Starts);
     }
 
     [Fact]
@@ -1154,8 +1149,9 @@ public class RecordingCoordinatorTests
     {
         public Task<ICaptureProcess> StartAsync(
             CameraSource source, string outputPath, string encoder, string? microphone = null,
-            CancellationToken cancellationToken = default) =>
-            Task.FromResult<ICaptureProcess>(new FakeProcess(outputPath));
+            CancellationToken cancellationToken = default,
+            int? segmentSeconds = null, int segmentStartNumber = 0) =>
+            Task.FromResult<ICaptureProcess>(new FakeProcess(outputPath, segmentStartNumber));
     }
 
     /// <summary>记下「被叫开录时用的是什么编码器」的假采集。</summary>
@@ -1163,26 +1159,48 @@ public class RecordingCoordinatorTests
     {
         public List<string> Encoders { get; } = [];
 
+        /// <summary>
+        /// 每次开录收到的分片参数。<c>SegmentSeconds</c> 为 <see langword="null"/> ⇒
+        /// 没开分片（整场一个文件）。
+        /// </summary>
+        /// <remarks>
+        /// T17 起「一段一路采集进程」没了（见 <c>RecordingCoordinatorTests.分段交给ffmpeg自己滚</c>），
+        /// 「有没有把滚段交给 ffmpeg」就只能在这儿看。
+        /// </remarks>
+        public List<(int? SegmentSeconds, int StartNumber, string OutputPath)> Starts { get; } = [];
+
         public Action? OnStart { get; set; }
 
         public Task<ICaptureProcess> StartAsync(
             CameraSource source, string outputPath, string encoder, string? microphone = null,
-            CancellationToken cancellationToken = default)
+            CancellationToken cancellationToken = default,
+            int? segmentSeconds = null, int segmentStartNumber = 0)
         {
             Encoders.Add(encoder);
+            Starts.Add((segmentSeconds, segmentStartNumber, outputPath));
             OnStart?.Invoke();
-            return Task.FromResult<ICaptureProcess>(new FakeProcess(outputPath));
+            return Task.FromResult<ICaptureProcess>(new FakeProcess(outputPath, segmentStartNumber));
         }
     }
 
-    private sealed class FakeProcess(string outputPath) : ICaptureProcess
+    /// <param name="startNumber">
+    /// 滚段那一趟（T17）`outputPath` 是模式，产物要按起始号落成具体文件。
+    /// </param>
+    private sealed class FakeProcess(string outputPath, int startNumber = 0) : ICaptureProcess
     {
         public string? StartupWarning => null;
 
         public Task<int?> StopAsync(TimeSpan timeout, CancellationToken cancellationToken = default)
         {
             Directory.CreateDirectory(Path.GetDirectoryName(outputPath)!);
-            File.WriteAllText(outputPath, "captured");
+
+            File.WriteAllText(
+                outputPath.Replace(
+                    "%03d",
+                    startNumber.ToString("D3", System.Globalization.CultureInfo.InvariantCulture),
+                    StringComparison.Ordinal),
+                "captured");
+
             return Task.FromResult<int?>(0);
         }
     }
