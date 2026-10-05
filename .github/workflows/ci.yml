@@ -24,6 +24,13 @@ env:
   DOTNET_CLI_TELEMETRY_OPTOUT: true
   DOTNET_SKIP_FIRST_TIME_EXPERIENCE: true
 
+  # 网络摄像头那一组的**类名**，`--filter` 用。两个变量是一对：
+  # 跑全量时排除它们、单独一步跑它们（为什么要拆开，见下面那一步的注释）。
+  # ⚠️ 加了新类要**两边都改** —— 只改一处的话那组会在两个步骤里各跑一次
+  #（用例数一眼看得出），不会静默漏掉，所以这个名单还算安全。
+  CAMERA_FILTER: 'FullyQualifiedName~NetworkCamera|FullyQualifiedName~Prerecord|FullyQualifiedName~RecordingPreview|FullyQualifiedName~PreviewThroughput'
+  NON_CAMERA_FILTER: 'FullyQualifiedName!~NetworkCamera&FullyQualifiedName!~Prerecord&FullyQualifiedName!~RecordingPreview&FullyQualifiedName!~PreviewThroughput'
+
 jobs:
   dotnet:
     name: .NET (build / test)
@@ -66,6 +73,100 @@ jobs:
       - name: 构建（Release）
         run: dotnet build -c Release --no-restore
 
+      # ─────────────────────────────────────────────
+      # 造一个假的网络摄像头源：把那 15 条 RequiresRtspFact 从「永远跳过」
+      # 变成「真的跑」。
+      #
+      # 为什么是**造**的不是**借**的：那些用例要一个真的网络源，而 GitHub 的
+      # runner 既没有摄像头、也进不了任何内网。借真设备更糟 —— 那台手机 IP 摄像头
+      # 是**单客户端**的（`-listen 1`），CI 每跑一次就去连一次，会把它打死。
+      # 而 ffmpeg 自己又当不了 RTSP 服务端（实测：rtsp 复用器**没有** listen
+      # 开关，它会把 URL 当客户端去连）。
+      #
+      # ⚠️ 所以这条路走的是**非 RTSP 分支**（`CameraSource.IsRtsp` 只看 URL 协议）
+      # —— `-rtsp_transport tcp` 那条分支 CI 上仍然盖不到，要盖得另装一个真
+      # RTSP 服务端。别把这一步当成「RTSP 全验过了」。
+      #
+      # 脚本在 `scripts/fake-network-camera.py`，本地同样能用（文件头有用法）。
+      # ─────────────────────────────────────────────
+      - name: 造一个假的网络摄像头源
+        run: |
+          # `py` 是 Windows 上的正牌启动器，`python` 反而经常只是商店的占位壳 ——
+          # 两个都试，免得到了一台没装 python 的机器上以一句看不懂的话红掉。
+          $py = (Get-Command python -ErrorAction SilentlyContinue).Source
+          if (-not $py) { $py = (Get-Command py -ErrorAction SilentlyContinue).Source }
+          if (-not $py) { throw 'runner 上既没有 python 也没有 py —— 假源那一步起不来' }
+
+          $log = "$env:RUNNER_TEMP\fake-camera.log"
+          # 端口绑上之前它会先把片子造出来（几秒），所以留 30 秒。
+          $proc = Start-Process -FilePath $py -PassThru -WindowStyle Hidden `
+            -ArgumentList 'scripts/fake-network-camera.py', '--port', '8081' `
+            -RedirectStandardOutput $log -RedirectStandardError "$log.err"
+          "FAKE_CAMERA_PID=$($proc.Id)" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+
+          $up = $false
+          foreach ($i in 1..60) {
+            try {
+              $client = [System.Net.Sockets.TcpClient]::new('127.0.0.1', 8081)
+              $client.Close()
+              $up = $true
+              break
+            } catch {
+              Start-Sleep -Milliseconds 500
+            }
+          }
+          if (-not $up) {
+            Get-Content $log, "$log.err" -ErrorAction SilentlyContinue | Write-Host
+            throw '假源 30 秒内没把 8081 绑上 —— 看上面那份日志'
+          }
+
+          "VIDLOG_TEST_RTSP_URL=http://127.0.0.1:8081" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+          "VIDLOG_TEST_CAMERA_SIZE=1920x1080"          | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+          Write-Host '假源已就位：http://127.0.0.1:8081'
+
+      - name: 测试（全量，不含网络摄像头组）
+        run: |
+          $output = & dotnet test -c Release --no-build `
+            --filter "$env:NON_CAMERA_FILTER" `
+            --logger "trx;LogFileName=results.trx" 2>&1 | Out-String
+          Write-Host $output
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "dotnet test 失败（退出码 $LASTEXITCODE）"
+          }
+
+      # 这一组**单独一步**不是洁癖：它们是 1080p 的实时 x264 编解码，与其余
+      # 一千多条并行时会互相抢 CPU —— 仓里早就写明「并行时 PreviewThroughput
+      # 会读到 7 fps（判据要 ≥ 9）」。组内自己串行（同一个 xunit collection），
+      # 所以只要不跟别人并行就是稳的（2026-10-05 本地实测这 27 条全绿）。
+      #
+      # ⚠️ 那个括号**不能省**：VSTest 的 `&` 比 `|` 结合**更紧**（2026-10-05
+      # 实测），不加括号等于 `A|B|C|(D&!~连录十分钟)` —— 排除只落在最后一个
+      # 分支上，那条十分钟的照样跑。加了才是 (A|B|C|D) 里排掉它。
+      #
+      # ⚠️ 「真机连录十分钟」那条**不在这儿跑** —— 一次 CI 多十分钟，它留在
+      # 真机验收那一套里（这台机器上也不成立：假源是本地循环，不是真机）。
+      - name: 测试（网络摄像头组 —— 对着本机造的假源真跑）
+        run: |
+          $output = & dotnet test -c Release --no-build `
+            --filter "($env:CAMERA_FILTER)&FullyQualifiedName!~连录十分钟" `
+            --logger "trx;LogFileName=camera.trx" 2>&1 | Out-String
+          Write-Host $output
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "网络摄像头组失败（退出码 $LASTEXITCODE）"
+          }
+
+      # ⚠️ 必须收掉：托管 runner 上整台虚拟机作废、无所谓，但这台机器很可能是
+      # **self-hosted**（那台笔记本）—— 进程会留在那儿，下次 CI 撞端口。
+      # 只杀我们起的那个 PID：那台机器上可能还跑着别人的 python。
+      - name: 收掉假源
+        if: always()
+        run: |
+          if ($env:FAKE_CAMERA_PID) {
+            Stop-Process -Id ([int]$env:FAKE_CAMERA_PID) -Force -ErrorAction SilentlyContinue
+          }
+
       # 自带守卫：被跳过的测试会让 CI 变成一种虚假的安心，所以**意外**跳过必须红。
       #
       # ⚠️ 但不能一律按「跳过数 > 0 就红」写死。有一类跳过是**环境本来就跑不了**的：
@@ -85,36 +186,32 @@ jobs:
       # **「本该有、但这台机器没配好」的不许打** —— 最典型的是 RequiresFfmpegFact：
       # CI 会装 FFmpeg，它一旦跳过就说明**环境配错了**，必须红。所以 FFmpeg 那一组
       # 没有标记，CI 上少了 FFmpeg 照样立刻失败。
-      - name: 测试（含打真 FFmpeg 的集成测试）
+      # ⚠️ 这一步**不跑测试** —— 测试已经拆成上面两步（全量 / 网络摄像头组）。
+      # 它只汇总那两步留下的 trx，判有没有**意外跳过**。放在这里是因为
+      # 跳过守卫必须在两步都跑完之后才看得到全貌。
+      - name: 守卫（有没有测试被意外跳过）
+        if: always()   # 测试红了也要跑：跳过数正是排查的第一手线索
         run: |
-          $output = & dotnet test -c Release --no-build --logger "trx;LogFileName=results.trx" 2>&1 | Out-String
-          Write-Host $output
-
-          if ($LASTEXITCODE -ne 0) {
-            throw "dotnet test 失败（退出码 $LASTEXITCODE）"
-          }
-
-          $trx = Get-ChildItem -Path . -Recurse -Filter 'results.trx' -ErrorAction SilentlyContinue |
-                 Select-Object -First 1
-          if (-not $trx) { throw '找不到测试结果文件 results.trx —— 没法判定有没有意外跳过' }
-
-          [xml]$results = Get-Content $trx.FullName
-          $skipped = @($results.TestRun.Results.UnitTestResult |
-                      Where-Object { $_.outcome -eq 'NotExecuted' })
+          # 两步各自的 trx 名字不同（results.trx / camera.trx），所以是**收全部**
+          # 而不是取第一个 —— 取第一个会只看得到全量那一步，摄像头组的跳过就此隐形。
+          $trxFiles = @(Get-ChildItem -Path . -Recurse -Filter '*.trx' -ErrorAction SilentlyContinue)
+          if ($trxFiles.Count -eq 0) { throw '一份测试结果都没有 —— 测试那两步多半没跑起来' }
 
           # Skip 的**原因**在 TRX 的 Output/ErrorInfo/Message 里（实测 2026-09-29）。
           $allowMarker = [regex]::Escape('[允许跳过]')
 
-          $withReason = @($skipped | ForEach-Object {
-            [pscustomobject]@{
-              Name   = $_.testName
-              Reason = "$($_.Output.ErrorInfo.Message)"
-            }
-          })
+          $skipped = @()
+          foreach ($trx in $trxFiles) {
+            [xml]$results = Get-Content $trx.FullName
+            $skipped += @($results.TestRun.Results.UnitTestResult |
+                          Where-Object { $_.outcome -eq 'NotExecuted' })
+          }
 
-          $unexpected = @($withReason | Where-Object { $_.Reason -notmatch $allowMarker })
+          $unexpected = @($skipped | Where-Object {
+            "$($_.Output.ErrorInfo.Message)" -notmatch $allowMarker
+          })
           if ($unexpected.Count -gt 0) {
-            $names = ($unexpected | ForEach-Object { "$($_.Name)（原因：$($_.Reason)）" }) -join '; '
+            $names = ($unexpected | ForEach-Object { "$($_.testName)（原因：$($_.Output.ErrorInfo.Message)）" }) -join '; '
             throw "有 $($unexpected.Count) 个测试被意外跳过：$names —— CI 绿了但那些测试什么都没验，先查为什么跳。"
           }
 
