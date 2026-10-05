@@ -442,6 +442,12 @@ public class DesktopServicesTests
     /// **换台机器就复现不出来** —— 只能靠当时记下来的那一句。
     /// </para>
     /// <para>
+    /// ⚠️ 2026-10-05 在这个窗口里补了**第四条出口**（T14）：日历读不出「哪几天有录像」。
+    /// 它不改数据，但那是检索窗里唯一一处**会静默失败**的地方 —— 日子表读不出来
+    /// 就只是日历全白，而检索本身照常。用户会说「你们这个日历怎么全白的」，
+    /// 那时只有这条日志能回答是读索引读失败了、还是那几天真的没录。
+    /// </para>
+    /// <para>
     /// 为什么只能看源码文本：App 层没有测试工程（与上面那几条同一条理由）。
     /// </para>
     /// <para>
@@ -471,10 +477,14 @@ public class DesktopServicesTests
         //    所以当时不记下来，事后无从查起。
         Assert.Contains("\"回放\"", window, StringComparison.Ordinal);
 
-        // 数一数：锁定成功、锁定失败、回放失败 —— **恰好三条**。
+        // ④ 日历那张日子表读不出来时也要留痕（2026-10-05 补，T14）：它是这个窗口里
+        //    唯一一处**会静默失败**的地方（全白的日历，而检索照常）。
+        Assert.Contains("\"日历\"", window, StringComparison.Ordinal);
+
+        // 数一数：锁定成功、锁定失败、回放失败、日历读不出日子 —— **恰好四条**。
         // ⚠️ 这是个精确计数（原为 2）：少一条说明「成功/失败各一条」被删了，
         // 多一条说明有人新加了一个出口却没在这里登记。
-        Assert.Equal(3, System.Text.RegularExpressions.Regex.Matches(window, @"_host\.Log\(").Count);
+        Assert.Equal(4, System.Text.RegularExpressions.Regex.Matches(window, @"_host\.Log\(").Count);
     }
 
     /// <summary>

@@ -1,11 +1,15 @@
+using System.Globalization;
 using System.IO;
 using System.Text;
 using System.Windows;
 using System.Windows.Controls.Primitives;
+using System.Windows.Data;
 using System.Windows.Threading;
 
 // 本工程同时开了 UseWPF 与 UseWindowsForms（后者只为托盘图标），
 // ImplicitUsings 会把两边的同名类型都带进来。这里钉死成 WPF 的那套。
+using Brush = System.Windows.Media.Brush;
+using Brushes = System.Windows.Media.Brushes;
 using ComboBox = System.Windows.Controls.ComboBox;
 using ComboBoxItem = System.Windows.Controls.ComboBoxItem;
 using KeyEventArgs = System.Windows.Input.KeyEventArgs;
@@ -75,6 +79,12 @@ public partial class SearchWindow : Window
     /// <summary>用户正拖着进度条 —— 这期间不要用播放位置去覆盖他拖到的位置。</summary>
     private bool _seeking;
 
+    /// <summary>
+    /// 日历涂色用的那个转换器（T14）。它是 **XAML 建的**（那个日的模板要用
+    /// `{StaticResource DayMark}` 取它），这里只是把它取回来、往里面填「有录像的那些天」。
+    /// </summary>
+    private readonly DayMarkConverter _dayMark;
+
     /// <param name="initialQuery">
     /// 打开时预先填进检索框、并**当场检索一次**（T12 命令面板打单号跳过来用）。
     /// <see langword="null"/> = 就照原来的样子：空框，等用户自己输。
@@ -85,6 +95,8 @@ public partial class SearchWindow : Window
         InitializeComponent();
 
         SearchButton.IsEnabled = true;
+
+        _dayMark = (DayMarkConverter)Resources["DayMark"];
 
         if (!string.IsNullOrWhiteSpace(initialQuery))
         {
@@ -287,6 +299,105 @@ public partial class SearchWindow : Window
     /// </remarks>
     private string PathOf(RecordingHit hit) =>
         _host.Services.Storage.ResolveOrActive(hit.Entry.Location.Value);
+
+    // ─────────────────────────────────────────────
+    // 检索页日历（T14，借自 NVR）
+    // ─────────────────────────────────────────────
+
+    /// <summary>点那颗日历钮：开着就收，收着就开。</summary>
+    /// <remarks>
+    /// ⚠️ 状态挂在按钮的 `IsChecked` 上，而不是「点一下就取反 `IsOpen`」：
+    /// 见 XAML 里那段说明（弹出层在**按下**时就收，`Click` 在**抬起**时来）。
+    /// </remarks>
+    private void OnCalendarToggled(object sender, RoutedEventArgs e)
+        => CalendarPopup.IsOpen = CalendarButton.IsChecked == true;
+
+    /// <summary>弹出层收掉时把按钮那颗也弹回来 —— 不弹的话下次点它会「先点亮再打开」，看着像卡了一下。</summary>
+    private void OnCalendarClosed(object sender, EventArgs e)
+        => CalendarButton.IsChecked = false;
+
+    /// <summary>日历一打开就去读一遍「有录像的那些天」。</summary>
+    /// <remarks>
+    /// 放在这里而不是窗口 `Loaded`：不点日历的人不该为它付一次全表读，
+    /// 而且每次打开都重读一遍，**正在录的这一条也能立刻出现在日历上**。
+    /// </remarks>
+    private async void OnCalendarOpened(object sender, EventArgs e)
+        => await LoadCatalogDaysAsync();
+
+    /// <summary>点了一天：把它当成一次「就查那天」的检索。</summary>
+    /// <remarks>
+    /// ⚠️ 这是 VidLog 与 NVR 的**分岔点**。NVR 是连续录像，点日期之后还要在时间轴上
+    /// 拖出时段；VidLog 是**打点**（一段一段的纠纷录像），所以「哪一天」就是全部条件了。
+    /// 照搬时间轴会造出一条**大多数时候是空的**控件。
+    /// </remarks>
+    private async void OnDayPicked(object sender, SelectionChangedEventArgs e)
+    {
+        if (DayCalendar.SelectedDate is not { } day)
+        {
+            return;
+        }
+
+        // 把范围收成那一天 —— 用户看得见这两格变了，所以「为什么列表只剩一条」有答案。
+        FromDate.SelectedDate = day;
+        ToDate.SelectedDate = day;
+
+        CalendarPopup.IsOpen = false;
+
+        await SearchAsync();
+    }
+
+    /// <summary>把整库「哪几天有录像」读出来，交给日历涂色。</summary>
+    /// <remarks>
+    /// <para>
+    /// ⚠️ 这里问的是**整库**，不带左栏当前的筛选条件：日历要回答的是「哪天有东西」，
+    /// 而用户正是因为不知道才来看它 —— 带着筛选条件涂色，他永远找不到那几天。
+    /// </para>
+    /// <para>
+    /// ⚠️ 直接走 <see cref="VidLog.Desktop.Core.Index.IRecordingIndex"/> 而不是
+    /// <c>SearchAsync</c>：只要日期，不要标签，省掉一次全表标签读。
+    /// </para>
+    /// </remarks>
+    private async Task LoadCatalogDaysAsync()
+    {
+        try
+        {
+            var entries = await _host.Services.Index.LoadAllAsync();
+
+            _dayMark.Days.Clear();
+
+            // ⚠️ 按**本地日期**分组，与列表里显示的那一列（`StartedAt.ToLocalTime()`）
+            // 是同一套 —— 索引里存的是 UTC，直接用 UTC 的日期会让凌晨录的那几条
+            // 涂到前一天上（东八区差 8 小时，跨午夜的那一批全都错一格）。
+            foreach (var entry in entries)
+            {
+                _dayMark.Days.Add(entry.StartedAt.ToLocalTime().Date);
+            }
+
+            RepaintCalendar();
+        }
+        catch (Exception ex)
+        {
+            // ⚠️ 日历涂不出色**不影响检索**（日历只是个路标），所以不弹窗、不挡住任何东西；
+            // 但也不许静默吞掉 —— 用户会说「你们这个日历怎么全白的」，
+            // 而那时只有这条日志能回答是不是读索引读失败了。
+            _host.Log(LogLevel.Warn, "日历", $"日历没能读出有录像的日子：{ex.Message}");
+        }
+    }
+
+    /// <summary>逼日历把当前这一屏重画一遍。</summary>
+    /// <remarks>
+    /// ⚠️ 涂色是在日子格子**被创建出来的那一刻**读一次的（模板里那个绑定），
+    /// 所以日子表填好之后，已经在屏幕上的那些格子不会自己再读一遍。
+    /// 翻一下月再翻回来 = 把那一屏的格子全部重建。
+    /// 两次赋值之间没有渲染，看不到闪。
+    /// </remarks>
+    private void RepaintCalendar()
+    {
+        var month = DayCalendar.DisplayDate;
+
+        DayCalendar.DisplayDate = month.AddMonths(1);
+        DayCalendar.DisplayDate = month;
+    }
 
     // ─────────────────────────────────────────────
     // 选中与播放
@@ -719,4 +830,33 @@ public partial class SearchWindow : Window
     }
 
     private static string? TagOf(ComboBox combo) => (combo.SelectedItem as ComboBoxItem)?.Tag as string;
+}
+
+/// <summary>
+/// 日历上给「这一天有录像」涂色（T14）。
+/// </summary>
+/// <remarks>
+/// ⚠️ 它是个**手里拿着表的转换器**。WPF 的 <c>CalendarDayButton</c> 没有
+/// 「这几天要突出」这种接口，它只把它代表的那一天放在 <c>DataContext</c> 上 ——
+/// 所以只能由这里拿着全库有录像的那些天，在日的模板里被问一句「这天算不算」。
+/// 表由 <see cref="SearchWindow"/> 填（<see cref="Days"/>）。
+/// </remarks>
+internal sealed class DayMarkConverter : IValueConverter
+{
+    /// <summary>有录像的那些天。**本地日期**（与 <c>Calendar</c> 给的是同一套）。</summary>
+    /// <remarks>
+    /// ⚠️ <see cref="DateTime"/> 的相等与哈希**只看刻度、不看 Kind**，
+    /// 所以这里不必操心两边一个 <c>Unspecified</c> 一个 <c>Local</c>。
+    /// </remarks>
+    public HashSet<DateTime> Days { get; } = [];
+
+    /// <summary>涂成什么色。在 XAML 里给（`Marked="{StaticResource AccentWeak}"`），好跟着主题走。</summary>
+    public Brush Marked { get; set; } = Brushes.Transparent;
+
+    public object Convert(object? value, Type targetType, object? parameter, CultureInfo culture)
+        => value is DateTime day && Days.Contains(day) ? Marked : Brushes.Transparent;
+
+    /// <remarks>只读的涂色，没人往回写。</remarks>
+    public object ConvertBack(object? value, Type targetType, object? parameter, CultureInfo culture)
+        => throw new NotSupportedException();
 }
