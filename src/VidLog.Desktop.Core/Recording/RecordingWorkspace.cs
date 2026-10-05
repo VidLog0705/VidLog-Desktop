@@ -107,6 +107,10 @@ public sealed class RecordingWorkspace
     private const string ManifestFileName = "session.json";
     private const string FinalizedFileName = "finalized.json";
 
+    /// <summary>分段文件的命名（`segment-000.mkv`，见 <c>RecordingSession.StartSegmentAsync</c>）。</summary>
+    private const string SegmentFilePrefix = "segment-";
+    private const string SegmentFilePattern = SegmentFilePrefix + "*.mkv";
+
     /// <summary>
     /// 空会话目录的冷静期（T21）：<c>session.json</c> 静了这么久、又一段都没留下，
     /// 就认定它不会再长出分段来了。
@@ -206,6 +210,11 @@ public sealed class RecordingWorkspace
     /// </summary>
     /// <remarks>
     /// <para>
+    /// <b>列出来的分段有两处来源</b>：<c>session.json</c> 里登记的（文件真在盘上的那些），
+    /// 加上目录里**没登记的** <c>segment-*.mkv</c>（T20：进程被杀时正在写的那一段，
+    /// 见 <see cref="RescueUnregisteredSegments"/>）。
+    /// </para>
+    /// <para>
     /// 分段文件已经不在了的会话不会被列出来 —— 那种情况没有东西可以收尾，
     /// 硬报一条只会是噪声。**但不会再静默地什么都不做**（T21）：
     /// 没有任何分段的会话目录收不了尾、也就永远写不上 <c>finalized.json</c>，
@@ -260,6 +269,20 @@ public sealed class RecordingWorkspace
                 .Where(s => File.Exists(s.SourcePath))
                 .OrderBy(s => s.Sequence)
                 .ToList();
+
+            // ★ T20：**崩溃 / 强杀 / 断电时正在写的那一段**不在 manifest 里
+            // （manifest 只在段**封闭时**才更新）—— 不捞它，它就永远留在 `work/` 里：
+            // 不进索引、也没人知道它存在过。捞回来之后走的是**同一条收尾路径**（I9）。
+            var rescued = RescueUnregisteredSegments(directory, manifest, segments);
+            if (rescued.Count > 0)
+            {
+                _logger.Log(Diagnostics.LogLevel.Info, "录制",
+                    $"{manifest.Waybill} 捞回 {rescued.Count} 段没登记的分段（{sessionId}）："
+                    + "进程被杀时正在写的那一段不在 session.json 里，本来会被永远遗弃");
+
+                segments.AddRange(rescued);
+                segments.Sort((a, b) => a.Sequence.CompareTo(b.Sequence));
+            }
 
             if (segments.Count == 0)
             {
@@ -366,6 +389,93 @@ public sealed class RecordingWorkspace
             value, null, System.Globalization.DateTimeStyles.RoundtripKind, out var parsed)
             ? parsed
             : DateTimeOffset.MinValue;
+
+    /// <summary>
+    /// 目录里**没登记进 <c>session.json</c>** 的分段（T20：进程被杀时正在写的那一段）。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>为什么它一定存在</b>：manifest 只在段**封闭时**才更新，所以崩溃 / 强杀 / 断电时
+    /// 正在写的那一段**必然不在里面**。原来 <see cref="ListOrphansAsync"/> 只认 manifest
+    /// 列出的分段 ⇒ 那一段被永久遗弃在 <c>work/</c> 里：不在索引里、也没人知道它存在过。
+    /// </para>
+    /// <para>
+    /// ⚠️ <b>电脑端写得是 MKV 中间容器，所以它救得回来</b>（分段结构、写到哪算哪，
+    /// 与 MP4 的 moov 在文件末尾完全不同）。这里只负责**把它捞出来**，能不能用
+    /// 交给**同一条收尾路径**判（remux + 实际解码校验，I9 不许有旁路）。
+    /// </para>
+    /// <para>
+    /// ⚠️ <b>0 字节的一律不要。</b>ffmpeg 的 matroska 封装器是**攒够一块才落盘**的
+    /// （2026-10-05 实测：一段 0 → 256KiB → 512KiB …），所以「起进程之后立刻被杀」
+    /// 留下的是一个 0 字节的壳。收进来只会让整场收尾**失败**（一段不通过 ⇒ 全会话
+    /// 不作数，规格 §4.1）—— 那会把本来救得回来的几段一起拖下水。
+    /// 反过来，**非 0 就一定带着真画面**（最小的一档就是一块）。
+    /// </para>
+    /// <para>
+    /// ⚠️ 时间戳：结束时刻取**文件最后一次写入的时刻** —— 进程就是在那一刻没的；
+    /// 起录时刻取**前一段的结束时刻**（分段是紧接着滚的），前面没有就用会话起点。
+    /// 于是 <c>Duration</c> 是它真录进去的那一段，而不是 0。
+    /// </para>
+    /// </remarks>
+    private static List<SegmentProduct> RescueUnregisteredSegments(
+        string directory, SessionManifest manifest, IReadOnlyList<SegmentProduct> registered)
+    {
+        var rescued = new List<SegmentProduct>();
+
+        var known = manifest.Segments
+            .Select(s => s.FileName)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        var sessionStart = ParseTimestamp(manifest.StartedAt);
+
+        foreach (var path in Directory.EnumerateFiles(directory, SegmentFilePattern))
+        {
+            if (known.Contains(Path.GetFileName(path)))
+            {
+                continue;
+            }
+
+            if (!TryParseSequence(Path.GetFileName(path), out var sequence))
+            {
+                continue;
+            }
+
+            if (new FileInfo(path).Length == 0)
+            {
+                continue;
+            }
+
+            var endedAt = new DateTimeOffset(File.GetLastWriteTimeUtc(path), TimeSpan.Zero);
+
+            // 前一段就是它的起点。取不到（它是第一段、或前一段的文件已经不在盘上）
+            // 就用会话起点；会话起点也认不出来（manifest 里那个时刻是坏的）就退回结束时刻
+            // —— 宁可时长记成 0，也不能记成一个 `MinValue` 换来的上万年。
+            var startedAt = registered
+                .Where(s => s.Sequence < sequence)
+                .Select(s => (DateTimeOffset?)s.EndedAt)
+                .Max() ?? sessionStart;
+
+            if (startedAt == DateTimeOffset.MinValue || startedAt > endedAt)
+            {
+                startedAt = endedAt;
+            }
+
+            rescued.Add(new SegmentProduct(sequence, path, startedAt, endedAt));
+        }
+
+        return rescued;
+    }
+
+    /// <summary>`segment-007.mkv` → 7。名字认不出来就返回 <see langword="false"/>。</summary>
+    private static bool TryParseSequence(string fileName, out int sequence)
+    {
+        sequence = 0;
+
+        var stem = Path.GetFileNameWithoutExtension(fileName);
+
+        return stem.StartsWith(SegmentFilePrefix, StringComparison.Ordinal)
+            && int.TryParse(stem.AsSpan(SegmentFilePrefix.Length), out sequence);
+    }
 
     /// <summary>
     /// 写临时文件再改名。

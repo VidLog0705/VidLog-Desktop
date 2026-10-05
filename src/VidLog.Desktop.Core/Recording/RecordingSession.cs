@@ -931,7 +931,8 @@ public sealed class RecordingSession : IAsyncDisposable
         // ① 那个刚起来的段几乎没有内容（刚 `StartAsync` 完）；
         // ② 它的 ffmpeg 会被 `DisposeAsync` → `ReleaseCaptureAsync` 收掉，**不留孤儿进程**；
         // ③ 有内容的那几段全都正常封闭、正常进 outcome（I2 不受影响）。
-        // 留下的只是**会话目录里一个没进索引的小文件**。
+        // 留在这个目录里的那个文件，T20 起会被孤儿恢复的「捞没登记的分段」捡回来
+        // （只要它落了内容 —— 刚起来的壳是 0 字节，见 `RescueUnregisteredSegments`）。
         //
         // 真要修的话，得把「关段」与「开段」串起来（收尾那边等正在开的那一段落地）——
         // 那是**碰 I9 那条路**，得单独一次改动、单独一轮真机回归，不混在别的事里做。

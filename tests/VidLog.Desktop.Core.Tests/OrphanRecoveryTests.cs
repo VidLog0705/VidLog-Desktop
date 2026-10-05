@@ -384,6 +384,97 @@ public class OrphanRecoveryTests
     }
 
     // ─────────────────────────────────────────────
+    // T20：「正在写的那一段」也要捞回来
+    // ─────────────────────────────────────────────
+
+    /// <summary>
+    /// **没登记进 <c>session.json</c> 的那一段（正在写的时候被杀）也要列出来。**
+    /// </summary>
+    /// <remarks>
+    /// manifest 只在段**封闭时**才写，所以它必然漏掉最后那一段 ——
+    /// 不捞的话那一段永远留在 <c>work/</c> 里：不进索引、也没人知道它存在过。
+    /// </remarks>
+    [Fact]
+    public async Task 没登记的那一段也要捞回来()
+    {
+        using var dir = new TempDir();
+        var workspace = await CreateKilledSessionAsync(dir);
+        var sessionDir = workspace.SessionDirectory("session-killed");
+
+        // 「正在写的那一段」= 有内容、但 manifest 里没有它。
+        var extra = System.IO.Path.Combine(sessionDir, "segment-001.mkv");
+        await File.WriteAllTextAsync(extra, "half-written-mkv-bytes");
+        var writtenAt = new DateTime(2026, 9, 16, 10, 33, 0, DateTimeKind.Utc);
+        File.SetLastWriteTimeUtc(extra, writtenAt);
+
+        var orphan = Assert.Single(await workspace.ListOrphansAsync());
+
+        Assert.Equal(new[] { 0, 1 }, orphan.Segments.Select(s => s.Sequence));
+        Assert.Equal(extra, orphan.Segments[1].SourcePath);
+
+        // ⚠️ 时间戳要**填得上**，否则索引里那一条的时长是 0：
+        // 起点是前一段的结束时刻（分段紧接着滚），终点是文件最后被写的时刻（进程就是那时没的）。
+        Assert.Equal(
+            DateTimeOffset.Parse("2026-09-16T10:31:00+08:00"), orphan.Segments[1].StartedAt);
+        Assert.Equal(new DateTimeOffset(writtenAt), orphan.Segments[1].EndedAt);
+        Assert.True(orphan.Segments[1].EndedAt > orphan.Segments[1].StartedAt);
+    }
+
+    /// <summary>
+    /// **0 字节的没登记分段不要捞。**
+    /// </summary>
+    /// <remarks>
+    /// ffmpeg 的 matroska 封装器攒够一块才落盘（实测 0 → 256KiB → …），所以
+    /// 「起进程之后立刻被杀」留下的是一个空壳。收进来只会让整场收尾**失败**
+    /// （一段不通过 ⇒ 全会话不作数，规格 §4.1）—— 那会把本来救得回来的几段一起拖下水。
+    /// </remarks>
+    [Fact]
+    public async Task 零字节的没登记分段不要捞()
+    {
+        using var dir = new TempDir();
+        var workspace = await CreateKilledSessionAsync(dir);
+        var sessionDir = workspace.SessionDirectory("session-killed");
+
+        await File.WriteAllTextAsync(
+            System.IO.Path.Combine(sessionDir, "segment-001.mkv"), string.Empty);
+
+        var orphan = Assert.Single(await workspace.ListOrphansAsync());
+
+        Assert.Equal(new[] { 0 }, orphan.Segments.Select(s => s.Sequence));
+    }
+
+    /// <summary>
+    /// **只剩「正在写的那一段」时，它不能被 T21 的冷静期清扫删掉。**
+    /// </summary>
+    /// <remarks>
+    /// 「<c>session.json</c> 里一段都没记」原来一律当成空会话 —— 而**起录之后、
+    /// 第一段封闭之前被杀**正好长这样：manifest 是空的，盘上却躺着一整段。
+    /// 捞回来之后这一场就不再是空的了，冷静期也不该再动它。
+    /// </remarks>
+    [Fact]
+    public async Task 只剩没登记的那一段时_冷静期也不删它()
+    {
+        using var dir = new TempDir();
+        var workspace = new RecordingWorkspace(dir.Dir("work"));
+        var sessionDir = workspace.SessionDirectory("session-killed");
+        Directory.CreateDirectory(sessionDir);
+
+        await File.WriteAllTextAsync(
+            System.IO.Path.Combine(sessionDir, "segment-000.mkv"), "half-written-mkv-bytes");
+
+        await workspace.WriteManifestAsync(ManifestFor("session-killed"));
+
+        // 把 manifest 拨到冷静期之外 —— T21 的空会话清扫正好会删掉这个目录。
+        File.SetLastWriteTimeUtc(
+            System.IO.Path.Combine(sessionDir, "session.json"), DateTime.UtcNow.AddHours(-25));
+
+        var orphan = Assert.Single(await workspace.ListOrphansAsync());
+
+        Assert.Equal(new[] { 0 }, orphan.Segments.Select(s => s.Sequence));
+        Assert.True(Directory.Exists(sessionDir));
+    }
+
+    // ─────────────────────────────────────────────
     // 收尾行为
     // ─────────────────────────────────────────────
 
@@ -528,5 +619,59 @@ public class OrphanRecoveryTests
 
         // 4. 已经打过标记，不会重复收尾
         Assert.Empty(await workspace.ListOrphansAsync());
+    }
+
+    /// <summary>
+    /// **端到端（真 FFmpeg）：被杀时正在写的那一段也要进索引。**
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// 这是 T20 的验收原话：录到一半强杀 → 重启 → **那一段进了索引**（改动之前不会）。
+    /// </para>
+    /// <para>
+    /// ⚠️ 必须走**整条路**（发现 → remux → 解码校验 → 写索引），因为这条改动的风险
+    /// 恰恰在两处接缝上：捞出来的那一段**喂不喂得进收尾器**、
+    /// 以及**收尾器认不认**一个没有 cue、被截断的 MKV。
+    /// （2026-10-05 本机实测：截断的 MKV 源在 `-v error` 下会打印
+    /// `File ended prematurely`，但 remux **退出码 0、产物能完整解码** ——
+    /// 所以判据是产物，不是源那一行 stderr。）
+    /// </para>
+    /// </remarks>
+    [RequiresFfmpegFact]
+    public async Task 端到端_被杀时正在写的那一段也进索引()
+    {
+        var ffmpeg = FfmpegLocator.TryFind()!;
+        var runner = new SystemProcessRunner();
+
+        using var dir = new TempDir();
+        var workspace = new RecordingWorkspace(dir.Dir("work"));
+        var sessionDir = workspace.SessionDirectory("session-real");
+        Directory.CreateDirectory(sessionDir);
+
+        // 两段都真录出来。只有 segment-000 登记进 manifest —— segment-001 就是
+        // 「进程被杀时正在写的那一段」在盘上的样子。
+        foreach (var name in new[] { "segment-000.mkv", "segment-001.mkv" })
+        {
+            var encode = await runner.RunAsync(ffmpeg, [
+                "-hide_banner", "-v", "error",
+                "-f", "lavfi", "-i", "testsrc=size=160x120:rate=10:duration=1",
+                "-c:v", "libx264", "-y", System.IO.Path.Combine(sessionDir, name),
+            ]);
+            Assert.True(encode.Succeeded, encode.StandardError);
+        }
+
+        await workspace.WriteManifestAsync(ManifestFor("session-real", "segment-000.mkv"));
+
+        var index = new JsonLinesRecordingIndex(dir.File("index.jsonl"));
+        var recovery = BuildRecovery(dir, workspace, runner, index, ffmpeg);
+
+        var outcome = Assert.Single(await recovery.RecoverAsync());
+
+        Assert.True(outcome.Succeeded, outcome.FailureReason);
+        Assert.Equal(new[] { 0, 1 }, outcome.Segments.Select(s => s.Source.Sequence));
+
+        var entries = await index.LoadAllAsync();
+        Assert.Equal(new[] { "session-real-000", "session-real-001" },
+            entries.Select(e => e.EvidenceId));
     }
 }
