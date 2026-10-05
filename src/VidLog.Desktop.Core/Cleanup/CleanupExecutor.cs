@@ -219,6 +219,28 @@ public sealed class CleanupExecutor
 
             var path = found.Path;
 
+            // ★ T19：**审计写在删之前**。
+            //
+            // 原来是删完才写 `deleted`，于是写失败时：盘上少了一份、审计里一条都没有，
+            // 而下面那个 catch 还会补一条 `failed` —— 报告说「删除失败」，
+            // 文件其实已经进了回收站。**先写意图、再动手**，才不会出现「删了却没痕」。
+            try
+            {
+                await _audit.AppendAsync(new CleanupAuditRecord(
+                    candidate.Entry.EvidenceId, "deleting", candidate.Why, null));
+            }
+            catch (Exception ex)
+            {
+                // 意图都记不下 ⇒ 这一条不删。规格 §6.2 禁止静默清理：
+                // 没有记录 = 静默，而这一步是真的要把东西删掉。
+                refused.Add((candidate.Entry, $"清理审计写不进去（{ex.Message}），按「禁止静默清理」不删"));
+                _logger.Log(LogLevel.Warn, "清理",
+                    $"没删 {candidate.Entry.Waybill.Value}：清理审计写不进去（{ex.Message}），"
+                    + "按「禁止静默清理」中止这一条");
+
+                continue;
+            }
+
             try
             {
                 var size = new FileInfo(path).Length;
@@ -233,7 +255,7 @@ public sealed class CleanupExecutor
                 deleted.Add(candidate.Entry);
                 freed += size;
 
-                await _audit.AppendAsync(new CleanupAuditRecord(
+                await TryAppendAsync(new CleanupAuditRecord(
                     candidate.Entry.EvidenceId, "deleted", candidate.Why, null));
 
                 _logger.Log(LogLevel.Info, "清理",
@@ -245,7 +267,7 @@ public sealed class CleanupExecutor
                 // 删失败**保留**，不重试、不升级 —— 下次计划会再看到它。
                 refused.Add((candidate.Entry, $"删除失败：{ex.Message}"));
 
-                await _audit.AppendAsync(new CleanupAuditRecord(
+                await TryAppendAsync(new CleanupAuditRecord(
                     candidate.Entry.EvidenceId, "failed", candidate.Why, ex.Message));
 
                 // ⚠️ 日志也要记一条（`AGENTS.md` §6「清理动作」）——
@@ -259,11 +281,34 @@ public sealed class CleanupExecutor
 
         return new CleanupReport(deleted, refused) { FreedBytes = freed };
     }
+
+    /// <summary>补一条「已经动过手了」的审计 —— **写不进去只记日志，不再往上抛**。</summary>
+    /// <remarks>
+    /// T19：删除之后的这一步再抛，只会把这一条**真实的**结果盖掉
+    /// （删成功却报成失败、删失败又报成别的），而文件已经动过了、重来一次也不会有别的结果。
+    /// 与删除**之前**那一条不同：那一条写不进去就**不删**，因为删了就再也补不上了。
+    /// </remarks>
+    private async Task TryAppendAsync(CleanupAuditRecord record)
+    {
+        try
+        {
+            await _audit.AppendAsync(record);
+        }
+        catch (Exception ex)
+        {
+            _logger.Log(LogLevel.Warn, "清理",
+                $"审计补记不上 {record.EvidenceId}（{record.Action}）：{ex.Message}");
+        }
+    }
 }
 
 /// <summary>一条清理审计记录。</summary>
 /// <param name="EvidenceId">哪条录像。</param>
-/// <param name="Action">deleted / refused / failed。</param>
+/// <param name="Action">
+/// <c>deleting</c>（意图，写在动手之前）/ <c>deleted</c>（真删掉了）/
+/// <c>refused</c>（回查不通过，没删）/ <c>failed</c>（动手了但没删掉）。
+/// 一次成功的清理会留下 <c>deleting</c> + <c>deleted</c> 两条。
+/// </param>
 /// <param name="Reason">为什么。</param>
 /// <param name="FailureReason">失败时的原因。</param>
 public sealed record CleanupAuditRecord(

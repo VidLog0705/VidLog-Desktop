@@ -478,10 +478,10 @@ public class CleanupTests
         await executor.ExecuteAsync(PlanFor(Entry("e1", Now.AddDays(-365), "a.mp4")));
 
         // 规格 §6.2：禁止静默清理 —— 清理必须留可查的记录。
+        // T19 之后是**两条**：动手前一条 `deleting`（意图），成了再补一条 `deleted`。
         var records = await audit.LoadAllAsync();
-        var record = Assert.Single(records);
-        Assert.Equal("deleted", record.Action);
-        Assert.Equal("e1", record.EvidenceId);
+        Assert.Equal(new[] { "deleting", "deleted" }, records.Select(r => r.Action));
+        Assert.All(records, r => Assert.Equal("e1", r.EvidenceId));
     }
 
     [Fact]
@@ -495,6 +495,58 @@ public class CleanupTests
 
         var record = Assert.Single(await audit.LoadAllAsync());
         Assert.Equal("refused", record.Action);
+    }
+
+    // ─────────────────────────────────────────────
+    // T19：审计写在删之前
+    // ─────────────────────────────────────────────
+
+    [Fact]
+    public async Task 审计写不进去时一条都不删()
+    {
+        using var dir = new TempDir();
+        var file = dir.WriteArtifact("a.mp4");
+
+        // 注入一个写不进去的审计：把路径指到**一个目录**上 ——
+        // `File.AppendAllTextAsync` 撞目录会报 `UnauthorizedAccessException`，
+        // 正是 `CleanupAuditLog` 转成 `InvalidOperationException` 的那一种。
+        var auditAsDir = System.IO.Path.Combine(dir.Path, "audit-is-a-directory");
+        Directory.CreateDirectory(auditAsDir);
+
+        var executor = BuildExecutor(
+            dir,
+            new FakeArchive(ArchiveBackendKind.Cloud, exists: true),
+            new CleanupAuditLog(auditAsDir));
+
+        var report = await executor.ExecuteAsync(PlanFor(Entry("e1", Now.AddDays(-365), "a.mp4")));
+
+        // ★ T19 之前这里是反的：文件已经进了回收站、审计里一条都没有，
+        // 报告还说「删除失败」—— 磁盘少了一份而没人知道。
+        Assert.Empty(report.Deleted);
+        Assert.Single(report.Refused);
+        Assert.True(File.Exists(file), "审计写不进去时**不许**动手删");
+    }
+
+    [Fact]
+    public async Task 删不掉时审计里是deleting加failed_没有deleted()
+    {
+        using var dir = new TempDir();
+        var file = dir.WriteArtifact("a.mp4");
+        var audit = new CleanupAuditLog(dir.AuditPath);
+
+        // 把文件按住不放（FileShare.None）⇒ 删它的那条路拿不到 DELETE 权限。
+        using var hold = new FileStream(file, FileMode.Open, FileAccess.ReadWrite, FileShare.None);
+
+        var executor = BuildExecutor(dir, new FakeArchive(ArchiveBackendKind.Cloud, exists: true), audit);
+        var report = await executor.ExecuteAsync(PlanFor(Entry("e1", Now.AddDays(-365), "a.mp4")));
+
+        Assert.Empty(report.Deleted);
+        Assert.Single(report.Refused);
+        Assert.True(File.Exists(file));
+
+        // 两条都在，**顺序**也是判据：意图在前、结果在后。
+        var actions = (await audit.LoadAllAsync()).Select(r => r.Action).ToList();
+        Assert.Equal(new[] { "deleting", "failed" }, actions);
     }
 
     // ─────────────────────────────────────────────
