@@ -34,7 +34,22 @@ env:
 jobs:
   dotnet:
     name: .NET (build / test)
-    runs-on: windows-latest
+
+    # ─────────────────────────────────────────────
+    # 跑在哪台机器上 —— **`pull_request` 不许落到那台笔记本上**（2026-10-05）。
+    #
+    # 那台 `vidlog-laptop` 是真有摄像头、有 ffmpeg 的机器，`vidlog-cam` 是它
+    # 自己的标签（`config.cmd --labels`）。本仓是 **public**：如果 PR 也能落上去，
+    # 任何人 fork 一下开个 PR，就能让**他提交的代码**在那台笔记本上执行 ——
+    # 而那台是你自己的工作机（有真实录像、登着 GitHub）。GitHub 专门警告过这个
+    # 攻击面（self-hosted runner on a public repo）。
+    #
+    # 所以只有**自己推的**和**手动点的**才上笔记本；PR 留在 GitHub 托管的 runner
+    # 上（public 仓的托管 runner 不计费，所以这道闸不要钱）。
+    #
+    # ⚠️ 换机器、或改 runner 标签，这一行与上面的说明一起改。
+    # ─────────────────────────────────────────────
+    runs-on: ${{ (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && 'vidlog-cam' || 'windows-latest' }}
     defaults:
       run:
         shell: pwsh
@@ -55,14 +70,21 @@ jobs:
       # 解码校验这三件最该被验证的事一件都没验。
       # 这是「看起来完成了」，比 CI 红更贵。
       #
+      # ⚠️ 但**先看 PATH**：自托管那台笔记本上 ffmpeg 早装好了，而
+      # `choco install` **要管理员**、runner 一般是普通用户 ⇒ 会红，
+      # 红得还像「环境坏了」，其实只是白装一遍。有就直接用。
+      #
       # 刻意不在 Linux 上跑这些测试：编码能力探测的结果本身就是
       # 机器相关的（QSV/NVENC/AMF 各自要看显卡），在 Linux 上验等于没验。
       # ─────────────────────────────────────────────
-      - name: 安装 FFmpeg
+      - name: 准备 FFmpeg
         run: |
-          choco install ffmpeg -y --no-progress
           $ffmpeg = (Get-Command ffmpeg -ErrorAction SilentlyContinue).Source
-          if (-not $ffmpeg) { throw '装了 FFmpeg 但 PATH 上找不到' }
+          if (-not $ffmpeg) {
+            choco install ffmpeg -y --no-progress
+            $ffmpeg = (Get-Command ffmpeg -ErrorAction SilentlyContinue).Source
+          }
+          if (-not $ffmpeg) { throw 'FFmpeg 既没装、也没装成（choco 要管理员）—— 这台机器上那些集成测试跑不了' }
           "FFMPEG_EXE=$ffmpeg" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
           Write-Host "FFmpeg: $ffmpeg"
           & $ffmpeg -version | Select-Object -First 1
