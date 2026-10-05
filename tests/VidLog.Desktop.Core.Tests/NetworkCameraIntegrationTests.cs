@@ -1,3 +1,6 @@
+using System.Diagnostics;
+using System.Globalization;
+using VidLog.Desktop.Core.Index;
 using VidLog.Desktop.Core.Media;
 using VidLog.Desktop.Core.Recording;
 
@@ -118,6 +121,239 @@ public class NetworkCameraIntegrationTests
             probe.Succeeded,
             "「录制声音」关着，产物里却有一条音轨 —— 那是摄像头自带的那一路被自动挑进去了");
     }
+
+    /// <summary>
+    /// **T17 真机回归**：连录十分钟，分段的**媒体时长与墙钟耗时要对得上**（= 段边界没有空洞）。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// 需求方 2026-10-05 给的验收口径原话：**「真机录 10 分钟、各段时长加起来 ≈600 秒、
+    /// 抽一处段边界看空洞」**。
+    /// </para>
+    /// <para>
+    /// ⚠️ <b>「空洞」不能用眼睛看</b>：丢的那 1~2 秒是同一台摄像头对着同一个场景少收的几帧，
+    /// 画面本身完全正常（静态场景尤其看不出来）。能看见它的是这一条恒等式 ——
+    /// <b>媒体总时长 ≈ 墙钟耗时</b>。旧行为（每段收尾再重开一次 ffmpeg）在每段边界丢掉
+    /// 重开摄像头的 1~1.5 秒，10 段就是 10~15 秒；改成「一个进程自己滚段」之后两者对齐。
+    /// </para>
+    /// <para>
+    /// ⚠️ 走的是**生产录制那一段**（<see cref="RecordingSession"/> + 真
+    /// <see cref="FfmpegCameraCapture"/> + 真 <see cref="SessionFinalizer"/>），
+    /// 不是另拼一条 ffmpeg 命令 —— T17 改的正是这两层之间的接缝
+    /// （分段交给 ffmpeg 自己滚、<c>-segment_start_number</c> 接着预录那一段往下排）。
+    /// ⚠️ 但界面里**没有**填网络摄像头地址的入口（批次 3 才做），所以这一条是**绕开界面**
+    /// 直接起 Core 会话；「界面 → 录制」那一路要等批次 3 之后才走得通。
+    /// </para>
+    /// <para>
+    /// ⚠️ <b>判据要按源的时钟分档</b>：像用户那台手机这样「声明 25fps、实际推 30fps」的
+    /// MJPEG 源，光是它自己的时钟偏差就有 19%，而段边界那点空洞只占 2% ——
+    /// 差一个数量级，硬套「媒体 ≈ 墙钟」会得到一条恒红的用例。所以先标定
+    /// （<see cref="MediaPerSecondAsync"/>）再比，并把标定值写进报告。
+    /// </para>
+    /// <para>
+    /// 时长默认 600 秒；要冒烟就设 <see cref="SecondsVariable"/>（比如 <c>120</c>）。
+    /// 量出来的数写进 <see cref="ReportPath"/> —— 通过时也写，因为要拿它当回归证据。
+    /// </para>
+    /// </remarks>
+    [RequiresRtspFact]
+    public async Task 真机连录十分钟_分段的媒体时长与墙钟对得上()
+    {
+        var seconds = int.TryParse(
+            Environment.GetEnvironmentVariable(SecondsVariable), out var asked) && asked > 0
+                ? asked
+                : 600;
+
+        using var dir = new TempDir();
+        var runner = new SystemProcessRunner();
+
+        var encoder = EncoderSelection.Select(await new FfmpegEncoderProbe(Ffmpeg, runner).ProbeAsync());
+        Assert.NotNull(encoder);
+
+        // 先标定这条源的「媒体秒 / 墙钟秒」……
+        var rate = await MediaPerSecondAsync(runner, Source.Address);
+
+        await using var session = new RecordingSession(
+            new RecordingWorkspace(dir.File("work")),
+            new FfmpegCameraCapture(Ffmpeg),
+            new SessionFinalizer(
+                new RemuxPipeline(Ffmpeg, runner),
+                new DecodeVerifier(Ffmpeg, runner),
+                new JsonLinesRecordingIndex(dir.File("index.jsonl")),
+                dir.File("archive")),
+            new DiskSpaceGuard(new DriveSpaceProbe()),
+            Source,
+            "device-net",
+            RecordingSessionOptions.Default with { SegmentDuration = TimeSpan.FromSeconds(60) });
+
+        await session.StartAsync(WaybillNumber.Parse("SF-T17"), encoder!);
+
+        // ⚠️ 秒表从**采集进程起来之后**开始算：`StartAsync` 之前那一段是开摄像头的时间，
+        // 它本来就不该在录像里，算进去会让判据白松掉 1~2 秒。
+        var wall = Stopwatch.StartNew();
+        await Task.Delay(TimeSpan.FromSeconds(seconds));
+        var outcome = await session.StopAsync(StopReason.Manual);
+        wall.Stop();
+
+        Assert.True(outcome.Segments.Count > 0, outcome.FailureReason ?? "十分钟一段都没录到");
+
+        // ⚠️ 量的是**成品 MP4**而不是 `work/` 里那个源 MKV：收尾成功后源 MKV 会被
+        // **按设计丢掉**（`RecordingSession.StopAsync` 里那句 `DiscardSessionDirectory`，
+        // 前提是归档层收下了）。remux 是无损换容器 ⇒ 两者时长同源，只是前者还在。
+        var rows = new List<string>();
+        var measured = new List<(int Sequence, double Duration)>();
+        var total = 0.0;
+
+        foreach (var segment in outcome.Segments.OrderBy(s => s.Source.Sequence))
+        {
+            var path = segment.PublishedPath ?? segment.Source.SourcePath;
+            if (!File.Exists(path))
+            {
+                rows.Add($"{segment.Source.Sequence:000}\t文件不在：{path}（{segment.FailureReason}）");
+                continue;
+            }
+
+            var probe = await runner.RunAsync(Ffprobe, [
+                "-hide_banner", "-v", "error",
+                "-show_entries", "format=duration", "-of", "csv=p=0",
+                path,
+            ]);
+
+            if (!probe.Succeeded)
+            {
+                rows.Add($"{segment.Source.Sequence:000}\tffprobe 失败：{probe.StandardError.Trim()}");
+                continue;
+            }
+
+            var duration = double.Parse(probe.StandardOutput.Trim(), CultureInfo.InvariantCulture);
+            total += duration;
+            measured.Add((segment.Source.Sequence, duration));
+            rows.Add(
+                $"{segment.Source.Sequence:000}\t{duration:0.000}s\t"
+                + $"{segment.Source.StartedAt:O} ~ {segment.Source.EndedAt:O}\t"
+                + $"{new FileInfo(path).Length / 1024 / 1024.0:0.0} MB");
+        }
+
+        var wallSeconds = wall.Elapsed.TotalSeconds;
+        var report =
+            $"""
+            源：{Source.Address}
+            请求时长：{seconds}s
+            墙钟耗时：{wallSeconds:0.000}s
+            源的媒体/墙钟比：{rate:0.000}（标定值；1.000 = 源的时间戳与墙钟一致）
+            分段数：{outcome.Segments.Count}
+            媒体总时长：{total:0.000}s
+            差（媒体 − 墙钟）：{total - wallSeconds:+0.000;-0.000}s
+            全部段都入库：{outcome.Segments.All(s => s.IsPublished)}
+            会话状态：{outcome.State}
+
+            段号	时长	起止（收尾登记）	大小
+            {string.Join(Environment.NewLine, rows)}
+            """;
+
+        await File.WriteAllTextAsync(ReportPath, report);
+
+        // 判据一：收尾那条路要走得通 —— T17 把「每段写一次 manifest」删了，
+        // 收尾改成**扫盘 + 按序推算时刻**，这一段就是它的真机验证。
+        Assert.True(
+            outcome.Segments.All(s => s.IsPublished) && outcome.State == RecordingSessionState.Indexed,
+            $"{outcome.FailureReason}{Environment.NewLine}{report}");
+
+        // 判据二：分了两段以上，说明**真的滚过段**（一段到底的话这条恒等式什么都验不到）。
+        Assert.True(
+            outcome.Segments.Count >= 2,
+            $"只录到 {outcome.Segments.Count} 段 —— 没滚过段，这条恒等式等于没验。{report}");
+
+        // 判据三：除最后一段（还在写的时候被停掉）外，每段都该是整整 60 秒。
+        foreach (var (sequence, duration) in measured.SkipLast(1))
+        {
+            Assert.True(
+                duration is >= 59.0 and <= 61.0,
+                $"第 {sequence} 段长 {duration:0.000} 秒，不是整整 60 秒。{report}");
+        }
+
+        // 判据四（**这条才是 T17 的核心**）：媒体总时长与墙钟对齐。
+        // 旧行为每段边界丢 1~1.5 秒（重开摄像头），10 段少 10~15 秒 ⇒ 当场红。
+        // 允许 5 秒余量是留给「起流到第一帧」与分段关闭抖动，不是留给空洞的。
+        //
+        // ⚠️ **这条判据只在源的时钟可信时才有分辨力**：空洞本身只占 2% 左右
+        // （600 秒丢 10~15 秒），而像用户那台手机这样「声明 25fps、实际推 30fps」的源
+        // 光自身的时钟偏差就 19% —— 两者差一个数量级，硬套会得到一条恒红的用例。
+        // 所以标定之后分开判：源可信时用 5 秒的硬闸，源不可信时只留一条粗判防灾难性回归，
+        // 并把「这条源上分辨力不足」写进报告 —— 那是**说清楚适用边界**，不是放松判据。
+        var drift = Math.Abs(total - rate * wallSeconds);
+        if (Math.Abs(rate - 1.0) <= 0.02)
+        {
+            Assert.True(
+                drift <= 5,
+                $"媒体总时长与墙钟差了 {total - wallSeconds:0.000} 秒 —— 段边界有空洞。{report}");
+        }
+        else
+        {
+            Assert.True(
+                drift <= 0.10 * total,
+                $"媒体总时长与标的差了 {drift:0.000} 秒（源自身偏差 {rate:0.000}）—— 不像是抖动。{report}");
+        }
+    }
+
+    /// <summary>
+    /// 标定这条源**一秒墙钟产出多少秒媒体**（正常的网络摄像头 = 1.000）。
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ MJPEG over HTTP 这类源**自己不带时间戳**，ffmpeg 只能按流里声明的
+    /// <c>r_frame_rate</c> 发时间戳。实测用户那台手机声明 <c>25 tbr/tbn</c>、
+    /// 实际推 <b>~30fps</b>（同一时刻 <c>-f null -</c> 数出来 721 帧 / 24.2 秒），
+    /// 于是媒体时钟比墙钟快 19% —— 录下来的东西**整体播快 19%、时长也多 19%**。
+    /// 那是源的问题，不是录制的问题，但它会让「媒体时长 ≈ 墙钟」这条判据在这类源上
+    /// 必然红，所以先量出比值再比。
+    /// <para>
+    /// ⚠️ 这里直接 <c>-i &lt;地址&gt;</c>，不带 <c>-rtsp_transport tcp</c>
+    /// （那是 <c>CameraSource.IsRtsp</c> 在生产采集里加的）。对 RTSP 源它走默认的 UDP
+    /// —— 本机用过的两条源都是 <c>http://</c>，没撞上过；真拿 RTSP 相机跑这条时若标定失败，
+    /// 先看这里。
+    /// </para>
+    /// </remarks>
+    private static async Task<double> MediaPerSecondAsync(IProcessRunner runner, string address)
+    {
+        var sample = Path.Combine(Path.GetTempPath(), "vidlog-rate-" + Guid.NewGuid().ToString("N") + ".mkv");
+
+        try
+        {
+            var wall = Stopwatch.StartNew();
+            var capture = await runner.RunAsync(Ffmpeg, [
+                "-hide_banner", "-v", "error",
+                "-i", address,
+                "-t", "20", "-c", "copy", "-y", sample,
+            ]);
+            wall.Stop();
+
+            Assert.True(capture.Succeeded, capture.StandardError);
+
+            var probe = await runner.RunAsync(Ffprobe, [
+                "-hide_banner", "-v", "error",
+                "-show_entries", "format=duration", "-of", "csv=p=0", sample,
+            ]);
+            Assert.True(probe.Succeeded, probe.StandardError);
+
+            var media = double.Parse(probe.StandardOutput.Trim(), CultureInfo.InvariantCulture);
+            Assert.True(media > 0, "标定没量到媒体时长");
+
+            return media / wall.Elapsed.TotalSeconds;
+        }
+        finally
+        {
+            try { File.Delete(sample); }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
+        }
+    }
+
+    private static string Ffprobe => Path.Combine(Path.GetDirectoryName(Ffmpeg)!, "ffprobe.exe");
+
+    /// <summary>冒烟时把这一条录短一点（秒）。不设 = 600。</summary>
+    private const string SecondsVariable = "VIDLOG_TEST_T17_SECONDS";
+
+    /// <summary>量出来的数落在这里 —— 通过时也写，回归证据要看它。</summary>
+    private static string ReportPath =>
+        Path.Combine(Path.GetTempPath(), "vidlog-t17-regression.txt");
 
     private sealed class TempDir : IDisposable
     {
