@@ -1,10 +1,12 @@
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Input;
 
 // 本工程同时开了 UseWPF 与 UseWindowsForms（后者只为托盘图标），
 // ImplicitUsings 会把两边的同名类型都带进来。这里钉死成 WPF 的那套。
 using ComboBox = System.Windows.Controls.ComboBox;
 using ComboBoxItem = System.Windows.Controls.ComboBoxItem;
+using KeyEventArgs = System.Windows.Input.KeyEventArgs;
 using SelectionChangedEventArgs = System.Windows.Controls.SelectionChangedEventArgs;
 using VidLog.Desktop.Core.Index;
 using VidLog.Desktop.Core.Search;
@@ -84,6 +86,21 @@ public partial class DataWindow : Window
     // ─────────────────────────────────────────────
     // 筛选
     // ─────────────────────────────────────────────
+
+    /// <summary>Esc 关窗 —— 与其余几个对话框同一条约定（见 <c>每个对话框都按_Esc_关得掉</c> 那条绊线）。</summary>
+    /// <remarks>
+    /// ⚠️ 这个窗口**一个字段都不落盘**（纯展示），所以「关掉」没有半途而废这回事。
+    /// 挂的是窗口级的 <see cref="UIElement.PreviewKeyDown"/>（隧道），不是某个控件上的
+    /// <c>KeyDown</c> —— 焦点这会儿多半在筛选那几个 <c>ComboBox</c> 里。
+    /// </remarks>
+    private void OnPreviewKeyDown(object sender, KeyEventArgs e)
+    {
+        if (e.Key != Key.Escape) return;
+
+        e.Handled = true;
+        Close();
+    }
+
 
     private static string? TagOf(ComboBox combo) => (combo.SelectedItem as ComboBoxItem)?.Tag as string;
 

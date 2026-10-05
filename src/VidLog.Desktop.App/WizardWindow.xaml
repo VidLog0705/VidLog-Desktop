@@ -9,7 +9,8 @@
         FontFamily="{StaticResource UiFont}"
         Background="{StaticResource PageBackground}"
         WindowStartupLocation="CenterOwner"
-        Closing="OnClosing">
+        Closing="OnClosing"
+        PreviewKeyDown="OnPreviewKeyDown">
     <!--
         ════════════════════════════════════════════════════════════════
         配置向导（2026-09-30，批次 3）

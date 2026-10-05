@@ -755,6 +755,81 @@ public class DesktopServicesTests
     }
 
     /// <summary>
+    /// 改造清单 T1。钉住「每个对话框都按 Esc 关得掉」。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// T1 的验收是「每个对话框：回车确认、Esc 取消、Tab 顺序符合阅读序」，三条里
+    /// **只有 Esc 这一条扫得出来**，另外两条要人看（回车是「哪个按钮算确认」，
+    /// Tab 序要看渲染出来的阅读顺序）。
+    /// </para>
+    /// <para>
+    /// ⚠️ <b>为什么必须有这条</b>：2026-10-05 核的时候 T1 已经做了一半（4 个窗口有
+    /// <c>IsDefault</c>、6 个有 <c>IsCancel</c>），而**没有任何东西在管它** ——
+    /// 也就是说新加一个对话框、忘了写 Esc，谁都不会知道。而「Esc 关不掉」是
+    /// 用户第二天就会撞上的那一类（T1 排第一就是这个理由）。
+    /// </para>
+    /// <para>
+    /// ⚠️ 两条路都算数：XAML 里的 <c>IsCancel="True"</c>，或者代码里的
+    /// <c>Key.Escape</c>（全屏那种要自己接住键的先例：<c>MultiViewWindow</c>）。
+    /// 扫文本只能扫这两样，**接不上「用别的键关窗」**，那是这个检查的天花板。
+    /// </para>
+    /// <para>
+    /// ⚠️ 例外是**逐个写了理由的**，不是白名单：
+    /// <list type="bullet">
+    /// <item><c>App.xaml</c> / <c>HelpTip.xaml</c> —— 根元素不是 <c>Window</c>（资源字典 / 用户控件），</item>
+    /// <item><c>MainWindow</c> / <c>SearchWindow</c> —— 主窗，Esc 关掉整个程序是灾难，</item>
+    /// <item><c>StartupWindow</c> —— 开机的启动画面，一个按钮都没有，没有可取消的动作。</item>
+    /// </list>
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public void 每个对话框都按_Esc_关得掉()
+    {
+        var app = Path.Combine(RepoRoot(), "src", "VidLog.Desktop.App");
+
+        var exempt = new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            ["App.xaml"] = "资源字典，根元素不是 Window",
+            ["HelpTip.xaml"] = "用户控件，不是窗口",
+            ["MainWindow.xaml"] = "主窗；Esc 关掉整个程序是灾难",
+            ["SearchWindow.xaml"] = "主窗；同上",
+            ["StartupWindow.xaml"] = "启动画面，一个按钮都没有，没有可取消的动作",
+        };
+
+        var offenders = new List<string>();
+
+        foreach (var file in Directory.EnumerateFiles(app, "*.xaml", SearchOption.AllDirectories))
+        {
+            var name = Path.GetFileName(file);
+            if (exempt.ContainsKey(name)) continue;
+
+            var xaml = File.ReadAllText(file);
+
+            // 只认窗口 —— 万一以后又冒出一个资源字典/用户控件，别让它悄悄混进来。
+            if (!Regex.IsMatch(xaml, @"<Window[\s>]")) continue;
+
+            if (Regex.IsMatch(xaml, @"IsCancel=""True""")) continue;
+
+            // 另一条路：代码里自己接住 Esc。
+            var code = Path.ChangeExtension(file, ".xaml.cs");
+            if (File.Exists(code)
+                && Regex.IsMatch(File.ReadAllText(code), @"Key\.Escape"))
+            {
+                continue;
+            }
+
+            offenders.Add(name);
+        }
+
+        Assert.True(
+            offenders.Count == 0,
+            "下面这些窗口按 Esc 关不掉 —— 给【取消/关掉】按钮加 IsCancel=\"True\"，"
+                + "或者在代码里接住 Key.Escape（两个都行，见这条用例的说明）：\n  "
+                + string.Join("\n  ", offenders));
+    }
+
+    /// <summary>
     /// 改造清单 T4。改版前 App 下 8 个窗口 XAML 里散着 31 处写死的 <c>CornerRadius</c>。
     /// 数过一遍：<b>6 出现 16 次、8 十四次、4 五次</b> —— 那是三档有角色的；
     /// 再往后就是断崖（5 / 3 / 9 / 11 各一两次），每一个都只出现在

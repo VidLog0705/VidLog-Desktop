@@ -1,5 +1,6 @@
 using System.ComponentModel;
 using System.Windows;
+using System.Windows.Input;
 using System.Windows.Media.Imaging;
 using System.Windows.Threading;
 
@@ -8,6 +9,7 @@ using System.Windows.Threading;
 // 这类同名类型变成「不明确」。这里用**别名钉死成 WPF 的那套**（与拆窗那几个文件同一条口径）。
 using Brush = System.Windows.Media.Brush;
 using ComboBoxItem = System.Windows.Controls.ComboBoxItem;
+using KeyEventArgs = System.Windows.Input.KeyEventArgs;
 using MessageBox = System.Windows.MessageBox;
 using MessageBoxImage = System.Windows.MessageBoxImage;
 using PixelFormats = System.Windows.Media.PixelFormats;
@@ -169,6 +171,31 @@ public partial class WizardWindow : Window
 
         _ready = true;
         ShowStep(0);
+    }
+
+    /// <summary>Esc 关掉向导 —— 与其余几个对话框同一条约定（见 <c>每个对话框都按_Esc_关得掉</c> 那条绊线）。</summary>
+    /// <remarks>
+    /// <para>
+    /// ⚠️ Esc 是**放弃**，不是走完：`Completed` 不动，所以调用方仍然按「没配完」处理。
+    /// 而**已经点过【下一步】的那几步设置是存了的**（`SaveSettingsAsync` 逐步落盘），
+    /// 这里不做回滚 —— 回滚要在打开向导时先快照整份设置，为一条 Esc 不值当。
+    /// </para>
+    /// <para>
+    /// ⚠️ 只调 <see cref="Window.Close"/>，**不要在这里自己放相机 / 取消** ——
+    /// 那条路全在 <see cref="OnClosing"/> 里，而且它会把这次关闭取消掉再异步收尾
+    /// （它上面那一大段说明了为什么不能绕开）。按 X 和按 Esc 走的是同一条。
+    /// </para>
+    /// <para>
+    /// ⚠️ 挂窗口级的 <see cref="UIElement.PreviewKeyDown"/>（隧道）：焦点这会儿可能在
+    /// 步 6 那个测试框里（用户刚拿扫码枪打了一枪），普通 <c>KeyDown</c> 收不到。
+    /// </para>
+    /// </remarks>
+    private void OnPreviewKeyDown(object sender, KeyEventArgs e)
+    {
+        if (e.Key != Key.Escape) return;
+
+        e.Handled = true;
+        Close();
     }
 
     /// <summary>

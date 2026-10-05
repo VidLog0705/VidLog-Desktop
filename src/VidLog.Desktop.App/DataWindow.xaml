@@ -7,7 +7,8 @@
         Title="打包数据深度分析" Height="760" Width="1100" MinWidth="880" MinHeight="600"
         FontFamily="{StaticResource UiFont}"
         Background="{StaticResource PageBackground}"
-        WindowStartupLocation="CenterOwner">
+        WindowStartupLocation="CenterOwner"
+        PreviewKeyDown="OnPreviewKeyDown">
     <!--
         ════════════════════════════════════════════════════════════════
         打包数据深度分析（照需求方设计图 `_40`）
