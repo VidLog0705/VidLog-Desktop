@@ -59,6 +59,13 @@ jobs:
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: '9.0.x'
+          # ⚠️ **不能**让它装到默认的 `C:\Program Files\dotnet`：自托管那台 runner
+          # 是普通用户，写不进去 ⇒ 整个作业卡在第三步就红，报的是
+          # 「The current user doesn't have write access to the installation root」
+          # （2026-10-05 在 vidlog-laptop 上实测，第一次触发就是这么挂的）。
+          # 装到 runner 自己的临时目录里，谁都能写；自托管那台还会把它留在
+          # `_work\_temp` 下，下次不用重下。托管 runner 那边只是个临时目录，无所谓。
+          install-dir: ${{ runner.temp }}/dotnet
 
       - name: 显示 SDK 版本
         run: dotnet --info
