@@ -341,10 +341,11 @@ public class DesktopServicesTests
 
         foreach (var (file, fragment, why) in checks)
         {
-            var code = string.Join(
-                '\n',
-                File.ReadAllLines(Path.Combine(RepoRoot(), "src", "VidLog.Desktop.App", file))
-                    .Where(line => !line.TrimStart().StartsWith("//")));
+            // ⚠️ 走 ReadSplit：`MainWindow` 已拆成 partial，`MainWindow.xaml.cs` 只是它的
+            // 主文件（`EnrollWindow` 还没拆，扫出来仍然只有它自己那一个文件）。
+            var code = ReadSplit(
+                Path.Combine(RepoRoot(), "src", "VidLog.Desktop.App"),
+                file.Replace(".xaml.cs", string.Empty));
 
             Assert.True(
                 code.Contains(fragment, StringComparison.Ordinal),
@@ -623,14 +624,8 @@ public class DesktopServicesTests
     {
         var app = Path.Combine(RepoRoot(), "src", "VidLog.Desktop.App");
 
-        // ⚠️ 2026-10-06（T26①）设置窗按页签拆成了若干 partial ⇒ **必须读全部**。
-        // 只读主文件的话，下面那两行一旦挪进别的 partial，这条就会**假红** ——
-        // 而假红的惯常下场是有人把这里改成去读那个具体文件，
-        // 于是下一次挪动再假红一次（这正是「只挡删改、挡不住搬家」那个天花板）。
-        var settings = string.Concat(
-            Directory.EnumerateFiles(app, "SettingsWindow*.cs")
-                .OrderBy(one => one, StringComparer.Ordinal)
-                .Select(File.ReadAllText));
+        // ⚠️ 设置窗按页签拆成了若干 partial ⇒ 走 `ReadSplit`（2026-10-06，T26①）。
+        var settings = ReadSplit(app, "SettingsWindow");
         var host = File.ReadAllText(Path.Combine(app, "AppHost.cs"));
 
         // ① 出口真的存在（界面层唯一能拿到 logger 的地方）。
@@ -659,7 +654,7 @@ public class DesktopServicesTests
             "new ArchiveFailureLog(layout.ArchiveFailurePath, logger)",
             File.ReadAllText(Path.Combine(RepoRoot(), "src", "VidLog.Desktop.Core", "Configuration", "DesktopServices.cs")),
             StringComparison.Ordinal);
-        var mainWindow = File.ReadAllText(Path.Combine(app, "MainWindow.xaml.cs"));
+        var mainWindow = ReadSplit(app, "MainWindow");
         Assert.Contains("new MultiViewWindow(", mainWindow, StringComparison.Ordinal);
         // ⚠️ 数**几处**，而不是钉整段调用文本：2026-10-03 多画面那一族的构造点变了
         //（机位改成「取机位的函数 + 建一格的函数」，不再是开窗那一刻的快照），
@@ -717,7 +712,7 @@ public class DesktopServicesTests
         var app = Path.Combine(root, "src", "VidLog.Desktop.App");
 
         var xaml = File.ReadAllText(Path.Combine(app, "MainWindow.xaml"));
-        var window = File.ReadAllText(Path.Combine(app, "MainWindow.xaml.cs"));
+        var window = ReadSplit(app, "MainWindow");
         var appCode = File.ReadAllText(Path.Combine(app, "App.xaml.cs"));
 
         // ① 屏幕上那两个按钮真的在，而且接着处理函数。
@@ -811,7 +806,7 @@ public class DesktopServicesTests
         var root = RepoRoot();
         var app = Path.Combine(root, "src", "VidLog.Desktop.App");
 
-        var window = File.ReadAllText(Path.Combine(app, "MainWindow.xaml.cs"));
+        var window = ReadSplit(app, "MainWindow");
 
         // ① 有人**取**待批准的改名请求，而且会**决定**它。
         Assert.Contains("PendingRenamesAsync()", window, StringComparison.Ordinal);
@@ -822,15 +817,8 @@ public class DesktopServicesTests
         Assert.Contains("_renameWatch.Start()", window, StringComparison.Ordinal);
 
         // ③ 路由真的注册了（Core 那边）。
-        // ⚠️ 2026-10-06（T26②）：`PlaybackServer` 按路由族拆成了若干 partial ⇒
-        // **必须读全部**。它现在红过一次了：`/api/v1/enroll/rename` 那一段一搬进
-        // `.Api.cs`，只读主文件这条就报「没找到」—— 而路由其实好好地注册着。
-        // 与设置窗那条是同一个天花板（「只挡删改、挡不住搬家」）。
-        var server = string.Concat(
-            Directory.EnumerateFiles(
-                    Path.Combine(root, "src", "VidLog.Desktop.Core", "Web"), "PlaybackServer*.cs")
-                .OrderBy(one => one, StringComparer.Ordinal)
-                .Select(File.ReadAllText));
+        var server = ReadSplit(
+            Path.Combine(root, "src", "VidLog.Desktop.Core", "Web"), "PlaybackServer");
 
         Assert.Contains("\"/api/v1/enroll/rename\"", server, StringComparison.Ordinal);
     }
@@ -1063,6 +1051,26 @@ public class DesktopServicesTests
                 + "（4 → RadiusTag，6 → RadiusControl，8 → RadiusCard，4,4,0,0 → RadiusTab）：\n  "
                 + string.Join("\n  ", offenders));
     }
+
+    /// <summary>
+    /// 读一个**拆成了 partial** 的窗口 / 服务的全部源码（整行注释已剥掉）。
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ 2026-10-06（T26）之后这是唯一正确的读法。<c>SettingsWindow</c> /
+    /// <c>MainWindow</c> / <c>PlaybackServer</c> 都按页签或职责拆成了若干 partial，
+    /// 而下面这些绊线多半是「某个字符串在源码里出现过」的形状 ——
+    /// <b>只读主文件的话，那一行一搬走它们就假红</b>，而假红的惯常下场是有人把它
+    /// 改成去读那个具体文件，于是下次再挪再红一次。这条弯路 2026-10-06 一天里真走了
+    /// 三遍（T26 ① ② ④ 各一次）。剥注释：注释掉的代码不算数
+    ///（<c>入网二维码…</c> 那条本来就这么做）。
+    /// </remarks>
+    private static string ReadSplit(string folder, string stem) =>
+        string.Join(
+            '\n',
+            Directory.EnumerateFiles(folder, stem + "*.cs")
+                .OrderBy(one => one, StringComparer.Ordinal)
+                .SelectMany(one => File.ReadAllLines(one)
+                    .Where(line => !line.TrimStart().StartsWith("//"))));
 
     /// <summary>从测试程序集往上找到仓库根（含 <c>src</c> 与 <c>tests</c> 的那一层）。</summary>
     /// <summary><paramref name="needle"/> 在 <paramref name="haystack"/> 里出现了几次。</summary>
@@ -1479,14 +1487,21 @@ public class DesktopServicesTests
     /// <para>
     /// ⚠️ <b>为什么不扫「全仓所有 .cs」</b>：实测本仓有 <b>18 个</b> .cs 超 800 行
     ///（含 8 个测试文件）。照字面扫全仓的话白名单要列 18 条 —— 那就不叫绊线了，
-    /// 叫给现状盖章（新写一个 900 行的文件照样过得去）。这里钉的是清单点名的那几个：
-    /// **破 1500 硬上限的四个**。⚠️ 其中 <c>MainWindow.xaml.cs</c>（1615 行）是
-    /// 2026-10-06 拆 ① 时才发现的 —— 清单原文只写了「三个文件」，需求方当天裁定
-    /// 把它排进来（T26④）。
+    /// 叫给现状盖章（新写一个 900 行的文件照样过得去）。这里钉的是清单点名那几个
+    /// 拆出来的**家族**，而且是 glob 不是某一个路径 —— 钉路径的话，拆出来的新
+    /// partial 就全在检查之外，当天下午再长回去也没人管。
     /// </para>
     /// <para>
-    /// ⚠️ 天花板：白名单冻结的是**文件**而不是**行数** —— 进了名单的文件还能继续变长。
-    /// 清单里明写了这个洞并接受（T7 的硬编码字号绊线用的是同一招）。
+    /// ⚠️ <b>2026-10-06：这条绊线把自己缩没了</b>。它原先还带一份「还没拆」的白名单
+    /// 加一条**收缩断言**（白名单里的文件一旦不超了就必须删条目）。T26② 拆完之后
+    /// 那条断言真的报了「<c>PlaybackServer.cs</c> 现在只有 590 行，已经不超 800 了」；
+    /// 拆 ④ 又逼掉了 <c>MainWindow.xaml.cs</c> 那条 —— 白名单至此**空了**，收缩断言
+    /// 随之退场（留着就是死代码）。它当初要挡的那个洞（「拆完了条目还留着，
+    /// 往后谁再往里加行都没人管」）现在由下面那圈扫描接着守。
+    /// </para>
+    /// <para>
+    /// ⚠️ 天花板照旧：冻结的是**文件**不是**行数** —— 在白名单里的文件还能继续变长
+    /// （T7 的硬编码字号绊线用的是同一招，清单里明写了这个洞并接受）。
     /// </para>
     /// </remarks>
     [Fact]
@@ -1494,23 +1509,11 @@ public class DesktopServicesTests
     {
         const int Limit = 800;
         var repo = RepoRoot();
+        var app = Path.Combine(repo, "src", "VidLog.Desktop.App");
 
-        // ⚠️ 只减不增，每条都写清归属 —— 下面第二半逼它自己缩。
-        var pending = new Dictionary<string, string>(StringComparer.Ordinal)
-        {
-            // T26④：清单原本只点了「三个文件」，这个 1615 行是 2026-10-06 拆 ① 时
-            // 才发现的（同样破了 1500，只是没人点它）。需求方 2026-10-06 裁定排进来。
-            ["src/VidLog.Desktop.App/MainWindow.xaml.cs"] =
-                "T26④ 还没做：1615 行几乎全是 UI 事件处理，先例就是 ① 那套按页签拆 partial",
-        };
-
-        var named = Directory
-            .EnumerateFiles(Path.Combine(repo, "src", "VidLog.Desktop.App"), "SettingsWindow*.cs")
-            .Append(Path.Combine(repo, "src", "VidLog.Desktop.App", "MainWindow.xaml.cs"))
-            // ⚠️ 2026-10-06（T26②）：`PlaybackServer.cs` 那条刚从白名单里自己缩掉，
-            // 这一行随之从「一个路径」改成 glob —— 否则新拆出来的那几个 partial
-            // 就全在检查之外，当天下午再长回去也没人管。与上面 `SettingsWindow*.cs`
-            // 同一条道理：钉的是**这一族文件**，不是某一个路径。
+        // 清单点名的那几个文件（T26 ① ② ④）各自拆出来的家族。
+        var named = Directory.EnumerateFiles(app, "SettingsWindow*.cs")
+            .Concat(Directory.EnumerateFiles(app, "MainWindow*.cs"))
             .Concat(Directory.EnumerateFiles(
                 Path.Combine(repo, "src", "VidLog.Desktop.Core", "Web"), "PlaybackServer*.cs"));
 
@@ -1519,8 +1522,6 @@ public class DesktopServicesTests
         foreach (var file in named)
         {
             var relative = Path.GetRelativePath(repo, file).Replace('\\', '/');
-            if (pending.ContainsKey(relative)) continue;
-
             var lines = File.ReadLines(file).Count();
             if (lines > Limit)
             {
@@ -1532,17 +1533,6 @@ public class DesktopServicesTests
             offenders.Count == 0,
             $"这些文件超过 {Limit} 行 —— 按页签（UI）/ 按职责（服务）拆成 partial：\n  "
                 + string.Join("\n  ", offenders));
-
-        // 第二半：白名单里的文件一旦**已经不超了**就报错。不逼它缩的话，
-        // 拆完了条目还留着，往后谁再往里加行都没人管。
-        foreach (var (relative, why) in pending)
-        {
-            var lines = File.ReadLines(Path.Combine(repo, relative)).Count();
-            Assert.True(
-                lines > Limit,
-                $"`{relative}` 现在只有 {lines} 行，已经不超 {Limit} 了 —— "
-                    + $"把它从白名单里删掉（它当初为什么在里面：{why}）。");
-        }
     }
 
     /// <summary>退出码固定、并把 argv 留一份的假 netsh。</summary>
