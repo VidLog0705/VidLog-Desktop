@@ -40,9 +40,12 @@ env:
   # `LiveTileProcessTests` 也起真 ffmpeg、也在满负载下偶发红过一次，看着该进来 ——
   # 但它没有 `RequiresRtspFact`，塞进来会让上面那条判据**变假**（判据是防名单走岔的
   # 唯一机制，比这一个用例值钱）。而且它跟 `PreviewThroughput` **不同因**：它跑的是
-  # `testsrc=size=320x240:rate=10`，跟 1080p 实时编解码抢 CPU 那件事无关；它那条偶发
-  # 出在**自己的时间预算**上（`LiveTileProcessTests.cs` 里等 `ProgressWatch` 的 10 秒
-  # 周期出第一行，30 秒窗口在满负载下不够）—— 该治它在用例本身，不在这名单。
+  # `testsrc=size=320x240:rate=10`，跟 1080p 实时编解码抢 CPU 那件事无关。
+  #
+  # ⚠️ 它那条偶发的**根因还没查明**。这里特别留一句提醒：**别照我写这行字时先前那句
+  # 「时间预算紧」去改** —— 那句没有实测支撑，而且本机实测**正相反**：这条只要 **11 秒**
+  #（窗口是 30 秒，余量三倍）。CI 上那次却是 30 秒超时 ⇒ 那不是「慢一点」，是**真卡住了**。
+  # 要治它得先抓到卡在哪一步（该在用例里加现场，不在这名单）。
   CAMERA_FILTER: 'FullyQualifiedName~NetworkCamera|FullyQualifiedName~Prerecord|FullyQualifiedName~RecordingPreview|FullyQualifiedName~PreviewThroughput|FullyQualifiedName~PreviewProcess'
   NON_CAMERA_FILTER: 'FullyQualifiedName!~NetworkCamera&FullyQualifiedName!~Prerecord&FullyQualifiedName!~RecordingPreview&FullyQualifiedName!~PreviewThroughput&FullyQualifiedName!~PreviewProcess'
 
