@@ -150,7 +150,8 @@ public class SessionFinalizerTests
 
         var nas = dir.Dir("nas");
         var relay = new ArchiveRelay(
-            new DirectoryArchiveBackend(nas, ArchiveBackendKind.Nas), "NAS");
+            new DirectoryArchiveBackend(nas, ArchiveBackendKind.Nas), "NAS",
+            new PublishedStore(dir.File("published.jsonl")));
 
         var finalizer = BuildFinalizer(dir, runner, index, relay);
 
@@ -190,7 +191,8 @@ public class SessionFinalizerTests
         var relay = new ArchiveRelay(
             new DirectoryArchiveBackend(
                 System.IO.Path.Combine(blocker, "nas"), ArchiveBackendKind.Nas),
-            "NAS");
+            "NAS",
+            new PublishedStore(dir.File("published.jsonl")));
 
         var finalizer = BuildFinalizer(dir, runner, index, relay);
 

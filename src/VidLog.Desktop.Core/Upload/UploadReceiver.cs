@@ -443,7 +443,9 @@ public sealed class UploadReceiver
         // 这一份没上去**不会**影响手机端拿到的那个答复。
         if (_relay is not null)
         {
-            await _relay.PublishAsync(location, destination, cancellationToken);
+            // T18：走咽喉记账。手机这一路**同时**还有回执（上面那行）——
+            // 两张表都记着同一个事实，合并时回执那条优先（见 `CleanupService`）。
+            await _relay.PublishAsync(evidenceId, location, destination, cancellationToken);
         }
 
         return new CommitResponse(receipt, ReceiptSignature.Compute(credential, receipt));

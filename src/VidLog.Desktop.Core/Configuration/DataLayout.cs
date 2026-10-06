@@ -120,6 +120,17 @@ public sealed class DataLayout
     public string ReceiptsPath => Path.Combine(RootDirectory, "receipts.jsonl");
 
     /// <summary>
+    /// 桌面**自己**发布到归档层的那本账（T18）。
+    /// </summary>
+    /// <remarks>
+    /// 与 <see cref="ReceiptsPath"/> **分开两个文件**，理由见
+    /// <c>PublishedStore</c>：回执是**发给手机的线上契约**，这本是**自己记的账**。
+    /// 两者记的是同一个事实（「这条在 T 时刻进了归档层」），但读它们的人不一样，
+    /// 混在一起会让前一个意思被后一个污染。
+    /// </remarks>
+    public string PublishedPath => Path.Combine(RootDirectory, "published.jsonl");
+
+    /// <summary>
     /// 百度网盘的登录令牌（设计图 `_45`「账号与上传状态」）。
     /// </summary>
     /// <remarks>

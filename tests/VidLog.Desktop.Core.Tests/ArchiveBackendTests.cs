@@ -241,9 +241,10 @@ public class ArchiveBackendTests
     public async Task 发布失败会记住原因并留一条日志()
     {
         var logger = new CapturingLogger();
-        var relay = new ArchiveRelay(new AlwaysFailingPublisher(), "NAS", logger);
+        using var published = new TempStore();
+        var relay = new ArchiveRelay(new AlwaysFailingPublisher(), "NAS", published.Store, logger: logger);
 
-        var result = await relay.PublishAsync(Where("e.mp4"), "local.mp4");
+        var result = await relay.PublishAsync("e-000", Where("e.mp4"), "local.mp4");
 
         Assert.False(result.Published);
         Assert.NotNull(relay.LastFailure);
@@ -420,16 +421,93 @@ public class ArchiveBackendTests
     [Fact]
     public async Task 发布成功会清掉上一次的失败()
     {
-        var relay = new ArchiveRelay(new AlwaysFailingPublisher(), "NAS");
+        using var published = new TempStore();
+        var relay = new ArchiveRelay(new AlwaysFailingPublisher(), "NAS", published.Store);
 
-        await relay.PublishAsync(Where("a.mp4"), "x.mp4");
+        await relay.PublishAsync("a-000", Where("a.mp4"), "x.mp4");
         Assert.NotNull(relay.LastFailure);
 
-        var ok = new ArchiveRelay(new SucceedingPublisher(), "NAS");
-        await ok.PublishAsync(Where("a.mp4"), "x.mp4");
+        var ok = new ArchiveRelay(new SucceedingPublisher(), "NAS", published.Store);
+        await ok.PublishAsync("a-000", Where("a.mp4"), "x.mp4");
 
         Assert.Null(ok.LastFailure);
         Assert.Equal("a.mp4", ok.LastPublished);
+    }
+
+    // ─────────────────────────────────────────────
+    // T18：记账点在**咽喉**上，不在两个调用点各写一遍
+    // ─────────────────────────────────────────────
+
+    [Fact]
+    public async Task 发布成功会往已归档账上追加一条()
+    {
+        using var published = new TempStore();
+        var relay = new ArchiveRelay(new SucceedingPublisher(), "NAS", published.Store);
+
+        await relay.PublishAsync("e-000", Where("e.mp4"), "local.mp4");
+
+        var anchors = await published.Store.LoadAnchorMapAsync();
+
+        // 记账的**唯一**理由：清理层要拿它当时间锚。所以断言直接落在锚表上，
+        // 而不是「文件里有没有行」—— 后者是「有没有东西」而不是「是不是我要的那个」。
+        Assert.True(anchors.ContainsKey("e-000"));
+    }
+
+    [Fact]
+    public async Task 发布失败一条都不记_否则等于把唯一副本放行()
+    {
+        // ⚠️ 这是本组里最要紧的那条反证。记账写在「成功」那一支上是**承重的**：
+        // 写错成「无论成败都记」的话，归档层上根本没有那一份，
+        // 而清理层会以为它有第二份 ⇒ **把唯一副本删掉**。
+        using var published = new TempStore();
+        var relay = new ArchiveRelay(new AlwaysFailingPublisher(), "NAS", published.Store);
+
+        await relay.PublishAsync("e-000", Where("e.mp4"), "local.mp4");
+
+        Assert.Empty(await published.Store.LoadAnchorMapAsync());
+    }
+
+    [Fact]
+    public async Task 同一条发布两次_锚取最早的那次_不许往后挪()
+    {
+        // ⚠️ 与回执表相反（那边是「后写的胜出」）。回执敢那么做是因为重复 commit
+        // 走「原样再给一份」、两行一样；而重复发布的**时刻不同**，
+        // 取后者会把起算点往后推 ⇒ 那条录像比它该被清的时刻更晚才能清。
+        // 起算点的意思是「**第一次**在别处有了第二份」。
+        using var published = new TempStore();
+        var relay = new ArchiveRelay(new SucceedingPublisher(), "NAS", published.Store);
+
+        var first = new DateTimeOffset(2026, 9, 1, 0, 0, 0, TimeSpan.FromHours(8));
+        var later = first.AddDays(10);
+
+        await published.Store.AppendAsync(new PublishedRecord("e-000", first, "e.mp4"));
+        await published.Store.AppendAsync(new PublishedRecord("e-000", later, "e.mp4"));
+
+        var anchors = await published.Store.LoadAnchorMapAsync();
+
+        Assert.Equal(first, anchors["e-000"]);
+    }
+
+    /// <summary>一次性的 <c>published.jsonl</c>（临时目录，用完删）。</summary>
+    private sealed class TempStore : IDisposable
+    {
+        private readonly string _root;
+
+        public TempStore()
+        {
+            _root = Path.Combine(Path.GetTempPath(), "vidlog-published-" + Guid.NewGuid().ToString("N"));
+            Store = new PublishedStore(Path.Combine(_root, "published.jsonl"));
+        }
+
+        public PublishedStore Store { get; }
+
+        public void Dispose()
+        {
+            if (Directory.Exists(_root))
+            {
+                Directory.Delete(_root, recursive: true);
+            }
+        }
     }
 
     private sealed class AlwaysFailingPublisher : IArchivePublisher

@@ -2,7 +2,9 @@ using System.Net;
 using System.Net.Sockets;
 using System.Text.RegularExpressions;
 using VidLog.Desktop.Core.Configuration;
+using VidLog.Desktop.Core.Cleanup;
 using VidLog.Desktop.Core.Diagnostics;
+using VidLog.Desktop.Core.Index;
 using VidLog.Desktop.Core.Media;
 using VidLog.Desktop.Core.Recording;
 using VidLog.Desktop.Core.Upload;
@@ -123,6 +125,58 @@ public class DesktopServicesTests
         {
             squatter.Stop();
         }
+    }
+
+    [Fact]
+    public async Task 发布端写的那本已归档账_清理端真的读得到()
+    {
+        // ⚠️ **T18 的收口检查**：缺陷原来断的就是这一截 ——
+        // 桌面自己发布成功之后**一个可持久化的锚都没留下**，于是自录的内容
+        // 永远被判成「唯一副本」，设置里那个保留期对它根本不成立、**盘满只是时间问题**。
+        //
+        // ⚠️ 这条刻意**走装配出来那一套对象图**（`DesktopServices.Create` 出来的
+        // `ArchiveRelay` 与 `Cleanup`），而不是自己 new 两个部件 ——
+        // 记账端读哪个文件、清理端读哪个文件是**两处**写的，只有把它们接起来跑一遍
+        // 才能证明是**同一个文件**。各测各的部件时，这个问题看不见（两边都会过）。
+        using var dir = new TempDir();
+        var layout = new DataLayout(dir.Dir("data"));
+        var nas = dir.Dir("nas");
+        Directory.CreateDirectory(nas);
+
+        await using var services = DesktopServices.Create(
+            layout,
+            playbackPort: null,
+            archive: new ArchiveTarget(ArchiveBackendKind.Nas, nas));
+
+        Assert.NotNull(services.ArchiveRelay);
+
+        // 本机那一份得真在盘上 —— 发布要有东西可发。
+        var relative = RelativePath.Parse("2026/09/27/SF1000000001/e-000.mp4");
+        var local = System.IO.Path.Combine(layout.ArchiveRoot, relative.Value);
+        Directory.CreateDirectory(System.IO.Path.GetDirectoryName(local)!);
+        await File.WriteAllTextAsync(local, "x");
+
+        var endedAt = DateTimeOffset.Now.AddDays(-40);
+        await services.Index.AddAsync(new RecordingEntry(
+            "e-000",
+            "sess-1",
+            WaybillNumber.Parse("SF1000000001"),
+            endedAt.AddMinutes(-5),
+            endedAt,
+            TimeSpan.FromMinutes(5),
+            relative,
+            ContentHash.Parse(new string('a', 64)),
+            "device-1"));
+
+        var published = await services.ArchiveRelay!.PublishAsync("e-000", relative, local);
+
+        Assert.True(published.Published, published.FailureReason);
+
+        // 盘快满了 ⇒ 该清的就该清得上。**自录的这条必须出现在候选里。**
+        var plan = await services.Cleanup.PreviewBySpaceAsync(
+            minFreeBytes: 1L << 40, freeBytes: 0, DateTimeOffset.Now);
+
+        Assert.Equal("e-000", Assert.Single(plan!.Candidates).Entry.EvidenceId);
     }
 
     [Fact]

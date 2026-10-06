@@ -303,7 +303,7 @@ public sealed class RecordingImporter
         // 它是这个系统的第一份。与收尾那一处是同一条判据。
         if (_relay is not null)
         {
-            await _relay.PublishAsync(location, destination, cancellationToken);
+            await _relay.PublishAsync(entry.EvidenceId, location, destination, cancellationToken);
         }
 
         _logger.Log(LogLevel.Info, "导入", $"{request.Waybill.Value} 导进来了一段录像",

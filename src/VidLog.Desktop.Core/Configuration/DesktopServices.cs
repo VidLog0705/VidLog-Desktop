@@ -432,9 +432,15 @@ public sealed class DesktopServices : IAsyncDisposable
             publisher = directory;
         }
 
+        // T18：这本账**发布端写、清理端读**，所以只建一个、两边传同一个。
+        // 两条理由：① 只有一个地方决定它是哪个文件，不存在「写的和读的不是同一个」；
+        // ② `PublishedStore` 的写互斥是**实例内**的（`SemaphoreSlim`），
+        // 建两个实例等于两个闸各管各的，同一行就可能被两个写者交错着追加。
+        var published = new PublishedStore(layout.PublishedPath);
+
         var relay = target.IsOnThisMachine
             ? null
-            : new ArchiveRelay(publisher, target.Label, logger);
+            : new ArchiveRelay(publisher, target.Label, published, logger: logger);
 
         if (target.ConfigurationProblem is { } problem)
         {
@@ -538,6 +544,7 @@ public sealed class DesktopServices : IAsyncDisposable
             index,
             labels,
             new ReceiptStore(layout.ReceiptsPath),
+            published,
             new CleanupExecutor(
                 archiveBackend,
                 locations,

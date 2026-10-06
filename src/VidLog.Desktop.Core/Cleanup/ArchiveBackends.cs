@@ -370,15 +370,27 @@ public sealed class DirectoryArchiveBackend : IArchiveBackend, IArchivePublisher
 /// ⚠️ 归档层就是本机时**根本不建这个对象**（见 <c>DesktopServices</c>）——
 /// 那时发布是空操作，建它只会让「有没有发布过」这个问题多一个没意义的答案。
 /// </para>
+/// <para>
+/// <b>T18：这里也是「已归档」这笔账唯一的记账点。</b>发布成功 ⇒ 往
+/// <see cref="PublishedStore"/> 追加一条 —— 清理层的时间锚靠它。写在咽喉上而不是
+/// 两个调用点各写一遍，理由是同一句：**两处各写一遍必然走岔**，
+/// 而走岔的表现是「有一条没记上 ⇒ 它被永久豁免 ⇒ 盘满」，不报错。
+/// </para>
 /// </remarks>
 public sealed class ArchiveRelay
 {
     private readonly IArchivePublisher _publisher;
+    private readonly PublishedStore _published;
     private readonly IAppLogger _logger;
 
-    public ArchiveRelay(IArchivePublisher publisher, string label, IAppLogger? logger = null)
+    public ArchiveRelay(
+        IArchivePublisher publisher,
+        string label,
+        PublishedStore published,
+        IAppLogger? logger = null)
     {
         _publisher = publisher;
+        _published = published;
         Label = label;
         _logger = logger ?? NullLogger.Instance;
     }
@@ -396,8 +408,13 @@ public sealed class ArchiveRelay
     /// <summary>最近一次成功发布是哪一条。</summary>
     public string? LastPublished { get; private set; }
 
+    /// <param name="evidenceId">
+    /// 索引里的那一条。**不是可选的** —— 记账要它，而「调用方忘了传」这件事
+    /// 不该在运行期表现为「那条录像永远清不掉」。让编译器挡住。
+    /// </param>
     public async Task<ArchivePublishResult> PublishAsync(
-        RelativePath location, string localPath, CancellationToken cancellationToken = default)
+        string evidenceId, RelativePath location, string localPath,
+        CancellationToken cancellationToken = default)
     {
         var result = await _publisher.PublishAsync(location, localPath, cancellationToken);
 
@@ -405,6 +422,7 @@ public sealed class ArchiveRelay
         {
             LastFailure = null;
             LastPublished = location.Value;
+            await RecordPublishedAsync(evidenceId, location);
             return result;
         }
 
@@ -416,5 +434,37 @@ public sealed class ArchiveRelay
             new Dictionary<string, object?> { ["location"] = location.Value });
 
         return result;
+    }
+
+    /// <summary>记一笔「这条已经发到归档层了」。**记不上不能把发布结果弄坏。**</summary>
+    /// <remarks>
+    /// <para>
+    /// ⚠️ <b>不传调用方的 <see cref="CancellationToken"/>，用 <see cref="CancellationToken.None"/>。</b>
+    /// 走到这里**归档层上已经有那一份了** —— 这是既成事实。这时若收尾被取消（关机、退出）
+    /// 而把这一行也丢掉，结果就是「归档层有、账上没有」⇒ 那条录像被判成唯一副本、
+    /// **永远清不掉**，正是 T18 本身。账本比一次收尾的及时性值钱。
+    /// </para>
+    /// <para>
+    /// ⚠️ 这里 <b>吞掉异常只记日志</b>，与 <c>CleanupExecutor.TryAppendAsync</c> 同一条规矩：
+    /// 账没记上是个**要让人看见的问题**（记 Warn，说的是后果而不是堆栈），
+    /// 但它**不是发布失败** —— 返回 <c>Published: true</c> 才是实话，
+    /// 否则调用方会去重发一份归档层上已经有的东西。
+    /// </para>
+    /// </remarks>
+    private async Task RecordPublishedAsync(string evidenceId, RelativePath location)
+    {
+        try
+        {
+            await _published.AppendAsync(
+                new PublishedRecord(evidenceId, DateTimeOffset.Now, location.Value),
+                CancellationToken.None);
+        }
+        catch (Exception ex)
+        {
+            _logger.Log(LogLevel.Warn, "归档",
+                $"发布到{Label}成功，但「已归档」这笔账没记上：{ex.Message} —— "
+                + "这条将来会被当成唯一副本、永远清不掉（磁盘只涨不落）",
+                new Dictionary<string, object?> { ["证据"] = evidenceId, ["落点"] = location.Value });
+        }
     }
 }

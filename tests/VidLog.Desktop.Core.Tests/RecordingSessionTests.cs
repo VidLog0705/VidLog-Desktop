@@ -298,7 +298,9 @@ public class RecordingSessionTests
         // ⚠️ 归档层发不上去 ⇒ 收尾之后工作目录**留着**（T21 只在发布成功时丢），
         // 这一条才有东西可读。用「进程被杀」那条路读不到 —— 那时还没收尾。
         await using var session = Build(
-            dir, capture, relay: new ArchiveRelay(new FailingPublisher(), "NAS"));
+            dir, capture, relay: new ArchiveRelay(
+                new FailingPublisher(), "NAS",
+                new PublishedStore(dir.File("published.jsonl"))));
 
         await session.StartAsync(WaybillNumber.Parse("SF1"), "libx264");
         var outcome = await session.StopAsync(StopReason.Manual);
@@ -525,7 +527,9 @@ public class RecordingSessionTests
 
         // 归档层是 NAS，而且发不上去（发布失败**不影响**收尾成败）。
         await using var session = Build(
-            dir, capture, clock: clock, relay: new ArchiveRelay(new FailingPublisher(), "NAS"));
+            dir, capture, clock: clock, relay: new ArchiveRelay(
+                new FailingPublisher(), "NAS",
+                new PublishedStore(dir.File("published.jsonl"))));
 
         await session.StartAsync(WaybillNumber.Parse("SF1"), "libx264");
         clock.Advance(TimeSpan.FromSeconds(5));

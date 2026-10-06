@@ -146,13 +146,16 @@ public sealed record CleanupPlan(
 /// 算出该清谁。它**不碰文件系统** —— 真正删除在别处，而且要先回查归档层（I8）。
 /// </para>
 /// <para>
-/// ⚠️ <b>谁来提供那份归档时刻表，目前还没有答案。</b>
-/// 回执里就有（<c>ReceiptPayload.TimeAnchor</c>），但 <c>ReceiptStore</c> 只有
-/// 按 id 查一个的 <c>FindAsync</c>，没有「一次读全表」。所以要真接上，
-/// 第一步是给 <c>ReceiptStore</c> 加一个 <c>LoadAllAsync</c>。
-/// <b>现在故意不加</b>：在本类有生产调用点之前，那会是一段没人调用、
-/// 也没法验证的代码 —— 电脑端刚因为「写完了、测过了、没插电」吃过一次亏
-/// （母仓 <c>HANDOFF.md</c> §6 第 19 条）。
+/// <b>归档时刻表由 <c>CleanupService</c> 拼好再传进来</b>（2026-10-06 更正：
+/// 这里原来写着「谁来提供那份时刻表，目前还没有答案」，那是**过期的**，
+/// <c>ReceiptStore.LoadAnchorMapAsync</c> 早就在了）。现在是**两张表并起来**：
+/// <c>receipts.jsonl</c>（手机上传那一路写的回执，<c>ReceiptPayload.TimeAnchor</c>）
+/// ∪ <c>published.jsonl</c>（桌面自己发布成功时记的，T18）。
+/// 本类**不必知道**这个合并 —— 它只管收一张表。
+/// </para>
+/// <para>
+/// ⚠️ 只接一张表会漏掉一整类录像：只接回执时**桌面自录的永远没有锚**，
+/// 于是被判成「唯一副本」永久豁免、盘满只是时间问题 —— 那就是 T18。
 /// </para>
 /// </remarks>
 public sealed class CleanupPlanner
@@ -170,7 +173,7 @@ public sealed class CleanupPlanner
     /// 按一份策略算一批候选与豁免（规格 §3.5.2.1 / §3.5.3）。
     /// </summary>
     /// <param name="archiveAnchors">
-    /// <c>evidenceId</c> → **归档成功时刻**（回执里的 <c>timeAnchor</c>，外部时间锚）。
+    /// <c>evidenceId</c> → **归档成功时刻**（两张表并起来的那一份，见类注释）。
     /// <b>表里没有的那条就是「还没成功归档」，必然被豁免</b>（规格 §3.5.3①）——
     /// 所以这个参数是必填的，没有「不知道归档状态」这个中间态。
     /// </param>

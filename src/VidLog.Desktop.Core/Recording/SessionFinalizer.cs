@@ -381,7 +381,8 @@ public sealed class SessionFinalizer
         var archived = true;
         if (_relay is not null)
         {
-            var published = await _relay.PublishAsync(location, destination, cancellationToken);
+            var published = await _relay.PublishAsync(
+                entry.EvidenceId, location, destination, cancellationToken);
             archived = published.Published;
         }
 

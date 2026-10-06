@@ -62,7 +62,8 @@ public class CleanupServiceTests
         string? archiveRoot = null,
         IReadOnlyList<RecordingEntry>? entries = null,
         IReadOnlyList<RecordingLabel>? labels = null,
-        IReadOnlyList<ReceiptPayload>? receipts = null)
+        IReadOnlyList<ReceiptPayload>? receipts = null,
+        IReadOnlyList<PublishedRecord>? published = null)
     {
         var index = new FakeIndex(entries ?? []);
         var labelStore = new FakeLabels(labels ?? []);
@@ -73,6 +74,14 @@ public class CleanupServiceTests
             receiptStore.AppendAsync(receipt).GetAwaiter().GetResult();
         }
 
+        // T18：自记账那一张表。**与回执是两本账**（见 `PublishedStore` 的类注释）。
+        var publishedStore = new PublishedStore(System.IO.Path.Combine(fixture.Root, "published.jsonl"));
+
+        foreach (var record in published ?? [])
+        {
+            publishedStore.AppendAsync(record).GetAwaiter().GetResult();
+        }
+
         var executor = new CleanupExecutor(
             new DirectoryArchiveBackend(
                 archiveRoot ?? Path.Combine(fixture.Root, "nas"), kind),
@@ -80,7 +89,7 @@ public class CleanupServiceTests
             new CleanupAuditLog(System.IO.Path.Combine(fixture.Root, "cleanup-audit.jsonl")),
             NullLogger.Instance);
 
-        return new CleanupService(index, labelStore, receiptStore, executor);
+        return new CleanupService(index, labelStore, receiptStore, publishedStore, executor);
     }
 
     /// <summary>把「已归档」写成回执 —— 起算点就是从它来的。</summary>
@@ -235,6 +244,81 @@ public class CleanupServiceTests
         Assert.Equal(2, plan.Exempted.Count);
         Assert.Contains(plan.Exempted, e => e.Why.Contains("唯一副本"));
         Assert.Contains(plan.Exempted, e => e.Why.Contains("锁定"));
+    }
+
+    // ─────────────────────────────────────────────
+    // T18：桌面**自己**发出去的那一份也要算数
+    // ─────────────────────────────────────────────
+    //
+    // 缺陷原样：时间锚只有一个来源（`receipts.jsonl`），而那份回执**只有手机上传那一路会写**
+    // ⇒ 桌面自己录、自己发到 NAS 的录像**一个锚都没有** ⇒ 被判成「唯一副本」**永久豁免**。
+    // 于是「本机保留多久」这个设置对本机录制内容根本不成立，**盘满只是时间问题**。
+
+    /// <summary>「已归档」自记账的一条（T18 的 `published.jsonl`）。</summary>
+    private static PublishedRecord Published(string evidenceId, DateTimeOffset at) =>
+        new(evidenceId, at, $"2026/09/27/SF1000000001/{evidenceId}.mp4");
+
+    [Fact]
+    public async Task 自录的发布成功后就成了可清候选_不再被判成唯一副本()
+    {
+        // ⚠️ 这条**故意不给回执** —— 自录那一路本来就没有回执，
+        // 给了就变成在验手机上传那条路，验不到 T18。
+        using var fixture = new Fixture();
+
+        var service = Build(
+            fixture, ArchiveBackendKind.Nas,
+            entries: [Entry("self-rec", Now.AddDays(-40))],
+            labels: [Outbound("self-rec")],
+            published: [Published("self-rec", Now.AddDays(-39))]);
+
+        var plan = await service.PreviewBySpaceAsync(Gb(1024), 0, Now);
+
+        Assert.NotNull(plan);
+        Assert.Single(plan!.Candidates);
+        Assert.Equal("self-rec", plan.Candidates[0].Entry.EvidenceId);
+    }
+
+    [Fact]
+    public async Task 自录的发布失败仍然豁免_一张账都没记就不该清()
+    {
+        // 反证的另一半：T18 修的是「账没记」，不是「把没归档的也放行」。
+        // 归档层那一份没上去（`ArchiveRelay` 就不会记账）⇒ 本机这份是唯一副本 ⇒ 仍然豁免。
+        using var fixture = new Fixture();
+
+        var service = Build(
+            fixture, ArchiveBackendKind.Nas,
+            entries: [Entry("never-published", Now.AddDays(-40))],
+            labels: [Outbound("never-published")],
+            published: []);                                  // ← 没记上账 = 没发上去
+
+        var plan = await service.PreviewBySpaceAsync(Gb(1024), 0, Now);
+
+        Assert.Empty(plan!.Candidates);
+        Assert.Contains(plan.Exempted, e => e.Why.Contains("唯一副本"));
+    }
+
+    [Fact]
+    public async Task 两张账都有的那条以回执为准_自记账把锚往后挪不算数()
+    {
+        // 手机传上来的那条**两张表都有**。时刻真不一致时（这里刻意的：
+        // 回执 39 天前、自记账 1 天前），**认回执** —— 它是对外签出去的那个
+        // `timeAnchor`，规格 §3.5.2.1 要的正是「外部时间锚，用户改不了」。
+        //
+        // ⚠️ 判据刻意选成**方向敏感**的：保留 7 天，回执锚 39 天前 ⇒ 到期该清；
+        // 若自记账那条赢了（锚 1 天前）⇒ **一条都不会清**。所以这个断言只在
+        // 「回执优先」时成立 —— 合并方向写反了它就会红。
+        using var fixture = new Fixture();
+
+        var service = Build(
+            fixture, ArchiveBackendKind.Nas,
+            entries: [Entry("from-phone", Now.AddDays(-40))],
+            labels: [Outbound("from-phone")],
+            receipts: [Receipt("from-phone", Now.AddDays(-39))],
+            published: [Published("from-phone", Now.AddDays(-1))]);
+
+        var plan = await service.PreviewAsync(DeleteAfter(7), Now);
+
+        Assert.Equal("from-phone", Assert.Single(plan.Candidates).Entry.EvidenceId);
     }
 
     [Fact]

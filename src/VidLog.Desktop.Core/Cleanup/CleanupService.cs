@@ -28,6 +28,7 @@ public sealed class CleanupService
     private readonly IRecordingIndex _index;
     private readonly ILabelStore _labels;
     private readonly ReceiptStore _receipts;
+    private readonly PublishedStore _published;
     private readonly CleanupExecutor _executor;
     private readonly IAppLogger _logger;
 
@@ -35,14 +36,48 @@ public sealed class CleanupService
         IRecordingIndex index,
         ILabelStore labels,
         ReceiptStore receipts,
+        PublishedStore published,
         CleanupExecutor executor,
         IAppLogger? logger = null)
     {
         _index = index;
         _labels = labels;
         _receipts = receipts;
+        _published = published;
         _executor = executor;
         _logger = logger ?? NullLogger.Instance;
+    }
+
+    /// <summary>
+    /// 归档时刻表 = 回执 ∪ 自记账（T18）。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// 两张表记的是**同一个事实**（「这条在 T 时刻进了归档层」），来源不同：
+    /// <c>receipts.jsonl</c> 只由手机上传那一路写，<c>published.jsonl</c> 由
+    /// <c>ArchiveRelay</c> 在每次发布成功时写。**只读其中一张就会漏掉一整类录像**
+    /// —— 只读回执时桌面自录的永远没有锚（T18 本身）。
+    /// </para>
+    /// <para>
+    /// <b>冲突时回执优先</b>（先装回执、自记账用 <c>TryAdd</c>）。
+    /// 手机传上来的那一条两张表都有，两个时刻几乎相同；真要有先后，
+    /// 认回执 —— 它是**对外签出去的那个 timeAnchor**，
+    /// 规格 §3.5.2.1 要的正是「外部时间锚，用户改不了」。
+    /// </para>
+    /// </remarks>
+    private async Task<IReadOnlyDictionary<string, DateTimeOffset>> LoadAnchorsAsync(
+        CancellationToken cancellationToken)
+    {
+        var anchors = new Dictionary<string, DateTimeOffset>(
+            await _receipts.LoadAnchorMapAsync(cancellationToken), StringComparer.Ordinal);
+
+        foreach (var (evidenceId, publishedAt) in
+            await _published.LoadAnchorMapAsync(cancellationToken))
+        {
+            anchors.TryAdd(evidenceId, publishedAt);
+        }
+
+        return anchors;
     }
 
     /// <summary>归档层这一档到底允不允许清理（规格 §3.5.1）。</summary>
@@ -72,7 +107,7 @@ public sealed class CleanupService
 
         // 起算点是**归档成功时刻**（回执里的 timeAnchor，外部时间锚，用户改不了）——
         // 不是录完时刻。见 §3.5.2.1 与 `CleanupPlanner` 上的说明。
-        var anchors = await _receipts.LoadAnchorMapAsync(cancellationToken);
+        var anchors = await LoadAnchorsAsync(cancellationToken);
 
         return new CleanupPlanner().PlanPerBusinessType(entries, labels, anchors, settings, now);
     }
@@ -133,7 +168,7 @@ public sealed class CleanupService
 
         var entries = await _index.LoadAllAsync(cancellationToken);
         var labels = await _labels.LoadAllAsync(cancellationToken);
-        var anchors = await _receipts.LoadAnchorMapAsync(cancellationToken);
+        var anchors = await LoadAnchorsAsync(cancellationToken);
 
         var plan = new CleanupPlanner().Plan(
             entries, labels, anchors,
