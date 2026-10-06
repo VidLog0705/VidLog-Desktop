@@ -376,21 +376,30 @@ public sealed class DirectoryArchiveBackend : IArchiveBackend, IArchivePublisher
 /// 两个调用点各写一遍，理由是同一句：**两处各写一遍必然走岔**，
 /// 而走岔的表现是「有一条没记上 ⇒ 它被永久豁免 ⇒ 盘满」，不报错。
 /// </para>
+/// <para>
+/// <b>T23-A：成败两笔账都落盘。</b>上面那个 <see cref="LastFailure"/> 只在内存 ⇒
+/// 重启后「NAS 那份没发上去」就看不见了，而它恰恰是最容易出事的时候
+/// （重启往往就是因为刚出过问题）。所以失败时往 <see cref="ArchiveFailureLog"/>
+/// 记一笔、成功时把那笔撤掉。**同一个咽喉，不另找地方写。**
+/// </para>
 /// </remarks>
 public sealed class ArchiveRelay
 {
     private readonly IArchivePublisher _publisher;
     private readonly PublishedStore _published;
+    private readonly ArchiveFailureLog _failures;
     private readonly IAppLogger _logger;
 
     public ArchiveRelay(
         IArchivePublisher publisher,
         string label,
         PublishedStore published,
+        ArchiveFailureLog failures,
         IAppLogger? logger = null)
     {
         _publisher = publisher;
         _published = published;
+        _failures = failures;
         Label = label;
         _logger = logger ?? NullLogger.Instance;
     }
@@ -402,6 +411,11 @@ public sealed class ArchiveRelay
     /// 界面要显示它 —— 「归档层那一份没发上去」是**必须让用户知道**的事：
     /// 它意味着本地这一份还不能被清理（回查会拒），用户如果以为已经双份了，
     /// 就会手动删掉唯一的那一份。
+    /// <para>
+    /// ⚠️ <b>它只在内存</b>，所以它答的是「**这一趟运行**里最近那次」。
+    /// 「重启之前发生过的那些」在 <see cref="ArchiveFailureLog"/> 里 ——
+    /// 界面要**两个都看**，只看这个的话，重启后那句话就没了（T23-A）。
+    /// </para>
     /// </remarks>
     public string? LastFailure { get; private set; }
 
@@ -422,6 +436,16 @@ public sealed class ArchiveRelay
         {
             LastFailure = null;
             LastPublished = location.Value;
+
+            // ⚠️ 顺序：**先撤欠账，再记台账**。反过来的话，撤欠账那一步若失败
+            // （磁盘满、没权限），界面会一直提示「这条没发上去」——
+            // 而那是个**假警报**，用户会去查一个不存在的问题。
+            await BookkeepAsync(
+                evidenceId,
+                () => _failures.NoteRecoveredAsync(evidenceId, DateTimeOffset.Now),
+                $"发布到{Label}成功，但「它上次没发上去」那笔欠账没撤掉 —— "
+                + "重启后设置页会继续提示这一条（那是假的，它已经发上去了）");
+
             await RecordPublishedAsync(evidenceId, location);
             return result;
         }
@@ -433,38 +457,68 @@ public sealed class ArchiveRelay
         _logger.Log(LogLevel.Warn, "归档", $"发布到{Label}失败：{LastFailure}",
             new Dictionary<string, object?> { ["location"] = location.Value });
 
+        // ⚠️ **不传调用方的 CancellationToken**（见 `BookkeepAsync` 的说明）：
+        // 这条欠账要是跟着「收尾被取消」一起丢了，重启之后用户就再也看不到它 ——
+        // 而那正是 T23-A 要修的那个洞。
+        await BookkeepAsync(
+            evidenceId,
+            () => _failures.NoteFailedAsync(
+                new ArchiveFailureRecord(
+                    evidenceId, location.Value, LastFailure, DateTimeOffset.Now,
+                    ArchiveFailureState.Failed)),
+            $"发布到{Label}失败，而且这笔欠账没落盘 —— "
+            + "重启之后设置页不会提示这一条（盘上它仍然只有一份）");
+
         return result;
     }
 
     /// <summary>记一笔「这条已经发到归档层了」。**记不上不能把发布结果弄坏。**</summary>
     /// <remarks>
-    /// <para>
     /// ⚠️ <b>不传调用方的 <see cref="CancellationToken"/>，用 <see cref="CancellationToken.None"/>。</b>
     /// 走到这里**归档层上已经有那一份了** —— 这是既成事实。这时若收尾被取消（关机、退出）
     /// 而把这一行也丢掉，结果就是「归档层有、账上没有」⇒ 那条录像被判成唯一副本、
     /// **永远清不掉**，正是 T18 本身。账本比一次收尾的及时性值钱。
-    /// </para>
+    /// </remarks>
+    private Task RecordPublishedAsync(string evidenceId, RelativePath location) =>
+        BookkeepAsync(
+            evidenceId,
+            () => _published.AppendAsync(
+                new PublishedRecord(evidenceId, DateTimeOffset.Now, location.Value),
+                CancellationToken.None),
+            $"发布到{Label}成功，但「已归档」这笔账没记上 —— "
+            + "这条将来会被当成唯一副本、永远清不掉（磁盘只涨不落）");
+
+    /// <summary>
+    /// 记一笔账：**记不上只留痕，绝不把发布结果弄坏**。
+    /// </summary>
+    /// <param name="evidenceId">哪一条的账。⚠️ 必须传：这三条 Warn 说的都是
+    /// 「**某一条**的账没记上」，不写出是哪一条，事后翻日志的人无从下手。</param>
+    /// <param name="write">真正落盘的那一步。</param>
+    /// <param name="consequence">记不上的**后果**（不是堆栈）—— 出事了要能回答「下一步会怎样」。</param>
+    /// <remarks>
     /// <para>
-    /// ⚠️ 这里 <b>吞掉异常只记日志</b>，与 <c>CleanupExecutor.TryAppendAsync</c> 同一条规矩：
-    /// 账没记上是个**要让人看见的问题**（记 Warn，说的是后果而不是堆栈），
+    /// 与 <c>CleanupExecutor.TryAppendAsync</c> 同一条规矩：账没记上是个
+    /// **要让人看见的问题**（记 Warn，说的是**后果**而不是堆栈），
     /// 但它**不是发布失败** —— 返回 <c>Published: true</c> 才是实话，
     /// 否则调用方会去重发一份归档层上已经有的东西。
     /// </para>
+    /// <para>
+    /// ⚠️ <b>一律用 <see cref="CancellationToken.None"/></b>，不传调用方那个：
+    /// 走到这几个调用点时事实已经发生了（归档层上有没有那一份已经定了），
+    /// 这时因为「收尾被取消」把账丢掉，两次都对不上 —— 一次是「有却没记」，
+    /// 一次是「没成却没留痕」。
+    /// </para>
     /// </remarks>
-    private async Task RecordPublishedAsync(string evidenceId, RelativePath location)
+    private async Task BookkeepAsync(string evidenceId, Func<Task> write, string consequence)
     {
         try
         {
-            await _published.AppendAsync(
-                new PublishedRecord(evidenceId, DateTimeOffset.Now, location.Value),
-                CancellationToken.None);
+            await write();
         }
         catch (Exception ex)
         {
-            _logger.Log(LogLevel.Warn, "归档",
-                $"发布到{Label}成功，但「已归档」这笔账没记上：{ex.Message} —— "
-                + "这条将来会被当成唯一副本、永远清不掉（磁盘只涨不落）",
-                new Dictionary<string, object?> { ["证据"] = evidenceId, ["落点"] = location.Value });
+            _logger.Log(LogLevel.Warn, "归档", $"{consequence}（证据 {evidenceId}）：{ex.Message}",
+                new Dictionary<string, object?> { ["证据"] = evidenceId });
         }
     }
 }

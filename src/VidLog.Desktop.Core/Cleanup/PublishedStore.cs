@@ -37,7 +37,16 @@ public sealed record PublishedRecord(
 /// </remarks>
 public sealed class PublishedStore
 {
-    private static readonly JsonSerializerOptions SerializerOptions = new() { WriteIndented = false };
+    /// <remarks>
+    /// ⚠️ <c>camelCase</c> 是**与 <c>UploadQueue</c> 对齐**的（那边也是自己写的落盘文件，
+    /// 也走 camelCase）。这个文件会进诊断包，人是要打开看的 ——
+    /// 同一批自写的 <c>*.jsonl</c> 里混两种大小写只会让人怀疑自己看错了。
+    /// </remarks>
+    private static readonly JsonSerializerOptions SerializerOptions = new()
+    {
+        WriteIndented = false,
+        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+    };
 
     private readonly string _path;
     private readonly SemaphoreSlim _gate = new(1, 1);

@@ -140,6 +140,21 @@ public sealed class DesktopServices : IAsyncDisposable
     public ArchiveRelay? ArchiveRelay { get; private init; }
 
     /// <summary>
+    /// 「哪几条没发到归档层」那本账（T23-A）。
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ 界面要**连同 <see cref="ArchiveRelay"/> 的 <c>LastFailure</c> 一起看**：
+    /// <c>LastFailure</c> 只在内存，答的是「**这一趟运行**里最近那次」；
+    /// 这个答的是「**重启之前**发生过的那些」。只看前者的话，
+    /// 一重启那句话就没了 —— 而那正是最容易出事的时候。
+    /// <para>
+    /// ⚠️ 归档层是**本机磁盘**时 <see cref="ArchiveRelay"/> 是 <c>null</c>（那时发布是空操作），
+    /// 但这本账**照样在**：用户可能刚从 NAS 改回本机，之前欠着的那几条仍然只有一份。
+    /// </para>
+    /// </remarks>
+    public ArchiveFailureLog ArchiveFailures { get; private init; } = null!;
+
+    /// <summary>
     /// 清理链路（规格 §3.5.4 / §3.5.5）。
     /// </summary>
     /// <remarks>
@@ -438,9 +453,13 @@ public sealed class DesktopServices : IAsyncDisposable
         // 建两个实例等于两个闸各管各的，同一行就可能被两个写者交错着追加。
         var published = new PublishedStore(layout.PublishedPath);
 
+        // T23-A：「哪几条没发上去」那本账。**与上面那本分开建**（一个是台账、一个是欠账），
+        // 但同样是「发布端写、界面端读」，所以也只建一个。
+        var archiveFailures = new ArchiveFailureLog(layout.ArchiveFailurePath, logger);
+
         var relay = target.IsOnThisMachine
             ? null
-            : new ArchiveRelay(publisher, target.Label, published, logger: logger);
+            : new ArchiveRelay(publisher, target.Label, published, archiveFailures, logger);
 
         if (target.ConfigurationProblem is { } problem)
         {
@@ -569,6 +588,7 @@ public sealed class DesktopServices : IAsyncDisposable
             CloudUploads = cloudUploads,
             Storage = locations,
             ArchiveRelay = relay,
+            ArchiveFailures = archiveFailures,
             Live = live,
             Cleanup = cleanup,
             TrustedClock = trustedClock,

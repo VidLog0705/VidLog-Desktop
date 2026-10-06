@@ -1645,24 +1645,55 @@ public partial class SettingsWindow : Window
     /// 「归档层那一份没发上去」——**必须说出来**。
     /// </summary>
     /// <remarks>
+    /// <para>
     /// 后果很具体：盘上这份现在**只有一份**。用户若以为已经双份了，
     /// 就可能手动删掉唯一的那一份（那正是 I2 要防的事）。
+    /// </para>
+    /// <para>
+    /// ⚠️ <b>两个来源都要看</b>（T23-A）：
+    /// <see cref="ArchiveRelay.LastFailure"/> 只在内存，答的是「**这一趟运行**里最近那次」；
+    /// <see cref="DesktopServices.ArchiveFailures"/> 是落盘的，答的是
+    /// 「**重启之前**发生过的那些」。只看前者的话，一重启这句话就没了 ——
+    /// 而那正是最容易出事的时候（重启往往就是因为刚出过问题）。
+    /// </para>
     /// </remarks>
     private void ShowArchiveRelayFailure()
     {
         var relay = _host.Services.ArchiveRelay;
 
-        if (relay?.LastFailure is not { Length: > 0 } failure)
+        // ① 这一趟运行里最近那次失败 —— 最具体（带着原因），优先说它。
+        if (relay?.LastFailure is { Length: > 0 } failure)
+        {
+            ArchiveRelayNote.Visibility = Visibility.Visible;
+            ArchiveRelayNote.Text =
+                $"⚠️ 最近一次发布到{relay.Label}没成功：{failure}\n"
+                + "盘上这一份仍然是好的、也能检索 —— 但它现在只有一份，"
+                + "在发上去之前别删它。修好之后下次收尾会自动再发。";
+            return;
+        }
+
+        // ② 重启之前欠下的那些。⚠️ 归档层是本机时 relay 是 null，但这本账照样要读
+        //（用户可能刚从 NAS 改回本机，之前欠着的那几条仍然只有一份）。
+        var outstanding = _host.Services.ArchiveFailures.Outstanding;
+
+        if (outstanding.Count == 0)
         {
             ArchiveRelayNote.Visibility = Visibility.Collapsed;
             return;
         }
 
+        // 按时间倒序取最近的那条说细节，其余只报个数 —— 一条提示里塞 N 条原因是
+        // 没人读的（界面上是一行 Caption，不是列表）。
+        var newest = outstanding.OrderByDescending(r => r.At).First();
+        var rest = outstanding.Count - 1;
+
         ArchiveRelayNote.Visibility = Visibility.Visible;
         ArchiveRelayNote.Text =
-            $"⚠️ 最近一次发布到{relay.Label}没成功：{failure}\n"
-            + "盘上这一份仍然是好的、也能检索 —— 但它现在只有一份，"
-            + "在发上去之前别删它。修好之后下次收尾会自动再发。";
+            $"⚠️ 有 {outstanding.Count} 条录像没发到归档层（最近一条：{newest.EvidenceId}，"
+            + $"{newest.At.LocalDateTime:yyyy-MM-dd HH:mm} —— {newest.Reason}）"
+            + (rest > 0 ? $"，另有 {rest} 条更早的。" : "。")
+            + "\n盘上这些仍然是好的、也能检索 —— 但它们现在只有一份，"
+            + "在发上去之前别删。修好之后下次收尾会自动再发。";
     }
 
     /// <summary>界面上当前选中的归档层。</summary>

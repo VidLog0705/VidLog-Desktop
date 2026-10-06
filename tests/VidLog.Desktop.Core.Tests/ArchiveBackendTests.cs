@@ -242,7 +242,7 @@ public class ArchiveBackendTests
     {
         var logger = new CapturingLogger();
         using var published = new TempStore();
-        var relay = new ArchiveRelay(new AlwaysFailingPublisher(), "NAS", published.Store, logger: logger);
+        var relay = new ArchiveRelay(new AlwaysFailingPublisher(), "NAS", published.Store, published.Failures, logger: logger);
 
         var result = await relay.PublishAsync("e-000", Where("e.mp4"), "local.mp4");
 
@@ -422,12 +422,12 @@ public class ArchiveBackendTests
     public async Task 发布成功会清掉上一次的失败()
     {
         using var published = new TempStore();
-        var relay = new ArchiveRelay(new AlwaysFailingPublisher(), "NAS", published.Store);
+        var relay = new ArchiveRelay(new AlwaysFailingPublisher(), "NAS", published.Store, published.Failures);
 
         await relay.PublishAsync("a-000", Where("a.mp4"), "x.mp4");
         Assert.NotNull(relay.LastFailure);
 
-        var ok = new ArchiveRelay(new SucceedingPublisher(), "NAS", published.Store);
+        var ok = new ArchiveRelay(new SucceedingPublisher(), "NAS", published.Store, published.Failures);
         await ok.PublishAsync("a-000", Where("a.mp4"), "x.mp4");
 
         Assert.Null(ok.LastFailure);
@@ -442,7 +442,7 @@ public class ArchiveBackendTests
     public async Task 发布成功会往已归档账上追加一条()
     {
         using var published = new TempStore();
-        var relay = new ArchiveRelay(new SucceedingPublisher(), "NAS", published.Store);
+        var relay = new ArchiveRelay(new SucceedingPublisher(), "NAS", published.Store, published.Failures);
 
         await relay.PublishAsync("e-000", Where("e.mp4"), "local.mp4");
 
@@ -460,7 +460,7 @@ public class ArchiveBackendTests
         // 写错成「无论成败都记」的话，归档层上根本没有那一份，
         // 而清理层会以为它有第二份 ⇒ **把唯一副本删掉**。
         using var published = new TempStore();
-        var relay = new ArchiveRelay(new AlwaysFailingPublisher(), "NAS", published.Store);
+        var relay = new ArchiveRelay(new AlwaysFailingPublisher(), "NAS", published.Store, published.Failures);
 
         await relay.PublishAsync("e-000", Where("e.mp4"), "local.mp4");
 
@@ -475,7 +475,7 @@ public class ArchiveBackendTests
         // 取后者会把起算点往后推 ⇒ 那条录像比它该被清的时刻更晚才能清。
         // 起算点的意思是「**第一次**在别处有了第二份」。
         using var published = new TempStore();
-        var relay = new ArchiveRelay(new SucceedingPublisher(), "NAS", published.Store);
+        var relay = new ArchiveRelay(new SucceedingPublisher(), "NAS", published.Store, published.Failures);
 
         var first = new DateTimeOffset(2026, 9, 1, 0, 0, 0, TimeSpan.FromHours(8));
         var later = first.AddDays(10);
@@ -497,9 +497,17 @@ public class ArchiveBackendTests
         {
             _root = Path.Combine(Path.GetTempPath(), "vidlog-published-" + Guid.NewGuid().ToString("N"));
             Store = new PublishedStore(Path.Combine(_root, "published.jsonl"));
+            Failures = new ArchiveFailureLog(Path.Combine(_root, "archive-failures.jsonl"));
         }
 
         public PublishedStore Store { get; }
+
+        /// <summary>T23-A 的那本「没发上去」的账 —— 与 <see cref="Store"/> **方向相反**。</summary>
+        public ArchiveFailureLog Failures { get; }
+
+        /// <summary>再开一份**指向同一个目录**的账，用来演「重启」（内存全丢、文件还在）。</summary>
+        public ArchiveFailureLog ReopenFailures() =>
+            new(Path.Combine(_root, "archive-failures.jsonl"));
 
         public void Dispose()
         {

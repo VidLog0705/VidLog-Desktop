@@ -131,6 +131,16 @@ public sealed class DataLayout
     public string PublishedPath => Path.Combine(RootDirectory, "published.jsonl");
 
     /// <summary>
+    /// 「哪几条没发到归档层」的那本账（T23-A）。
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ 与 <see cref="PublishedPath"/> **方向相反**，别合并：那边记**成了**的
+    /// （只增不减，清理层的时间锚），这边记**没成的**（会被撤掉的待办集合）。
+    /// 一个是台账，一个是欠账。
+    /// </remarks>
+    public string ArchiveFailurePath => Path.Combine(RootDirectory, "archive-failures.jsonl");
+
+    /// <summary>
     /// 百度网盘的登录令牌（设计图 `_45`「账号与上传状态」）。
     /// </summary>
     /// <remarks>

@@ -180,6 +180,66 @@ public class DesktopServicesTests
     }
 
     [Fact]
+    public async Task 发布失败的欠账跨重启仍看得见_补上之后才消失()
+    {
+        // ⚠️ **T23-A 的验收**（清单原话：「让发布失败 → 重启 → 断言设置页**仍显示**那条失败」）。
+        // ⚠️ 这里断言到 `DesktopServices.ArchiveFailures` 为止 —— 设置页那一步在 WPF 外壳，
+        // 那个工程没有测试（T27②），只能手验。这一条管的是**它读的那个东西**跨不跨得过重启。
+        using var dir = new TempDir();
+        var layout = new DataLayout(dir.Dir("data"));
+
+        // 拿一个**文件**当归档根：发布必然失败（`Directory.CreateDirectory` 就会抛）
+        var blocker = System.IO.Path.Combine(dir.Path, "not-a-directory");
+        await File.WriteAllTextAsync(blocker, "x");
+
+        var relative = RelativePath.Parse("2026/10/06/SF1000000001/e-000.mp4");
+        var local = System.IO.Path.Combine(layout.ArchiveRoot, relative.Value);
+        Directory.CreateDirectory(System.IO.Path.GetDirectoryName(local)!);
+        await File.WriteAllTextAsync(local, "x");
+
+        // ── 第一趟：发布失败 ───────────────────────────────────────
+        await using (var first = DesktopServices.Create(
+            layout, playbackPort: null,
+            archive: new ArchiveTarget(ArchiveBackendKind.Nas, blocker)))
+        {
+            Assert.NotNull(first.ArchiveRelay);
+
+            var published = await first.ArchiveRelay!.PublishAsync("e-000", relative, local);
+            Assert.False(published.Published);
+
+            Assert.Single(first.ArchiveFailures.Outstanding);
+        }
+
+        // ── 重启：另装配一套（内存全丢、文件还在），换成能写进去的归档层 ──
+        var nas = dir.Dir("nas");
+        Directory.CreateDirectory(nas);
+
+        await using var second = DesktopServices.Create(
+            layout, playbackPort: null,
+            archive: new ArchiveTarget(ArchiveBackendKind.Nas, nas));
+
+        // ⚠️ 这一句就是「重启后设置页仍显示」在 Core 那一层的等价物。
+        var carried = Assert.Single(second.ArchiveFailures.Outstanding);
+        Assert.Equal("e-000", carried.EvidenceId);
+
+        // 这一趟里 `ArchiveRelay.LastFailure` 是 null（内存是空的）——
+        // 所以只看它就什么都看不见，这正是缺陷的形状。
+        Assert.Null(second.ArchiveRelay!.LastFailure);
+
+        // ── 补上：欠账撤掉，而且**撤掉这件事也落盘** ────────────────
+        var retry = await second.ArchiveRelay.PublishAsync("e-000", relative, local);
+        Assert.True(retry.Published, retry.FailureReason);
+        Assert.Empty(second.ArchiveFailures.Outstanding);
+
+        // ── 再重启一次：不能再冒出来 ────────────────────────────────
+        await using var third = DesktopServices.Create(
+            layout, playbackPort: null,
+            archive: new ArchiveTarget(ArchiveBackendKind.Nas, nas));
+
+        Assert.Empty(third.ArchiveFailures.Outstanding);
+    }
+
+    [Fact]
     public async Task 找不到FFmpeg时给出可见警告而不是静默()
     {
         // 换个空目录 + 清掉环境变量，让定位器只能去 PATH 找；
@@ -583,6 +643,13 @@ public class DesktopServicesTests
         // 界面真的把 `_host.Logger` 递下去了、别的地方没有偷偷 new 一个。
         Assert.Contains(
             "new LiveDirectory(logger: logger)",
+            File.ReadAllText(Path.Combine(RepoRoot(), "src", "VidLog.Desktop.Core", "Configuration", "DesktopServices.cs")),
+            StringComparison.Ordinal);
+
+        // ④ 「哪几条没发上去」那本账（T23-A）也是「logger 可选」的构造点 ——
+        //    它的读不出/写不上都要靠这条通道才看得见，不传就是静默的。
+        Assert.Contains(
+            "new ArchiveFailureLog(layout.ArchiveFailurePath, logger)",
             File.ReadAllText(Path.Combine(RepoRoot(), "src", "VidLog.Desktop.Core", "Configuration", "DesktopServices.cs")),
             StringComparison.Ordinal);
         var mainWindow = File.ReadAllText(Path.Combine(app, "MainWindow.xaml.cs"));

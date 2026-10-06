@@ -300,7 +300,7 @@ public class RecordingSessionTests
         await using var session = Build(
             dir, capture, relay: new ArchiveRelay(
                 new FailingPublisher(), "NAS",
-                new PublishedStore(dir.File("published.jsonl"))));
+                new PublishedStore(dir.File("published.jsonl")), new ArchiveFailureLog(dir.File("archive-failures.jsonl"))));
 
         await session.StartAsync(WaybillNumber.Parse("SF1"), "libx264");
         var outcome = await session.StopAsync(StopReason.Manual);
@@ -529,7 +529,7 @@ public class RecordingSessionTests
         await using var session = Build(
             dir, capture, clock: clock, relay: new ArchiveRelay(
                 new FailingPublisher(), "NAS",
-                new PublishedStore(dir.File("published.jsonl"))));
+                new PublishedStore(dir.File("published.jsonl")), new ArchiveFailureLog(dir.File("archive-failures.jsonl"))));
 
         await session.StartAsync(WaybillNumber.Parse("SF1"), "libx264");
         clock.Advance(TimeSpan.FromSeconds(5));
