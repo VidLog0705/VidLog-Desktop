@@ -8,6 +8,7 @@ using ComboBox = System.Windows.Controls.ComboBox;
 using ComboBoxItem = System.Windows.Controls.ComboBoxItem;
 using KeyEventArgs = System.Windows.Input.KeyEventArgs;
 using SelectionChangedEventArgs = System.Windows.Controls.SelectionChangedEventArgs;
+using VidLog.Desktop.Core;
 using VidLog.Desktop.Core.Index;
 using VidLog.Desktop.Core.Search;
 

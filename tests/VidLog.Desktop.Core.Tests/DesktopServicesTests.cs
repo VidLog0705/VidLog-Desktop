@@ -623,7 +623,14 @@ public class DesktopServicesTests
     {
         var app = Path.Combine(RepoRoot(), "src", "VidLog.Desktop.App");
 
-        var settings = File.ReadAllText(Path.Combine(app, "SettingsWindow.xaml.cs"));
+        // ⚠️ 2026-10-06（T26①）设置窗按页签拆成了若干 partial ⇒ **必须读全部**。
+        // 只读主文件的话，下面那两行一旦挪进别的 partial，这条就会**假红** ——
+        // 而假红的惯常下场是有人把这里改成去读那个具体文件，
+        // 于是下一次挪动再假红一次（这正是「只挡删改、挡不住搬家」那个天花板）。
+        var settings = string.Concat(
+            Directory.EnumerateFiles(app, "SettingsWindow*.cs")
+                .OrderBy(one => one, StringComparer.Ordinal)
+                .Select(File.ReadAllText));
         var host = File.ReadAllText(Path.Combine(app, "AppHost.cs"));
 
         // ① 出口真的存在（界面层唯一能拿到 logger 的地方）。
@@ -1436,6 +1443,76 @@ public class DesktopServicesTests
         finally
         {
             Environment.SetEnvironmentVariable("VIDLOG_LICENSE_PUBKEY", previous);
+        }
+    }
+
+    /// <summary>
+    /// 改造清单 T26。母仓 §4：单文件 ≤ 800 行是**建议**，「超过 1500 行**必须**拆」。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// 清单点名了三个破 1500 的文件（T26 的标题就是「三个文件破 1500 行硬上限」），
+    /// 验收写的是「拆完后**每个文件** ≤ 800 行」—— 那个「每个」指的就是这三个。
+    /// ⚠️ 本仓只钉得到其中两个：<c>recorder_page.dart</c> 在手机仓（T26③），
+    /// 得在那边自己钉一条。
+    /// </para>
+    /// <para>
+    /// ⚠️ <b>为什么不扫「全仓所有 .cs」</b>：实测本仓有 <b>18 个</b> .cs 超 800 行
+    ///（含 8 个测试文件；还有 <c>MainWindow.xaml.cs</c> 1615 行，它同样破了 1500，
+    /// 但清单里没点它）。照字面扫全仓的话白名单要列 18 条 —— 那就不叫绊线了，
+    /// 叫给现状盖章（新写一个 900 行的文件照样过得去）。清单说话的范围是
+    /// 「破 1500 硬上限的那三个」，所以这里也只钉它们。
+    /// </para>
+    /// <para>
+    /// ⚠️ 天花板：白名单冻结的是**文件**而不是**行数** —— 进了名单的文件还能继续变长。
+    /// 清单里明写了这个洞并接受（T7 的硬编码字号绊线用的是同一招）。
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public void T26_点名的长文件拆完之后都不超过800行()
+    {
+        const int Limit = 800;
+        var repo = RepoRoot();
+
+        // ⚠️ 只减不增，每条都写清归属 —— 下面第二半逼它自己缩。
+        var pending = new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            ["src/VidLog.Desktop.Core/Web/PlaybackServer.cs"] =
+                "T26② 还没做：它同时是 HTTP 服务器、路由表和一摊端点，按路由前缀拆",
+        };
+
+        var named = Directory
+            .EnumerateFiles(Path.Combine(repo, "src", "VidLog.Desktop.App"), "SettingsWindow*.cs")
+            .Append(Path.Combine(repo, "src", "VidLog.Desktop.Core", "Web", "PlaybackServer.cs"));
+
+        var offenders = new List<string>();
+
+        foreach (var file in named)
+        {
+            var relative = Path.GetRelativePath(repo, file).Replace('\\', '/');
+            if (pending.ContainsKey(relative)) continue;
+
+            var lines = File.ReadLines(file).Count();
+            if (lines > Limit)
+            {
+                offenders.Add($"{relative}: {lines} 行");
+            }
+        }
+
+        Assert.True(
+            offenders.Count == 0,
+            $"这些文件超过 {Limit} 行 —— 按页签（UI）/ 按职责（服务）拆成 partial：\n  "
+                + string.Join("\n  ", offenders));
+
+        // 第二半：白名单里的文件一旦**已经不超了**就报错。不逼它缩的话，
+        // 拆完了条目还留着，往后谁再往里加行都没人管。
+        foreach (var (relative, why) in pending)
+        {
+            var lines = File.ReadLines(Path.Combine(repo, relative)).Count();
+            Assert.True(
+                lines > Limit,
+                $"`{relative}` 现在只有 {lines} 行，已经不超 {Limit} 了 —— "
+                    + $"把它从白名单里删掉（它当初为什么在里面：{why}）。");
         }
     }
 

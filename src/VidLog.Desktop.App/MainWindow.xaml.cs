@@ -461,9 +461,13 @@ public partial class MainWindow : Window
 
         try
         {
-            var plan = await cleanup.PreviewAsync(_host.Settings.Retention, DateTimeOffset.Now);
+            // ⚠️ 走**同一个**流程：设置页那颗【按时间清理…】算的东西与这里**一模一样**
+            // （都是按保留期），开头那句话此前在两处各写了一遍 ——
+            // 改一处漏一处的话，用户会看到「开机时说的」与「自己点出来的」对不上。
+            var preview = await _host.Services.CleanupFlow.ByTimeAsync(
+                _host.Settings.Retention, DateTimeOffset.Now);
 
-            if (plan.Candidates.Count == 0)
+            if (preview.Proposal is not { } proposal)
             {
                 // **没有候选就不打扰** —— 每次开机弹一个「没什么要清的」是噪音，
                 // 而噪音会把真正该看的那一次淹掉。
@@ -473,10 +477,7 @@ public partial class MainWindow : Window
 
             // 预告框与「删了什么」那句话只有一份实现（`CleanupPrompt`）——
             // 它现在有三个调用点，各写一遍迟早有一处把 I8 那三条说明改漏。
-            var outcome = await CleanupPrompt.AskAndRunAsync(
-                this, _host, plan,
-                $"保留期到了的录像有 {plan.Candidates.Count} 条，"
-                + $"约 {plan.TotalBytes / 1024 / 1024} MB。");
+            var outcome = await CleanupPrompt.AskAndRunAsync(this, _host, proposal);
 
             NoticesText.Text = $"{DateTime.Now:HH:mm:ss}  {outcome.Message}";
         }

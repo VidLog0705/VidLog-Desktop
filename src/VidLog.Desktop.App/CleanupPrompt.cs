@@ -31,8 +31,10 @@ internal sealed record CleanupOutcome(bool Ran, string Message);
 /// </para>
 /// <para>
 /// ⚠️ <b>本文件是外壳，不是逻辑</b>：预告框说什么、图标挑哪一档、点【是】之后
-/// 该不该带 <c>force</c>，全都在 <see cref="CleanupAsk.For"/> 里算好了。
-/// 留在这里的只有 <c>MessageBox.Show</c> 这一句 API 调用、以及它的参数怎么摆。
+/// 该不该带 <c>force</c>，全都在 <see cref="CleanupAsk.For"/> 里算好了；
+/// 「这一次是哪一种清理、要不要问、开头那句话怎么写」在
+/// <see cref="CleanupFlow"/> 里算好了。留在这里的只有 <c>MessageBox.Show</c>
+/// 这一句 API 调用、以及它的参数怎么摆。
 /// 原因是这个工程没有测试工程（T27）—— 把决定留在这一层，
 /// 「界面把 force 传下去」这条线就永远是读出来对的、不是测出来的。
 /// </para>
@@ -47,10 +49,15 @@ internal sealed record CleanupOutcome(bool Ran, string Message);
 /// </remarks>
 internal static class CleanupPrompt
 {
+    /// <param name="proposal">
+    /// 整个方案带着那句开头话一起收 —— 分开传两个参数的话，
+    /// 调用方就多了一次「把 A 的话配到 B 的方案上」的机会，而那种错不报错。
+    /// </param>
     public static async Task<CleanupOutcome> AskAndRunAsync(
-        Window owner, AppHost host, CleanupPlan plan, string headline)
+        Window owner, AppHost host, CleanupProposal proposal)
     {
-        var ask = CleanupAsk.For(plan, headline);
+        var plan = proposal.Plan;
+        var ask = CleanupAsk.For(plan, proposal.Headline);
 
         var answer = MessageBox.Show(
             owner,

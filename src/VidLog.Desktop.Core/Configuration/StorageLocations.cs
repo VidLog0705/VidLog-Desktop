@@ -357,6 +357,17 @@ public sealed class StorageLocations
         return null;
     }
 
+    /// <summary>
+    /// 一块盘现在还剩多少。**每次调用都真去问一次盘**，不吃缓存。
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ 是给「按空间释放」那一路用的：读到的那个数**马上就要写进给用户看的那句话里**
+    /// （「D:\ 还剩 12.3 GB」），缓存一份的话说出来的话可能早就不是真的了。
+    /// 它也能探**兜底根**（<see cref="FallbackRoot"/>）—— 那个根不属于
+    /// <see cref="Slots"/>，所以 <see cref="Describe"/> 里没有它。
+    /// </remarks>
+    public VolumeSpace? Measure(string path) => _probe.Measure(path);
+
     /// <summary>把每个根当下的实情列出来，给设置页的两张表和容量条用。</summary>
     public IReadOnlyList<DiskSlotStatus> Describe()
     {

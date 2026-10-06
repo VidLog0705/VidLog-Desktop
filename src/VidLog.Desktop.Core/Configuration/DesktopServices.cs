@@ -164,6 +164,16 @@ public sealed class DesktopServices : IAsyncDisposable
     public CleanupService Cleanup { get; private init; } = null!;
 
     /// <summary>
+    /// 设置页那两颗清理按钮的流程（T26①）—— 「算什么、要不要问、怎么问」。
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ 与 <see cref="Cleanup"/> 的分工：那边管「怎么算、怎么删」，这边管
+    /// 「**这一次该算哪一种、算完该跟用户说什么**」。界面拿到结果之后只剩
+    /// 「弹框 / 写状态行」两件事，**一个判断都不留**。
+    /// </remarks>
+    public CleanupFlow CleanupFlow { get; private init; } = null!;
+
+    /// <summary>
     /// 可信时钟（规格 §3.6.4）。录制的闸门与时间来源都在它身上。
     /// </summary>
     public TrustedClock TrustedClock { get; private init; } = null!;
@@ -571,6 +581,12 @@ public sealed class DesktopServices : IAsyncDisposable
                 effectiveLogger),
             effectiveLogger);
 
+        // T26①：【按时间清理…】/【按空间释放…】按下之后该算什么 —— 从 WPF 的
+        // 按钮点击事件里搬出来的（母仓 §4「逻辑不许塞进 UI 层」）。
+        // ⚠️ 保留期是**每次调用时传进来的**，不在这里存一份：设置页上改完立刻生效，
+        // 而这里存的任何快照在保存设置之后就过期了（且过期不会报错，只是清错东西）。
+        var cleanupFlow = new CleanupFlow(cleanup, locations);
+
         return new DesktopServices(
             layout, index, punches, labels, finalizer, orphanRecovery,
             search, punchNavigation, server, warnings, playbackPort ?? DefaultPlaybackPort,
@@ -591,6 +607,7 @@ public sealed class DesktopServices : IAsyncDisposable
             ArchiveFailures = archiveFailures,
             Live = live,
             Cleanup = cleanup,
+            CleanupFlow = cleanupFlow,
             TrustedClock = trustedClock,
             ClockSource = clockSource ?? new HttpDateClockSource(),
             Exporter = new Export.EvidenceExporter(locations, logger),
