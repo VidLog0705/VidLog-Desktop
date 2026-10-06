@@ -28,8 +28,15 @@ env:
   # 跑全量时排除它们、单独一步跑它们（为什么要拆开，见下面那一步的注释）。
   # ⚠️ 加了新类要**两边都改** —— 只改一处的话那组会在两个步骤里各跑一次
   #（用例数一眼看得出），不会静默漏掉，所以这个名单还算安全。
-  CAMERA_FILTER: 'FullyQualifiedName~NetworkCamera|FullyQualifiedName~Prerecord|FullyQualifiedName~RecordingPreview|FullyQualifiedName~PreviewThroughput'
-  NON_CAMERA_FILTER: 'FullyQualifiedName!~NetworkCamera&FullyQualifiedName!~Prerecord&FullyQualifiedName!~RecordingPreview&FullyQualifiedName!~PreviewThroughput'
+  #
+  # ⚠️ `PreviewProcess` 是 2026-10-05 补进来的，补之前它**不在名单里**：
+  # 那个类里有 **2 条 `[RequiresRtspFact]`**，于是它们跑在**全量**那一步，
+  # 跟一千多条并排 —— 而拆两步的唯一理由就是不让这一组跟别人抢 CPU。
+  # 这正是上面那句「名单会走岔」的又一次实例（漏的是名字最不像的那个）。
+  # 判据不是「看类名像不像」，是：**哪个类里有 RequiresRtspFact，就得在这个名单里**
+  #（`grep -c "\[RequiresRtspFact" tests/**/*.cs` 一把就能对出来）。
+  CAMERA_FILTER: 'FullyQualifiedName~NetworkCamera|FullyQualifiedName~Prerecord|FullyQualifiedName~RecordingPreview|FullyQualifiedName~PreviewThroughput|FullyQualifiedName~PreviewProcess'
+  NON_CAMERA_FILTER: 'FullyQualifiedName!~NetworkCamera&FullyQualifiedName!~Prerecord&FullyQualifiedName!~RecordingPreview&FullyQualifiedName!~PreviewThroughput&FullyQualifiedName!~PreviewProcess'
 
 jobs:
   dotnet:
@@ -125,33 +132,94 @@ jobs:
       # ─────────────────────────────────────────────
       - name: 造一个假的网络摄像头源
         run: |
-          # `py` 是 Windows 上的正牌启动器，`python` 反而经常只是商店的占位壳 ——
-          # 两个都试，免得到了一台没装 python 的机器上以一句看不懂的话红掉。
+          # ─────────────────────────────────────────────
+          # 挑解释器：判据是「**它真能跑**」，不是「找得到」。
+          #
+          # ⚠️ 2026-10-05 在 vidlog-laptop 上踩出来的，代价是四轮 CI：
+          # 那台机器上 `python` 是个**微软商店的占位壳**
+          #（`%LOCALAPPDATA%\Microsoft\WindowsApps\python.exe`）——
+          # 它**找得到**（`Get-Command` 有结果），但**什么也不执行、一个字符也不打印**。
+          # 于是这段代码挑中了它 ⇒ 脚本从没跑起来 ⇒ 而那 15 条用例照样「绿」。
+          # 更难看的是：这条注释本来就在提醒「`python` 经常只是商店的占位壳」，
+          # 而代码只判了「找不找得到」—— 写了，自己没照做。
+          #
+          # 所以判据必须**能失败**：拿一句 print 真跑一下，有输出才算数。
+          # 商店壳不会打印任何东西，也过不了这一关。
+          # ─────────────────────────────────────────────
+          function Test-Python([string]$exe) {
+            if (-not $exe) { return $false }
+            $out = & $exe -c "print('ok')" 2>$null
+            return ($LASTEXITCODE -eq 0) -and ("$out" -match 'ok')
+          }
+
           $py = (Get-Command python -ErrorAction SilentlyContinue).Source
-          if (-not $py) { $py = (Get-Command py -ErrorAction SilentlyContinue).Source }
-          if (-not $py) { throw 'runner 上既没有 python 也没有 py —— 假源那一步起不来' }
+          if (-not (Test-Python $py)) { $py = (Get-Command py -ErrorAction SilentlyContinue).Source }
+          if (-not (Test-Python $py)) {
+            throw 'runner 上没有一个能真跑的 python —— `python`/`py` 要么不存在、要么是微软商店的占位壳'
+          }
+          Write-Host "假源用的解释器: $py"
+          & $py -V
+
+          # 端口预检：8081 上已经有人（多半是上一次没收干净的假源）就直接红。
+          #
+          # ⚠️ 少了这一条，两个源会**各绑各的**（见上），连到谁身上看运气 ——
+          # 表现是「有时绿有时红、红在很深的用例里」，极难查。
+          # 只看 LISTENING，不看 TIME_WAIT：上一次跑完留下的 TIME_WAIT 无害，
+          # 按它判就会把一次正常的重跑误伤成红。
+          if (netstat -ano | Select-String ':8081\s.*LISTENING') {
+            throw '8081 上已经有东西在监听了（多半是上一次没收干净的假源）—— 先把它收掉再跑'
+          }
 
           $log = "$env:RUNNER_TEMP\fake-camera.log"
-          # 端口绑上之前它会先把片子造出来（几秒），所以留 30 秒。
+          # `-u` 是**必须的**：stdout 被重定向到文件时会变成块缓冲，
+          # 下面那行「我起来了」会被憋在缓冲区里，这份日志就永远读不到 ——
+          # 排查那四轮 CI 时打出来的日志文件一直是**空的**，就是这个原因。
           $proc = Start-Process -FilePath $py -PassThru -WindowStyle Hidden `
-            -ArgumentList 'scripts/fake-network-camera.py', '--port', '8081' `
+            -ArgumentList '-u', 'scripts/fake-network-camera.py', '--port', '8081' `
             -RedirectStandardOutput $log -RedirectStandardError "$log.err"
           "FAKE_CAMERA_PID=$($proc.Id)" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
 
+          # ─────────────────────────────────────────────
+          # 就绪判据：**我们的进程自己说它起来了**，而不是「8081 上有人应声」。
+          #
+          # ⚠️ 原来的写法是 `TcpClient` 连一下 8081，连上就算就位。那条判据**测错了东西**：
+          # 它只问「这个端口有没有人接」，**不问接的是不是我们**。2026-10-05 那次
+          # 「假源已就位」（1.8 秒就绪）就是**假绿** —— 当时 8081 上接的是别的残留，
+          # 我们那个源**一个字节都没发过**，而 CI 照样往下跑，
+          # 撞上真源的那两条用例随即以 Assert.NotNull 红掉。这正是本仓最防的
+          # 「有人应声所以绿」。
+          #
+          # 现在的判据问的是「**是不是我们**」：日志里出现脚本自己那句
+          # `fake network camera serving` 才算数 —— 商店壳那种「起来了其实什么都没干」
+          # 再也混不过去。
+          #
+          # ⚠️ 但**光看日志不够**：脚本是先 print 再 bind 的，所以还得**同时**要求进程
+          # 还活着（`-not $proc.HasExited`）—— 万一它打完这句就崩，也算没起来。
+          #
+          # ⚠️ 这条判据**盖不住**下面这种情况，别当成已经有了（本机实测出来的）：
+          # 8081 上已经蹲着别的东西时，脚本**不会死**。`allow_reuse_address = True`
+          # 就是 `SO_REUSEADDR`，而**在 Windows 上它允许第二个 socket 也 bind 同一个
+          # 端口**（实测：两个实例同时活着、各自都打印了「serving」，连到谁身上没定义）。
+          # 所以「别人占着 ⇒ 我们的进程会死」是**错的**——真正的兜底是下面那道端口预检。
+          #
+          # 留 60 秒：片子没缓存时它得先编码 750 帧 1080p（那台笔记本上要几分钟，
+          # 所以 CI 上更常见的失败是**预算不够**而不是脚本坏了 —— 日志会说明是哪种）。
+          # ─────────────────────────────────────────────
           $up = $false
-          foreach ($i in 1..60) {
-            try {
-              $client = [System.Net.Sockets.TcpClient]::new('127.0.0.1', 8081)
-              $client.Close()
+          foreach ($i in 1..120) {
+            if ($proc.HasExited) {
+              Get-Content $log, "$log.err" -ErrorAction SilentlyContinue | Write-Host
+              throw "假源进程已经退出（退出码 $($proc.ExitCode)）—— 看上面那两份日志"
+            }
+            if (Select-String -Path $log -Pattern 'fake network camera serving' -Quiet -ErrorAction SilentlyContinue) {
               $up = $true
               break
-            } catch {
-              Start-Sleep -Milliseconds 500
             }
+            Start-Sleep -Milliseconds 500
           }
           if (-not $up) {
             Get-Content $log, "$log.err" -ErrorAction SilentlyContinue | Write-Host
-            throw '假源 30 秒内没把 8081 绑上 —— 看上面那份日志'
+            throw '假源 60 秒内没说它起来了 —— 看上面那两份日志'
           }
 
           "VIDLOG_TEST_RTSP_URL=http://127.0.0.1:8081" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
