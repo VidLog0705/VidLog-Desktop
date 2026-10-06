@@ -114,6 +114,20 @@ jobs:
       - name: 构建（Release）
         run: dotnet build -c Release --no-restore
 
+      # ⚠️ 全量这一步**放在造源之前**是刻意的：它不需要那个源。
+      # 它是这里最宽的一道闸，让它先跑 —— 否则摄像头组一旦红，这一轮就再也
+      # 看不到「全量到底绿不绿」，而那条信号比摄像头组的值钱。
+      - name: 测试（全量，不含网络摄像头组）
+        run: |
+          $output = & dotnet test -c Release --no-build `
+            --filter "$env:NON_CAMERA_FILTER" `
+            --logger "trx;LogFileName=results.trx" 2>&1 | Out-String
+          Write-Host $output
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "dotnet test 失败（退出码 $LASTEXITCODE）"
+          }
+
       # ─────────────────────────────────────────────
       # 造一个假的网络摄像头源：把那 15 条 RequiresRtspFact 从「永远跳过」
       # 变成「真的跑」。
@@ -130,7 +144,7 @@ jobs:
       #
       # 脚本在 `scripts/fake-network-camera.py`，本地同样能用（文件头有用法）。
       # ─────────────────────────────────────────────
-      - name: 造一个假的网络摄像头源
+      - name: 测试（网络摄像头组 —— 造源，然后对着它真跑）
         run: |
           # ─────────────────────────────────────────────
           # 挑解释器：判据是「**它真能跑**」，不是「找得到」。
@@ -233,84 +247,75 @@ jobs:
             throw '假源 60 秒内没说它起来了、或者说了却没在 8081 上监听 —— 看上面那两份日志'
           }
 
+          # ⚠️ 这两个**必须设在当前进程里**，不能只写 `GITHUB_ENV`：
+          # `GITHUB_ENV` 只对**后续步骤**生效，同一步里写完立刻 `dotnet test`
+          # 是**读不到**的 —— 那样测试会以为「没有源」，15 条全变跳过，
+          # 比现在这版更坏（假绿）。写 `GITHUB_ENV` 那份是留给后面几步的
+          #（「收掉假源」要按 `FAKE_CAMERA_PID` 杀）。
+          $env:VIDLOG_TEST_RTSP_URL = 'http://127.0.0.1:8081'
+          $env:VIDLOG_TEST_CAMERA_SIZE = '1920x1080'
           "VIDLOG_TEST_RTSP_URL=http://127.0.0.1:8081" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
           "VIDLOG_TEST_CAMERA_SIZE=1920x1080"          | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
           Write-Host '假源已就位：http://127.0.0.1:8081'
 
-      - name: 测试（全量，不含网络摄像头组）
-        run: |
-          $output = & dotnet test -c Release --no-build `
-            --filter "$env:NON_CAMERA_FILTER" `
-            --logger "trx;LogFileName=results.trx" 2>&1 | Out-String
-          Write-Host $output
-
-          if ($LASTEXITCODE -ne 0) {
-            throw "dotnet test 失败（退出码 $LASTEXITCODE）"
-          }
-
-      # 这一组**单独一步**不是洁癖：它们是 1080p 的实时 x264 编解码，与其余
-      # 一千多条并行时会互相抢 CPU —— 仓里早就写明「并行时 PreviewThroughput
-      # 会读到 7 fps（判据要 ≥ 9）」。组内自己串行（同一个 xunit collection），
-      # 所以只要不跟别人并行就是稳的（2026-10-05 本地实测这 27 条全绿）。
-      #
-      # ⚠️ 那个括号**不能省**：VSTest 的 `&` 比 `|` 结合**更紧**（2026-10-05
-      # 实测），不加括号等于 `A|B|C|(D&!~连录十分钟)` —— 排除只落在最后一个
-      # 分支上，那条十分钟的照样跑。加了才是 (A|B|C|D) 里排掉它。
-      #
-      # ⚠️ 「真机连录十分钟」那条**不在这儿跑** —— 一次 CI 多十分钟，它留在
-      # 真机验收那一套里（这台机器上也不成立：假源是本地循环，不是真机）。
-      - name: 测试（网络摄像头组 —— 对着本机造的假源真跑）
-        run: |
           # ─────────────────────────────────────────────
-          # 先把假源的两份日志与端口状态打出来备用。
+          # 上面是「造源」，下面是「用它」—— 这两件事**必须在同一个步骤里**。
           #
-          # ⚠️ 为什么需要它 —— 2026-10-06 实测跑出来一次：第 9 步（造源）**绿**、
-          # 就位判据也命中，中间只隔了一步全量测试（1 分钟），到这一步
-          # **要源的那 14 条一条不剩全红**，不要源的 26 条全绿。ffmpeg 的原话是
+          # ⚠️ 2026-10-06 实测：原来起源与用源分成两步、中间只隔了一步全量测试
+          #（1 分钟），结果**要源的那 14 条一条不剩全红**，清一色
           # `Connection to tcp://127.0.0.1:8081 failed: Error number -138 occurred`
-          #（连接被拒）—— 也就是**源在两步之间没了**，而第 9 步的判据看不见这件事。
+          #（连接被拒）；不要源的 26 条全绿。开工前打出来的现场是：日志停在启动
+          # 那三行、`.err` **空**、端口上没人、进程也没了 —— 说明它是被**外部
+          # 干净地收走**的，不是自己崩的（崩了 socketserver 会往 stderr 吐
+          # traceback）。那段时间只有 runner 自己在动，所以最合理的解释是
+          # **它在每一步结束时收掉该步的进程树**（作业结束时它会印
+          # `Terminate orphan process`，日志里看得到）。并成一步之后，
+          # 这件事就与它无关了 —— 源与用例同生共死。
           #
-          # 最省事的解释是 runner 在每一步结束时收掉该步的进程树（它在作业结束时
-          # 确实会 `Terminate orphan process`）。**这只是假设，没证实** ——
-          # 所以这里不猜：先把现场原样打出来，那个 throw 才有东西可看。
+          # ⚠️ 这一组**单占一步**不是洁癖：它们是 1080p 的实时 x264 编解码，
+          # 与其余一千多条并行时会互相抢 CPU（仓里早有记录：「并行时
+          # PreviewThroughput 会读到 7 fps，判据要 ≥ 9」）。组内自己串行
+          # （同一个 xunit collection），只要不跟别人并行就是稳的。
+          #
+          # ⚠️ 那个括号**不能省**：VSTest 的 `&` 比 `|` 结合**更紧**（2026-10-05
+          # 实测），不加括号等于 `A|B|C|(D&!~连录十分钟)` —— 排除只落在最后一个
+          # 分支上，那条十分钟的照样跑。加了才是 (A|B|C|D) 里排掉它。
+          #
+          # ⚠️ 「真机连录十分钟」那条**不在这儿跑** —— 一次 CI 多十分钟，它留在
+          # 真机验收那一套里（这台机器上也不成立：假源是本地循环，不是真机）。
           # ─────────────────────────────────────────────
-          function Show-FakeCamera {
-            Write-Host '— 8081 的端口状态（没有 LISTENING 就是源已经没了）—'
-            netstat -ano | Select-String ':8081'
-            Write-Host '— fake-camera.log —'
-            Get-Content "$env:RUNNER_TEMP\fake-camera.log" -Tail 40 -ErrorAction SilentlyContinue | Write-Host
-            Write-Host '— fake-camera.log.err —'
-            Get-Content "$env:RUNNER_TEMP\fake-camera.log.err" -Tail 40 -ErrorAction SilentlyContinue | Write-Host
-            Write-Host '— 假源进程还在不在 —'
-            Get-Process -Id ([int]$env:FAKE_CAMERA_PID) -ErrorAction SilentlyContinue |
-              Select-Object Id, ProcessName | Write-Host
-          }
-
-          # 开工前确认它**这会儿还活着**。不在就直接红 —— 那种情况下跑测试
-          # 只会得到 14 条「连接被拒」，看不出为什么。
-          if (-not (netstat -ano | Select-String ':8081\s.*LISTENING')) {
-            Show-FakeCamera
-            throw '假源在第 9 步之后没了（8081 上没有监听者）—— 看上面打出来的现场'
-          }
-
           $output = & dotnet test -c Release --no-build `
             --filter "($env:CAMERA_FILTER)&FullyQualifiedName!~连录十分钟" `
             --logger "trx;LogFileName=camera.trx" 2>&1 | Out-String
           Write-Host $output
 
           if ($LASTEXITCODE -ne 0) {
-            Show-FakeCamera
+            # 红的时候把现场留下来：这一组几乎每个「红」都在问
+            #「源那边到底怎么了」，而截图里只有断言消息。
+            Write-Host '— 8081 的端口状态 —'
+            netstat -ano | Select-String ':8081'
+            Write-Host '— fake-camera.log —'
+            Get-Content "$env:RUNNER_TEMP\fake-camera.log" -Tail 40 -ErrorAction SilentlyContinue | Write-Host
+            Write-Host '— fake-camera.log.err —'
+            Get-Content "$env:RUNNER_TEMP\fake-camera.log.err" -Tail 40 -ErrorAction SilentlyContinue | Write-Host
             throw "网络摄像头组失败（退出码 $LASTEXITCODE）"
           }
 
       # ⚠️ 必须收掉：托管 runner 上整台虚拟机作废、无所谓，但这台机器很可能是
       # **self-hosted**（那台笔记本）—— 进程会留在那儿，下次 CI 撞端口。
       # 只杀我们起的那个 PID：那台机器上可能还跑着别人的 python。
+      #
+      # ⚠️ 所以先看名字再杀。自从「造源」并进上一步之后，走到这儿**源多半已经
+      # 死了**（它随那一步一起被收走），而这个 PID 就成了一把**指向已死编号的枪**
+      # —— Windows 会复用 PID，几秒后那个号可能就是别人的进程。名字不对就不动手。
       - name: 收掉假源
         if: always()
         run: |
           if ($env:FAKE_CAMERA_PID) {
-            Stop-Process -Id ([int]$env:FAKE_CAMERA_PID) -Force -ErrorAction SilentlyContinue
+            $p = Get-Process -Id ([int]$env:FAKE_CAMERA_PID) -ErrorAction SilentlyContinue
+            if ($p -and $p.ProcessName -like 'python*') {
+              Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
+            }
           }
 
       # 自带守卫：被跳过的测试会让 CI 变成一种虚假的安心，所以**意外**跳过必须红。
