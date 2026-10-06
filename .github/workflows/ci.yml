@@ -37,15 +37,22 @@ env:
   #（`grep -c "\[RequiresRtspFact" tests/**/*.cs` 一把就能对出来）。
   #
   # ⚠️ 2026-10-06 又想起一个候选，**结论是不放**，理由留在这儿免得下次重新想一遍：
-  # `LiveTileProcessTests` 也起真 ffmpeg、也在满负载下偶发红过一次，看着该进来 ——
+  # `LiveTileProcessTests` 也起真 ffmpeg，看着该进来 ——
   # 但它没有 `RequiresRtspFact`，塞进来会让上面那条判据**变假**（判据是防名单走岔的
   # 唯一机制，比这一个用例值钱）。而且它跟 `PreviewThroughput` **不同因**：它跑的是
-  # `testsrc=size=320x240:rate=10`，跟 1080p 实时编解码抢 CPU 那件事无关。
+  # `testsrc=size=320x240:rate=10`（且只有 `-t 1`、`ultrafast`），跟 1080p 实时编解码
+  # 抢 CPU 那件事无关。
   #
-  # ⚠️ 它那条偶发的**根因还没查明**。这里特别留一句提醒：**别照我写这行字时先前那句
-  # 「时间预算紧」去改** —— 那句没有实测支撑，而且本机实测**正相反**：这条只要 **11 秒**
-  #（窗口是 30 秒，余量三倍）。CI 上那次却是 30 秒超时 ⇒ 那不是「慢一点」，是**真卡住了**。
-  # 要治它得先抓到卡在哪一步（该在用例里加现场，不在这名单）。
+  # ⚠️ 2026-10-06 更正 —— 记一笔免得有人再被下面那句话带偏：
+  # 这段注释的前几版写过「它偶发红过一次」「CI 上那次是 30 秒超时（`.cs:212`）」
+  # 以及一个解释「等 ProgressWatch 的 10 秒周期、30 秒窗口不够」。
+  # **那三句都是我在没有任何实测数据时写的推测，不是观察到的事实。**
+  # 兑现核查（2026-10-06）：把本仓能取到的**全部** CI 日志逐轮 grep，
+  # `LiveTileProcess` **命中 0** —— main 上的红是计费拦截 / `TrustedClockTests` /
+  # 那几个真相机类，这一支的红是 14 条 RTSP 与 `PlaybackServerTests`，都不含它。
+  # 本机整类 13 条 42 秒、连跑三次一模一样，那条带 30 秒窗口的单独 11 秒。
+  # ⇒ **它到底会不会偶发，目前没有证据；没有失败就没有根因可查。**
+  # 真要治，前提是先抓到一次真的失败（在用例里加现场），不在这名单，也别照旧话改。
   CAMERA_FILTER: 'FullyQualifiedName~NetworkCamera|FullyQualifiedName~Prerecord|FullyQualifiedName~RecordingPreview|FullyQualifiedName~PreviewThroughput|FullyQualifiedName~PreviewProcess'
   NON_CAMERA_FILTER: 'FullyQualifiedName!~NetworkCamera&FullyQualifiedName!~Prerecord&FullyQualifiedName!~RecordingPreview&FullyQualifiedName!~PreviewThroughput&FullyQualifiedName!~PreviewProcess'
 
