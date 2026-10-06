@@ -822,8 +822,15 @@ public class DesktopServicesTests
         Assert.Contains("_renameWatch.Start()", window, StringComparison.Ordinal);
 
         // ③ 路由真的注册了（Core 那边）。
-        var server = File.ReadAllText(Path.Combine(
-            root, "src", "VidLog.Desktop.Core", "Web", "PlaybackServer.cs"));
+        // ⚠️ 2026-10-06（T26②）：`PlaybackServer` 按路由族拆成了若干 partial ⇒
+        // **必须读全部**。它现在红过一次了：`/api/v1/enroll/rename` 那一段一搬进
+        // `.Api.cs`，只读主文件这条就报「没找到」—— 而路由其实好好地注册着。
+        // 与设置窗那条是同一个天花板（「只挡删改、挡不住搬家」）。
+        var server = string.Concat(
+            Directory.EnumerateFiles(
+                    Path.Combine(root, "src", "VidLog.Desktop.Core", "Web"), "PlaybackServer*.cs")
+                .OrderBy(one => one, StringComparer.Ordinal)
+                .Select(File.ReadAllText));
 
         Assert.Contains("\"/api/v1/enroll/rename\"", server, StringComparison.Ordinal);
     }
@@ -1495,14 +1502,17 @@ public class DesktopServicesTests
             // 才发现的（同样破了 1500，只是没人点它）。需求方 2026-10-06 裁定排进来。
             ["src/VidLog.Desktop.App/MainWindow.xaml.cs"] =
                 "T26④ 还没做：1615 行几乎全是 UI 事件处理，先例就是 ① 那套按页签拆 partial",
-            ["src/VidLog.Desktop.Core/Web/PlaybackServer.cs"] =
-                "T26② 还没做：它同时是 HTTP 服务器、路由表和一摊端点，按路由前缀拆",
         };
 
         var named = Directory
             .EnumerateFiles(Path.Combine(repo, "src", "VidLog.Desktop.App"), "SettingsWindow*.cs")
             .Append(Path.Combine(repo, "src", "VidLog.Desktop.App", "MainWindow.xaml.cs"))
-            .Append(Path.Combine(repo, "src", "VidLog.Desktop.Core", "Web", "PlaybackServer.cs"));
+            // ⚠️ 2026-10-06（T26②）：`PlaybackServer.cs` 那条刚从白名单里自己缩掉，
+            // 这一行随之从「一个路径」改成 glob —— 否则新拆出来的那几个 partial
+            // 就全在检查之外，当天下午再长回去也没人管。与上面 `SettingsWindow*.cs`
+            // 同一条道理：钉的是**这一族文件**，不是某一个路径。
+            .Concat(Directory.EnumerateFiles(
+                Path.Combine(repo, "src", "VidLog.Desktop.Core", "Web"), "PlaybackServer*.cs"));
 
         var offenders = new List<string>();
 
