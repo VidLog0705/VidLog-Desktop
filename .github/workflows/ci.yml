@@ -35,6 +35,14 @@ env:
   # 这正是上面那句「名单会走岔」的又一次实例（漏的是名字最不像的那个）。
   # 判据不是「看类名像不像」，是：**哪个类里有 RequiresRtspFact，就得在这个名单里**
   #（`grep -c "\[RequiresRtspFact" tests/**/*.cs` 一把就能对出来）。
+  #
+  # ⚠️ 2026-10-06 又想起一个候选，**结论是不放**，理由留在这儿免得下次重新想一遍：
+  # `LiveTileProcessTests` 也起真 ffmpeg、也在满负载下偶发红过一次，看着该进来 ——
+  # 但它没有 `RequiresRtspFact`，塞进来会让上面那条判据**变假**（判据是防名单走岔的
+  # 唯一机制，比这一个用例值钱）。而且它跟 `PreviewThroughput` **不同因**：它跑的是
+  # `testsrc=size=320x240:rate=10`，跟 1080p 实时编解码抢 CPU 那件事无关；它那条偶发
+  # 出在**自己的时间预算**上（`LiveTileProcessTests.cs` 里等 `ProgressWatch` 的 10 秒
+  # 周期出第一行，30 秒窗口在满负载下不够）—— 该治它在用例本身，不在这名单。
   CAMERA_FILTER: 'FullyQualifiedName~NetworkCamera|FullyQualifiedName~Prerecord|FullyQualifiedName~RecordingPreview|FullyQualifiedName~PreviewThroughput|FullyQualifiedName~PreviewProcess'
   NON_CAMERA_FILTER: 'FullyQualifiedName!~NetworkCamera&FullyQualifiedName!~Prerecord&FullyQualifiedName!~RecordingPreview&FullyQualifiedName!~PreviewThroughput&FullyQualifiedName!~PreviewProcess'
 
@@ -144,7 +152,15 @@ jobs:
       #
       # 脚本在 `scripts/fake-network-camera.py`，本地同样能用（文件头有用法）。
       # ─────────────────────────────────────────────
+      #
+      # ⚠️ `!cancelled()`，**不是** `always()`：全量那一步偶发一红时，别把这一组
+      # 整个 skip 掉 —— 这一组的结论最需要每次都看到（2026-10-06 那次全量偶发
+      # 就是正好把 14 条 RTSP 用例的结论挡掉了，那一轮等于白跑）。
+      # 不用 `always()` 是因为它在**手动取消**时也返回真 —— 你都按了取消，
+      # 它还要再起一轮测试。下面「收掉假源」继续用 `always()` 是对的：
+      # 取消时更要把假源收干净，那是另一回事。
       - name: 测试（网络摄像头组 —— 造源，然后对着它真跑）
+        if: ${{ !cancelled() }}
         run: |
           # ─────────────────────────────────────────────
           # 挑解释器：判据是「**它真能跑**」，不是「找得到」。
