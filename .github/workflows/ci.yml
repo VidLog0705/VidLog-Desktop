@@ -61,20 +61,25 @@ jobs:
     name: .NET (build / test)
 
     # ─────────────────────────────────────────────
-    # 跑在哪台机器上 —— **`pull_request` 不许落到那台笔记本上**（2026-10-05）。
+    # 跑在哪台机器上 —— **只有手动点的才上那台笔记本**（2026-10-06 收紧）。
     #
     # 那台 `vidlog-laptop` 是真有摄像头、有 ffmpeg 的机器，`vidlog-cam` 是它
-    # 自己的标签（`config.cmd --labels`）。本仓是 **public**：如果 PR 也能落上去，
+    # 自己的标签（`config.cmd --labels`）。本仓是 **public**：如果自动触发也能落上去，
     # 任何人 fork 一下开个 PR，就能让**他提交的代码**在那台笔记本上执行 ——
     # 而那台是你自己的工作机（有真实录像、登着 GitHub）。GitHub 专门警告过这个
     # 攻击面（self-hosted runner on a public repo）。
     #
-    # 所以只有**自己推的**和**手动点的**才上笔记本；PR 留在 GitHub 托管的 runner
-    # 上（public 仓的托管 runner 不计费，所以这道闸不要钱）。
+    # ⚠️ 2026-10-06 又收紧一格：**`push` 也不上笔记本了**。原来 `push` 上，
+    # 于是合并进 main 之后**每一次** push 都落到那台笔记本 —— 而笔记本会合盖、
+    # 会睡、会关机、runner 会掉。一台会睡觉的机器不该成为 main 每次 push 的必经之路。
+    #（未验的一条：注册着的 runner 离线时，作业是**排队等着**还是直接红。
+    #  若是排队，main 的 CI 会安静地挂住 —— 比红还难发现。）
+    #
+    # ⇒ 那 15 条真源用例只在**手动那一轮**跑。托管 runner 不计费，这两道闸都不要钱。
     #
     # ⚠️ 换机器、或改 runner 标签，这一行与上面的说明一起改。
     # ─────────────────────────────────────────────
-    runs-on: ${{ (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && 'vidlog-cam' || 'windows-latest' }}
+    runs-on: ${{ github.event_name == 'workflow_dispatch' && 'vidlog-cam' || 'windows-latest' }}
     defaults:
       run:
         shell: pwsh
