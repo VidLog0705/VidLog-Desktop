@@ -73,6 +73,9 @@ public partial class SettingsWindow : Window
         }
         catch (Exception ex)
         {
+            // ⚠️ 只写在界面上不算数：清理是**不可逆动作**，而这一行会被用户
+            // 划走、窗口一关就没了 —— 事后只有日志能说明那一次为什么没清成。
+            _host.Log(LogLevel.Warn, "清理", $"清理没能进行：{ex.Message}");
             CleanupNote.Text = $"清理没能进行：{ex.Message}";
         }
         finally
@@ -106,6 +109,8 @@ public partial class SettingsWindow : Window
         }
         catch (Exception ex)
         {
+            // 同【按时间清理…】：只写界面的话，这一次为什么没清成事后查不到。
+            _host.Log(LogLevel.Warn, "清理", $"清理没能进行：{ex.Message}");
             CleanupNote.Text = $"清理没能进行：{ex.Message}";
         }
         finally

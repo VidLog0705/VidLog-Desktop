@@ -675,6 +675,19 @@ public class DesktopServicesTests
         Assert.Contains(
             "DshowDevices.ListAudioAsync(services.FfmpegPath, logger, cancellationToken)",
             host, StringComparison.Ordinal);
+
+        // ⑤ 清理失败也要留痕（2026-10-06 补）。核 T26① 的 diff 时发现：三处
+        //    「清理没能进行」的 catch 只写界面、**不落日志** —— 已对 HEAD 原文
+        //    核过，是既有欠账、不是那次引入的。
+        //    ⚠️ 为什么必须落：清理是**不可逆动作**，而界面上那句话会被用户划走、
+        //    窗口一关就没了 —— 事后只有日志说得清那一次为什么没清成。
+        //    三处 = 设置窗【按时间清理…】+【按空间释放…】+ 启动时那次清理。
+        //    ⚠️ 与上面几条同理，数**几处**而不是钉整段文本：它真正要守的是
+        //    「每一处失败都留痕」，而不是日志那句话的措辞。
+        Assert.True(
+            CountOf(settings + mainWindow, "Log(LogLevel.Warn, \"清理\"") >= 3,
+            "清理失败那三处（设置窗两颗按钮 + 启动时那次）都要往日志里留一条 —— "
+                + "只写界面的话，用户划走就再也查不到那一次为什么没清成");
     }
 
     /// <summary>
@@ -1458,10 +1471,11 @@ public class DesktopServicesTests
     /// </para>
     /// <para>
     /// ⚠️ <b>为什么不扫「全仓所有 .cs」</b>：实测本仓有 <b>18 个</b> .cs 超 800 行
-    ///（含 8 个测试文件；还有 <c>MainWindow.xaml.cs</c> 1615 行，它同样破了 1500，
-    /// 但清单里没点它）。照字面扫全仓的话白名单要列 18 条 —— 那就不叫绊线了，
-    /// 叫给现状盖章（新写一个 900 行的文件照样过得去）。清单说话的范围是
-    /// 「破 1500 硬上限的那三个」，所以这里也只钉它们。
+    ///（含 8 个测试文件）。照字面扫全仓的话白名单要列 18 条 —— 那就不叫绊线了，
+    /// 叫给现状盖章（新写一个 900 行的文件照样过得去）。这里钉的是清单点名的那几个：
+    /// **破 1500 硬上限的四个**。⚠️ 其中 <c>MainWindow.xaml.cs</c>（1615 行）是
+    /// 2026-10-06 拆 ① 时才发现的 —— 清单原文只写了「三个文件」，需求方当天裁定
+    /// 把它排进来（T26④）。
     /// </para>
     /// <para>
     /// ⚠️ 天花板：白名单冻结的是**文件**而不是**行数** —— 进了名单的文件还能继续变长。
@@ -1477,12 +1491,17 @@ public class DesktopServicesTests
         // ⚠️ 只减不增，每条都写清归属 —— 下面第二半逼它自己缩。
         var pending = new Dictionary<string, string>(StringComparer.Ordinal)
         {
+            // T26④：清单原本只点了「三个文件」，这个 1615 行是 2026-10-06 拆 ① 时
+            // 才发现的（同样破了 1500，只是没人点它）。需求方 2026-10-06 裁定排进来。
+            ["src/VidLog.Desktop.App/MainWindow.xaml.cs"] =
+                "T26④ 还没做：1615 行几乎全是 UI 事件处理，先例就是 ① 那套按页签拆 partial",
             ["src/VidLog.Desktop.Core/Web/PlaybackServer.cs"] =
                 "T26② 还没做：它同时是 HTTP 服务器、路由表和一摊端点，按路由前缀拆",
         };
 
         var named = Directory
             .EnumerateFiles(Path.Combine(repo, "src", "VidLog.Desktop.App"), "SettingsWindow*.cs")
+            .Append(Path.Combine(repo, "src", "VidLog.Desktop.App", "MainWindow.xaml.cs"))
             .Append(Path.Combine(repo, "src", "VidLog.Desktop.Core", "Web", "PlaybackServer.cs"));
 
         var offenders = new List<string>();

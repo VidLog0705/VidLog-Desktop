@@ -27,6 +27,7 @@ using VidLog.Desktop.App.Platform;
 using VidLog.Desktop.Core;
 using VidLog.Desktop.Core.Commands;
 using VidLog.Desktop.Core.Configuration;
+using VidLog.Desktop.Core.Diagnostics;
 using VidLog.Desktop.Core.Labels;
 using VidLog.Desktop.Core.Live;
 using VidLog.Desktop.Core.Punches;
@@ -484,6 +485,9 @@ public partial class MainWindow : Window
         catch (Exception ex)
         {
             // 清理失败不该拦住启动（I4 的同一条精神）—— 但要说出来。
+            // ⚠️ 「说出来」有两处：这里，以及日志。只有界面那句话的话，
+            // 用户划走就没有了，而清理是**不可逆动作** —— 事后要能查为什么没清成。
+            _host.Log(LogLevel.Warn, "清理", $"清理没能进行：{ex.Message}");
             NoticesText.Text = $"{DateTime.Now:HH:mm:ss}  清理没能进行：{ex.Message}";
         }
     }
