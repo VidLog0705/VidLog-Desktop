@@ -205,13 +205,23 @@ jobs:
           # 留 60 秒：片子没缓存时它得先编码 750 帧 1080p（那台笔记本上要几分钟，
           # 所以 CI 上更常见的失败是**预算不够**而不是脚本坏了 —— 日志会说明是哪种）。
           # ─────────────────────────────────────────────
+          # ⚠️ 两条**都要**：说过（日志里那句）**而且真在听**（netstat）。
+          #
+          # 只看日志有个洞，是我自己留的：脚本是**先 print 再 bind**，
+          # 所以「日志里有那句话」+「进程还活着」这两条在 bind **之前**就已经同时
+          # 成立了 —— 「说了要起、其实压根没绑上」照样放行。这正是本步要防的
+          # 那类假绿，换了个位置又长出来一次。补上 netstat 才算闭合。
+          #
+          # 上面那道端口预检保证了**开工前 8081 上没人**，所以此刻任何一条
+          # LISTENING 都是我们自己的，不用去比对 PID。
           $up = $false
           foreach ($i in 1..120) {
             if ($proc.HasExited) {
               Get-Content $log, "$log.err" -ErrorAction SilentlyContinue | Write-Host
               throw "假源进程已经退出（退出码 $($proc.ExitCode)）—— 看上面那两份日志"
             }
-            if (Select-String -Path $log -Pattern 'fake network camera serving' -Quiet -ErrorAction SilentlyContinue) {
+            if ((Select-String -Path $log -Pattern 'fake network camera serving' -Quiet -ErrorAction SilentlyContinue) -and
+                (netstat -ano | Select-String ':8081\s.*LISTENING')) {
               $up = $true
               break
             }
@@ -219,7 +229,8 @@ jobs:
           }
           if (-not $up) {
             Get-Content $log, "$log.err" -ErrorAction SilentlyContinue | Write-Host
-            throw '假源 60 秒内没说它起来了 —— 看上面那两份日志'
+            netstat -ano | Select-String ':8081'
+            throw '假源 60 秒内没说它起来了、或者说了却没在 8081 上监听 —— 看上面那两份日志'
           }
 
           "VIDLOG_TEST_RTSP_URL=http://127.0.0.1:8081" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
@@ -250,12 +261,45 @@ jobs:
       # 真机验收那一套里（这台机器上也不成立：假源是本地循环，不是真机）。
       - name: 测试（网络摄像头组 —— 对着本机造的假源真跑）
         run: |
+          # ─────────────────────────────────────────────
+          # 先把假源的两份日志与端口状态打出来备用。
+          #
+          # ⚠️ 为什么需要它 —— 2026-10-06 实测跑出来一次：第 9 步（造源）**绿**、
+          # 就位判据也命中，中间只隔了一步全量测试（1 分钟），到这一步
+          # **要源的那 14 条一条不剩全红**，不要源的 26 条全绿。ffmpeg 的原话是
+          # `Connection to tcp://127.0.0.1:8081 failed: Error number -138 occurred`
+          #（连接被拒）—— 也就是**源在两步之间没了**，而第 9 步的判据看不见这件事。
+          #
+          # 最省事的解释是 runner 在每一步结束时收掉该步的进程树（它在作业结束时
+          # 确实会 `Terminate orphan process`）。**这只是假设，没证实** ——
+          # 所以这里不猜：先把现场原样打出来，那个 throw 才有东西可看。
+          # ─────────────────────────────────────────────
+          function Show-FakeCamera {
+            Write-Host '— 8081 的端口状态（没有 LISTENING 就是源已经没了）—'
+            netstat -ano | Select-String ':8081'
+            Write-Host '— fake-camera.log —'
+            Get-Content "$env:RUNNER_TEMP\fake-camera.log" -Tail 40 -ErrorAction SilentlyContinue | Write-Host
+            Write-Host '— fake-camera.log.err —'
+            Get-Content "$env:RUNNER_TEMP\fake-camera.log.err" -Tail 40 -ErrorAction SilentlyContinue | Write-Host
+            Write-Host '— 假源进程还在不在 —'
+            Get-Process -Id ([int]$env:FAKE_CAMERA_PID) -ErrorAction SilentlyContinue |
+              Select-Object Id, ProcessName | Write-Host
+          }
+
+          # 开工前确认它**这会儿还活着**。不在就直接红 —— 那种情况下跑测试
+          # 只会得到 14 条「连接被拒」，看不出为什么。
+          if (-not (netstat -ano | Select-String ':8081\s.*LISTENING')) {
+            Show-FakeCamera
+            throw '假源在第 9 步之后没了（8081 上没有监听者）—— 看上面打出来的现场'
+          }
+
           $output = & dotnet test -c Release --no-build `
             --filter "($env:CAMERA_FILTER)&FullyQualifiedName!~连录十分钟" `
             --logger "trx;LogFileName=camera.trx" 2>&1 | Out-String
           Write-Host $output
 
           if ($LASTEXITCODE -ne 0) {
+            Show-FakeCamera
             throw "网络摄像头组失败（退出码 $LASTEXITCODE）"
           }
 
