@@ -400,11 +400,12 @@ public class PlaybackServerTests
     // ─────────────────────────────────────────────
 
     /// <summary>
-    /// 等到日志文件里出现至少 <paramref name="count"/> 行，且**每一行都能当 JSON 解析**。
+    /// 等到日志文件里出现至少 <paramref name="count"/> 行、**每一行都能当 JSON 解析**，
+    /// 且（给了 <paramref name="enough"/> 时）**满足那个条件**。
     /// </summary>
     /// <remarks>
     /// <para>
-    /// 两个理由都要等，缺一个就是间歇性红：
+    /// 三个理由都要等，缺一个就是间歇性红：
     /// </para>
     /// <list type="number">
     /// <item>日志是**异步落盘**的（后台队列），而请求的 `finally` 也可能还没跑到 ——
@@ -413,9 +414,16 @@ public class PlaybackServerTests
     /// 但读者可能在它落完之前就看到文件变长了 —— 于是最后一行是残缺的 JSON，
     /// `JsonDocument.Parse` 当场抛。所以判据不是「行数够了」，
     /// 而是「行数够了**而且都解析得动**」。</item>
+    /// <item>⚠️ 2026-10-06 补的第三个，**最阴的一个**：「行数够了」**也不等于
+    /// 「我要的那几行来了」** —— 启动阶段自己就会写够 <paramref name="count"/> 行，
+    /// 于是这个循环在**第 0 次尝试**就返回，而此刻那几条请求日志还躺在
+    /// `FileLogger` 的队列里（CI 上实测：27 ms 就失败、数出 0 条带 `data.path` 的，
+    /// 而失败信息里**没有** `Assert.Fail` 那一句 ⇒ 行数确实够了，只是全不是请求日志）。
+    /// 所以调用点必须把「我在等什么」用 <paramref name="enough"/> 显式说出来。</item>
     /// </list>
     /// </remarks>
-    private static async Task<List<JsonElement>> WaitForLogEntriesAsync(string path, int count)
+    private static async Task<List<JsonElement>> WaitForLogEntriesAsync(
+        string path, int count, Func<List<JsonElement>, bool>? enough = null)
     {
         for (var attempt = 0; attempt < 100; attempt++)
         {
@@ -423,7 +431,8 @@ public class PlaybackServerTests
             {
                 var lines = await TryReadAllLinesAsync(path);
 
-                if (lines is not null && lines.Length >= count && TryParseAll(lines, out var entries))
+                if (lines is not null && lines.Length >= count && TryParseAll(lines, out var entries)
+                    && (enough is null || enough(entries)))
                 {
                     return entries;
                 }
@@ -432,7 +441,8 @@ public class PlaybackServerTests
             await Task.Delay(20);
         }
 
-        Assert.Fail($"{path} 里始终没有出现 {count} 行可解析的日志（等到超时）");
+        Assert.Fail($"{path} 里始终没有等到 {count} 行可解析的日志"
+            + (enough is null ? "" : "、且满足调用点给的附加条件") + "（等到超时）");
         return [];
     }
 
@@ -515,7 +525,12 @@ public class PlaybackServerTests
         await fixture.Client.GetAsync("/");
         await fixture.Client.GetAsync("/api/nope");
 
-        var entries = await WaitForLogEntriesAsync(logger.Path, 3);
+        // ⚠️ 判据必须说清「我在等什么」：**那两条请求日志**，不是「文件里够 3 行了」。
+        // 启动阶段自己就写够 3 行 —— 队列里那两条还没落盘时，「行数够了」就已经成立，
+        // 于是这个循环第 0 次尝试就返回。2026-10-06 这条用例就是这么在 CI 上红了一次
+        //（27 ms、数出 0 条带 `data.path` 的）。
+        var entries = await WaitForLogEntriesAsync(logger.Path, 3,
+            es => es.Count(e => e.TryGetProperty("data", out var d) && d.TryGetProperty("path", out _)) >= 2);
         await logger.DisposeAsync();
 
         // 启动时那条「绑上了哪个地址」不是请求日志，按有没有 `data.path` 分开数。
