@@ -96,7 +96,7 @@ public class ThemePaletteTests
 
         // 前提检查：一条都没扫到说明这条绊线自己坏了（正则过期、路径漂了），
         // 那时候它就是个恒真的绿 —— 比没有还坏。
-        // 门槛按**实测的下界**取（2026-10-07：64 个 x:Key、268 处引用），
+        // 门槛按**实测的下界**取（2026-10-07 复测：66 个 x:Key、268 处引用），
         // 取得很松，只为了抓「一处都没扫到」，不是为了锁住数量。
         Assert.True(defined.Count >= 40, $"只扫到 {defined.Count} 个 x:Key，正则或路径大概过期了");
         Assert.True(used.Count >= 200, $"只扫到 {used.Count} 处 DynamicResource，正则或路径大概过期了");
@@ -128,6 +128,13 @@ public class ThemePaletteTests
         // 亮色下两支同值 ⇒ 这次拆分明面上只多了一个键、渲染结果逐像素不变。
         // 这条一变红就说明亮色被顺手改了 —— 那是有意为之才行的，不是顺手的事。
         Assert.Equal(LightColorKeys["Accent"], LightColorKeys["AccentSolid"]);
+
+        // 2026-10-07 又拆了两支，同一条话对它们也成立 —— 亮色取的都是**原来的值**：
+        //  `PrimaryDisabledInk` 亮色 = `#FFFFFF`，就是模板里原先写死的那个白；
+        //  `ProgressFill` 亮色 = `#2563EB`，就是原来当填充用的 `AccentSolid`。
+        // 这两条一变红就说明「顺手把亮色也改了」—— 那要有意为之，不是顺手的事。
+        Assert.Equal("#FFFFFF", Rgb(LightColorKeys["PrimaryDisabledInk"]));
+        Assert.Equal(LightColorKeys["AccentSolid"], LightColorKeys["ProgressFill"]);
     }
 
     // ─────────────────────────────────────────────
@@ -201,13 +208,11 @@ public class ThemePaletteTests
             // 警示块。
             ("警示字 / 警示底", Dark["Warning"], Dark["WarningSurface"], 4.5),
             ("正文 / 警示底", Dark["TextPrimary"], Dark["WarningSurface"], 4.5),
-
-            // ⚠️ 这颗**看着**像漏网之鱼，其实是「暗色下禁用态白字反而更清楚」那个
-            // 悖论的正面：要求是「禁用态的字仍然读得出来」（10.36:1）。
-            // 它比可用态（5.17:1）还显眼这件事，药方是给控件模板加 Opacity，
-            // 会改到亮色，本批没动 —— 见 ThemePalette 那条注释。
-            ("白字 / 禁用主按钮底", "#FFFFFF", Dark["AccentDisabled"], 4.5),
         };
+
+        // ⚠️ 这里**故意没有**「禁用主按钮上那行字」那一对：禁用态的墨色不需要
+        // 达 4.5（WCAG 把禁用控件整条豁免掉了），它受另一条约束管 ——
+        // **禁用不许比可用还显眼**，见 `禁用态不许比可用态还显眼`。
 
         foreach (var (label, fg, bg, min) in pairs)
         {
@@ -218,21 +223,137 @@ public class ThemePaletteTests
     }
 
     [Fact]
-    public void 暗色下那两对明知差一点的不许更差()
+    public void 进度填充压轨道每一对都达标()
     {
-        // 这两对**都不达标**，是有意留着的（改不动：见 ThemePalette 各自的注释）。
-        // 把它们钉在这儿，是为了「以后不许悄悄更差」—— 不是假装它们达标了。
+        // ⚠️ 2026-10-07 之前这一对是**明知差一点**的（填充压向导轨道 2.84:1，
+        // 标准要 3.0）：当时填充与「选中底」共用 `AccentSolid`，而 blue-600 的
+        // 亮度决定了轨道得接近纯黑才够 —— 那种黑会跟页底撞车（选中行直接消失）。
+        // 拆出 `ProgressFill` 之后四条轨道逐条达标，这条从「钉住那个差值」
+        // 变成「钉住达标」。
+        //
+        // ⚠️ 四条进度条的**轨道各用各的键**（见 `Theme.xaml` 各自那一处），
+        // 所以四对都得钉 —— 只钉一对的话，其余三条里的任何一条掉下去都没人喊。
+        // 亮色那支与 `AccentSolid` 同值，所以下面也把亮色的四条一起钉上。
+        var tracks = new (string Label, string Key)[]
+        {
+            ("向导进度条", "AccentWeak"),
+            ("容量条", "BorderStrong"),
+            ("数据窗进度条", "SurfaceAlt"),
+            ("启动窗那条", "SurfaceMuted"),
+        };
 
-        // ① 进度填充压进度轨道（`WizardProgress`）：blue-600 的亮度决定了轨道得
-        //    接近纯黑才够 3:1，而那种黑会跟页底撞车（选中行直接消失）。
-        //    量出来 2.84:1，blue-900 只有 2.00:1。
-        var track = Contrast(Dark["AccentSolid"], Dark["AccentWeak"]);
-        Assert.True(track >= 2.8, $"进度填充压轨道只剩 {track:F2}:1（当前 2.84）");
+        foreach (var (label, key) in tracks)
+        {
+            var dark = Contrast(Dark["ProgressFill"], Dark[key]);
+            Assert.True(dark >= 3.0, $"暗色：进度填充压{label}（{Dark[key]}）只有 {dark:F2}:1，要求 ≥ 3.0:1");
 
-        // ② 白字压危险/成功色：亮色那边也一样不达标（3.76 / 2.54），
-        //    所以不是暗色引入的，也不该在这一批里偷偷改亮色。
+            var light = Contrast(LightColorKeys["ProgressFill"], LightColorKeys[key]);
+            Assert.True(light >= 3.0, $"亮色：进度填充压{label}（{LightColorKeys[key]}）只有 {light:F2}:1，要求 ≥ 3.0:1");
+        }
+    }
+
+    [Fact]
+    public void 禁用态不许比可用态还显眼()
+    {
+        // ⚠️ 这条是 2026-10-07 抓出来的：模板里禁用态那行字**写死 `White`**，
+        // 亮色下压 `AccentDisabled`（blue-500 兑白）只有 2.08:1，看着是「褪色」，
+        // 对；暗色下压 `AccentDisabled`（往深底兑 ⇒ blue-900）是 **10.36:1**，
+        // 比可用态（5.17:1）**还高** —— 灰掉的那个按钮成了全界面最清楚的一颗。
+        //
+        // 药方**不是**给控件模板加 `Opacity`（那会改到亮色：2.08 会掉到 1.37），
+        // 而是把墨色拆成一支：亮色取 `#FFFFFF`（= 原来的值，亮色一个像素不变），
+        // 暗色取 `TextDisabled` 那一档。
+        //
+        // 下面同时钉两头：**不许更显眼**（主约束），**也不许低到读不出来**
+        // （否则就是把「太清楚」治成「看不见」，那是另一个毛病）。
+        foreach (var (theme, table) in new (string, IReadOnlyDictionary<string, string>)[]
+                 { ("亮色", LightColorKeys), ("暗色", Dark) })
+        {
+            var disabled = Contrast(table["PrimaryDisabledInk"], table["AccentDisabled"]);
+            var enabled = Contrast("#FFFFFF", table["AccentSolid"]);
+
+            Assert.True(
+                disabled < enabled,
+                $"{theme}：禁用态 {disabled:F2}:1 不低于可用态 {enabled:F2}:1 —— 灰掉的按钮比能点的还显眼");
+
+            // 下限：1.5:1 是「还看得出那儿有字」的量级，不是达标线
+            // （WCAG 对禁用控件整条豁免，4.5 在这儿不适用）。
+            Assert.True(disabled >= 1.5, $"{theme}：禁用态那行字只剩 {disabled:F2}:1，等于没字了");
+        }
+    }
+
+    [Fact]
+    public void 白字压危险与成功色那两对明知差一点的不许更差()
+    {
+        // 这两对**两套主题都不达标**，是有意留着的：亮色那边也一样
+        // （3.76 / 2.54），所以不是暗色引入的。钉在这儿是为了
+        // 「以后不许悄悄更差」—— 不是假装它们达标了。
         Assert.True(Contrast("#FFFFFF", Dark["Danger"]) >= 3.7);
         Assert.True(Contrast("#FFFFFF", Dark["Success"]) >= 2.5);
+
+        // ⚠️ 两边的写法不一样（`Theme.xaml` 是 `#AARRGGBB`，暗色表是 `#RRGGBB`），
+        // 直接比字符串会红 —— 比**同一个色**：剥掉透明度那一截再比。
+        Assert.Equal(Rgb(Dark["Danger"]), Rgb(LightColorKeys["Danger"]));
+        Assert.Equal(Rgb(Dark["Success"]), Rgb(LightColorKeys["Success"]));
+    }
+
+    // ─────────────────────────────────────────────
+    // 亮色那边本来就有的几对（2026-10-07 一并改了）
+    // ─────────────────────────────────────────────
+
+    [Fact]
+    public void 亮色下改过的这几对也达标()
+    {
+        // ⚠️ 这几对**不是暗色引入的**，是亮色主题里本来就有的、没人喊的缺陷
+        // （清单第 5 批顺手收掉，见 `Theme.xaml` 各自那处的注释）：
+        //
+        //  ① `TextSecondary` 原来是 slate-500 `#64748B`：压在页底上 4.32:1，
+        //     而它是 `Caption` 那个样式的主色、全界面用得最广的一支。
+        //  ② `Warning` 原来是 amber-500：当**文字**用只有 2.15:1（XAML 里 10 处
+        //     `Foreground`，另有 C# 那几支），
+        //     这正是我在批次报告里**报错了**的那一条 —— 我说的是
+        //     「琥珀字压琥珀底 2.07」，而代码里根本没有那一处（那两块警示块
+        //     的字是 `TextPrimary`/`Caption`，琥珀只当描边）。真正不达标的是
+        //     琥珀当文字。两处都已改成 orange-700 `#C2410C`。
+        //
+        // 门槛取标准值，不是取量出来的那个数 —— 一眼看得出达没达标。
+        var pairs = new (string Label, string Fg, string Bg, double Min)[]
+        {
+            ("次级字 / 页底", "TextSecondary", "PageBackground", 4.5),
+            ("次级字 / 卡片", "TextSecondary", "Surface", 4.5),
+            ("次级字 / 侧栏", "TextSecondary", "SidebarBackground", 4.5),
+            ("次级字 / 选中底", "TextSecondary", "AccentWeak", 4.5),
+
+            // 警示色当**文字**用（这是那些站点真实的用法）。
+            ("警示字 / 卡片", "Warning", "Surface", 4.5),
+            ("警示字 / 页底", "Warning", "PageBackground", 4.5),
+
+            // 警示色当 1px **描边**：图形门槛 3.0。
+            ("警示描边 / 警示底", "Warning", "WarningSurface", 3.0),
+        };
+
+        foreach (var (label, fg, bg, min) in pairs)
+        {
+            var ratio = Contrast(LightColorKeys[fg], LightColorKeys[bg]);
+            Assert.True(
+                ratio >= min,
+                $"亮色：{label}（{LightColorKeys[fg]} 压 {LightColorKeys[bg]}）只有 {ratio:F2}:1，要求 ≥ {min}:1");
+        }
+    }
+
+    [Fact]
+    public void 亮色这次的改动是换值不是换关系()
+    {
+        // ⚠️ 钉两头，缺一条就成了「反正改了都行」：
+        //  ① 次级字**必须仍比正文浅**（它是 `Caption`，要跟正文分层）——
+        //     顺手换成 slate-600 `#475569` 能到 6.89:1，但那会把层级压平。
+        //  ② 它**必须仍比禁用字深**（禁用的那支更淡，不然两者分不出）。
+        Assert.True(
+            Luminance(LightColorKeys["TextSecondary"]) > Luminance(LightColorKeys["TextPrimary"]),
+            "次级字比正文还深 ⇒ Caption 与正文的层级反了");
+        Assert.True(
+            Luminance(LightColorKeys["TextSecondary"]) < Luminance(LightColorKeys["TextDisabled"]),
+            "次级字比禁用字还浅 ⇒ 「禁用」看着跟正常一样的淡");
     }
 
     // ─────────────────────────────────────────────
@@ -261,8 +382,10 @@ public class ThemePaletteTests
         // **两块面同色 ⇒ 那块面整个消失**。界面上没有任何东西会喊。
         //
         // 这一条是证伪时补出来的：原先只有「侧栏 vs 页底」一对，而把
-        // `AccentWeak` 换成页底色**一条都不会红**（它的对比度反而从 2.84 涨到 3.45，
-        // 轨道那条门槛拦不住）—— 可那样一来设置页「选中的那一行」在页底上就看不见了。
+        // `AccentWeak` 换成页底色**一条都不会红**（两块面撞在一起，
+        // 对比度是 1.00:1，而当时唯一看着相关的那条门槛是「填充压轨道 ≥ 3.0」，
+        // 那条比的是**填充**不是这两个面，拦不住）—— 可那样一来设置页
+        // 「选中的那一行」在页底上就看不见了。
         var pairs = new (string Label, string A, string B)[]
         {
             ("侧栏 / 页底", Dark["SidebarBackground"], Dark["PageBackground"]),
@@ -290,6 +413,12 @@ public class ThemePaletteTests
 
         return (Math.Max(a, b) + 0.05) / (Math.Min(a, b) + 0.05);
     }
+
+    /// <summary>
+    /// 剥掉透明度那一截，只留 <c>#RRGGBB</c> —— 亮色写 <c>#AARRGGBB</c>、
+    /// 暗色表写 <c>#RRGGBB</c>，比「同一个色」时得先对齐写法。
+    /// </summary>
+    private static string Rgb(string hex) => "#" + hex.TrimStart('#')[^6..];
 
     /// <summary>WCAG 相对亮度。<c>#AARRGGBB</c> 时忽略透明度那一截。</summary>
     private static double Luminance(string hex)

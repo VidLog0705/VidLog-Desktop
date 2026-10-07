@@ -28,7 +28,7 @@
                  进度条自己在动，用户一眼就知道程序还活着。 -->
             <ProgressBar Margin="0,18,0,0" Height="4" IsIndeterminate="True"
                          BorderThickness="0"
-                         Foreground="{DynamicResource AccentSolid}"
+                         Foreground="{DynamicResource ProgressFill}"
                          Background="{DynamicResource SurfaceMuted}"/>
         </StackPanel>
     </Border>

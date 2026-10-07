@@ -1,6 +1,8 @@
 using System.Globalization;
 using System.Text.RegularExpressions;
 
+using VidLog.Desktop.Core.Theme;
+
 namespace VidLog.Desktop.Core.Tests;
 
 /// <summary>
@@ -21,9 +23,13 @@ namespace VidLog.Desktop.Core.Tests;
 /// <item>两种空位的底色**不是同一个画刷**（那句话的原文）。</item>
 /// <item>那个**叉掉的眼睛**只在「已关闭」那格露面 —— 它才是真正一眼看得见的那一笔
 /// （两块浅底差的主要是色相，见下）。</item>
-/// <item>「已关闭」那格的字**在它自己的底上够看得清**（WCAG AA 4.5:1）。
-/// 这一条挡的是那种「顺手把字也换成琥珀、好更醒目」的改法 ——
-/// 量过，琥珀压在淡琥珀上只有 <b>2.07:1</b>。</item>
+/// <item>「已关闭」那格的字**在它自己的底上够看得清**（WCAG AA 4.5:1）——
+/// 亮色 <b>5.54:1</b>、暗色 <b>5.68:1</b>。
+/// ⚠️ 这一条**原来的论据已经过期**：它当初挡的是「顺手把字也换成琥珀」那种改法，
+/// 理由是「琥珀压在淡琥珀上只有 2.07:1」。2026-10-07 亮色 `Warning` 已从 amber-500
+/// 改成 orange-700 `#C2410C`，那一对现在是 <b>4.99:1</b>（暗色 6.79:1）——
+/// **换字色已经不会红**。所以这条现在守的是它自己那句话：
+/// 这一格的字色压在自己的底上得够，换谁来都按这个量。</item>
 /// </list>
 /// <para>
 /// ⚠️ <b>为什么只能看源码文本</b>：App 层没有测试工程（与 <c>DesktopServicesTests</c>
@@ -71,13 +77,28 @@ public class MultiViewWindowCellTests
 
         var ratio = Contrast(ink, off);
 
-        // ⚠️ 这条是给「顺手把字也换醒目的颜色」那种改法准备的：`Warning`（#F59E0B）
-        // 压在 `WarningSurface`（#FFFBEB）上只有 2.07:1，远不够 —— 但项目里
-        // 到处都用那一对，所以「颜色差走底子、不走字」这件事必须写死在这儿。
+        // ⚠️ 这条原来举的例子已经过期：当初写的是「`Warning` #F59E0B 压在
+        // `WarningSurface` #FFFBEB 上只有 2.07:1」，而亮色 `Warning` 2026-10-07
+        // 已改成 orange-700 `#C2410C`，那一对现在是 4.99:1（暗色 6.79:1）——
+        // 把字换成警示色**不会再让这条红**。
+        // 它现在守的是那句话本身：「颜色差走底子、不走字」，
+        // 量出来是亮色 5.54:1 / 暗色 5.68:1（用两个主题各自的两支算，下面那两条断言）。
         Assert.True(
             ratio >= AaNormalText,
             $"「已关闭」那格的字色（{ink}）在它自己的底色（{off}）上只有 {ratio:F2}:1，"
                 + $"低于 AA 正文档的 {AaNormalText} —— 让字更醒目不该拿可读性换。");
+
+        // ⚠️ 上面那一量**只覆盖亮色**（这个文件读的是 `Theme.xaml`），而这一格的
+        // 底与字**两套主题是两对不同的值**（暗色 `WarningSurface` = #422006）——
+        // 所以暗色那一支单独量一次，不然「跟随系统切暗色」之后这块字没人管。
+        var darkInk = ThemePalette.Dark["TextSecondary"];
+        var darkOff = ThemePalette.Dark["WarningSurface"];
+        var darkRatio = Contrast(darkInk, darkOff);
+
+        Assert.True(
+            darkRatio >= AaNormalText,
+            $"暗色：「已关闭」那格的字色（{darkInk}）在自己的底色（{darkOff}）上只有 "
+                + $"{darkRatio:F2}:1，低于 AA 正文档的 {AaNormalText}。");
     }
 
     [Fact]

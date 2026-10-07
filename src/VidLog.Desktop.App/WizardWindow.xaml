@@ -133,7 +133,7 @@
             <Setter Property="Height" Value="6"/>
             <Setter Property="Maximum" Value="1"/>
             <Setter Property="Background" Value="{DynamicResource AccentWeak}"/>
-            <Setter Property="Foreground" Value="{DynamicResource AccentSolid}"/>
+            <Setter Property="Foreground" Value="{DynamicResource ProgressFill}"/>
             <Setter Property="Template">
                 <Setter.Value>
                     <ControlTemplate TargetType="ProgressBar">

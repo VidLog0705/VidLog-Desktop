@@ -78,7 +78,17 @@
 
     <!-- 正文 slate-800；深色面板上的标题用 slate-900（见 VideoBackground）。 -->
     <SolidColorBrush x:Key="TextPrimary" Color="#FF1E293B"/>
-    <SolidColorBrush x:Key="TextSecondary" Color="#FF64748B"/>
+    <!--
+        ⚠️ **2026-10-07 需求方拍板改过一次值**：原为 slate-500 `#64748B`，
+        压在页面底 `#F3F4F6` 上只有 **4.32:1**、低于 AA 正文档的 4.5:1
+        （它是 `Caption` 那一档说明文字的主色，用得最广）。
+        现值 `#59677C` 是把 slate-500 **顺着同色相压暗**量出来的
+        （页底 **5.22:1**、卡片 **5.74:1**、选中底 `#DBEAFE` **4.71:1**），
+        **不是 Tailwind 现成的一档** —— slate-600 `#475569` 会跳到 6.89:1，
+        说明文字与正文的分层就没了。这条与 `AccentDisabled` 同例：
+        色板以 Tailwind 为底，达标优先时按同色相微调，改了就写在这儿。
+    -->
+    <SolidColorBrush x:Key="TextSecondary" Color="#FF59677C"/>
     <SolidColorBrush x:Key="TextDisabled" Color="#FF94A3B8"/>
 
     <!-- 主按钮、选中导航、单选点：blue-600。
@@ -102,11 +112,44 @@
     <SolidColorBrush x:Key="AccentWeak" Color="#FFDBEAFE"/>
     <!-- 主按钮禁用态：blue-500 兑白，图上 `_31` 的「下一步」。 -->
     <SolidColorBrush x:Key="AccentDisabled" Color="#FF8EB5F6"/>
+    <!--
+        禁用态主按钮上那行字的墨色。
+        ⚠️ 拆这一支不是为了好看，是**暗色下原来那个写死的白字比可用态还醒目**：
+        暗色禁用底 `#1E3A8A` 压纯白是 **10.36:1**，而可用底 blue-600 压白只有
+        **5.17:1** —— 「禁用」反而最清楚。亮色没这个毛病（禁用底是淡蓝，
+        白字只有 2.08:1），所以**亮色就用原来的白**：这一支亮色取 `#FFFFFF`
+        ⇒ 拆分**不改变亮色的任何一个像素**。暗色取 `TextDisabled` 那一档。
+        绊线见 `ThemePaletteTests.禁用态不许比可用态还显眼`。
+    -->
+    <SolidColorBrush x:Key="PrimaryDisabledInk" Color="#FFFFFFFF"/>
+    <!--
+        进度条的**填充**（向导进度、麦克风电平、容量条、启动窗那条）。
+        ⚠️ 与 `AccentSolid` 分开的**唯一**理由是暗色：这四条进度条的**轨道**
+        各用各的键（`AccentWeak` / `SurfaceAlt` / `SurfaceMuted` / `BorderStrong`），
+        暗色下这四块面的亮度与 blue-600 差得太小 —— 量出来只有 **1.47–3.45:1**，
+        最坏那条（容量条压 `BorderStrong`）等于看不出填充（图形要 3.0）。
+        所以暗色那支换成跟这些轨道配套的 blue-300（**4.20–9.90:1**）。
+        亮色取 `#2563EB`（与 `AccentSolid` 同值）⇒ **不改变亮色**。
+        四条的实际配对照 `ThemePaletteTests.进度填充压轨道每一对都达标`（亮暗各量一次）。
+    -->
+    <SolidColorBrush x:Key="ProgressFill" Color="#FF2563EB"/>
 
     <!-- 「开始录制」按钮：emerald-500。 -->
     <SolidColorBrush x:Key="Success" Color="#FF10B981"/>
 
-    <SolidColorBrush x:Key="Warning" Color="#FFF59E0B"/>
+    <!--
+        ⚠️ **2026-10-07 需求方拍板改过一次值**：原为 amber-500 `#F59E0B`。
+        它有两副面孔，**两副原来都不达标**：
+          · 当**文字**（`Foreground`；XAML 里 **10 处**，另有 C# 那几支）压在卡片白底上只有 **2.15:1**；
+          · 当 `WarningSurface` 那块的**描边**压在 `#FFFBEB` 上只有 **2.07:1**。
+        现值 `#C2410C`（orange-700）白底 **5.18:1**、警示底上 **4.99:1**，两副都过。
+        ⚠️ 这不是新挑的颜色：**网页回放页（`PlaybackServer.Page.cs` 里那个名为
+        `warn` 的 CSS 变量，CSS 自定义属性要写两个减号打头）一直用的就是它**。
+        同一套语义在仓里本来就有两个值，这次是让 WPF 这边
+        对齐到**达标的那个**。
+        暗色那支仍是 `#F59E0B`（暗底上 6.81:1，本来就够），见 `ThemePalette.Dark`。
+    -->
+    <SolidColorBrush x:Key="Warning" Color="#FFC2410C"/>
     <SolidColorBrush x:Key="WarningSurface" Color="#FFFFFBEB"/>
 
     <!--
@@ -295,7 +338,8 @@
                         </Trigger>
                         <Trigger Property="IsEnabled" Value="False">
                             <Setter Property="Background" Value="{DynamicResource AccentDisabled}"/>
-                            <Setter Property="Foreground" Value="White"/>
+                            <!-- ⚠️ 不写死 White：暗色下白字压深底比可用态还清楚（见上面那个键）。 -->
+                            <Setter Property="Foreground" Value="{DynamicResource PrimaryDisabledInk}"/>
                             <Setter Property="Cursor" Value="Arrow"/>
                         </Trigger>
                     </ControlTemplate.Triggers>

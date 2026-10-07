@@ -232,7 +232,7 @@
                                                  VerticalAlignment="Center" Margin="8,0"
                                                  Minimum="0" Maximum="1"
                                                  Value="{Binding Ratio, Mode=OneWay}"
-                                                 Foreground="{DynamicResource AccentSolid}"
+                                                 Foreground="{DynamicResource ProgressFill}"
                                                  Background="{DynamicResource SurfaceAlt}"
                                                  BorderThickness="0">
                                         <ProgressBar.Template>

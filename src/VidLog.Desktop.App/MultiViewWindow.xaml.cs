@@ -770,10 +770,14 @@ public partial class MultiViewWindow : Window
         /// 这一对是个**能失败的检查**（见 `MultiViewWindowCellTests`）。
         /// </para>
         /// <para>
-        /// ⚠️ <b>字不许用琥珀。</b>量过：`Warning` <c>#F59E0B</c> 压在 `WarningSurface`
-        /// <c>#FFFBEB</c> 上只有 <b>2.07:1</b> —— 远低于 AA 正文档的 4.5。所以这一格的
-        /// **颜色差走底子、不走字**：字还是 <see cref="MutedKey"/>（<b>4.59:1</b>，刚够）。
-        /// 这两条一起钉在那条绊线里。
+        /// ⚠️ <b>这一格的「颜色差」走底子、不走字。</b>字用 <see cref="MutedKey"/>，
+        /// 亮色 <b>5.54:1</b>、暗色 <b>5.68:1</b>。
+        /// ⚠️ 这里原来写的是「字不许用琥珀 —— `Warning` <c>#F59E0B</c> 压在
+        /// `WarningSurface` 上只有 2.07:1」，那句**已经过期**：亮色 `Warning`
+        /// 2026-10-07 改成 orange-700 `#C2410C`，现在那一对是 <b>4.99:1</b>
+        ///（暗色 6.79:1）。结论不变，但理由变了 —— 现在是**设计选择**
+        /// （带色相的底本身就是这一格的信号），不再是「换字色会不达标」逼出来的。
+        /// 这两条一起钉在那条绊线里（亮暗各量一次）。
         /// </para>
         /// </remarks>
         private const string OffSlotKey = "WarningSurface";

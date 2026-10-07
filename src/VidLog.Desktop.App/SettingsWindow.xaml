@@ -553,7 +553,7 @@
                                     Background="{DynamicResource BorderStrong}">
                                 <Border x:Name="CapacityFill" Width="0" CornerRadius="{StaticResource RadiusTag}"
                                         HorizontalAlignment="Left"
-                                        Background="{DynamicResource AccentSolid}"/>
+                                        Background="{DynamicResource ProgressFill}"/>
                             </Border>
                             <TextBlock Grid.Column="1" x:Name="CapacityText"
                                        Style="{StaticResource Body}" Text="正在统计…"
