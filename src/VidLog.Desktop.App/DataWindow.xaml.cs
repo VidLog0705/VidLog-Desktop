@@ -153,29 +153,26 @@ public partial class DataWindow : Window
         _ = ReloadAsync();
     }
 
-    /// <summary>按「时间范围」把两个日期填上。选了「自定义」就不动它们。</summary>
+    /// <summary>
+    /// 按「时间范围」把两个日期填上。选了「自定义」就不动它们。
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ 档位到日期的换算在 <see cref="DateRangeSelection.DatesFor"/> 里（T27② 第 2 批），
+    /// 这里只管把结果接到两个日期控件上。
+    /// </remarks>
     private void SyncDatesFromRange()
     {
-        var today = DateOnly.FromDateTime(DateTime.Now);
+        var dates = DateRangeSelection.DatesFor(
+            TagOf(RangeCombo), DateOnly.FromDateTime(DateTime.Now));
 
-        var (from, to) = TagOf(RangeCombo) switch
-        {
-            // 「最近 7 天」= 含今天在内的 7 天，不是从今天往前 7 天。
-            "30" => (today.AddDays(-29), today),
-            "90" => (today.AddDays(-89), today),
-            "month" => (new DateOnly(today.Year, today.Month, 1), today),
-            "custom" => ((DateOnly?)null, (DateOnly?)null),
-            _ => (today.AddDays(-6), today),
-        };
-
-        if (from is null || to is null)
+        if (dates is not { } range)
         {
             return;
         }
 
         _syncing = true;
-        FromDate.SelectedDate = from.Value.ToDateTime(TimeOnly.MinValue);
-        ToDate.SelectedDate = to.Value.ToDateTime(TimeOnly.MinValue);
+        FromDate.SelectedDate = range.From.ToDateTime(TimeOnly.MinValue);
+        ToDate.SelectedDate = range.To.ToDateTime(TimeOnly.MinValue);
         _syncing = false;
     }
 
@@ -183,31 +180,16 @@ public partial class DataWindow : Window
     /// 界面上选的那个区间，转成半开区间的两个端点。
     /// </summary>
     /// <remarks>
-    /// ⚠️ 右端点取**次日零点**：用户在「结束日期」里选的那一天要**整日包含**。
-    /// 直接拿它当上界的话，那天最后一个小时录的全都不算 —— 而界面上一点都看不出来。
+    /// ⚠️ 兜底、反选交换、「右端点取次日零点（结束日整日包含）」都在
+    /// <see cref="DateRangeSelection.HalfOpen"/> 里（T27② 第 2 批）——
+    /// 那几条错一天界面上完全看不出来，所以搬进了有测试工程的那一侧。
     /// </remarks>
-    private (DateTimeOffset From, DateTimeOffset To) SelectedRange()
-    {
-        var today = DateOnly.FromDateTime(DateTime.Now);
-
-        // 日期被清空时给个兜底，不让它变成 null：这条路上出现 null
-        // 会一路传到查询里，而「没设日期」与「日期是空的」在结果上
-        // 长得一模一样 —— 与其猜，不如退回默认区间。
-        var from = FromDate.SelectedDate is { } f ? DateOnly.FromDateTime(f) : today.AddDays(-6);
-        var to = ToDate.SelectedDate is { } t ? DateOnly.FromDateTime(t) : today;
-
-        // 选反了也能用（用户先点结束再点开始是常事）。
-        if (to < from)
-        {
-            (from, to) = (to, from);
-        }
-
-        var offset = DateTimeOffset.Now.Offset;
-
-        return (
-            new DateTimeOffset(from.ToDateTime(TimeOnly.MinValue), offset),
-            new DateTimeOffset(to.AddDays(1).ToDateTime(TimeOnly.MinValue), offset));
-    }
+    private (DateTimeOffset From, DateTimeOffset To) SelectedRange() =>
+        DateRangeSelection.HalfOpen(
+            FromDate.SelectedDate is { } f ? DateOnly.FromDateTime(f) : null,
+            ToDate.SelectedDate is { } t ? DateOnly.FromDateTime(t) : null,
+            DateOnly.FromDateTime(DateTime.Now),
+            DateTimeOffset.Now.Offset);
 
     private StatsGranularity Granularity() => TagOf(GranularityCombo) switch
     {
