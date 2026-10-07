@@ -48,8 +48,12 @@ namespace VidLog.Desktop.App;
 public partial class WizardWindow : Window
 {
     private const int LastStep = 6;
-    private const int CameraStep = 1;
-    private const int RecognitionStep = 2;
+
+    // ⚠️ 这两个数**只有一份**，在 Core 里（`WizardPlan`）—— 取景那两条规则要按步号
+    // 判断（只有摄像头步与识码步取景），两边各写一个 1 的话，改了一处就是**静默**错。
+    private const int CameraStep = WizardPlan.CameraStep;
+    private const int RecognitionStep = WizardPlan.RecognitionStep;
+
     private const int PerformanceStep = 3;
     private const int MicrophoneStep = 4;
 
@@ -368,28 +372,21 @@ public partial class WizardWindow : Window
     /// 「界面上选的是 A，存下去的是 B」—— 静默、且用户无法自查。
     /// </para>
     /// <para>
-    /// ⚠️ 切换摄像头种类时**保留另一边的值**（换回本机设备还记得上次是哪台）。
-    /// 这与 <see cref="CameraSource.FromConfig"/> 是同一个口径。
+    /// 并进去的规矩（换种类保留另一边的值、麦克风不选时保持原值）在
+    /// <see cref="WizardPlan.Build"/> 那头，这里只读控件。
     /// </para>
     /// </remarks>
-    private AppSettings Pending()
-    {
-        var source = SelectedSource();
-        var remembered = _host.Settings;
+    private AppSettings Pending() => WizardPlan.Build(_host.Settings, Draft());
 
-        return remembered with
-        {
-            Mode = ModeContinuous.IsChecked == true
-                ? WorkMode.Continuous
-                : WorkMode.StopOnSameWaybill,
-            CameraSource = source.Kind,
-            CameraDevice = source.IsNetwork ? remembered.CameraDevice : source.Address,
-            CameraNetworkUrl = source.IsNetwork ? source.Address : remembered.CameraNetworkUrl,
-            CameraRecognition = RecognitionOn.IsChecked == true,
-            Rotation = _rotation,
-            MicrophoneDevice = SelectedMicrophone() ?? remembered.MicrophoneDevice,
-        };
-    }
+    /// <summary>界面上读出来的那一份草稿 —— 一行一个控件。</summary>
+    private WizardDraft Draft() => new()
+    {
+        Continuous = ModeContinuous.IsChecked == true,
+        Camera = SelectedSource(),
+        Recognition = RecognitionOn.IsChecked == true,
+        Rotation = _rotation,
+        Microphone = SelectedMicrophone(),
+    };
 
     // ─────────────────────────────────────────────
     // 步 2 · 选择摄像头
@@ -619,38 +616,23 @@ public partial class WizardWindow : Window
     // 预览（步 2 / 步 3）
     // ─────────────────────────────────────────────
 
-    /// <summary>当前这一步要不要预览。</summary>
-    private bool NeedsPreview() => _step switch
-    {
-        CameraStep => SourceReady(),
-        RecognitionStep => RecognitionOn.IsChecked == true && SourceReady(),
-        _ => false,
-    };
+    /// <summary>当前这一步要不要预览（规则在 <see cref="WizardPlan.NeedsPreview"/>）。</summary>
+    private bool NeedsPreview() =>
+        WizardPlan.NeedsPreview(_step, RecognitionOn.IsChecked == true, SourceReady());
 
-    /// <summary>这一路现在**能不能**取景。</summary>
-    /// <remarks>
-    /// ⚠️ 网络那一档在「测试连接」成功之前**不取景**（照图 `_18` 那句话）。
-    /// </remarks>
-    private bool SourceReady()
-    {
-        var source = Pending().Camera;
-        return !source.IsEmpty && (!source.IsNetwork || _networkVerified);
-    }
+    /// <summary>
+    /// 这一路现在**能不能**取景（规则在 <see cref="WizardPlan.SourceReady"/>：
+    /// 网络那一档在「测试连接」成功之前不取景，照图 `_18`）。
+    /// </summary>
+    private bool SourceReady() => WizardPlan.SourceReady(SelectedSource(), _networkVerified);
 
     /// <summary>正在跑的那一路预览是给谁跑的 —— 变了就要重开。</summary>
-    private string DesiredPreviewKey()
-    {
-        if (!NeedsPreview())
-        {
-            return string.Empty;
-        }
-
-        var pending = Pending();
-
-        // ⚠️ 用 **Identity** 不用 Address：地址里是用户自己的摄像头密码，
-        // 而这个串会长期留在内存里当一个字典键，没有必要带着它。
-        return $"{pending.Camera.Kind}|{pending.Camera.Identity}|{(int)pending.Rotation}";
-    }
+    /// <remarks>
+    /// ⚠️ 键怎么拼（用 <c>Identity</c> 不用 <c>Address</c>，地址里有密码）
+    /// 在 <see cref="WizardPlan.PreviewKey"/> 那头。
+    /// </remarks>
+    private string DesiredPreviewKey() =>
+        NeedsPreview() ? WizardPlan.PreviewKey(SelectedSource(), _rotation) : string.Empty;
 
     private async Task EnsurePreviewAsync()
     {
