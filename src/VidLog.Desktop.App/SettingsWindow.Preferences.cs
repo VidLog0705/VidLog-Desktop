@@ -276,20 +276,6 @@ public partial class SettingsWindow : Window
         _ => "错误（最安静）",
     };
 
-    private LogLevel SelectedLogLevel() =>
-        Enum.TryParse<LogLevel>(TagOf(LogLevelCombo), out var level) ? level : LogLevel.Info;
-
-    /// <summary>
-    /// 保留天数。
-    /// </summary>
-    /// <remarks>
-    /// ⚠️ 认不出来、或者越界（`1..365`，与 `AppSettings` 的校验同一个范围）就**退回原值**：
-    /// 写个 0 进去的话，所有日志当场被清掉，而用户只是想改一个数。
-    /// </remarks>
-    private int ParsedLogRetainDays() =>
-        int.TryParse(LogRetainDaysBox.Text.Trim(), out var days) && days is >= 1 and <= 365
-            ? days
-            : _host.Settings.LogRetainDays;
 
     // ─────────────────────────────────────────────
     // 关于

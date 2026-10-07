@@ -345,28 +345,4 @@ public partial class SettingsWindow : Window
         combo.Text = setting.Label;
         combo.SelectedIndex = RetentionSetting.Standard.ToList().IndexOf(setting);
     }
-
-    /// <summary>把下拉里的选择读回来。**认不出的写法一律回落「全部保留」**（朝少删的那头落）。</summary>
-    private static RetentionSetting RetentionOf(ComboBox combo)
-    {
-        // ⚠️ 可编辑下拉：用户敲的东西在 `Text` 里，不一定选中了某一项。
-        // 先按**选中项**认，认不出再看文本 —— 顺序反了的话，手输过一个数之后
-        // 再点列表里的项，读回来的会是旧文本。
-        if (combo.SelectedIndex >= 0
-            && combo.SelectedIndex < RetentionSetting.Standard.Count
-            && string.Equals(
-                combo.Text, RetentionSetting.Standard[combo.SelectedIndex].Label, StringComparison.Ordinal))
-        {
-            return RetentionSetting.Standard[combo.SelectedIndex];
-        }
-
-        var text = combo.Text?.Trim() ?? string.Empty;
-
-        if (text is "全部保留" or "") return RetentionSetting.KeepAll;
-        if (text == "不保留") return RetentionSetting.Immediate;
-
-        var digits = text.EndsWith('天') ? text[..^1].Trim() : text;
-
-        return int.TryParse(digits, out var days) ? RetentionSetting.FromConfig(days) : RetentionSetting.KeepAll;
-    }
 }

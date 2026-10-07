@@ -487,135 +487,27 @@ public partial class SettingsWindow : Window
     /// </summary>
     /// <returns>存成功了返回 true。</returns>
     /// <remarks>
-    /// 越界的输入**不静默吞掉** —— 说清楚、并且不保存，而不是存进去一个
-    /// 之后会让人莫名其妙的值。⚠️ 校验不过时**不关窗**：关掉的话用户
-    /// 连自己填错了什么都看不见。
+    /// ⚠️ <b>算设置那一段一个判断都不该有</b>（T27② 第 3 批）：校验、逐项的
+    /// 「认不出来就保持原值」、磁盘表怎么读，全在 <see cref="SettingsForm"/> 里 ——
+    /// 那个工程有测试工程，而本工程没有（原先这一段有一百八十行，全是注释在解释
+    /// 「为什么不能那样写」）。外壳这一层只剩「把控件上的原值读出来、把结果存下去」。
+    /// <para>
+    /// 越界的输入**不静默吞掉** —— 说清楚、并且不保存。⚠️ 校验不过时**不关窗**：
+    /// 关掉的话用户连自己填错了什么都看不见。
+    /// </para>
     /// </remarks>
     private async Task<bool> SaveAsync()
     {
-        if (!int.TryParse(SegmentBox.Text, out var segment) || segment is < 1 or > 10)
+        var input = ReadForm();
+
+        var (next, problem) = SettingsForm.Build(
+            input, _host.Settings, DiskRowsOf(_saveDiskRows), DiskRowsOf(_backupDiskRows));
+
+        if (next is null)
         {
-            SettingsStatus.Text = "分段时长要在 1~10 分钟之间，本次未保存。";
+            SettingsStatus.Text = problem;
             return false;
         }
-
-        if (!int.TryParse(PortBox.Text, out var port) || port is < 1024 or > 65535)
-        {
-            SettingsStatus.Text = "端口要在 1024~65535 之间，本次未保存。";
-            return false;
-        }
-
-        // 重复单号检测的天数（规格 §3.2.5「N 可配置」）。**0 = 关闭。**
-        // ⚠️ 界面上写清「0 = 关闭」，而这里也接受 0 —— 否则那句话就是空话。
-        if (!int.TryParse(DuplicateDaysBox.Text, out var duplicateDays)
-            || duplicateDays is < 0 or > 365)
-        {
-            SettingsStatus.Text = "重复单号检测要填 0~365 天（0 = 关闭），本次未保存。";
-            return false;
-        }
-
-        // 两张磁盘表（批次 4，设计图 `_43`）。分开判，好让每一处各自说自己那一句。
-        if (!TryReadDisks(_saveDiskRows, "录像保存位置", out var saveDisks, out var saveDiskError))
-        {
-            SettingsStatus.Text = saveDiskError;
-            return false;
-        }
-
-        if (!TryReadDisks(_backupDiskRows, "录像备份位置", out var backupDisks, out var backupDiskError))
-        {
-            SettingsStatus.Text = backupDiskError;
-            return false;
-        }
-
-        // 自定义分钟数：只在选了「自定义」时才管它，否则保持原值
-        // （用户先填了 7 分钟又改回 3 分钟，那 7 不该丢 —— 下次切回自定义还要用）。
-        var idleMinutes = int.TryParse(IdleMinutesBox.Text, out var parsedMinutes)
-            ? Math.Clamp(parsedMinutes, WorkModeOptions.MinIdleMinutes, WorkModeOptions.MaxIdleMinutes)
-            : _host.Settings.IdleReminderMinutes;
-
-        var next = _host.Settings with
-        {
-            // 电脑用途（批次 4）。认不出来就保持原值 —— 这个下拉只有四项，
-            // 认不出来说明界面坏了，而「静默换成默认用途」会让一台备份主机
-            // 下次启动突然开始抢摄像头。
-            StationRole = Enum.TryParse<StationRole>(TagOf(RoleCombo), out var stationRole)
-                ? stationRole : _host.Settings.StationRole,
-            Mode = Enum.TryParse<WorkMode>(TagOf(ModeCombo), out var mode) ? mode : _host.Settings.Mode,
-            Codec = Enum.TryParse<VideoCodec>(TagOf(CodecButtons), out var codec)
-                ? codec : _host.Settings.Codec,
-            Resolution = Enum.TryParse<VideoResolution>(TagOf(ResolutionButtons), out var resolution)
-                ? resolution : _host.Settings.Resolution,
-            IdleReminder = Enum.TryParse<IdleReminderOption>(TagOf(IdleCombo), out var idle)
-                ? idle : _host.Settings.IdleReminder,
-            IdleReminderMinutes = idleMinutes,
-            DurationFallback = Enum.TryParse<DurationFallbackOption>(TagOf(DurationCombo), out var d)
-                ? d : _host.Settings.DurationFallback,
-            SegmentMinutes = segment,
-            // 扫码预录缓冲（批次 C，规格 §3.1.3）。四个档位，正常取不到别的值；
-            // 越界就保持原值而不是夹一下 —— 与「同时上传数」同一个理由，
-            // 猜错一档要么白丢几秒画面、要么白占一份磁盘，不如不动。
-            PrerecordSeconds = int.TryParse(TagOf(PrerecordCombo), out var prerecord)
-                && prerecord is >= 0 and <= 30
-                    ? prerecord : _host.Settings.PrerecordSeconds,
-            DuplicateCheckDays = duplicateDays,
-            PlaybackPort = port,
-
-            // ── 外观与启动（批次 9，设计图 `_49`）──
-            // ⚠️ 「界面语言」与「外观主题」**刻意不在这里读**：它们各自只有一档能选，
-            // 落进设置文件就是一个永远为真的假开关（踩坑 #13）。
-            RunAtStartup = RunAtStartupToggle.IsChecked == true,
-            CloseWindowAction = Enum.TryParse<CloseWindowAction>(TagOf(CloseActionCombo), out var closeAction)
-                ? closeAction : _host.Settings.CloseWindowAction,
-            CheckForUpdates = CheckUpdateToggle.IsChecked == true,
-            // ── 日志（2026-10-01 需求方要「级别可配」）──
-            LogMinLevel = SelectedLogLevel(),
-            LogRetainDays = ParsedLogRetainDays(),
-            // ⚠️ 用着网络摄像头时那个下拉是禁用且空的，直接取 SelectedItem
-            // 会把记着的本机设备名抹成 null —— 用户哪天切回本机设备就得重选一遍。
-            CameraDevice = CameraCombo.SelectedItem as string ?? _host.Settings.CameraDevice,
-            // ⚠️ 关掉时麦克风那一栏**仍然记着**选的是哪个（与归档目录同一个道理）：
-            // 用户来回拨开关时不必重选一遍。关着的时候那个下拉根本没被填过，
-            // 直接取 SelectedItem 会把记着的名字抹成 null。
-            RecordAudio = AudioToggle.IsChecked == true,
-            MicrophoneDevice = MicrophoneCombo.SelectedItem as string ?? _host.Settings.MicrophoneDevice,
-            ArchiveBackend = Enum.TryParse<ArchiveBackendKind>(TagOf(ArchiveCombo), out var backend)
-                ? backend : _host.Settings.ArchiveBackend,
-            // 目录型那两档的根，现在是一张表（批次 4）。别的档位下那张表是藏着的，
-            // 但行仍然记着 —— 用户在 NAS 与挂载盘之间来回切时不必重填一遍。
-            //
-            // ⚠️ 老的单个 `ArchiveDirectory` 在这里**清掉**：留着它的话，
-            // `AppSettings.ArchiveDirectories` 会在表被清空时回落到它 ——
-            // 于是用户删掉的最后一行会**原地复活**。值已经折进表里了（读的时候折的）。
-            ArchiveDirectory = null,
-            BackupDisks = backupDisks,
-            SaveDisks = saveDisks,
-            Retention = new RetentionSettings(
-                RetentionOf(ArchivedOutboundCombo), RetentionOf(ArchivedReturnCombo),
-                RetentionOf(UnarchivedOutboundCombo), RetentionOf(UnarchivedReturnCombo)),
-
-            // ── 百度网盘（批次 5，设计图 `_45` / `_46`）──
-            // ⚠️ `AutoUploadSince` **刻意不在这里**：盖章的是
-            // `AppHost.SaveSettingsAsync`（拨开那一刻），因为这组设置还有别的入口，
-            // 而这条时间戳是「仅此开关开启后**新开始录制**的视频会上传」唯一的判据 ——
-            // 少盖一次，打开开关就会把整库历史录像一次全传上去。
-            Cloud = _host.Settings.Cloud with
-            {
-                AutoUpload = CloudAutoUploadToggle.IsChecked == true,
-                CompareAndBackfill = CloudCompareToggle.IsChecked == true,
-                BackfillScope = Enum.TryParse<BackfillScope>(TagOf(CloudScopeCombo), out var scope)
-                    ? scope : _host.Settings.Cloud.BackfillScope,
-                // 换回「全部」时**不清**：用户来回切时不必重选一遍（与磁盘表同一个道理）。
-                BackfillFrom = CloudFromDatePicker.SelectedDate is { } from
-                    ? new DateTimeOffset(from) : _host.Settings.Cloud.BackfillFrom,
-                // 界面上是个 1~8 的下拉，正常取不到别的值；越界就保持原值而不是夹一下 ——
-                // 静默把「同时上传数」改成 8 的后果不是慢一点，是整库被网盘风控限流。
-                ParallelUploads = int.TryParse(CloudParallelCombo.SelectedItem as string, out var parallel)
-                    && parallel is >= 1 and <= 8
-                        ? parallel : _host.Settings.Cloud.ParallelUploads,
-                AppName = string.IsNullOrWhiteSpace(CloudAppNameBox.Text)
-                    ? _host.Settings.Cloud.AppName : CloudAppNameBox.Text.Trim(),
-            },
-        };
 
         try
         {
@@ -664,4 +556,71 @@ public partial class SettingsWindow : Window
         await RefreshCloudPageAsync();
         return true;
     }
+
+    /// <summary>
+    /// 把设置页上那些格子的**原值**读出来交给 <see cref="SettingsForm"/>。
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ 这里**只读不算**：一个判断都不做（T27② 第 3 批）。连「下拉传 tag 不传文本」
+    /// 这条也在 Core 那边写着 —— 这一层唯一的活是把控件的形状翻成数据。
+    /// </remarks>
+    private SettingsFormInput ReadForm() => new()
+    {
+        // 数字格
+        SegmentMinutes = SegmentBox.Text,
+        PlaybackPort = PortBox.Text,
+        DuplicateCheckDays = DuplicateDaysBox.Text,
+        IdleMinutes = IdleMinutesBox.Text,
+        PrerecordTag = TagOf(PrerecordCombo),
+        LogRetainDays = LogRetainDaysBox.Text,
+        CloudParallelText = CloudParallelCombo.SelectedItem as string,
+
+        // 下拉的 tag
+        StationRoleTag = TagOf(RoleCombo),
+        ModeTag = TagOf(ModeCombo),
+        CodecTag = TagOf(CodecButtons),
+        ResolutionTag = TagOf(ResolutionButtons),
+        IdleReminderTag = TagOf(IdleCombo),
+        DurationFallbackTag = TagOf(DurationCombo),
+        CloseActionTag = TagOf(CloseActionCombo),
+        ArchiveBackendTag = TagOf(ArchiveCombo),
+        CloudBackfillScopeTag = TagOf(CloudScopeCombo),
+        LogLevelTag = TagOf(LogLevelCombo),
+
+        // 开关
+        RunAtStartup = RunAtStartupToggle.IsChecked == true,
+        CheckForUpdates = CheckUpdateToggle.IsChecked == true,
+        RecordAudio = AudioToggle.IsChecked == true,
+        CloudAutoUpload = CloudAutoUploadToggle.IsChecked == true,
+        CloudCompareAndBackfill = CloudCompareToggle.IsChecked == true,
+
+        // 别的格子
+        CameraDevice = CameraCombo.SelectedItem as string,
+        MicrophoneDevice = MicrophoneCombo.SelectedItem as string,
+        CloudBackfillFrom = CloudFromDatePicker.SelectedDate is { } from ? new DateTimeOffset(from) : null,
+        CloudAppName = CloudAppNameBox.Text,
+
+        // 保留期那四个可编辑下拉：选中项与文本都要（用户可能自己敲了个数）。
+        ArchivedOutbound = RetentionInputOf(ArchivedOutboundCombo),
+        ArchivedReturn = RetentionInputOf(ArchivedReturnCombo),
+        UnarchivedOutbound = RetentionInputOf(UnarchivedOutboundCombo),
+        UnarchivedReturn = RetentionInputOf(UnarchivedReturnCombo),
+    };
+
+    private static RetentionInput RetentionInputOf(ComboBox combo) => new(combo.SelectedIndex, combo.Text);
+
+    /// <summary>
+    /// 磁盘表里的行 → Core 要的那种「全 string」形状。
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ 备份表里那一格显示的是占位符「—」（那一列是**死的**，见
+    /// <see cref="BackupReserveText"/>）—— 它是个显示上的东西，在这层折成
+    /// 「没填」，别让 Core 去认一个界面文案。
+    /// </remarks>
+    private static (string Folder, string? ReservedText)[] DiskRowsOf(List<DiskSlotRow> rows) =>
+        [.. rows.Select(row =>
+        {
+            var text = row.ReservedGb.Trim();
+            return (row.Folder, text is "" or BackupReserveText ? null : text);
+        })];
 }

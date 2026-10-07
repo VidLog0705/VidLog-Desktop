@@ -354,57 +354,6 @@ public class DesktopServicesTests
     }
 
     /// <summary>
-    /// 钉住「磁盘槽位的两个上限只有一份」（T29）——
-    /// 设置页必须读 <see cref="AppSettings.MaxDiskSlots"/> / <see cref="AppSettings.MaxReservedGb"/>。
-    /// </summary>
-    /// <remarks>
-    /// <para>
-    /// 修之前这两个数是**各写各的**：Core 写在 <c>PlausibleSlots</c> 里，
-    /// 界面写在 <c>TryReadDisks</c> 里（`> 32`、`> 1_000_000`），判据还不齐
-    /// （界面没有「完整路径」那两条）。
-    /// </para>
-    /// <para>
-    /// ⚠️ 对不上的后果**不是**「多存两行」：<c>AppSettings.IsValid</c> 判的是
-    /// **整份设置**，界面放行了 Core 判不过的值 ⇒ 下一次启动**整体回落到默认值**，
-    /// 保留期、云端、关窗行为一起被打回原样，而用户只碰过磁盘这一页、还看不到
-    /// 任何提示。这正是它值得一条绊线的理由。
-    /// </para>
-    /// <para>
-    /// ⚠️ <b>天花板</b>（与上面几条同）：只挡「数又写死回去」。挡不住
-    /// 「常量引对了、但比较方向写反」（`>=` 写成 `>` 之类）—— 那要真跑一次
-    /// <c>TryReadDisks</c>，而它在 <c>net9.0-windows</c> 的 App 里、没有测试工程。
-    /// 根治办法仍然是 T27②：把这套读表逻辑搬进 Core。
-    /// </para>
-    /// <para>
-    /// ⚠️ 扫的是 <b>`SettingsWindow` 的全部 partial</b>（不是只有 `Disks.cs`）：
-    /// 只读一个具体文件的话，哪天 <c>TryReadDisks</c> 被挪到别的 partial 上，
-    /// 这条就会假红。注释先被 <see cref="ReadSplit"/> 剥掉。
-    /// </para>
-    /// </remarks>
-    [Fact]
-    public void 磁盘槽位的上限只有一份_界面读的是Core的常量()
-    {
-        var code = ReadSplit(
-            Path.Combine(RepoRoot(), "src", "VidLog.Desktop.App"), "SettingsWindow");
-
-        foreach (var name in new[] { "AppSettings.MaxDiskSlots", "AppSettings.MaxReservedGb" })
-        {
-            Assert.True(
-                code.Contains(name, StringComparison.Ordinal),
-                $"设置页没有引用 {name} —— 上限又被写死了第二份。见 T29。");
-        }
-
-        // ⚠️ 这两条写死过一遍。整个 App 工程此刻**一处都没有**（2026-10-07 核过），
-        // 所以这条不会因为不相干的代码假红。
-        foreach (var literal in new[] { "> 32", "1_000_000" })
-        {
-            Assert.False(
-                code.Contains(literal, StringComparison.Ordinal),
-                $"设置页里又出现了写死的「{literal}」—— 上限必须是 AppSettings 上的常量。见 T29。");
-        }
-    }
-
-    /// <summary>
     /// 钉住「许可那句话只有一份」（T30）—— 侧栏与设置页都必须走
     /// <see cref="LicenseStatus.SummaryText"/>。
     /// </summary>
