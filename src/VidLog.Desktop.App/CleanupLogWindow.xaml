@@ -1,0 +1,117 @@
+<Window x:Class="VidLog.Desktop.App.CleanupLogWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        mc:Ignorable="d"
+        Title="清理流水" Height="640" Width="1000" MinWidth="760" MinHeight="420"
+        FontFamily="{StaticResource UiFont}"
+        Background="{StaticResource PageBackground}"
+        WindowStartupLocation="CenterOwner">
+    <!--
+        ════════════════════════════════════════════════════════════════
+        清理流水（T24）
+
+        规格 §6.2「禁止静默清理」的另一半：**保留可查的清理记录**。
+        审计从 T19 起就在写盘了，但在这之前**没有任何界面能看它** ——
+        于是设置页上那句「明细见清理流水」指的是一份用户打不开的文件。
+
+        四列照清单写死：时间 / 单号 / 动作 / 原因。
+
+        ⚠️ 翻账的逻辑（时间格式、动作码翻人话、单号兜底）**全在 Core 的
+        `CleanupLogView`**，这里一行判断都没有 —— App 层没有测试工程，
+        任何写在这儿的判断都只能靠肉眼。这与 `CleanupAsk` 当初搬去 Core
+        是同一条理由。
+
+        ⚠️ 行数据是 `CleanupLogRow`，**没有 WPF 类型**（Core 是纯 net9.0，
+        引不到 `Visibility`）。所以「有没有坏行」那种开关由这个窗口的
+        code-behind 直接设，不走绑定。
+        ════════════════════════════════════════════════════════════════
+    -->
+    <Grid Margin="20,16,20,16">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <StackPanel Grid.Row="0" Margin="0,0,0,12">
+            <TextBlock Style="{StaticResource PageTitle}" Text="清理流水"/>
+            <TextBlock Style="{StaticResource Caption}" Margin="0,4,0,0" TextWrapping="Wrap"
+                       Text="系统清过哪一条、为什么清、哪几条按 I8 保留了，全记在这里。这份记录只增不改。"/>
+        </StackPanel>
+
+        <!-- 表头。⚠️ 五列宽度与下面 ItemTemplate 里那份**必须逐字相同** ——
+             两处各改各的，表头就会和内容错开，而那是没人会报、只会觉得「有点歪」的那种错。 -->
+        <Border Grid.Row="1" Background="{StaticResource SurfaceAlt}"
+                CornerRadius="{StaticResource RadiusTag}" Padding="12,6"
+                BorderBrush="{StaticResource CardBorder}" BorderThickness="1">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="150"/>
+                    <ColumnDefinition Width="200"/>
+                    <ColumnDefinition Width="100"/>
+                    <ColumnDefinition Width="*"/>
+                </Grid.ColumnDefinitions>
+                <TextBlock Style="{StaticResource Caption}" Text="时间"/>
+                <TextBlock Grid.Column="1" Style="{StaticResource Caption}" Text="单号"/>
+                <TextBlock Grid.Column="2" Style="{StaticResource Caption}" Text="动作"/>
+                <TextBlock Grid.Column="3" Style="{StaticResource Caption}" Text="原因"/>
+            </Grid>
+        </Border>
+
+        <Grid Grid.Row="2" Margin="0,6,0,0">
+            <TextBlock x:Name="EmptyNote" Margin="18" Visibility="Collapsed"
+                       TextWrapping="Wrap" TextAlignment="Center"
+                       HorizontalAlignment="Center" VerticalAlignment="Center"
+                       Foreground="{StaticResource TextDisabled}"/>
+            <ListBox x:Name="LogList" BorderThickness="0" Background="Transparent"
+                     HorizontalContentAlignment="Stretch"
+                     ScrollViewer.HorizontalScrollBarVisibility="Disabled">
+                <ListBox.ItemTemplate>
+                    <DataTemplate>
+                        <Grid Margin="2,4">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="150"/>
+                                <ColumnDefinition Width="200"/>
+                                <ColumnDefinition Width="100"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+
+                            <TextBlock Text="{Binding AtText}"
+                                       FontFamily="{StaticResource MonoFont}"
+                                       Foreground="{StaticResource TextSecondary}"/>
+                            <!-- 单号查不到时这一格写的是「（无单号）」。
+                                 ⚠️ 审计里那一行的**原值**（证据 id）挂在整行 tooltip 上 ——
+                                 查不到单号时它是唯一能对上号的东西，别删。 -->
+                            <TextBlock Grid.Column="1" Text="{Binding WaybillText}"
+                                       TextTrimming="CharacterEllipsis"
+                                       ToolTip="{Binding EvidenceId}"
+                                       FontWeight="SemiBold"
+                                       Foreground="{StaticResource TextPrimary}"/>
+                            <TextBlock Grid.Column="2" Text="{Binding ActionText}"
+                                       Foreground="{StaticResource TextPrimary}"/>
+                            <TextBlock Grid.Column="3" Text="{Binding ReasonText}"
+                                       TextWrapping="Wrap"
+                                       Foreground="{StaticResource TextSecondary}"/>
+                        </Grid>
+                    </DataTemplate>
+                </ListBox.ItemTemplate>
+            </ListBox>
+        </Grid>
+
+        <TextBlock x:Name="UnreadableNote" Grid.Row="3" Margin="12,8,0,0"
+                   Visibility="Collapsed" TextWrapping="Wrap"
+                   Foreground="{StaticResource Warning}"/>
+
+        <StackPanel Grid.Row="4" Orientation="Horizontal" HorizontalAlignment="Right"
+                    Margin="0,12,0,0">
+            <!-- IsCancel：Esc 也关得掉（`DesktopServicesTests.每个对话框都按_Esc_关得掉`
+                 扫的就是这个）。这不是可选的美化 —— 一个关不掉的模态窗会一直挡在主界面前面。 -->
+            <Button x:Name="CloseButton" Content="关闭" MinWidth="88" IsCancel="True"
+                    Style="{StaticResource SecondaryButton}" Click="OnClose"/>
+        </StackPanel>
+    </Grid>
+</Window>

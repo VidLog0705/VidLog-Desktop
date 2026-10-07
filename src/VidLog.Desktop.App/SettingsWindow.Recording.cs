@@ -119,6 +119,14 @@ public partial class SettingsWindow : Window
         }
     }
 
+    /// <summary>【清理流水…】—— 规格 §6.2 那个「**可查的**清理记录」（T24）。</summary>
+    /// <remarks>
+    /// ⚠️ 它不碰 <c>CleanupNote</c>、也不进 <c>SyncCleanupButtons</c>：
+    /// 看历史**没有前置条件**，「准备没准备好」是清理那两颗按钮的事。
+    /// </remarks>
+    private void OnCleanupLog(object sender, RoutedEventArgs e) =>
+        new CleanupLogWindow(_host) { Owner = this }.ShowDialog();
+
     // ─────────────────────────────────────────────
     // 摄像头
     // ─────────────────────────────────────────────

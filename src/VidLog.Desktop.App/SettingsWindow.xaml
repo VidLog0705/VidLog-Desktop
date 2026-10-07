@@ -586,6 +586,13 @@
                                 <Button x:Name="CleanupBySpaceButton" Content="按空间释放…"
                                         Style="{StaticResource SecondaryButton}" Padding="14,7"
                                         Margin="8,0,0,0" Click="OnCleanupBySpace"/>
+                                <!-- T24：规格 §6.2「保留**可查的**清理记录」的那个「可查」。
+                                     ⚠️ 它**不受 SyncCleanupButtons 管**（不看准备没准备好）——
+                                     看历史没有前置条件，而且恰恰是系统没准备好的时候，
+                                     用户才更想看看之前到底清掉过什么。 -->
+                                <Button x:Name="CleanupLogButton" Content="清理流水…"
+                                        Style="{StaticResource SecondaryButton}" Padding="14,7"
+                                        Margin="8,0,0,0" Click="OnCleanupLog"/>
                             </StackPanel>
                         </Grid>
                         <TextBlock x:Name="CleanupNote" Style="{StaticResource Caption}"

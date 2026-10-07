@@ -174,6 +174,16 @@ public sealed class DesktopServices : IAsyncDisposable
     public CleanupFlow CleanupFlow { get; private init; } = null!;
 
     /// <summary>
+    /// 清理审计那本账（T24 的「清理流水」窗口读它）。
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ 界面读的是 <see cref="CleanupAuditLog.LoadPageAsync"/> 而不是
+    /// <see cref="CleanupAuditLog.LoadAllAsync"/> —— 后者把坏行**静默跳过**，
+    /// 而一个「不许静默」的窗口静默藏几条记录，是这本账最不该有的错。
+    /// </remarks>
+    public CleanupAuditLog CleanupAudit { get; private init; } = null!;
+
+    /// <summary>
     /// 可信时钟（规格 §3.6.4）。录制的闸门与时间来源都在它身上。
     /// </summary>
     public TrustedClock TrustedClock { get; private init; } = null!;
@@ -569,16 +579,14 @@ public sealed class DesktopServices : IAsyncDisposable
         // 装配在这里，触发在 App 层（启动时算一次、给用户看过才动手）。
         var effectiveLogger = logger ?? NullLogger.Instance;
 
+        var cleanupAudit = new CleanupAuditLog(layout.CleanupAuditPath);
+
         var cleanup = new CleanupService(
             index,
             labels,
             new ReceiptStore(layout.ReceiptsPath),
             published,
-            new CleanupExecutor(
-                archiveBackend,
-                locations,
-                new CleanupAuditLog(layout.CleanupAuditPath),
-                effectiveLogger),
+            new CleanupExecutor(archiveBackend, locations, cleanupAudit, effectiveLogger),
             effectiveLogger);
 
         // T26①：【按时间清理…】/【按空间释放…】按下之后该算什么 —— 从 WPF 的
@@ -608,6 +616,7 @@ public sealed class DesktopServices : IAsyncDisposable
             Live = live,
             Cleanup = cleanup,
             CleanupFlow = cleanupFlow,
+            CleanupAudit = cleanupAudit,
             TrustedClock = trustedClock,
             ClockSource = clockSource ?? new HttpDateClockSource(),
             Exporter = new Export.EvidenceExporter(locations, logger),

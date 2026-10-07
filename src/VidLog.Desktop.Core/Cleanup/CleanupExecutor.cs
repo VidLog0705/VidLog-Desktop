@@ -359,12 +359,31 @@ public sealed class CleanupAuditLog
     public async Task<IReadOnlyList<CleanupAuditRecord>> LoadAllAsync(
         CancellationToken cancellationToken = default)
     {
+        return (await LoadPageAsync(cancellationToken)).Records;
+    }
+
+    /// <summary>
+    /// 与 <see cref="LoadAllAsync"/> 同一件事，但**把读不动的行数也带出来**。
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ 上面那个方法**静默跳过**坏行（那是对的：不能因为一行坏了就丢掉整份审计）。
+    /// 但 T24 的「清理流水」窗口是给人看的，**静默跳过 = 悄悄藏了几条**，
+    /// 而这个窗口存在的全部意义就是「不许静默」。所以给界面另开一个入口，
+    /// 让它能把「另有几行读不动」也说出来。
+    /// <para>
+    /// 两个方法共用一条实现，不是两份 —— 否则哪天改了解析，只有一边会跟着改。
+    /// </para>
+    /// </remarks>
+    public async Task<CleanupAuditPage> LoadPageAsync(
+        CancellationToken cancellationToken = default)
+    {
         if (!File.Exists(_path))
         {
-            return [];
+            return new CleanupAuditPage([], 0);
         }
 
         var records = new List<CleanupAuditRecord>();
+        var unreadable = 0;
 
         foreach (var line in await File.ReadAllLinesAsync(_path, cancellationToken))
         {
@@ -380,13 +399,25 @@ public sealed class CleanupAuditLog
                 {
                     records.Add(record);
                 }
+                else
+                {
+                    unreadable++;
+                }
             }
             catch (JsonException)
             {
                 // 半截的一行跳过 —— 不能因为一行坏了就丢掉整份审计。
+                // 但**要数出来**：界面得告诉用户「这里少了几条」。
+                unreadable++;
             }
         }
 
-        return records;
+        return new CleanupAuditPage(records, unreadable);
     }
 }
+
+/// <summary>读出来的清理流水，外加**读不动的行数**。</summary>
+/// <param name="Records">读出来的记录。</param>
+/// <param name="UnreadableLines">坏掉 / 写了一半、被跳过的行数。</param>
+public sealed record CleanupAuditPage(
+    IReadOnlyList<CleanupAuditRecord> Records, int UnreadableLines);
