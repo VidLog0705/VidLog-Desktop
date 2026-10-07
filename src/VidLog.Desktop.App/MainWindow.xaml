@@ -197,11 +197,14 @@
                                RenderOptions.BitmapScalingMode="HighQuality"/>
 
                         <!-- 实时时间。⚠️ 这是**可信时钟**的时间，不是系统时钟 ——
-                             改系统时间也改不动它，与录像里烧的那个是同一个来源。 -->
+                             改系统时间也改不动它，与录像里烧的那个是同一个来源。
+                             ⚠️ 颜色**不在这里给**：可信（白）与未校准（警示色）
+                             由 `UpdatePreviewClock` 一处决定 —— 这里再写一份的话，
+                             「哪种状态是什么色」就有两个来源了。 -->
                         <TextBlock x:Name="PreviewClockText" Margin="0,12,16,0"
                                    HorizontalAlignment="Right" VerticalAlignment="Top"
                                    FontFamily="{StaticResource MonoFont}" FontSize="13"
-                                   Foreground="White" Text=""/>
+                                   Text=""/>
 
                         <StackPanel x:Name="PreviewPlaceholder"
                                     HorizontalAlignment="Center" VerticalAlignment="Center">

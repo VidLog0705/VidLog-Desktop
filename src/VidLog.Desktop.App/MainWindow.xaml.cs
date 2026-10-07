@@ -23,6 +23,10 @@ using TextChangedEventArgs = System.Windows.Controls.TextChangedEventArgs;
 // ⚠️ WinForms 那侧也有一个 `KeyEventArgs`（`MouseEventArgs` 那些倒是不撞，
 // 所以只有这一个要钉）。T12 的命令面板开始用 WPF 那个。
 using KeyEventArgs = System.Windows.Input.KeyEventArgs;
+// ⚠️ 同理：WinForms 那侧也有一个 `Brushes`（`System.Drawing.Brushes`），
+// 不钉的话 `Brushes.White` 会解析成**画图那个** —— 它根本不是 `Brush`，
+// 报错只说「参数不对」，而真正的问题是类型选错了（与上面 `Image` 同一个坑）。
+using Brushes = System.Windows.Media.Brushes;
 using VidLog.Desktop.App.Platform;
 using VidLog.Desktop.Core;
 using VidLog.Desktop.Core.Commands;
@@ -336,14 +340,20 @@ public partial class MainWindow : Window
 
         PreviewClockText.Text = PreviewTexts.Watermark(clock.IsCalibrated, clock.Now);
 
-        // ⚠️ 只在未校准时改颜色（XAML 里那颗字是 White，压在取景画面上）。
-        // **校准那一支一个字都不动** —— 与搬走之前一样：这里没写过
-        // 「恢复成 White」，所以未校准过再重新校准之后，它会一直挂着警示色。
-        // （原样搬过来，没有改；要不要顺手修由需求方定。）
-        if (!clock.IsCalibrated)
-        {
-            PreviewClockText.Foreground = (Brush)FindResource("Warning");
-        }
+        // ⚠️ **两种状态都要给颜色**，一个三元了事。
+        //
+        // 原先只给未校准那一支（另一支一个字都不动、靠 XAML 里那颗写死的
+        // `Foreground="White"`），于是**校准成功之后它会一直挂着警示色** ——
+        // 那次会话里水印已经写着可信时间了，颜色还在喊「不可信」，而用户学会
+        // 忽略这个颜色之后，下一次真未校准就没人看了。
+        // 而且警示色是琥珀（`#FFF59E0B`），压在明亮车间画面上**比白色更难读** ——
+        // 语义与可读性两头都错。（2026-10-07 需求方拍板：改。）
+        //
+        // ⚠️ 颜色**只在这里给**（XAML 那颗字上不再写 `Foreground`）：
+        // 两处各写一份的话，「哪种状态是什么色」就有了两个来源。
+        PreviewClockText.Foreground = clock.IsCalibrated
+            ? Brushes.White
+            : (Brush)FindResource("Warning");
     }
 
     /// <summary>
