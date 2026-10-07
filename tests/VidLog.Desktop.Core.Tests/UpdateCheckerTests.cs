@@ -178,6 +178,74 @@ public class UpdateCheckerTests
         });
     }
 
+    // ─────────────────────────────────────────────
+    // 「关于」页那一行的结论（T27② 第 4 批）
+    // ─────────────────────────────────────────────
+
+    private static readonly UpdateCheckResult 查不到 =
+        new(Succeeded: false, LatestTag: null, FailureReason: "断网了");
+
+    [Fact]
+    public void 开关关掉时不许说没查到()
+    {
+        // ⚠️ 说明「没查到」会让用户去查网络 —— 而它只是被自己关掉了。
+        var text = UpdateStatusText.Describe(checkEnabled: false, 查不到, "1.0.0");
+
+        Assert.Contains("已关闭", text);
+        Assert.DoesNotContain("没查到", text);
+    }
+
+    [Fact]
+    public void 还没查完就如实说还没查完()
+    {
+        Assert.Contains("还没查完", UpdateStatusText.Describe(true, status: null, "1.0.0"));
+    }
+
+    [Fact]
+    public void 没问到不许说成已是最新()
+    {
+        // ⚠️ 这一段里最要紧的一条：一个网断了的工位会一直显示「已是最新」——
+        // 而它其实**一次都没查过**。用户拿这句话决定要不要去发布页看看。
+        var text = UpdateStatusText.Describe(true, 查不到, "1.0.0");
+
+        Assert.Contains("没查到", text);
+        Assert.Contains("断网了", text);
+        Assert.DoesNotContain("已是最新", text);
+        Assert.DoesNotContain("对端还没有发布过", text);
+    }
+
+    [Fact]
+    public void 对端一个版本都没发过不算没查到()
+    {
+        // ⚠️ 与前一条正好相反的那一面：这里的 `Succeeded` 是 true，只是对端空着。
+        // 说成「没查到」的话，一个刚建好、还没发过版的仓库会让每台机器都像网断了。
+        var text = UpdateStatusText.Describe(true, new UpdateCheckResult(true, null, null), "1.0.0");
+
+        Assert.Contains("对端还没有发布过任何版本", text);
+        Assert.DoesNotContain("没查到", text);
+    }
+
+    [Fact]
+    public void 有新版本要说清是哪一个以及在哪儿下()
+    {
+        var text = UpdateStatusText.Describe(
+            checkEnabled: true, new UpdateCheckResult(true, "v2.0.0", null), "1.0.0");
+
+        Assert.Contains("v2.0.0", text);
+        Assert.Contains("1.0.0", text);
+        Assert.Contains("发布页", text);
+    }
+
+    [Fact]
+    public void 已经是最新就直说()
+    {
+        var text = UpdateStatusText.Describe(
+            true, new UpdateCheckResult(true, "v1.0.0", null), "1.0.0");
+
+        Assert.Contains("已是最新", text);
+        Assert.Contains("v1.0.0", text);
+    }
+
     private sealed class CapturingLogger : IAppLogger
     {
         public List<(LogLevel Level, string Message)> Entries { get; } = [];

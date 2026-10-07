@@ -114,4 +114,62 @@ public static class AppPreferences
         new("深色", false,
             "深色主题还没做。设计图全套是浅色，需求方定了「严格照图」，所以先只做浅色。"),
     ];
+
+    /// <summary>下拉该选中第几档 —— **真做了的那一档**（照实显示现状）。</summary>
+    /// <remarks>
+    /// <para>
+    /// ⚠️ 取的是**最后一个** <see cref="PreferenceOption.Implemented"/>，不是第一个：
+    /// 表里眼下只有一档是真的，所以两种取法今天等价；写成「最后一个」是因为
+    /// 将来真做出第二档时，那一档多半排在后面，而「选中第一个真的」会静默选错。
+    /// </para>
+    /// <para>
+    /// ⚠️ 一档都没做时回 <c>0</c>（与搬走之前的写法一致）：那不是正常情形，
+    /// 而那时选第一个至少是**看得见的**，比不回话强。
+    /// </para>
+    /// </remarks>
+    public static int RealIndex(IReadOnlyList<PreferenceOption> options)
+    {
+        var real = 0;
+
+        for (var i = 0; i < options.Count; i++)
+        {
+            if (options[i].Implemented)
+            {
+                real = i;
+            }
+        }
+
+        return real;
+    }
+
+    /// <summary>
+    /// 点了某一档之后要说的那句话；**该放行时给 <see langword="null"/>**。
+    /// </summary>
+    /// <param name="options">这张表。</param>
+    /// <param name="selected">用户点中的第几档（下拉框选中项的下标）。</param>
+    /// <param name="real">真做了的那一档（<see cref="RealIndex"/>）。</param>
+    /// <remarks>
+    /// <para>
+    /// ⚠️ 回 <see langword="null"/> 就是**放行**（选中的是真做了的那一档，
+    /// 或者压根没有选中项）—— 退回时又会进来一次，那时下标已经对了，
+    /// 这里必须放行，否则会递归。
+    /// </para>
+    /// <para>
+    /// ⚠️ <b>说这句话等于承诺「会退回来」</b>：那一档**不落盘**
+    /// （见 <see cref="PreferenceOption"/> 的类型注释），所以点了不真的那一档必须
+    /// 当场退回原位 —— 留在那里就是一个**骗人的假开关**（踩坑 #13）。
+    /// 两件事是一对：回 note 的调用处就得负责退回。
+    /// </para>
+    /// </remarks>
+    public static string? RejectNote(IReadOnlyList<PreferenceOption> options, int selected, int real)
+    {
+        if (selected < 0 || selected == real || selected >= options.Count)
+        {
+            return null;
+        }
+
+        var picked = options[selected];
+
+        return $"「{picked.Label}」还在开发中 —— {picked.Hint}";
+    }
 }

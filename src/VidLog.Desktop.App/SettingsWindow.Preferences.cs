@@ -34,6 +34,7 @@ using VidLog.Desktop.Core.Configuration;
 using VidLog.Desktop.Core.Diagnostics;
 using VidLog.Desktop.Core.Media;
 using VidLog.Desktop.Core.Recording;
+using VidLog.Desktop.Core.Update;
 using VidLog.Desktop.Core.Upload;
 
 namespace VidLog.Desktop.App;
@@ -64,13 +65,8 @@ public partial class SettingsWindow : Window
     {
         combo.Items.Clear();
 
-        // 真做了的那一档（表里只有一档）。
-        var real = 0;
-
-        for (var i = 0; i < options.Count; i++)
+        foreach (var option in options)
         {
-            var option = options[i];
-
             combo.Items.Add(new ComboBoxItem
             {
                 Content = option.Label,
@@ -79,32 +75,29 @@ public partial class SettingsWindow : Window
                 // 悬停那句话说给愿意悬停的人听；点下去那句话**谁都看得见**。
                 ToolTip = option.Hint,
             });
-
-            if (option.Implemented)
-            {
-                real = i;
-            }
         }
 
-        // 选中真做了的那一档（照实显示现状）。
+        // 选中真做了的那一档（照实显示现状）。哪一档是真的、点了不真的会怎样，
+        // 两件都在 `AppPreferences` 里（T27② 第 4 批）—— 那边有测试。
+        var real = AppPreferences.RealIndex(options);
+
         combo.SelectedIndex = real;
 
         // ⚠️ 挂在**这里**而不是 XAML 上：退回用的是 `real`，而它只有这里知道。
         combo.SelectionChanged += (_, _) =>
         {
-            // 退回时又会进来一次 —— 那时索引已经对了，直接放行（不会递归）。
-            if (combo.SelectedIndex < 0 || combo.SelectedIndex == real)
+            // 放行时给 null（含「退回时又进来一次」那一趟，不会递归）。
+            if (AppPreferences.RejectNote(options, combo.SelectedIndex, real) is not { } note)
             {
                 return;
             }
 
-            var picked = options[combo.SelectedIndex];
-
-            PreferencesNote.Text = $"「{picked.Label}」还在开发中 —— {picked.Hint}";
+            PreferencesNote.Text = note;
             PreferencesNote.Visibility = Visibility.Visible;
 
             // ⚠️ **退回**：它只有一个真值，而选中的那一档**不落盘** ——
-            // 留在那里就是一个骗人的假开关。
+            // 留在那里就是一个骗人的假开关。（说那句话就等于承诺退回，
+            // 两者是一对，见 `AppPreferences.RejectNote`。）
             combo.SelectedIndex = real;
         };
     }
@@ -310,40 +303,12 @@ public partial class SettingsWindow : Window
 
     /// <summary>「关于」页那一行「更新检查」的结论。</summary>
     /// <remarks>
-    /// ⚠️ <b>「没问到」与「已是最新」必须分开说</b>：混起来的话，一个网断了的工位
-    /// 会一直显示「已是最新」——而它其实一次都没查过。这句话正是用户判断
-    /// 「要不要去发布页看看」的依据，说反了比不说更糟。
+    /// ⚠️ 那句话本身在 <see cref="UpdateStatusText.Describe"/>（T27② 第 4 批）——
+    /// 连同「『没问到』与『已是最新』必须分开说」那条规矩；这里只剩**取哪三样**。
     /// </remarks>
-    private void ShowUpdateStatus()
-    {
-        if (!_host.Settings.CheckForUpdates)
-        {
-            AboutUpdateText.Text = "已关闭（在「高级」里可以打开）。";
-            return;
-        }
-
-        if (_host.UpdateStatus is not { } status)
-        {
-            AboutUpdateText.Text = "还没查完 —— 每次启动只查一次。";
-            return;
-        }
-
-        if (!status.Succeeded)
-        {
-            AboutUpdateText.Text = $"没查到：{status.FailureReason ?? "原因不明"}（不影响录制与回放）。";
-            return;
-        }
-
-        if (status.LatestTag is not { Length: > 0 } tag)
-        {
-            AboutUpdateText.Text = "对端还没有发布过任何版本。";
-            return;
-        }
-
-        AboutUpdateText.Text = status.SuggestUpdate(_host.CurrentVersion)
-            ? $"有新版本 {tag}（当前 {_host.CurrentVersion}），到发布页下载。"
-            : $"已是最新（{tag}）。";
-    }
+    private void ShowUpdateStatus() =>
+        AboutUpdateText.Text = UpdateStatusText.Describe(
+            _host.Settings.CheckForUpdates, _host.UpdateStatus, _host.CurrentVersion);
 
     private void OnOpenDataFolder(object sender, RoutedEventArgs e)
     {

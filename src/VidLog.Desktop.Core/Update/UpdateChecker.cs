@@ -223,3 +223,56 @@ public static class ReleaseFeedJson
         return root[0].TryGetProperty("tag_name", out var tag) ? tag.GetString() : null;
     }
 }
+
+/// <summary>
+/// 「关于」页那一行「更新检查」的结论（T27② 第 4 批）。
+/// </summary>
+/// <remarks>
+/// <para>
+/// ⚠️ <b>「没问到」与「已是最新」必须分开说</b>：混起来的话，一个网断了的工位
+/// 会一直显示「已是最新」—— 而它其实**一次都没查过**。这句话正是用户判断
+/// 「要不要去发布页看看」的依据，说反了比不说更糟。
+/// </para>
+/// <para>
+/// ⚠️ 四档的次序是承重的：**先**看开关关没关（关了就没什么可查的），
+/// **再**看查完没有，**然后**才轮到查到的结果。把关掉的机器说成「没查到」，
+/// 用户会去查网络，而它只是被自己关掉了。
+/// </para>
+/// <para>
+/// ⚠️ 原先长在 <c>SettingsWindow.Preferences</c> 里，而那个工程没有测试工程 ——
+/// 「没问到说成已是最新」这种错没有任何东西能挡。
+/// </para>
+/// </remarks>
+public static class UpdateStatusText
+{
+    /// <summary>界面上那一句。</summary>
+    /// <param name="checkEnabled">设置里那个开关开着没有。</param>
+    /// <param name="status">查到的那一份；**还没查完**时为 <see langword="null"/>。</param>
+    /// <param name="currentVersion">本机版本（判「要不要提示」用）。</param>
+    public static string Describe(bool checkEnabled, UpdateCheckResult? status, string currentVersion)
+    {
+        if (!checkEnabled)
+        {
+            return "已关闭（在「高级」里可以打开）。";
+        }
+
+        if (status is not { } result)
+        {
+            return "还没查完 —— 每次启动只查一次。";
+        }
+
+        if (!result.Succeeded)
+        {
+            return $"没查到：{result.FailureReason ?? "原因不明"}（不影响录制与回放）。";
+        }
+
+        if (result.LatestTag is not { Length: > 0 } tag)
+        {
+            return "对端还没有发布过任何版本。";
+        }
+
+        return result.SuggestUpdate(currentVersion)
+            ? $"有新版本 {tag}（当前 {currentVersion}），到发布页下载。"
+            : $"已是最新（{tag}）。";
+    }
+}
