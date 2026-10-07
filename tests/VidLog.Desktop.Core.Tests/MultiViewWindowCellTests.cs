@@ -115,7 +115,7 @@ public class MultiViewWindowCellTests
         Assert.Contains("MultiViewWindow", window, StringComparison.Ordinal);
 
         // ⚠️ 它原来是**一个字都没给**的：那颗按钮只有 `Content = "⟳"`，墨色靠 WPF
-        // 继承拿（默认前景＝黑），而它**只在近黑底上露面** ⇒ 黑压黑 **1.09:1**，
+        // 继承拿（默认前景＝黑），而它**只在近黑底上露面** ⇒ 黑压黑 **1.18:1**，
         // 等于没有这颗按钮（2026-10-07 核 diff 时量出来的，需求方当场点了名：
         // 「要让用户明显看到这个按钮」）。这一条钉的是**给了、而且跟着底走** ——
         // 写死一个颜色（`Brushes.White` 或 `Brushes.Black`）它照样红。
