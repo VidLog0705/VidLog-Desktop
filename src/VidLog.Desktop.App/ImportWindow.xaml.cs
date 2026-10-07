@@ -186,10 +186,17 @@ public partial class ImportWindow : Window
 
         // ⚠️ 时长没量出来要**明说**：索引里那条记的是 0 秒，而界面上不写的话
         // 用户会以为这段录像真的只有 0 秒（或者以为导入漏了什么）。
+        //
+        // ⚠️ 这一处用 `Display.Duration`（人话总量）而**不是** `Display.Timer`
+        // （等宽 `HH:MM:SS`）：等宽那套是给**每一秒都在变**的地方用的
+        // （录制中已录多久、播放进度），位数不跳才读得稳；这里是一次性写上去的
+        // **总量**。而且它更短（`1 分 23 秒` 6 字 vs `00:01:23` 8 字），
+        // 也不会紧挨着证据号被读成一个**时刻**。（2026-10-07 需求方拍板：改。）
+        // ⚠️ 检索列表那一行仍按设计图写 `1:23`，那是**另一处**，没动。
         ImportedSummary = result.Duration is null
             ? $"已导入（证据 {result.EvidenceId}）。⚠️ 没能从这个文件里量出时长，库里那条记的是 0 秒，"
               + "录像本身是完整的。"
-            : $"已导入（证据 {result.EvidenceId}，时长 {Display.Timer(result.Duration.Value)}）。"
+            : $"已导入（证据 {result.EvidenceId}，时长 {Display.Duration(result.Duration.Value)}）。"
               + "它已经进库了 —— 当前这组筛选条件不一定筛得到它。";
 
         ShowStatus(ImportedSummary, LogLevel.Info);
