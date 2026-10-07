@@ -1057,47 +1057,34 @@ public sealed class AppHost : IAsyncDisposable
     /// </summary>
     /// <remarks>
     /// <para>
-    /// ⚠️ <b>为什么需要它</b>：2026-10-02 实测 —— 那次回落纯粹是相机那一刻不可达
-    /// （几分钟后向导里实测「H.265 4K 跑得通」），可它**锁死了整个会话**：
-    /// <see cref="ProbedSpec"/> 记的是「这一对探过了」，而
-    /// <see cref="PrepareCaptureAsync"/> 只在「用户改了编码 / 分辨率」时才重探。
-    /// 于是用户配的 4K 静默变成 720P，直到重启程序。
+    /// ⚠️ <b>这里一个判断都不该有</b>（T27② 第 2 批）：该不该探全在
+    /// <see cref="ReprobeGate.Decide"/> 里 —— 那个工程有测试工程，而本工程没有
+    /// （那五输入的门控原先就长在这儿，只能靠读代码确认）。
+    /// 外壳这一层只剩「把现场的几个 bool 读出来、按结论去探」。
     /// </para>
     /// <para>
-    /// ⚠️ <b>只在没录的时候探</b>：相机是独占的，录制中另开一路只会失败（§25）。
-    /// 也正因如此它**不能**挂在开段路径上 —— 那会让开录先等一次十秒的超时
-    /// （§3.2.5：开录绝不被别的事挡住）。
-    /// </para>
-    /// <para>
-    /// ⚠️ 由主窗那个一秒一跳的时钟定时器捎带着调，所以这个方法必须**几乎不要钱**：
-    /// 不回落时它只做一次布尔判断。
+    /// ⚠️ 这一条**不能**挂在开段路径上：探一次要十秒，会让开录等它
+    /// （§3.2.5：开录绝不被别的事挡住）。它由主窗那个一秒一跳的时钟定时器捎带着调。
     /// </para>
     /// </remarks>
     public async Task MaybeReprobeAsync(CancellationToken cancellationToken = default)
     {
-        // ⚠️ <b>「没在录」不等于「相机是空的」</b>（2026-10-02 预录缓冲带来的新情况）：
-        // 待扫期间相机在**预录那个进程**手里，这时去探只会拿到
-        // `device already in use` —— 于是把**能用的组合误判成跑不通**，
-        // 而那正是这个方法存在的理由（上一次误判就是这么来的，见上面那段）。
-        // 所以判据要看「有没有人正持着相机」，不是「有没有在录」。
-        if (!SpecFellBack
-            || Coordinator.CurrentWaybill is not null
-            || Coordinator.Prerecord is { IsActive: true })
-        {
-            return;
-        }
+        var (shouldProbe, lastTriedAt) = ReprobeGate.Decide(
+            fellBack: SpecFellBack,
+            recording: Coordinator.CurrentWaybill is not null,
+            cameraHeld: Coordinator.Prerecord is { IsActive: true },
+            _lastReprobeAt,
+            DateTimeOffset.UtcNow);
 
-        // 一分钟最多一次：相机一直不可达时，别让每一次心跳都去真开一次相机
-        // （那是十秒的超时 + 一次设备占用）。
-        var now = DateTimeOffset.UtcNow;
-        if (now - _lastReprobeAt < TimeSpan.FromMinutes(1))
-        {
-            return;
-        }
-
-        // ⚠️ 在探之前就记时刻：探的过程抛异常时也要算「试过了」，
+        // ⚠️ 无论探不探都先写回（不探时 `Decide` 原样返回旧值）。写在 `await` 之前
+        // 是要害：探的过程抛异常（取消、进程起不来）时也要算「试过了」，
         // 否则一次持续失败会让它每次心跳都重来一遍。
-        _lastReprobeAt = now;
+        _lastReprobeAt = lastTriedAt;
+
+        if (!shouldProbe)
+        {
+            return;
+        }
 
         _logger.Log(LogLevel.Info, "录制", "相机可能已经回来了，重探一次录制规格");
         await ProbeAsync(cancellationToken);
