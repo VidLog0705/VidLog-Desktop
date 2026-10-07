@@ -106,6 +106,42 @@ public class MultiViewWindowCellTests
         Assert.Contains("EyeSlash", window, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void 那颗转九十度的字不许靠继承拿墨色()
+    {
+        var window = WindowSource();
+        var theme = ThemeSource();
+
+        Assert.Contains("MultiViewWindow", window, StringComparison.Ordinal);
+
+        // ⚠️ 它原来是**一个字都没给**的：那颗按钮只有 `Content = "⟳"`，墨色靠 WPF
+        // 继承拿（默认前景＝黑），而它**只在近黑底上露面** ⇒ 黑压黑 **1.09:1**，
+        // 等于没有这颗按钮（2026-10-07 核 diff 时量出来的，需求方当场点了名：
+        // 「要让用户明显看到这个按钮」）。这一条钉的是**给了、而且跟着底走** ——
+        // 写死一个颜色（`Brushes.White` 或 `Brushes.Black`）它照样红。
+        Assert.Contains(
+            "_rotate.Foreground = empty ? _textMain : Brushes.White;",
+            window,
+            StringComparison.Ordinal);
+
+        var dark = Brush(window, theme, "_videoBg");
+        var light = Brush(window, theme, "_slotBg");
+        var inkOnLight = Brush(window, theme, "_textMain");
+
+        // 「明显看到」那句量化下来就是 AA 正文档这条线，两种底各量一次。
+        var onDark = Contrast("#FFFFFFFF", dark);
+
+        Assert.True(
+            onDark >= AaNormalText,
+            $"深底（{dark}）上那颗 ⟳ 用白色只有 {onDark:F2}:1，低于 {AaNormalText}。");
+
+        var onLight = Contrast(inkOnLight, light);
+
+        Assert.True(
+            onLight >= AaNormalText,
+            $"浅底（{light}）上那颗 ⟳ 用 {inkOnLight} 只有 {onLight:F2}:1，低于 {AaNormalText}。");
+    }
+
     private const string AppFolder = "VidLog.Desktop.App";
 
     /// <summary>读多画面那个窗口的源码（整行注释已剥掉，与别的绊线同一个读法）。</summary>
@@ -131,6 +167,25 @@ public class MultiViewWindowCellTests
         Assert.True(found.Success, $"MultiViewWindow 里没量到 {name}。");
 
         return found.Groups[1].Value;
+    }
+
+    /// <summary>格子上那个字段（<c>_videoBg</c> 这种）取的是哪个画刷、色值多少。</summary>
+    private static string Brush(string window, string theme, string field)
+    {
+        var found = Regex.Match(
+            window,
+            $@"{Regex.Escape(field)}\s*=\s*\(Brush\)[A-Za-z_]\w*\.FindResource\(([^)]+)\)");
+
+        Assert.True(found.Success, $"MultiViewWindow 里没量到 {field} 用的是哪个画刷。");
+
+        var argument = found.Groups[1].Value.Trim();
+
+        // ⚠️ 这里两种写法都得认：早先那几笔写的是**画刷键的字面量**（`"VideoBackground"`），
+        // 后加的两笔写的是**画刷键的常量**（`SlotKey` / `MutedKey`）—— 常量那支要先解一层，
+        // 不认的话量出来的是常量名，去 Theme.xaml 里当然找不到。
+        var key = argument.StartsWith('"') ? argument.Trim('"') : KeyConstant(window, argument);
+
+        return Brush(theme, key);
     }
 
     /// <summary>那个画刷在 Theme.xaml 里的颜色（<c>#AARRGGBB</c>）。</summary>

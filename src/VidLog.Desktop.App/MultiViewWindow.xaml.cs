@@ -802,6 +802,7 @@ public partial class MultiViewWindow : Window
         private readonly Brush _countDim;
         private readonly Brush _countWarn;
         private readonly Brush _textSub;
+        private readonly Brush _textMain;
         private readonly Brush _videoBg;
         private readonly Brush _slotBg;
         private readonly Brush _offBg;
@@ -835,6 +836,12 @@ public partial class MultiViewWindow : Window
             // ★ T10 的两种格子各有各的脸色（见 `Paint`）：空位是浅底 + 次级灰字，
             // 「有机位没画面」是黑底 + 白字 —— 两句话之外再给一眼就能看出的底色差。
             _textSub = (Brush)owner.FindResource(MutedKey);
+
+            // 浅底上那颗 `⟳` 的墨色（见 `Paint`）。⚠️ 用正文墨不用纯黑：主题里
+            // 从来没有纯黑这一个值，而 #1E293B 压在浅底上是 **13.98:1**，
+            // 一样是「黑色」（量的，不是估的）。
+            _textMain = (Brush)owner.FindResource("TextPrimary");
+
             _videoBg = (Brush)owner.FindResource("VideoBackground");
             _slotBg = (Brush)owner.FindResource(SlotKey);
 
@@ -1116,6 +1123,16 @@ public partial class MultiViewWindow : Window
             var ink = empty ? _textSub : Brushes.White;
 
             _name.Foreground = ink;
+
+            // ⚠️ 这颗 `⟳` 的墨色**必须自己给** —— 它是全格唯一一笔没指定墨色的字
+            //（`_name` / `Empty` / `Counts` 每一笔都显式给了画刷），不给的话它拿到的是
+            // WPF 那个默认前景（黑），而它**只在 `empty == false` 时露面 ——
+            // 也就是只出现在近黑底上**（`VideoBackground` #0F172A）：黑压黑 1.09:1，
+            // 等于看不见（这台机器上一直如此，2026-10-07 核 diff 时量出来的）。
+            // 需求方 2026-10-07：「深底用白色、浅底用黑色，要让用户明显看到这个按钮。」
+            // ⚠️ 浅底那一支眼下走不到（浅底的格子这颗按钮是收起来的），留着是给
+            // 底下那条绊线一个**能失败**的形状 —— 写死一个颜色它就红。
+            _rotate.Foreground = empty ? _textMain : Brushes.White;
             _rotate.Visibility = empty ? Visibility.Collapsed : Visibility.Visible;
 
             // ⚠️ 眼睛**只有在这一格有机位、或者它正被关着**时才露面：
