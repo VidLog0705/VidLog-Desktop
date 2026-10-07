@@ -774,4 +774,122 @@ public class RecordingSpecTests
     {
         Assert.Equal(0, CleanupPlanner.EstimateBytes(Entry(TimeSpan.Zero, "H264", "P1080")));
     }
+
+    // ─────────────────────────────────────────────
+    // 「这一对探过了吗」（T27② 第 2 批收进 `RecordingSpec`）
+    // ─────────────────────────────────────────────
+
+    [Fact]
+    public void 探过没探过只比编码与分辨率_不比方向()
+    {
+        var baseline = new RecordingSpec(VideoCodec.H264, VideoResolution.P1080, CameraRotation.None);
+
+        // ⚠️ 方向**不算在内是判据**：探测器验的是「这台机器能不能用这个编码出这个尺寸」，
+        // 方向是采完之后才做的事，与设备能力无关（见 `RecordingSpec.FallbacksFrom`）。
+        // 把它算进去的话，用户只是把手机/摄像头掉了个个儿，就会被判成「没探过」
+        // 而白重探一次（真开一次相机）。
+        Assert.True(baseline.ProbeMatches(baseline with { Rotation = CameraRotation.UpsideDown }));
+
+        // 编码或分辨率换了才是真的「没探过」。
+        Assert.False(baseline.ProbeMatches(baseline with { Codec = VideoCodec.H265 }));
+        Assert.False(baseline.ProbeMatches(baseline with { Resolution = VideoResolution.P720 }));
+
+        // ⚠️ 原生档那个标记也换掉的话同样算「没探过」吗 —— **不算**，它不在判据里。
+        // 这一条钉住的是「判据就是那两个字段」，不是「差不多」。
+        Assert.True(baseline.ProbeMatches(baseline with { NativeCaptureSize = true }));
+    }
+}
+
+/// <summary>
+/// 「实际会按什么规格录」那句话（T27② 第 2 批从 <c>SettingsWindow</c> 搬进 Core）。
+/// </summary>
+/// <remarks>
+/// <para>
+/// ⚠️ 搬它的理由不是「分层好看」：那三档情形原先长在 <c>VidLog.Desktop.App</c> 里，
+/// 而那个工程**没有测试工程** —— 于是「什么时候会说出一句假话」只能靠读代码确认，
+/// 而它 2026-09-30 **真印出过一句假话**（下面第二条测试就是那件事）。
+/// </para>
+/// <para>
+/// ⚠️ 下面所有用例都让**方向在两边保持一致**：那是正常路径的样子
+/// （回落表里每一档都保住用户选的方向）。方向只在一边变的那条路
+/// **没有验过**，别拿这些测试当它也被盖住了。
+/// </para>
+/// </remarks>
+public class EffectiveSpecNoticeTests
+{
+    private static readonly RecordingSpec H264P1080 = new(VideoCodec.H264, VideoResolution.P1080);
+    private static readonly RecordingSpec H265P1080 = new(VideoCodec.H265, VideoResolution.P1080);
+
+    [Fact]
+    public void 情形一_选的就是探过的_说结论()
+    {
+        var (text, warning) = EffectiveSpecNotice.Describe(
+            H264P1080, H264P1080, H264P1080, fallbackReason: null);
+
+        Assert.Equal("这台电脑按 H.264 1080P 录制。", text);
+        Assert.False(warning);
+    }
+
+    [Fact]
+    public void 情形二_刚改过还没探过_不许说这台电脑跑不通()
+    {
+        // ⚠️ 这就是 2026-09-30 撞到的那个**假话**：用户刚把编码改成 H.265，
+        // 那一档**还没测过**，而 `effective` 说的仍是上一次（H.264）的结论。
+        // 拿它去比会印出一句「你选的是 H.265，这台电脑实际按 H.264 录制」——
+        // 听起来像「这台机器跑不通 H.265」，而它根本还没测。
+        var (text, warning) = EffectiveSpecNotice.Describe(
+            H265P1080, effective: H264P1080, probed: H264P1080, fallbackReason: null);
+
+        Assert.Contains("还没实测过", text, StringComparison.Ordinal);
+        Assert.Contains("下次开始工作时", text, StringComparison.Ordinal);
+
+        // ★ 不能出现回落那句 —— 那是这条测试存在的理由。
+        Assert.DoesNotContain("你选的是", text, StringComparison.Ordinal);
+        Assert.False(warning);
+    }
+
+    [Fact]
+    public void 情形三_探过且回落了_是警告而且说出原因()
+    {
+        var (text, warning) = EffectiveSpecNotice.Describe(
+            H265P1080, effective: H264P1080, probed: H265P1080, fallbackReason: "这个编码器起不来");
+
+        Assert.Equal(
+            "⚠️ 你选的是 H.265 1080P，这台电脑实际按 H.264 1080P 录制。原因：这个编码器起不来",
+            text);
+        Assert.True(warning);
+    }
+
+    [Fact]
+    public void 情形三没有原因时不留一个空的原因尾巴()
+    {
+        var (text, _) = EffectiveSpecNotice.Describe(
+            H265P1080, effective: H264P1080, probed: H265P1080, fallbackReason: "   ");
+
+        Assert.Equal("⚠️ 你选的是 H.265 1080P，这台电脑实际按 H.264 1080P 录制。", text);
+    }
+
+    [Fact]
+    public void 情形二_即使上一次回落过_也不许把旧结论和旧原因搬过来()
+    {
+        // 上一条是「用户刚改的那一对没探过」；这一条把上次**回落过**那件事叠上去：
+        // `effective` 与 `probed` 都是旧的、而且它们**相等**，只有 `wanted` 是新的。
+        // 少了「情形二」这一档的话，它会落进「情形三」——
+        // 印出「你选的是 H.265 720P，实际按 H.264 1080P 录制。原因：老原因」，
+        // 而那一档**压根还没测**：结论是编的，原因还是**上一次那件事**的。
+        //
+        // ⚠️ 这条原名叫「情形二必须先判」——**说过头了**：`ProbeMatches` 这一档
+        // 与「情形一」的先后互换**根本不影响结果**（情形三是 fallthrough，不是分支），
+        // 拿互换去证伪它照样绿。真会破它的是**少了这一档**，
+        // 2026-10-07 用「整段删掉」证伪过，两条同批的用例都红。
+        var p720 = new RecordingSpec(VideoCodec.H265, VideoResolution.P720);
+
+        var (text, warning) = EffectiveSpecNotice.Describe(
+            wanted: p720, effective: H264P1080, probed: H264P1080, fallbackReason: "老原因");
+
+        Assert.Contains("还没实测过", text, StringComparison.Ordinal);
+        Assert.DoesNotContain("你选的是", text, StringComparison.Ordinal);
+        Assert.DoesNotContain("老原因", text, StringComparison.Ordinal);
+        Assert.False(warning);
+    }
 }

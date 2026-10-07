@@ -297,63 +297,28 @@ public partial class SettingsWindow : Window
     /// </summary>
     /// <remarks>
     /// <para>
-    /// 规格 §3.1.7：「**回落必须可见**……**不得静默回落**」。
-    /// 取值来自**最近一次**真开相机的探测（<c>AppHost.EffectiveSpec</c>）。
-    /// 与用户选的不一样时把原因也说出来 —— 只说「实际是 H.264」而不说为什么，
-    /// 用户会以为自己选错了。
+    /// ⚠️ <b>这里一个判断都不该有</b>（T27② 第 2 批）：说什么、要不要画成警告色，
+    /// 全在 <see cref="EffectiveSpecNotice.Describe"/> 里 —— 那个工程有测试工程，
+    /// 而本工程没有（这一段原先就长在这儿，三档情形只能靠读代码确认）。
+    /// 外壳这一层只剩「把结果接到控件上」。
     /// </para>
     /// <para>
-    /// ⚠️ <b>三档情形，别用一句话糊过去</b>（2026-09-30 实测撞到过下面第二种）：
-    /// </para>
-    /// <list type="number">
-    /// <item>用户选的那一对**就是**上次探过的那一对 ⇒ 说结论。</item>
-    /// <item>用户刚改过、那一对**还没探过** ⇒ <c>EffectiveSpec</c> 说的是
-    /// **上一次**的结论。拿它去跟新选的比会印出一句「这台电脑跑不通」的**假话**
-    /// （那一档根本还没测），所以要说清「下次开始工作时才实测」。</item>
-    /// <item>探过且回落了 ⇒ 说结论 + 原因（§3.1.7 的「回落必须可见」）。</item>
-    /// </list>
-    /// <para>
-    /// ⚠️ 方向**要一起比**：它也在 spec 里，不带上它的话，一个方向设成「转 180°」的
-    /// 机器每次开这一页都会看到那句回落警告（两个 spec 的 `Rotation` 不一样）。
-    /// </para>
-    /// <para>
-    /// ⚠️ 这一句在**主窗口上看不见**（设计图的录制台上没有这个位置）——
-    /// 它挪进了设置里。规格要的是「可见」，不是「必须印在首页」，
-    /// 但它确实比以前难看见了，这一笔记在 `docs/实现决策.md`。
+    /// ⚠️ 三档情形的理由、「2026-09-30 印过一句假话」那件事、
+    /// 以及「方向要一起比」那条，都跟着搬进 <see cref="EffectiveSpecNotice"/> 了 ——
+    /// 要读那几条去 Core 那个文件，别在这儿再抄一份。
     /// </para>
     /// </remarks>
     private void ShowEffectiveSpec()
     {
-        var effective = _host.EffectiveSpec;
         var wanted = new RecordingSpec(
             _host.Settings.Codec, _host.Settings.Resolution, _host.Settings.Rotation);
-        var probed = _host.ProbedSpec;
 
-        EffectiveSpecText.Foreground = (System.Windows.Media.Brush)FindResource("TextSecondary");
+        var (text, warning) = EffectiveSpecNotice.Describe(
+            wanted, _host.EffectiveSpec, _host.ProbedSpec, _host.SpecFallbackReason);
 
-        // 情形 2：用户刚改的这一对还没实测过。**先判它**，否则会拿旧结论说新组合的不是。
-        if (wanted.Codec != probed.Codec || wanted.Resolution != probed.Resolution)
-        {
-            EffectiveSpecText.Text =
-                $"「{wanted.Label}」还没实测过 —— 下次开始工作时会真开一次相机验一遍，"
-                + $"验不过会自动回落并当场告诉你。"
-                + $"当前按 {effective.Label} 录制（那是上一次实测的结论）。";
-            return;
-        }
-
-        if (effective == wanted)
-        {
-            EffectiveSpecText.Text = $"这台电脑按 {effective.Label} 录制。";
-            return;
-        }
-
-        // 情形 3：探过，回落了。
-        EffectiveSpecText.Text =
-            $"⚠️ 你选的是 {wanted.Label}，这台电脑实际按 {effective.Label} 录制。"
-            + (string.IsNullOrWhiteSpace(_host.SpecFallbackReason)
-                ? string.Empty
-                : $"原因：{_host.SpecFallbackReason}");
-        EffectiveSpecText.Foreground = (System.Windows.Media.Brush)FindResource("Warning");
+        EffectiveSpecText.Foreground = (System.Windows.Media.Brush)FindResource(
+            warning ? "Warning" : "TextSecondary");
+        EffectiveSpecText.Text = text;
     }
 
     // ─────────────────────────────────────────────

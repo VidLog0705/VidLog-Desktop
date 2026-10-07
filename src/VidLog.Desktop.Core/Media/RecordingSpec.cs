@@ -355,6 +355,30 @@ public sealed record RecordingSpec(
     }
 
     /// <summary>
+    /// 这两条规格在**探测**这个意义上是同一对吗 —— 只比编码与分辨率，**不比方向**。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// ⚠️ <b>方向不算在内（这是判据，不是省事）</b>：探测器验的是「这台机器能不能
+    /// 用这个编码出这个尺寸」，方向是**采完之后**才做的事，与设备能力无关
+    /// （见 <see cref="FallbacksFrom"/> 里那条：方向不参与回落）。
+    /// </para>
+    /// <para>
+    /// ⚠️ <b>全仓只此一处</b>（T27② 第 2 批顺手收的）：这条判据原先在
+    /// <c>AppHost.PrepareCaptureAsync</c>（「没改就别重探」）与设置页的
+    /// 「这一对还没实测过」里**各写了一遍**。写成两份的那一刻，改一处忘一处
+    /// 就会让「界面说没测过、其实探过了」这种**两边都不报错**的走岔成真。
+    /// </para>
+    /// <para>
+    /// ⚠️ 注意它与 <c>effective == wanted</c>（整条记录相等，**含方向**）
+    /// 是两个不同的问题：「探过了吗」与「探出来的就是你要的吗」。
+    /// 后者必须带上方向，见 <see cref="EffectiveSpecNotice.Describe"/>。
+    /// </para>
+    /// </remarks>
+    public bool ProbeMatches(RecordingSpec other) =>
+        Codec == other.Codec && Resolution == other.Resolution;
+
+    /// <summary>
     /// 回落顺序：先用户选的那个，再逐级退。
     /// </summary>
     /// <remarks>

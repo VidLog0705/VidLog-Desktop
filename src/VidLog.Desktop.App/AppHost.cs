@@ -975,8 +975,9 @@ public sealed class AppHost : IAsyncDisposable
     {
         var wanted = new RecordingSpec(Settings.Codec, Settings.Resolution, Settings.Rotation);
 
-        // 没改就立刻返回 —— 见上面最后一条备注。比的是编码 + 分辨率，不含方向。
-        if (wanted.Codec == ProbedSpec.Codec && wanted.Resolution == ProbedSpec.Resolution)
+        // 没改就立刻返回 —— 见上面最后一条备注。比的是编码 + 分辨率，不含方向
+        //（判据只此一处，见 `RecordingSpec.ProbeMatches`）。
+        if (wanted.ProbeMatches(ProbedSpec))
         {
             return;
         }
