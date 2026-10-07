@@ -24,12 +24,12 @@ using TextChangedEventArgs = System.Windows.Controls.TextChangedEventArgs;
 // 所以只有这一个要钉）。T12 的命令面板开始用 WPF 那个。
 using KeyEventArgs = System.Windows.Input.KeyEventArgs;
 using VidLog.Desktop.App.Platform;
-using VidLog.Desktop.Core;
 using VidLog.Desktop.Core.Commands;
 using VidLog.Desktop.Core.Configuration;
 using VidLog.Desktop.Core.Diagnostics;
 using VidLog.Desktop.Core.Labels;
 using VidLog.Desktop.Core.Live;
+using VidLog.Desktop.Core.Overview;
 using VidLog.Desktop.Core.Punches;
 using VidLog.Desktop.Core.Recording;
 using VidLog.Desktop.Core.Rendering;
@@ -90,20 +90,18 @@ public partial class MainWindow : Window
             var hits = await _host.Services.Search.SearchAsync(
                 new RecordingQuery { From = from, To = to, Limit = int.MaxValue });
 
-            var known = hits.Aggregate(TimeSpan.Zero, (sum, hit) => sum + hit.Entry.Duration);
-            var average = hits.Count == 0
-                ? TimeSpan.Zero
-                : TimeSpan.FromTicks(known.Ticks / hits.Count);
+            // ⚠️ 算与写都在 Core（T27② 第 3 批块 2）：这里只把**取回来的值**递过去。
+            var (known, average) = OverviewTexts.TodayTotals(
+                [.. hits.Select(hit => hit.Entry.Duration)]);
 
-            TodayCountText.Text = $"今日 {hits.Count} 件";
-            TodayAverageText.Text = $"平均 {(int)average.TotalSeconds} 秒";
-            TodayTotalText.Text = $"总耗时 {(int)known.TotalSeconds} 秒";
+            TodayCountText.Text = OverviewTexts.TodayCount(hits.Count);
+            TodayAverageText.Text = OverviewTexts.TodayAverage(average);
+            TodayTotalText.Text = OverviewTexts.TodayTotal(known);
 
-            OvTodayText.Text =
-                $"{hits.Count} 段 · 已知时长合计 {(int)known.TotalHours} 小时 {known.Minutes} 分";
+            OvTodayText.Text = OverviewTexts.TodaySummary(hits.Count, known);
 
             var all = await _host.Services.Index.LoadAllAsync();
-            OvIndexText.Text = $"{all.Count} 段";
+            OvIndexText.Text = OverviewTexts.IndexCount(all.Count);
 
             // 录像库总容量：全量遍历目录，几万个文件时是秒级 ⇒ 挪出 UI 线程，
             // 否则大库上窗口会僵住（而这正是用户点【刷新】的那一刻）。
@@ -120,44 +118,28 @@ public partial class MainWindow : Window
                         sum.TotalBytes + one.TotalBytes,
                         sum.UnreadableCount + one.UnreadableCount)));
 
-            // ⚠️ 读不到的位置**必须说出来**：不说的话那个字节数是**静默偏小**的，
-            // 而用户会拿它判断「盘还够用」。
-            OvLibraryText.Text = footprint.UnreadableCount == 0
-                ? $"{Display.Bytes(footprint.TotalBytes)} · {footprint.FileCount} 个文件"
-                : $"{Display.Bytes(footprint.TotalBytes)} · {footprint.FileCount} 个文件"
-                  + $"（另有 {footprint.UnreadableCount} 处读不到，实际只会更多）";
+            OvLibraryText.Text = OverviewTexts.Library(footprint);
 
-            OvUpdatedText.Text = $"统计于 {DateTime.Now:HH:mm:ss}";
+            OvUpdatedText.Text = OverviewTexts.Updated(DateTimeOffset.Now);
 
             // ── ② 状态 ────────────────────────────────────────────────
             //
             // ⚠️ 读的是 `AppHost.Camera`（**启动时**定下来的那个），
             // 不是设置里用户刚选的那个 —— 摄像头改了要重启才生效。
-            //
-            // ⚠️ 显示用 `Display`（网络那一档会写成「网络摄像头 · <地址>」），
-            // 而不是 `Address` —— 后者在网络那一档带着摄像头密码。
-            OvCameraText.Text = _host.Services.FfmpegPath is null
-                ? "没有 FFmpeg，无法采集"
-                : _host.Camera.IsEmpty
-                    ? "没有找到摄像头"
-                    : _host.Camera.Display;
+            OvCameraText.Text = OverviewTexts.Camera(
+                _host.Services.FfmpegPath is not null, _host.Camera);
 
             var server = _host.Services.Server;
-            OvServerText.Text = server?.BaseUrl is { Length: > 0 } url
-                ? server.IsUsingFallback
-                    ? $"已启动 · {url}（只绑到本机，别的设备访问不了）"
-                    : $"已启动 · {url}"
-                : "未启动";
+            OvServerText.Text = OverviewTexts.Server(
+                server?.BaseUrl, server?.IsUsingFallback ?? false);
 
             var archive = _host.Services.ArchiveTarget;
-            OvArchiveText.Text = archive.ConfigurationProblem is { Length: > 0 } problem
-                ? $"⚠️ {archive.Label} —— 没配好：{problem}"
-                : archive.Label;
+            OvArchiveText.Text = OverviewTexts.Archive(archive.Label, archive.ConfigurationProblem);
 
             OvDiskText.Text = FormatFreeSpace(storage.ActiveRoot);
 
             var devices = await _host.Services.Devices.DevicesAsync();
-            OvDevicesText.Text = devices.Count == 0 ? "还没有手机接进来" : $"{devices.Count} 台";
+            OvDevicesText.Text = OverviewTexts.Devices(devices.Count);
 
             // ── ④ 备份主机那一屏的四个数（设计图 `_39`）─────────────────
             //
@@ -172,12 +154,10 @@ public partial class MainWindow : Window
                 BackupTodayText.Text = hits.Count.ToString();
                 BackupTotalText.Text = all.Count.ToString();
 
-                BackupDeviceTag.Text = devices.Count == 0 ? "暂无设备" : "已就绪";
-                BackupDeviceTag.Foreground =
-                    (Brush)FindResource(devices.Count == 0 ? "Warning" : "Success");
-                BackupDeviceText.Text = devices.Count == 0
-                    ? "还没有手机或电脑接进来。用上面的【连接电脑/手机】把它们加进来。"
-                    : $"已接入 {devices.Count} 台设备，录像会存到本机。";
+                BackupDeviceTag.Text = OverviewTexts.BackupDeviceTag(devices.Count);
+                BackupDeviceTag.Foreground = (Brush)FindResource(
+                    OverviewTexts.DeviceMissing(devices.Count) ? "Warning" : "Success");
+                BackupDeviceText.Text = OverviewTexts.BackupDeviceText(devices.Count);
             }
 
             // ── ③ 待办（没有就不出现）─────────────────────────────────
@@ -191,40 +171,26 @@ public partial class MainWindow : Window
                 var plan = await _host.Services.Cleanup.PreviewAsync(
                     _host.Settings.Retention, DateTimeOffset.Now);
 
-                if (plan.Candidates.Count > 0)
-                {
-                    // 「约」不能省：那是估算值，而且这一层自己就承认没标定过。
-                    cleanupLine =
-                        $"{plan.Candidates.Count} 条 · 约 {plan.TotalBytes / 1024 / 1024} MB"
-                        + "（估的，清理前会再算一次）";
-                }
+                cleanupLine = OverviewTexts.Cleanup(plan.Candidates.Count, plan.TotalBytes);
 
                 overdue = plan.OverdueUnarchived.Count;
             }
 
             OvCleanupText.Text = cleanupLine;
-            OvOverdueText.Text = overdue == 0
-                ? string.Empty
-                : $"{overdue} 条未备份的已过保留期（不会被自动删，只是提醒上传）";
+            OvOverdueText.Text = OverviewTexts.Overdue(overdue);
 
-            // ⚠️ 启动时的警告**全列出来**，不只第一条。
-            // 原先主窗有一块专门的「需要注意」清单（拆窗时删掉了，明细现在在设置窗里），
-            // 这里若只写第一条，用户就得去设置窗才知道后面还说了什么 ——
-            // 而警告里有「没有摄像头，无法录制」这种**必须当场知道**的。
-            OvWarningsText.Text = _host.Warnings.Count == 0
-                ? string.Empty
-                : "⚠️ 启动时有需要注意的地方：\n"
-                  + string.Join('\n', _host.Warnings.Select(w => $"· {w}"));
+            OvWarningsText.Text = OverviewTexts.Warnings(_host.Warnings);
 
-            OvTodoCard.Visibility = cleanupLine.Length > 0 || overdue > 0 || _host.Warnings.Count > 0
-                ? Visibility.Visible
-                : Visibility.Collapsed;
+            OvTodoCard.Visibility =
+                OverviewTexts.TodoVisible(cleanupLine, overdue, _host.Warnings.Count)
+                    ? Visibility.Visible
+                    : Visibility.Collapsed;
         }
         catch (Exception ex)
         {
             // 概览算不出来**不该让整个界面出错**（I4 的同一条精神）——
             // 但也不能装作没事：把原因写在该显示数字的那一格上。
-            OvUpdatedText.Text = $"⚠️ 统计没算完：{ex.Message}";
+            OvUpdatedText.Text = OverviewTexts.Failed(ex.Message);
         }
         finally
         {
@@ -235,19 +201,19 @@ public partial class MainWindow : Window
 
     /// <summary>数据目录所在盘的可用空间。</summary>
     /// <remarks>
-    /// ⚠️ 读不到时**不许渲染成一个数字**。<see cref="DriveSpaceProbe"/> 是**抛**的
-    /// （不是返回 -1），而一个「0 GB」或「-1 GB」会被当成真的 ——
-    /// 用户会据此判断「盘满了」。说不出原因也要说「读不到」。
+    /// ⚠️ 这一层只留**读**与**兜异常**（<see cref="DriveSpaceProbe"/> 是**抛**的，
+    /// 不是返回 -1）；两句文案在 <see cref="OverviewTexts"/> 那头
+    /// （为什么不许渲染成一个数字，记在那里）。
     /// </remarks>
     private static string FormatFreeSpace(string path)
     {
         try
         {
-            return $"可用 {Display.Bytes(new DriveSpaceProbe().GetFreeBytes(path))}";
+            return OverviewTexts.FreeSpace(new DriveSpaceProbe().GetFreeBytes(path));
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException)
         {
-            return $"读不到可用空间（{ex.Message}）";
+            return OverviewTexts.FreeSpaceUnreadable(ex.Message);
         }
     }
 
