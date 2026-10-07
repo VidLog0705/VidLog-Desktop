@@ -6,7 +6,7 @@
         mc:Ignorable="d"
         Title="打包数据深度分析" Height="760" Width="1100" MinWidth="880" MinHeight="600"
         FontFamily="{StaticResource UiFont}"
-        Background="{StaticResource PageBackground}"
+        Background="{DynamicResource PageBackground}"
         WindowStartupLocation="CenterOwner"
         PreviewKeyDown="OnPreviewKeyDown">
     <!--
@@ -50,27 +50,27 @@
         <Style x:Key="SegmentButton" TargetType="RadioButton">
             <Setter Property="FontFamily" Value="{StaticResource UiFont}"/>
             <Setter Property="FontSize" Value="13"/>
-            <Setter Property="Foreground" Value="{StaticResource TextPrimary}"/>
+            <Setter Property="Foreground" Value="{DynamicResource TextPrimary}"/>
             <Setter Property="Cursor" Value="Hand"/>
             <Setter Property="Margin" Value="0,0,6,0"/>
             <Setter Property="Template">
                 <Setter.Value>
                     <ControlTemplate TargetType="RadioButton">
-                        <Border x:Name="Bd" Background="{StaticResource Surface}"
-                                BorderBrush="{StaticResource BorderStrong}" BorderThickness="1"
+                        <Border x:Name="Bd" Background="{DynamicResource Surface}"
+                                BorderBrush="{DynamicResource BorderStrong}" BorderThickness="1"
                                 CornerRadius="6" Padding="14,5" SnapsToDevicePixels="True">
                             <ContentPresenter VerticalAlignment="Center"/>
                         </Border>
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsMouseOver" Value="True">
                                 <Setter TargetName="Bd" Property="Background"
-                                        Value="{StaticResource SurfaceMuted}"/>
+                                        Value="{DynamicResource SurfaceMuted}"/>
                             </Trigger>
                             <Trigger Property="IsChecked" Value="True">
                                 <Setter TargetName="Bd" Property="Background"
-                                        Value="{StaticResource Accent}"/>
+                                        Value="{DynamicResource AccentSolid}"/>
                                 <Setter TargetName="Bd" Property="BorderBrush"
-                                        Value="{StaticResource Accent}"/>
+                                        Value="{DynamicResource AccentSolid}"/>
                                 <Setter Property="Foreground" Value="White"/>
                             </Trigger>
                         </ControlTemplate.Triggers>
@@ -107,7 +107,7 @@
                 <DatePicker x:Name="FromDate" Width="130" Margin="10,0,0,0"
                             SelectedDateChanged="OnDateChanged"/>
                 <TextBlock Text="—" Margin="6,0" VerticalAlignment="Center"
-                           Foreground="{StaticResource TextSecondary}"/>
+                           Foreground="{DynamicResource TextSecondary}"/>
                 <DatePicker x:Name="ToDate" Width="130"
                             SelectedDateChanged="OnDateChanged"/>
 
@@ -147,7 +147,7 @@
                 <StackPanel>
                     <TextBlock Style="{StaticResource Caption}" Text="打包总件数"/>
                     <TextBlock x:Name="TotalCountText" FontSize="26" FontWeight="Bold"
-                               Margin="0,4,0,0" Foreground="{StaticResource TextPrimary}"
+                               Margin="0,4,0,0" Foreground="{DynamicResource TextPrimary}"
                                Text="0"/>
                     <!-- ⚠️ 两个口径都给出来：一个单号可以有好几段录像，
                          只说一个数的话「件」这个词是含糊的。 -->
@@ -160,7 +160,7 @@
                 <StackPanel>
                     <TextBlock Style="{StaticResource Caption}" Text="占用存储空间"/>
                     <TextBlock x:Name="TotalBytesText" FontSize="26" FontWeight="Bold"
-                               Margin="0,4,0,0" Foreground="{StaticResource Accent}"
+                               Margin="0,4,0,0" Foreground="{DynamicResource Accent}"
                                Text="约 0 MB"/>
                 </StackPanel>
             </Border>
@@ -169,7 +169,7 @@
                 <StackPanel>
                     <TextBlock Style="{StaticResource Caption}" Text="累计工作时长"/>
                     <TextBlock x:Name="TotalDurationText" FontSize="26" FontWeight="Bold"
-                               Margin="0,4,0,0" Foreground="{StaticResource Success}"
+                               Margin="0,4,0,0" Foreground="{DynamicResource Success}"
                                Text="0 秒"/>
                 </StackPanel>
             </Border>
@@ -178,7 +178,7 @@
                 <StackPanel>
                     <TextBlock Style="{StaticResource Caption}" Text="平均单件用时"/>
                     <TextBlock x:Name="AverageText" FontSize="26" FontWeight="Bold"
-                               Margin="0,4,0,0" Foreground="{StaticResource Warning}"
+                               Margin="0,4,0,0" Foreground="{DynamicResource Warning}"
                                Text="0 秒"/>
                 </StackPanel>
             </Border>
@@ -225,15 +225,15 @@
                                                VerticalAlignment="Center"
                                                FontFamily="{StaticResource MonoFont}"
                                                FontSize="12"
-                                               Foreground="{StaticResource TextSecondary}"/>
+                                               Foreground="{DynamicResource TextSecondary}"/>
 
                                     <!-- 条：见文件头那段关于 ProgressBar 的说明 -->
                                     <ProgressBar Grid.Column="1" Height="10"
                                                  VerticalAlignment="Center" Margin="8,0"
                                                  Minimum="0" Maximum="1"
                                                  Value="{Binding Ratio, Mode=OneWay}"
-                                                 Foreground="{StaticResource Accent}"
-                                                 Background="{StaticResource SurfaceAlt}"
+                                                 Foreground="{DynamicResource AccentSolid}"
+                                                 Background="{DynamicResource SurfaceAlt}"
                                                  BorderThickness="0">
                                         <ProgressBar.Template>
                                             <ControlTemplate TargetType="ProgressBar">
@@ -254,7 +254,7 @@
                                     <TextBlock Grid.Column="2" Text="{Binding Value}"
                                                VerticalAlignment="Center"
                                                HorizontalAlignment="Right"
-                                               Foreground="{StaticResource TextPrimary}"/>
+                                               Foreground="{DynamicResource TextPrimary}"/>
                                 </Grid>
                             </DataTemplate>
                         </ItemsControl.ItemTemplate>
@@ -293,6 +293,6 @@
 
         <TextBlock Grid.Row="4" x:Name="ShopGroupingNote" Style="{StaticResource Caption}"
                    Margin="2,8,0,0" TextWrapping="Wrap" MaxWidth="620"
-                   Foreground="{StaticResource Warning}" Visibility="Collapsed"/>
+                   Foreground="{DynamicResource Warning}" Visibility="Collapsed"/>
     </Grid>
 </Window>

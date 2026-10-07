@@ -3,7 +3,7 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="实时多画面" Width="1200" Height="820"
         MinWidth="720" MinHeight="520"
-        Background="{StaticResource PageBackground}"
+        Background="{DynamicResource PageBackground}"
         WindowStartupLocation="CenterOwner"
         PreviewKeyDown="OnPreviewKeyDown">
     <Grid>
@@ -13,8 +13,8 @@
         </Grid.RowDefinitions>
 
         <!-- ══ 工具条 ══════════════════════════════════════════════ -->
-        <Border Grid.Row="0" Background="{StaticResource Surface}"
-                BorderBrush="{StaticResource CardBorder}" BorderThickness="0,0,0,1"
+        <Border Grid.Row="0" Background="{DynamicResource Surface}"
+                BorderBrush="{DynamicResource CardBorder}" BorderThickness="0,0,0,1"
                 Padding="20,12">
             <Grid>
                 <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
@@ -61,7 +61,7 @@
             <TextBlock x:Name="EmptyNote" Grid.Row="0" Visibility="Collapsed"
                        HorizontalAlignment="Center" Margin="0,0,0,12"
                        TextAlignment="Center" TextWrapping="Wrap" MaxWidth="460"
-                       Foreground="{StaticResource TextSecondary}"
+                       Foreground="{DynamicResource TextSecondary}"
                        Text="正在查找已开启实时共享的手机…&#x0a;（在手机上打开实时共享之后，这里会出现它的画面。）"/>
 
             <UniformGrid x:Name="Wall" Grid.Row="1" Rows="3" Columns="3"/>
@@ -70,7 +70,7 @@
         <!-- ══ 全屏层 ══════════════════════════════════════════════ -->
         <!-- ⚠️ 盖住整个窗口（RowSpan=2）：全屏就是「只看这一格」，
              工具条与别的格子都不该还在。 -->
-        <Grid x:Name="FullscreenLayer" Grid.RowSpan="2" Background="{StaticResource VideoBackground}"
+        <Grid x:Name="FullscreenLayer" Grid.RowSpan="2" Background="{DynamicResource VideoBackground}"
               Visibility="Collapsed" MouseLeftButtonDown="OnFullscreenClick">
             <Grid.RowDefinitions>
                 <RowDefinition Height="*"/>
@@ -80,7 +80,7 @@
             <!-- 画面本体由 code-behind 挂进来（同一张 Image 在两个容器间搬，见 .cs） -->
             <Grid x:Name="FullscreenHost" Grid.Row="0"/>
 
-            <Border Grid.Row="1" Background="{StaticResource Surface}" Padding="20,12">
+            <Border Grid.Row="1" Background="{DynamicResource Surface}" Padding="20,12">
                 <StackPanel>
                     <StackPanel Orientation="Horizontal">
                         <TextBlock x:Name="FullscreenTitle" Style="{StaticResource SectionTitle}"

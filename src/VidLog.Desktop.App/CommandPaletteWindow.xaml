@@ -4,7 +4,7 @@
         Title="命令面板" Width="520" MaxHeight="480"
         SizeToContent="Height"
         FontFamily="{StaticResource UiFont}"
-        Background="{StaticResource PageBackground}"
+        Background="{DynamicResource PageBackground}"
         WindowStartupLocation="CenterOwner"
         ResizeMode="NoResize" ShowInTaskbar="False">
     <!--
@@ -15,7 +15,7 @@
     <Border Margin="10" Padding="12" Style="{StaticResource Card}">
         <StackPanel>
             <TextBox x:Name="QueryBox" FontSize="15" Padding="8,6"
-                     BorderBrush="{StaticResource BorderStrong}"/>
+                     BorderBrush="{DynamicResource BorderStrong}"/>
 
             <!-- 这句是**死的**（不随输入变），所以写在 XAML 里，不在每次敲字时重设 -->
             <TextBlock x:Name="HintText" Margin="2,8,0,0" TextWrapping="Wrap"

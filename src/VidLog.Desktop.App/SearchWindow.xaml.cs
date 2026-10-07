@@ -8,6 +8,7 @@ using System.Windows.Threading;
 
 // 本工程同时开了 UseWPF 与 UseWindowsForms（后者只为托盘图标），
 // ImplicitUsings 会把两边的同名类型都带进来。这里钉死成 WPF 的那套。
+using Application = System.Windows.Application;
 using Brush = System.Windows.Media.Brush;
 using Brushes = System.Windows.Media.Brushes;
 using ComboBox = System.Windows.Controls.ComboBox;
@@ -823,11 +824,24 @@ internal sealed class DayMarkConverter : IValueConverter
     /// </remarks>
     public HashSet<DateTime> Days { get; } = [];
 
-    /// <summary>涂成什么色。在 XAML 里给（`Marked="{StaticResource AccentWeak}"`），好跟着主题走。</summary>
-    public Brush Marked { get; set; } = Brushes.Transparent;
+    /// <summary>有录像的那天涂成哪个资源的色。</summary>
+    private const string MarkedKey = "AccentWeak";
 
     public object Convert(object? value, Type targetType, object? parameter, CultureInfo culture)
-        => value is DateTime day && Days.Contains(day) ? Marked : Brushes.Transparent;
+        => value is DateTime day && Days.Contains(day) ? MarkedBrush() : Brushes.Transparent;
+
+    /// <summary>
+    /// 「有录像的那天」那个点的颜色，**每次换算时按名字现查**。
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ 为什么不是 XAML 传进来的一支笔刷：这个类是普通 <see cref="IValueConverter"/>，
+    /// 想收 <c>{DynamicResource AccentWeak}</c> 就得把属性改成 DependencyProperty
+    /// （普通属性收不了动态资源）；而 <c>{StaticResource}</c> 会在窗口加载那一刻
+    /// 把**亮色**那支焊死 —— 暗色主题下这个点是错的（2026-10-07 实测：换完主题字典，
+    /// 新建控件从 <c>Style</c> 里拿到的仍是亮色笔刷）。现查这条路两个毛病都没有。
+    /// </remarks>
+    private static Brush MarkedBrush() =>
+        Application.Current?.TryFindResource(MarkedKey) as Brush ?? Brushes.Transparent;
 
     /// <remarks>只读的涂色，没人往回写。</remarks>
     public object ConvertBack(object? value, Type targetType, object? parameter, CultureInfo culture)

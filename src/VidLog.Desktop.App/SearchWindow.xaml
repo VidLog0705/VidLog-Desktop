@@ -7,7 +7,7 @@
         mc:Ignorable="d"
         Title="历史录像检索与回放" Height="720" Width="1080" MinWidth="900" MinHeight="600"
         FontFamily="{StaticResource UiFont}"
-        Background="{StaticResource PageBackground}"
+        Background="{DynamicResource PageBackground}"
         WindowStartupLocation="CenterOwner">
     <!--
         ════════════════════════════════════════════════════════════════
@@ -49,7 +49,13 @@
             ⚠️ 顺序不能反：下面那个日的模板用 `{StaticResource DayMark}` 取它，
             StaticResource 只认**写在前面**的。表由后台填（见 `SearchWindow.xaml.cs`）。
         -->
-        <local:DayMarkConverter x:Key="DayMark" Marked="{StaticResource AccentWeak}"/>
+        <!--
+            ⚠️ 这个转换器**没有**取色的属性：它是普通 IValueConverter、`Marked` 是普通
+            属性，`{DynamicResource}` 在它上面用不了，而 `{StaticResource}` 会把亮色
+            那支焊死（暗色下这个点就是错的）。色由它自己在换算时按名字现查 ——
+            见 `DayMarkConverter.Convert` 的说明。
+        -->
+        <local:DayMarkConverter x:Key="DayMark"/>
 
         <!--
             开日历的那一颗。⚠️ 必须是 `ToggleButton` 而不是普通按钮：
@@ -74,12 +80,12 @@
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsMouseOver" Value="True">
                                 <Setter TargetName="Bd" Property="Background"
-                                        Value="{StaticResource SurfaceAlt}"/>
+                                        Value="{DynamicResource SurfaceAlt}"/>
                             </Trigger>
                             <!-- 开着的时候是浅蓝：让用户知道这一屏日历是他点出来的、再点一下收 -->
                             <Trigger Property="IsChecked" Value="True">
                                 <Setter TargetName="Bd" Property="Background"
-                                        Value="{StaticResource AccentWeak}"/>
+                                        Value="{DynamicResource AccentWeak}"/>
                             </Trigger>
                         </ControlTemplate.Triggers>
                     </ControlTemplate>
@@ -102,7 +108,7 @@
             <Setter Property="MinHeight" Value="26"/>
             <Setter Property="Margin" Value="1"/>
             <Setter Property="FontSize" Value="12"/>
-            <Setter Property="Foreground" Value="{StaticResource TextPrimary}"/>
+            <Setter Property="Foreground" Value="{DynamicResource TextPrimary}"/>
             <Setter Property="Cursor" Value="Hand"/>
             <Setter Property="Template">
                 <Setter.Value>
@@ -117,15 +123,15 @@
                                  鼠标一划过就分不清这天到底有没有东西了。用中性灰。 -->
                             <Trigger Property="IsMouseOver" Value="True">
                                 <Setter TargetName="Bd" Property="Border.Background"
-                                        Value="{StaticResource SurfaceAlt}"/>
+                                        Value="{DynamicResource SurfaceAlt}"/>
                             </Trigger>
                             <Trigger Property="IsSelected" Value="True">
                                 <Setter TargetName="Bd" Property="Border.Background"
-                                        Value="{StaticResource Accent}"/>
+                                        Value="{DynamicResource AccentSolid}"/>
                                 <Setter Property="Foreground" Value="White"/>
                             </Trigger>
                             <Trigger Property="IsEnabled" Value="False">
-                                <Setter Property="Foreground" Value="{StaticResource TextDisabled}"/>
+                                <Setter Property="Foreground" Value="{DynamicResource TextDisabled}"/>
                             </Trigger>
                         </ControlTemplate.Triggers>
                     </ControlTemplate>
@@ -163,7 +169,7 @@
                             <!-- ⚠️ 132 → 118 是给右边那颗日历钮让的位（左栏可用宽 298）。 -->
                             <DatePicker x:Name="FromDate" Width="118"/>
                             <TextBlock Text="至" VerticalAlignment="Center" Margin="6,0"
-                                       Foreground="{StaticResource TextSecondary}"/>
+                                       Foreground="{DynamicResource TextSecondary}"/>
                             <DatePicker x:Name="ToDate" Width="118"/>
 
                             <!-- T14：这一颗开日历。⚠️ 摆在日期这一行里而不是单起一行 ——
@@ -175,7 +181,7 @@
                                           Margin="6,0,0,0"
                                           Checked="OnCalendarToggled" Unchecked="OnCalendarToggled">
                                 <Path Data="M 1,3 L 13,3 L 13,13 L 1,13 Z M 1,6 L 13,6 M 4,1 L 4,4.5 M 10,1 L 10,4.5"
-                                      Stroke="{StaticResource TextPrimary}" StrokeThickness="1.2"/>
+                                      Stroke="{DynamicResource TextPrimary}" StrokeThickness="1.2"/>
                             </ToggleButton>
                         </StackPanel>
 
@@ -189,11 +195,11 @@
                                VerticalOffset="4"
                                Opened="OnCalendarOpened" Closed="OnCalendarClosed">
                             <Border Padding="8" CornerRadius="{StaticResource RadiusControl}"
-                                    Background="{StaticResource Surface}"
-                                    BorderBrush="{StaticResource CardBorder}" BorderThickness="1">
+                                    Background="{DynamicResource Surface}"
+                                    BorderBrush="{DynamicResource CardBorder}" BorderThickness="1">
                                 <Border.Effect>
                                     <DropShadowEffect BlurRadius="10" ShadowDepth="2"
-                                                      Opacity="0.16" Color="{StaticResource ShadowColor}"/>
+                                                      Opacity="0.16" Color="{DynamicResource ShadowColor}"/>
                                 </Border.Effect>
                                 <StackPanel>
                                     <Calendar x:Name="DayCalendar"
@@ -216,7 +222,7 @@
                                     Margin="0,0,5,0" Click="OnClearSearch"
                                     ToolTip="清空单号搜索框">
                                 <Path Data="M 0,0 L 8,8 M 8,0 L 0,8"
-                                      Stroke="{StaticResource TextDisabled}" StrokeThickness="1.4"/>
+                                      Stroke="{DynamicResource TextDisabled}" StrokeThickness="1.4"/>
                             </Button>
                         </Grid>
 
@@ -243,7 +249,7 @@
                                             HorizontalAlignment="Center">
                                     <!-- 清单一枚：内联矢量，不引任何图片资源 -->
                                     <Path Data="M 1,1 L 13,1 L 13,13 L 1,13 Z M 4,4.5 L 10,4.5 M 4,7 L 10,7 M 4,9.5 L 8,9.5"
-                                          Stroke="{StaticResource TextPrimary}" StrokeThickness="1.2"
+                                          Stroke="{DynamicResource TextPrimary}" StrokeThickness="1.2"
                                           VerticalAlignment="Center"/>
                                     <TextBlock Text="导出单号" Margin="7,0,0,0"
                                                VerticalAlignment="Center"/>
@@ -259,7 +265,7 @@
                                             HorizontalAlignment="Center">
                                     <!-- 文件夹一枚 -->
                                     <Path Data="M 1,12.5 L 1,3.5 L 5.5,3.5 L 7.5,5.5 L 13,5.5 L 13,12.5 Z"
-                                          Stroke="{StaticResource TextPrimary}" StrokeThickness="1.2"
+                                          Stroke="{DynamicResource TextPrimary}" StrokeThickness="1.2"
                                           VerticalAlignment="Center"/>
                                     <TextBlock Text="导入录像" Margin="7,0,0,0"
                                                VerticalAlignment="Center"/>
@@ -291,7 +297,7 @@
 
                     <!-- 结果列表。⚠️ 左边栏窄，所以是「一行一条」的列表而不是表格。 -->
                     <Border Grid.Row="1" Margin="0,12,0,0"
-                            BorderBrush="{StaticResource CardBorder}" BorderThickness="1"
+                            BorderBrush="{DynamicResource CardBorder}" BorderThickness="1"
                             CornerRadius="{StaticResource RadiusControl}">
                       <Grid>
                         <!--
@@ -302,7 +308,7 @@
                         <TextBlock x:Name="ResultsPlaceholder" Margin="18"
                                    TextWrapping="Wrap" TextAlignment="Center"
                                    HorizontalAlignment="Center" VerticalAlignment="Center"
-                                   Foreground="{StaticResource TextDisabled}"
+                                   Foreground="{DynamicResource TextDisabled}"
                                    Text="还没有检索。&#x0a;左边挑个日期、或者打上单号，再点【检索】。"/>
                         <ListBox x:Name="ResultsList" BorderThickness="0"
                                  Background="Transparent"
@@ -331,7 +337,7 @@
                                         <TextBlock Grid.Row="0" Grid.Column="0"
                                                    Text="{Binding Waybill}"
                                                    FontWeight="SemiBold"
-                                                   Foreground="{StaticResource TextPrimary}"/>
+                                                   Foreground="{DynamicResource TextPrimary}"/>
 
                                         <!-- 争议锁定（规格 §3.6.5）。⚠️ 它是**硬豁免**（§3.5.3②）：
                                              锁上之后保留期到了也不会自动清理这一条。 -->
@@ -351,7 +357,7 @@
                                             <TextBlock Text="{Binding Note}"
                                                        Style="{StaticResource Caption}"
                                                        Margin="0,2,0,0"
-                                                       Foreground="{StaticResource Warning}"
+                                                       Foreground="{DynamicResource Warning}"
                                                        Visibility="{Binding NoteVisibility}"/>
                                         </StackPanel>
                                     </Grid>
@@ -380,7 +386,7 @@
                             <TextBlock x:Name="CountText" Grid.Column="0"
                                        VerticalAlignment="Center"
                                        Margin="0,0,8,0" TextWrapping="Wrap"
-                                       Foreground="{StaticResource TextSecondary}"
+                                       Foreground="{DynamicResource TextSecondary}"
                                        Text="共 0 条"/>
                             <StackPanel Grid.Column="1" Orientation="Horizontal" HorizontalAlignment="Right">
                                 <Button x:Name="PrevPageButton" Content="上一页"
@@ -399,7 +405,7 @@
             <!-- ══ 右：播放区 ═══════════════════════════════════════════ -->
             <Border Grid.Column="1" Style="{StaticResource Card}"
                     Margin="0,0,0,16" Padding="0"
-                    Background="{StaticResource VideoBackground}">
+                    Background="{DynamicResource VideoBackground}">
                 <Grid>
                     <!-- ⚠️ MediaElement 是 WPF 自带的，**不引任何第三方播放器**（I10：离线可用）。
                          能不能解出画面取决于系统解码器 —— 播不了时下面那行会说为什么。 -->
@@ -410,7 +416,7 @@
                     <!-- 没选录像时的提示（照图：一个播放图标 + 一行字） -->
                     <StackPanel x:Name="PlayerPlaceholder"
                                 HorizontalAlignment="Center" VerticalAlignment="Center">
-                        <Path Data="M 0,0 L 26,15 L 0,30 Z" Fill="{StaticResource TextDisabled}"
+                        <Path Data="M 0,0 L 26,15 L 0,30 Z" Fill="{DynamicResource TextDisabled}"
                               HorizontalAlignment="Center"/>
                         <!-- ⚠️ `TextWrapping` + `MaxWidth` **两个都要**：这一行不只写
                              「请选择录像开始播放」，播不了时它换成的是**一整段**话
@@ -421,14 +427,14 @@
                         <TextBlock x:Name="PlayerHintText" Text="请选择录像开始播放"
                                    Margin="0,14,0,0" HorizontalAlignment="Center"
                                    TextWrapping="Wrap" MaxWidth="620" TextAlignment="Center"
-                                   Foreground="{StaticResource TextDisabled}"/>
+                                   Foreground="{DynamicResource TextDisabled}"/>
                     </StackPanel>
                 </Grid>
             </Border>
         </Grid>
 
         <!-- ══ 底部播放条 ══════════════════════════════════════════════ -->
-        <Border Grid.Row="1" Background="{StaticResource VideoBackground}"
+        <Border Grid.Row="1" Background="{DynamicResource VideoBackground}"
                 Padding="16,10">
             <Grid>
                 <Grid.ColumnDefinitions>

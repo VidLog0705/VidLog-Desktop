@@ -3,7 +3,7 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="连接电脑 / 手机" Height="640" Width="470"
         FontFamily="{StaticResource UiFont}"
-        Background="{StaticResource PageBackground}"
+        Background="{DynamicResource PageBackground}"
         WindowStartupLocation="CenterOwner">
     <!--
         ⚠️ 这个窗**只换了配色与间距**（2026-09-28，跟着主窗的 SaaS 版式走）。
@@ -21,19 +21,19 @@
             <RowDefinition Height="Auto"/>
         </Grid.RowDefinitions>
 
-        <TextBlock Grid.Row="0" TextWrapping="Wrap" Foreground="{StaticResource TextPrimary}"
+        <TextBlock Grid.Row="0" TextWrapping="Wrap" Foreground="{DynamicResource TextPrimary}"
                    Text="手机端扫下面这张二维码来申请连接。申请到了之后，屏幕正中会弹出提示，由你决定同意还是拒绝。"/>
 
         <!-- 发不出码的时候这里会说清楚为什么（服务没起来 / 只绑了本机 / 没有局域网地址）。
              不说的话，用户看到的就是一张扫不动的码。 -->
         <TextBlock Grid.Row="1" x:Name="BlockerText" Margin="0,10,0,0" TextWrapping="Wrap"
-                   Foreground="{StaticResource Danger}" Visibility="Collapsed"/>
+                   Foreground="{DynamicResource Danger}" Visibility="Collapsed"/>
 
         <!-- ⚠️ 这个 Border 的 `Background="White"` 是硬写的、**跟着 Theme 走会出事**：
              二维码要求高对比（码是黑的、底得是白的），
              用 Surface 或 PageBackground 那种带灰的底色会降低对比度。 -->
         <Border Grid.Row="2" Margin="0,14,0,0" Padding="10" Background="White"
-                BorderBrush="{StaticResource CardBorder}" BorderThickness="1" CornerRadius="{StaticResource RadiusControl}"
+                BorderBrush="{DynamicResource CardBorder}" BorderThickness="1" CornerRadius="{StaticResource RadiusControl}"
                 HorizontalAlignment="Center">
             <!-- 一个模块一个像素，靠最近邻放大成方块。
                  用别的方式缩放会把模块边缘糊成灰边 —— 糊掉的码在屏幕上看着正常、扫不出来。 -->
@@ -44,26 +44,26 @@
         <StackPanel Grid.Row="3" Margin="0,10,0,0">
             <TextBlock x:Name="StatusLine" HorizontalAlignment="Center"
                        TextAlignment="Center" TextWrapping="Wrap"
-                       Foreground="{StaticResource TextPrimary}"/>
+                       Foreground="{DynamicResource TextPrimary}"/>
             <TextBlock x:Name="AddressLine" Margin="0,4,0,0" HorizontalAlignment="Center"
                        TextAlignment="Center" TextWrapping="Wrap"
-                       Foreground="{StaticResource TextSecondary}"/>
+                       Foreground="{DynamicResource TextSecondary}"/>
 
             <!-- 防火墙没放行的时候才出现（见 `WarnIfFirewallBlockedAsync`）：
                  那种情况下码是好的、服务也绑上了，手机却连不上 —— 不说出来
                  用户只能对着一张好码干等。 -->
             <TextBlock x:Name="FirewallWarning" Margin="0,8,0,0" HorizontalAlignment="Center"
                        TextAlignment="Center" TextWrapping="Wrap"
-                       Foreground="{StaticResource Danger}" Visibility="Collapsed"/>
+                       Foreground="{DynamicResource Danger}" Visibility="Collapsed"/>
         </StackPanel>
 
         <StackPanel Grid.Row="4" Margin="0,14,0,0">
             <TextBlock Text="已经连过的设备" FontWeight="SemiBold"
-                       Foreground="{StaticResource TextPrimary}"/>
+                       Foreground="{DynamicResource TextPrimary}"/>
             <ListBox x:Name="DeviceList" Margin="0,4,0,0" Visibility="Collapsed"
                      HorizontalContentAlignment="Stretch"/>
             <TextBlock x:Name="DeviceEmpty" Margin="0,4,0,0"
-                       Foreground="{StaticResource TextSecondary}"
+                       Foreground="{DynamicResource TextSecondary}"
                        TextWrapping="Wrap" Text="还没有设备连过这台电脑。"/>
         </StackPanel>
 
@@ -76,7 +76,7 @@
             <Button Content="关掉" Style="{StaticResource SecondaryButton}"
                     Margin="8,0,0,0" Click="OnClose" IsCancel="True"/>
             <TextBlock x:Name="FootNote" Margin="12,0,0,0" VerticalAlignment="Center"
-                       TextWrapping="Wrap" Foreground="{StaticResource TextSecondary}"/>
+                       TextWrapping="Wrap" Foreground="{DynamicResource TextSecondary}"/>
         </StackPanel>
     </Grid>
 </Window>

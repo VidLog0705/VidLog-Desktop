@@ -7,7 +7,7 @@
         mc:Ignorable="d"
         Title="设置" Height="700" Width="900" MinWidth="780" MinHeight="560"
         FontFamily="{StaticResource UiFont}"
-        Background="{StaticResource Surface}"
+        Background="{DynamicResource Surface}"
         WindowStartupLocation="CenterOwner"
         Closing="OnClosing">
     <!--
@@ -52,7 +52,7 @@
                             <Setter.Value>
                                 <ControlTemplate TargetType="ListBoxItem">
                                     <Border x:Name="Row" Background="Transparent"
-                                            BorderBrush="{StaticResource CardBorder}"
+                                            BorderBrush="{DynamicResource CardBorder}"
                                             BorderThickness="0,0,0,1"
                                             Padding="12,7" SnapsToDevicePixels="True">
                                         <ContentPresenter/>
@@ -60,11 +60,11 @@
                                     <ControlTemplate.Triggers>
                                         <Trigger Property="IsMouseOver" Value="True">
                                             <Setter TargetName="Row" Property="Background"
-                                                    Value="{StaticResource SurfaceMuted}"/>
+                                                    Value="{DynamicResource SurfaceMuted}"/>
                                         </Trigger>
                                         <Trigger Property="IsSelected" Value="True">
                                             <Setter TargetName="Row" Property="Background"
-                                                    Value="{StaticResource AccentWeak}"/>
+                                                    Value="{DynamicResource AccentWeak}"/>
                                         </Trigger>
                                     </ControlTemplate.Triggers>
                                 </ControlTemplate>
@@ -90,13 +90,13 @@
                 <TextBlock Grid.Column="0" Text="{Binding Folder}"
                            VerticalAlignment="Center" FontSize="13"
                            TextTrimming="CharacterEllipsis"
-                           Foreground="{StaticResource TextPrimary}"/>
+                           Foreground="{DynamicResource TextPrimary}"/>
 
                 <StackPanel Grid.Column="1" Orientation="Horizontal"
                             VerticalAlignment="Center">
                     <TextBox Width="64" Padding="6,3" TextAlignment="Right"
-                             Background="{StaticResource SurfaceMuted}"
-                             BorderBrush="{StaticResource CardBorder}"
+                             Background="{DynamicResource SurfaceMuted}"
+                             BorderBrush="{DynamicResource CardBorder}"
                              Text="{Binding ReservedGb, UpdateSourceTrigger=PropertyChanged}"
                              IsEnabled="{Binding ReserveEditable}"
                              ToolTip="{Binding ReserveHint}"
@@ -104,7 +104,7 @@
                              TextChanged="OnDiskEdited"/>
                     <TextBlock Text="GB" Margin="8,0,0,0" FontSize="13"
                                FontWeight="SemiBold" VerticalAlignment="Center"
-                               Foreground="{StaticResource TextPrimary}"/>
+                               Foreground="{DynamicResource TextPrimary}"/>
                 </StackPanel>
             </Grid>
         </DataTemplate>
@@ -119,7 +119,7 @@
         <!-- ══ 左导航 ══════════════════════════════════════════════════
              ⚠️ 底色是 slate-50（`SidebarBackground`），而**选中项是白的** ——
              这是从设计图里量出来的，不是「浅蓝底」。见 Theme.xaml 的说明。 -->
-        <Border Grid.Column="0" Background="{StaticResource SidebarBackground}">
+        <Border Grid.Column="0" Background="{DynamicResource SidebarBackground}">
             <Grid>
                 <Grid.RowDefinitions>
                     <RowDefinition Height="Auto"/>
@@ -130,7 +130,7 @@
 
                 <TextBlock Grid.Row="0" Text="设置" Margin="20,22,20,18"
                            FontSize="15" FontWeight="SemiBold"
-                           Foreground="{StaticResource TextPrimary}"/>
+                           Foreground="{DynamicResource TextPrimary}"/>
 
                 <StackPanel Grid.Row="1">
                     <RadioButton x:Name="NavDevice" Style="{StaticResource NavItem}"
@@ -273,7 +273,7 @@
                              ⚠️ 不弹模态框：这一页是静态的，一句话放在点击处最近的地方最好找。 -->
                         <TextBlock x:Name="PreferencesNote" Style="{StaticResource Caption}"
                                    Margin="0,10,0,0" TextWrapping="Wrap" MaxWidth="520"
-                                   Foreground="{StaticResource Warning}" Visibility="Collapsed"/>
+                                   Foreground="{DynamicResource Warning}" Visibility="Collapsed"/>
 
                         <Separator Margin="0,18,0,16"/>
 
@@ -289,7 +289,7 @@
                             <TextBlock x:Name="CameraHint" Margin="10,0,0,0"
                                        VerticalAlignment="Center" TextWrapping="Wrap"
                                        MaxWidth="360"
-                                       Foreground="{StaticResource TextSecondary}" Text=""/>
+                                       Foreground="{DynamicResource TextSecondary}" Text=""/>
                         </StackPanel>
 
                         <!-- ⚠️ 配置向导的入口**搬到「高级设置」**了（批次 G：照前身产品的分页 ——
@@ -415,7 +415,7 @@
                                              VerticalContentAlignment="Center"
                                              LostFocus="OnIdleMinutesChanged"/>
                                     <TextBlock Text="分钟" VerticalAlignment="Center" Margin="4,0,0,0"
-                                               Foreground="{StaticResource TextPrimary}"/>
+                                               Foreground="{DynamicResource TextPrimary}"/>
                                 </StackPanel>
                             </StackPanel>
 
@@ -472,7 +472,7 @@
                              这一行就是那个落点，**不折进「?」里**。 -->
                         <TextBlock x:Name="EffectiveSpecText" Margin="76,6,0,0"
                                    TextWrapping="Wrap"
-                                   Foreground="{StaticResource TextSecondary}" Text=""/>
+                                   Foreground="{DynamicResource TextSecondary}" Text=""/>
                     </StackPanel>
 
                     <!-- ────────────────────────────────────────────────
@@ -506,12 +506,12 @@
                                           Checked="OnAudioChanged" Unchecked="OnAudioChanged"/>
                             <TextBlock x:Name="AudioStateText" Margin="10,0,0,0"
                                        VerticalAlignment="Center"
-                                       Foreground="{StaticResource TextPrimary}" Text=""/>
+                                       Foreground="{DynamicResource TextPrimary}" Text=""/>
                             <ComboBox x:Name="MicrophoneCombo" Width="260" Margin="18,0,0,0"
                                       IsEnabled="False"/>
                             <TextBlock x:Name="MicrophoneHint" Margin="10,0,0,0"
                                        VerticalAlignment="Center"
-                                       Foreground="{StaticResource TextSecondary}" Text=""/>
+                                       Foreground="{DynamicResource TextSecondary}" Text=""/>
                         </StackPanel>
 
                         <!-- ⚠️ 这一条**不折进「?」**：它说的是「麦克风出问题也不会毁掉录像」，
@@ -550,10 +550,10 @@
                                     CornerRadius="{StaticResource RadiusTag}" Margin="0,0,12,0"
                                     VerticalAlignment="Center"
                                     SizeChanged="OnCapacityTrackSized"
-                                    Background="{StaticResource BorderStrong}">
+                                    Background="{DynamicResource BorderStrong}">
                                 <Border x:Name="CapacityFill" Width="0" CornerRadius="{StaticResource RadiusTag}"
                                         HorizontalAlignment="Left"
-                                        Background="{StaticResource Accent}"/>
+                                        Background="{DynamicResource AccentSolid}"/>
                             </Border>
                             <TextBlock Grid.Column="1" x:Name="CapacityText"
                                        Style="{StaticResource Body}" Text="正在统计…"
@@ -606,7 +606,7 @@
                         <TextBlock Style="{StaticResource Caption}"
                                    Text="本地磁盘直接保存录像，空间不足时按保护期自动循环清理"/>
 
-                        <Border Background="{StaticResource SurfaceAlt}"
+                        <Border Background="{DynamicResource SurfaceAlt}"
                                 CornerRadius="{StaticResource RadiusTab}" Padding="12,7" Margin="0,10,0,0">
                             <Grid>
                                 <Grid.ColumnDefinitions>
@@ -677,7 +677,7 @@
                              （`ArchiveDirectory`），老配置读进来就是一行。 -->
                         <StackPanel x:Name="ArchivePathPanel" Margin="0,10,0,0"
                                     Visibility="Collapsed">
-                            <Border Background="{StaticResource SurfaceAlt}"
+                            <Border Background="{DynamicResource SurfaceAlt}"
                                     CornerRadius="{StaticResource RadiusTab}" Padding="12,7">
                                 <Grid>
                                     <Grid.ColumnDefinitions>
@@ -746,14 +746,14 @@
 
                                     <TextBlock Grid.Row="0" Grid.Column="1" Text="发货"
                                                FontWeight="SemiBold"
-                                               Foreground="{StaticResource TextPrimary}"/>
+                                               Foreground="{DynamicResource TextPrimary}"/>
                                     <TextBlock Grid.Row="0" Grid.Column="2" Text="退货"
                                                FontWeight="SemiBold"
-                                               Foreground="{StaticResource TextPrimary}"/>
+                                               Foreground="{DynamicResource TextPrimary}"/>
 
                                     <TextBlock Grid.Row="1" Grid.Column="0" Text="已备份"
                                                VerticalAlignment="Center"
-                                               Foreground="{StaticResource TextPrimary}"/>
+                                               Foreground="{DynamicResource TextPrimary}"/>
                                     <ComboBox x:Name="ArchivedOutboundCombo" Grid.Row="1" Grid.Column="1"
                                               IsEditable="True" Margin="0,2,8,2"
                                               SelectionChanged="OnRetentionChanged"/>
@@ -763,7 +763,7 @@
 
                                     <TextBlock Grid.Row="2" Grid.Column="0" Text="未备份"
                                                VerticalAlignment="Center"
-                                               Foreground="{StaticResource TextPrimary}"/>
+                                               Foreground="{DynamicResource TextPrimary}"/>
                                     <ComboBox x:Name="UnarchivedOutboundCombo" Grid.Row="2" Grid.Column="1"
                                               IsEditable="True" Margin="0,2,8,2"
                                               SelectionChanged="OnRetentionChanged"/>
@@ -797,7 +797,7 @@
                         <!-- 归档层那一份没发上去（规格 §3.4.6）。**必须说出来**：
                              它意味着盘上这份只有一份，而用户可能以为自己已经双份了。 -->
                         <TextBlock x:Name="ArchiveRelayNote" Style="{StaticResource Caption}"
-                                   Foreground="{StaticResource Warning}" Margin="0,10,0,0"
+                                   Foreground="{DynamicResource Warning}" Margin="0,10,0,0"
                                    Visibility="Collapsed"/>
                     </StackPanel>
 
@@ -810,7 +810,7 @@
                              原因由 code-behind 填，因为它是**当下**算出来的：
                              「档位不对」与「档位对但没配凭据」是两句不同的话。 -->
                         <TextBlock x:Name="CloudDisabledNote" Style="{StaticResource Caption}"
-                                   Foreground="{StaticResource Warning}" TextWrapping="Wrap"
+                                   Foreground="{DynamicResource Warning}" TextWrapping="Wrap"
                                    MaxWidth="520" Margin="0,0,0,14"
                                    Visibility="Collapsed"/>
 
@@ -854,7 +854,7 @@
                                          二维码要求高对比（码是黑的、底得是白的），
                                          用 Surface 或 PageBackground 那种带灰的底色会降低对比度。理由同 EnrollWindow。 -->
                                     <Border Margin="0,8,0,0" Padding="10" Background="White"
-                                            BorderBrush="{StaticResource CardBorder}" BorderThickness="1"
+                                            BorderBrush="{DynamicResource CardBorder}" BorderThickness="1"
                                             CornerRadius="{StaticResource RadiusControl}" HorizontalAlignment="Left">
                                         <!-- 一个模块一个像素，靠最近邻放大成方块。
                                              换成插值会把模块边缘糊成灰边 —— 糊掉的码在屏幕上看着正常、扫不出来。 -->
@@ -988,7 +988,7 @@
                                     <ListBox.ItemTemplate>
                                         <DataTemplate>
                                             <TextBlock Text="{Binding}" TextWrapping="Wrap" FontSize="13"
-                                                       Foreground="{StaticResource TextPrimary}"/>
+                                                       Foreground="{DynamicResource TextPrimary}"/>
                                         </DataTemplate>
                                     </ListBox.ItemTemplate>
                                 </ListBox>
@@ -1106,7 +1106,7 @@
                                      这一页本来就是静态的，一句话放在点击处最近的地方最好找。 -->
                                 <TextBlock x:Name="ExtensionsNote" Style="{StaticResource Caption}"
                                            Margin="0,12,0,0" TextWrapping="Wrap" MaxWidth="520"
-                                           Foreground="{StaticResource Warning}" Visibility="Collapsed"/>
+                                           Foreground="{DynamicResource Warning}" Visibility="Collapsed"/>
                             </StackPanel>
                         </Border>
                     </StackPanel>
@@ -1290,7 +1290,7 @@
                         <StackPanel Orientation="Horizontal" Margin="0,10,0,0">
                             <TextBlock x:Name="CalibrationNote" VerticalAlignment="Center"
                                        TextWrapping="Wrap" MaxWidth="480"
-                                       Foreground="{StaticResource TextPrimary}"/>
+                                       Foreground="{DynamicResource TextPrimary}"/>
                             <Button x:Name="CalibrateButton" Content="重新校准"
                                     Style="{StaticResource SecondaryButton}"
                                     Margin="12,0,0,0" Click="OnCalibrate"/>
@@ -1446,8 +1446,8 @@
             </ScrollViewer>
 
             <!-- ══ 底部：状态 + 确定 / 应用 / 取消 ════════════════════ -->
-            <Border Grid.Row="1" Background="{StaticResource Surface}"
-                    BorderBrush="{StaticResource CardBorder}" BorderThickness="0,1,0,0"
+            <Border Grid.Row="1" Background="{DynamicResource Surface}"
+                    BorderBrush="{DynamicResource CardBorder}" BorderThickness="0,1,0,0"
                     Padding="28,14">
                 <!-- ⚠️ **两列，不要把它俩摞在同一个格子里**。原来是一格放两个
                      （文字左对齐 + `MaxWidth="480"`，按钮右对齐），看着像有宽度上限，
@@ -1463,7 +1463,7 @@
                     <TextBlock x:Name="SettingsStatus" Grid.Column="0"
                                VerticalAlignment="Center" TextWrapping="Wrap"
                                Margin="0,0,16,0"
-                               Foreground="{StaticResource TextSecondary}"/>
+                               Foreground="{DynamicResource TextSecondary}"/>
                     <StackPanel Grid.Column="1" Orientation="Horizontal" HorizontalAlignment="Right">
                         <Button x:Name="OkButton" Content="确定"
                                 Style="{StaticResource PrimaryButton}"

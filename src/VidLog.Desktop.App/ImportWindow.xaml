@@ -6,7 +6,7 @@
         mc:Ignorable="d"
         Title="导入录像" Height="620" Width="560" MinWidth="520" MinHeight="560"
         FontFamily="{StaticResource UiFont}"
-        Background="{StaticResource PageBackground}"
+        Background="{DynamicResource PageBackground}"
         WindowStartupLocation="CenterOwner">
     <!--
         ════════════════════════════════════════════════════════════════
@@ -47,7 +47,7 @@
                         </Grid.ColumnDefinitions>
 
                         <TextBox x:Name="SourceBox" Grid.Column="0" IsReadOnly="True"
-                                 Background="{StaticResource SurfaceMuted}"/>
+                                 Background="{DynamicResource SurfaceMuted}"/>
                         <Button x:Name="BrowseButton" Grid.Column="1" Content="浏览…"
                                 Style="{StaticResource SecondaryButton}"
                                 Padding="16,5" Margin="8,0,0,0" Click="OnBrowse"/>
@@ -69,10 +69,10 @@
                     <StackPanel Orientation="Horizontal">
                         <RadioButton x:Name="OutboundRadio" Content="发货" GroupName="ImportBusiness"
                                      IsChecked="True"
-                                     Foreground="{StaticResource TextPrimary}"/>
+                                     Foreground="{DynamicResource TextPrimary}"/>
                         <RadioButton x:Name="ReturnRadio" Content="退货" GroupName="ImportBusiness"
                                      Margin="24,0,0,0"
-                                     Foreground="{StaticResource TextPrimary}"/>
+                                     Foreground="{DynamicResource TextPrimary}"/>
                     </StackPanel>
                 </StackPanel>
 

@@ -41,6 +41,13 @@ public partial class App : System.Windows.Application
         var logger = AppHost.CreateBootstrapLogger();
         Platform.CrashGuard.Install(logger);
 
+        // ⚠️ 主题必须在**任何窗口之前**定下来（改造清单第 5 批）：
+        // 界面那几百处取色已改成 `{DynamicResource}`，它们**允许**之后再换；
+        // 但先定下来能少闪一下亮色（启动窗最显眼）。放这儿连启动窗
+        // （下面那行）和用途选择窗都是对的颜色。
+        // 机制与「为什么不是改笔刷颜色」见 `Platform/AppTheme.cs` 的类注释。
+        Platform.AppTheme.Start(logger);
+
         // ⚠️ 计时是为了**能回答「启动为什么慢」**：这一条进日志之后，
         // 用户说「打开要等半天」就有数可查，而不是只能靠猜（`AGENTS.md` §6）。
         var startupClock = System.Diagnostics.Stopwatch.StartNew();

@@ -6,7 +6,7 @@
         mc:Ignorable="d"
         Title="清理流水" Height="640" Width="1000" MinWidth="760" MinHeight="420"
         FontFamily="{StaticResource UiFont}"
-        Background="{StaticResource PageBackground}"
+        Background="{DynamicResource PageBackground}"
         WindowStartupLocation="CenterOwner">
     <!--
         ════════════════════════════════════════════════════════════════
@@ -45,9 +45,9 @@
 
         <!-- 表头。⚠️ 五列宽度与下面 ItemTemplate 里那份**必须逐字相同** ——
              两处各改各的，表头就会和内容错开，而那是没人会报、只会觉得「有点歪」的那种错。 -->
-        <Border Grid.Row="1" Background="{StaticResource SurfaceAlt}"
+        <Border Grid.Row="1" Background="{DynamicResource SurfaceAlt}"
                 CornerRadius="{StaticResource RadiusTag}" Padding="12,6"
-                BorderBrush="{StaticResource CardBorder}" BorderThickness="1">
+                BorderBrush="{DynamicResource CardBorder}" BorderThickness="1">
             <Grid>
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="150"/>
@@ -66,7 +66,7 @@
             <TextBlock x:Name="EmptyNote" Margin="18" Visibility="Collapsed"
                        TextWrapping="Wrap" TextAlignment="Center"
                        HorizontalAlignment="Center" VerticalAlignment="Center"
-                       Foreground="{StaticResource TextDisabled}"/>
+                       Foreground="{DynamicResource TextDisabled}"/>
             <ListBox x:Name="LogList" BorderThickness="0" Background="Transparent"
                      HorizontalContentAlignment="Stretch"
                      ScrollViewer.HorizontalScrollBarVisibility="Disabled">
@@ -82,7 +82,7 @@
 
                             <TextBlock Text="{Binding AtText}"
                                        FontFamily="{StaticResource MonoFont}"
-                                       Foreground="{StaticResource TextSecondary}"/>
+                                       Foreground="{DynamicResource TextSecondary}"/>
                             <!-- 单号查不到时这一格写的是「（无单号）」。
                                  ⚠️ 审计里那一行的**原值**（证据 id）挂在整行 tooltip 上 ——
                                  查不到单号时它是唯一能对上号的东西，别删。 -->
@@ -90,12 +90,12 @@
                                        TextTrimming="CharacterEllipsis"
                                        ToolTip="{Binding EvidenceId}"
                                        FontWeight="SemiBold"
-                                       Foreground="{StaticResource TextPrimary}"/>
+                                       Foreground="{DynamicResource TextPrimary}"/>
                             <TextBlock Grid.Column="2" Text="{Binding ActionText}"
-                                       Foreground="{StaticResource TextPrimary}"/>
+                                       Foreground="{DynamicResource TextPrimary}"/>
                             <TextBlock Grid.Column="3" Text="{Binding ReasonText}"
                                        TextWrapping="Wrap"
-                                       Foreground="{StaticResource TextSecondary}"/>
+                                       Foreground="{DynamicResource TextSecondary}"/>
                         </Grid>
                     </DataTemplate>
                 </ListBox.ItemTemplate>
@@ -104,7 +104,7 @@
 
         <TextBlock x:Name="UnreadableNote" Grid.Row="3" Margin="12,8,0,0"
                    Visibility="Collapsed" TextWrapping="Wrap"
-                   Foreground="{StaticResource Warning}"/>
+                   Foreground="{DynamicResource Warning}"/>
 
         <StackPanel Grid.Row="4" Orientation="Horizontal" HorizontalAlignment="Right"
                     Margin="0,12,0,0">

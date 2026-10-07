@@ -36,6 +36,17 @@
 
         ⚠️ 字号（20/14/13/12）是**相对关系**保留原来的，没有绝对标定 ——
         截图 DPI 未知，量不出 pt。做具体窗口时对着图微调。
+
+        ⚠️ **2026-10-07 起，取颜色一律写 DynamicResource，不许再写
+        StaticResource。** 第 5 批要跟随系统切暗色，而
+        StaticResource 在加载那一刻就把值定死 —— 连 `Style` 里的 `Setter` 也一样
+        （实测：换完主题字典，新建控件的 `PrimaryButton` 底色**仍是亮色那支**）。
+        暗色的值在 `VidLog.Desktop.Core/Theme/ThemePalette.cs`，
+        由 `Platform/AppTheme.cs` 在启动时合并成一份覆盖字典。
+        字号 / 圆角 / 字体这些**不随主题变**的仍照旧用 `StaticResource`。
+        （全仓 268 处颜色引用已按此改完；绊线是
+        `ThemePaletteTests.每一处DynamicResource都找得到定义` ——
+        动态资源找不到是**静默不生效**，不像静态资源那样当场就崩。）
         ════════════════════════════════════════════════════════════════
     -->
 
@@ -77,6 +88,16 @@
          低于 WCAG AA 正文档的 4.5:1；压 blue-600 是 **5.17:1**，达标。
          原 `AccentStrong` 连同 `PrimaryButtonStrong` 一并删除（它只服务 3 处）。 -->
     <SolidColorBrush x:Key="Accent" Color="#FF2563EB"/>
+    <!--
+        ⚠️ **`Accent` 与 `AccentSolid` 亮色下同值，暗色下不同** —— 这支是给
+        「当**实心底**用」的地方（主按钮底、开关轨道、TagPill 底），上面会压白字。
+        拆它的理由**不是**好看，是暗色下这两个角色要的值相反：
+        当底必须留住 blue-600（白字 5.17:1，就是 P2 那次裁定保住的那条），
+        当前景压在 slate-800 上只有 2.83:1 —— 连图形要的 3:1 都不到。
+        暗色的两支值见 `VidLog.Desktop.Core/Theme/ThemePalette.cs`。
+        （亮色同值 ⇒ 这次拆分**不改变亮色的任何一个像素**。）
+    -->
+    <SolidColorBrush x:Key="AccentSolid" Color="#FF2563EB"/>
     <!-- 选中卡片底：blue-100。 -->
     <SolidColorBrush x:Key="AccentWeak" Color="#FFDBEAFE"/>
     <!-- 主按钮禁用态：blue-500 兑白，图上 `_31` 的「下一步」。 -->
@@ -104,6 +125,20 @@
         ⚠️ 它压在 `VideoBackground` 上，两者相差只有一档；换底色时这块要跟着复核。
     -->
     <SolidColorBrush x:Key="OverlayPillBackground" Color="#CC1E293B"/>
+
+    <!--
+        交互叠加层：悬停 / 按下时**叠在底色上**的一层半透明色。
+
+        ⚠️ 原来是写死在两个 `ControlTemplate` 里的字面量（`#1F000000` 这类），
+        依据是「叠一层半透明黑，对任何底色都成立」—— 那正是它能一套模板服务
+        两套蓝的原因（见 `PrimaryButton` 上面那段）。
+        **但这条规律在暗色下不成立**：半透明黑压在深底上等于没压，悬停与按下
+        会**看不见**。所以提成资源，暗色那边换成半透明白
+        （见 `ThemePalette.Dark`）。`HoverOverlaySoft` 是次级按钮悬停那支更淡的。
+    -->
+    <SolidColorBrush x:Key="HoverOverlay" Color="#1F000000"/>
+    <SolidColorBrush x:Key="HoverOverlaySoft" Color="#0F000000"/>
+    <SolidColorBrush x:Key="PressedOverlay" Color="#33000000"/>
 
     <!--
         投影色。`DropShadowEffect.Color` 要的是 `Color` 而不是 `Brush`，所以这条
@@ -154,7 +189,7 @@
         <Setter Property="FontFamily" Value="{StaticResource UiFont}"/>
         <Setter Property="FontSize" Value="20"/>
         <Setter Property="FontWeight" Value="SemiBold"/>
-        <Setter Property="Foreground" Value="{StaticResource TextPrimary}"/>
+        <Setter Property="Foreground" Value="{DynamicResource TextPrimary}"/>
         <Setter Property="VerticalAlignment" Value="Center"/>
     </Style>
 
@@ -162,14 +197,14 @@
         <Setter Property="FontFamily" Value="{StaticResource UiFont}"/>
         <Setter Property="FontSize" Value="14"/>
         <Setter Property="FontWeight" Value="SemiBold"/>
-        <Setter Property="Foreground" Value="{StaticResource TextPrimary}"/>
+        <Setter Property="Foreground" Value="{DynamicResource TextPrimary}"/>
         <Setter Property="Margin" Value="0,0,0,8"/>
     </Style>
 
     <Style x:Key="Body" TargetType="TextBlock">
         <Setter Property="FontFamily" Value="{StaticResource UiFont}"/>
         <Setter Property="FontSize" Value="13"/>
-        <Setter Property="Foreground" Value="{StaticResource TextPrimary}"/>
+        <Setter Property="Foreground" Value="{DynamicResource TextPrimary}"/>
         <Setter Property="TextWrapping" Value="Wrap"/>
     </Style>
 
@@ -177,7 +212,7 @@
     <Style x:Key="Caption" TargetType="TextBlock">
         <Setter Property="FontFamily" Value="{StaticResource UiFont}"/>
         <Setter Property="FontSize" Value="12"/>
-        <Setter Property="Foreground" Value="{StaticResource TextSecondary}"/>
+        <Setter Property="Foreground" Value="{DynamicResource TextSecondary}"/>
         <Setter Property="TextWrapping" Value="Wrap"/>
     </Style>
 
@@ -214,8 +249,8 @@
 
     <!-- ── 卡片 ──────────────────────────────────────────────────── -->
     <Style x:Key="Card" TargetType="Border">
-        <Setter Property="Background" Value="{StaticResource Surface}"/>
-        <Setter Property="BorderBrush" Value="{StaticResource CardBorder}"/>
+        <Setter Property="Background" Value="{DynamicResource Surface}"/>
+        <Setter Property="BorderBrush" Value="{DynamicResource CardBorder}"/>
         <Setter Property="BorderThickness" Value="1"/>
         <Setter Property="CornerRadius" Value="{StaticResource RadiusCard}"/>
         <Setter Property="Padding" Value="16"/>
@@ -237,7 +272,7 @@
         <Setter Property="FontFamily" Value="{StaticResource UiFont}"/>
         <Setter Property="FontSize" Value="13"/>
         <Setter Property="Foreground" Value="White"/>
-        <Setter Property="Background" Value="{StaticResource Accent}"/>
+        <Setter Property="Background" Value="{DynamicResource AccentSolid}"/>
         <Setter Property="Padding" Value="18,8"/>
         <Setter Property="Cursor" Value="Hand"/>
         <Setter Property="Template">
@@ -253,13 +288,13 @@
                     </Border>
                     <ControlTemplate.Triggers>
                         <Trigger Property="IsMouseOver" Value="True">
-                            <Setter TargetName="Overlay" Property="Background" Value="#1F000000"/>
+                            <Setter TargetName="Overlay" Property="Background" Value="{DynamicResource HoverOverlay}"/>
                         </Trigger>
                         <Trigger Property="IsPressed" Value="True">
-                            <Setter TargetName="Overlay" Property="Background" Value="#33000000"/>
+                            <Setter TargetName="Overlay" Property="Background" Value="{DynamicResource PressedOverlay}"/>
                         </Trigger>
                         <Trigger Property="IsEnabled" Value="False">
-                            <Setter Property="Background" Value="{StaticResource AccentDisabled}"/>
+                            <Setter Property="Background" Value="{DynamicResource AccentDisabled}"/>
                             <Setter Property="Foreground" Value="White"/>
                             <Setter Property="Cursor" Value="Arrow"/>
                         </Trigger>
@@ -276,15 +311,15 @@
     <Style x:Key="SecondaryButton" TargetType="Button">
         <Setter Property="FontFamily" Value="{StaticResource UiFont}"/>
         <Setter Property="FontSize" Value="13"/>
-        <Setter Property="Foreground" Value="{StaticResource TextPrimary}"/>
-        <Setter Property="Background" Value="{StaticResource Surface}"/>
+        <Setter Property="Foreground" Value="{DynamicResource TextPrimary}"/>
+        <Setter Property="Background" Value="{DynamicResource Surface}"/>
         <Setter Property="Padding" Value="18,8"/>
         <Setter Property="Cursor" Value="Hand"/>
         <Setter Property="Template">
             <Setter.Value>
                 <ControlTemplate TargetType="Button">
                     <Border Background="{TemplateBinding Background}"
-                            BorderBrush="{StaticResource BorderStrong}" BorderThickness="1"
+                            BorderBrush="{DynamicResource BorderStrong}" BorderThickness="1"
                             CornerRadius="{StaticResource RadiusControl}" SnapsToDevicePixels="True">
                         <Grid>
                             <Border x:Name="Overlay" Background="Transparent" CornerRadius="{StaticResource RadiusControl}"/>
@@ -294,15 +329,15 @@
                     </Border>
                     <ControlTemplate.Triggers>
                         <Trigger Property="IsMouseOver" Value="True">
-                            <Setter TargetName="Overlay" Property="Background" Value="#0F000000"/>
-                            <Setter Property="Background" Value="{StaticResource SurfaceMuted}"/>
+                            <Setter TargetName="Overlay" Property="Background" Value="{DynamicResource HoverOverlaySoft}"/>
+                            <Setter Property="Background" Value="{DynamicResource SurfaceMuted}"/>
                         </Trigger>
                         <Trigger Property="IsPressed" Value="True">
-                            <Setter TargetName="Overlay" Property="Background" Value="#1F000000"/>
+                            <Setter TargetName="Overlay" Property="Background" Value="{DynamicResource HoverOverlay}"/>
                         </Trigger>
                         <Trigger Property="IsEnabled" Value="False">
-                            <Setter Property="Foreground" Value="{StaticResource TextDisabled}"/>
-                            <Setter Property="Background" Value="{StaticResource SurfaceMuted}"/>
+                            <Setter Property="Foreground" Value="{DynamicResource TextDisabled}"/>
+                            <Setter Property="Background" Value="{DynamicResource SurfaceMuted}"/>
                             <Setter Property="Cursor" Value="Arrow"/>
                         </Trigger>
                     </ControlTemplate.Triggers>
@@ -316,20 +351,20 @@
         ⚠️ 红色本身是从 Tailwind 取的同源色（图上没有红），见上面 `Danger` 的说明。
     -->
     <Style x:Key="DangerButton" TargetType="Button" BasedOn="{StaticResource PrimaryButton}">
-        <Setter Property="Background" Value="{StaticResource Danger}"/>
+        <Setter Property="Background" Value="{DynamicResource Danger}"/>
     </Style>
 
     <!--
         绿色主按钮（主窗那颗【开始录制】）。
 
         ⚠️ **它存在的唯一理由是「禁用时得看得灰」**：此前那颗按钮把底色写成
-        `Background="{StaticResource Success}"` 的**本地值**，而本地值压过
+        `Background="{DynamicResource Success}"` 的**本地值**，而本地值压过
         `PrimaryButton` 里 `IsEnabled=False` 的触发器 —— 于是空单号时它是一颗
         满绿的按钮，点下去毫无反应（2026-10-02 实测报上来的）。
         底色改由**样式**给，触发器就压得住了。
     -->
     <Style x:Key="SuccessButton" TargetType="Button" BasedOn="{StaticResource PrimaryButton}">
-        <Setter Property="Background" Value="{StaticResource Success}"/>
+        <Setter Property="Background" Value="{DynamicResource Success}"/>
     </Style>
 
     <!--
@@ -353,7 +388,7 @@
                     <ControlTemplate.Triggers>
                         <Trigger Property="IsMouseOver" Value="True">
                             <Setter TargetName="Bd" Property="Background"
-                                    Value="{StaticResource SurfaceAlt}"/>
+                                    Value="{DynamicResource SurfaceAlt}"/>
                         </Trigger>
                         <Trigger Property="IsEnabled" Value="False">
                             <Setter Property="Opacity" Value="0.4"/>
@@ -377,7 +412,7 @@
     <Style x:Key="NavItem" TargetType="RadioButton">
         <Setter Property="FontFamily" Value="{StaticResource UiFont}"/>
         <Setter Property="FontSize" Value="13"/>
-        <Setter Property="Foreground" Value="{StaticResource TextSecondary}"/>
+        <Setter Property="Foreground" Value="{DynamicResource TextSecondary}"/>
         <Setter Property="Cursor" Value="Hand"/>
         <Setter Property="Margin" Value="8,2"/>
         <Setter Property="Template">
@@ -391,14 +426,14 @@
                     <ControlTemplate.Triggers>
                         <Trigger Property="IsMouseOver" Value="True">
                             <Setter TargetName="Bd" Property="Background"
-                                    Value="{StaticResource SurfaceAlt}"/>
+                                    Value="{DynamicResource SurfaceAlt}"/>
                         </Trigger>
                         <Trigger Property="IsChecked" Value="True">
                             <Setter TargetName="Bd" Property="Background"
-                                    Value="{StaticResource Surface}"/>
+                                    Value="{DynamicResource Surface}"/>
                             <Setter TargetName="Bd" Property="BorderBrush"
-                                    Value="{StaticResource CardBorder}"/>
-                            <Setter Property="Foreground" Value="{StaticResource Accent}"/>
+                                    Value="{DynamicResource CardBorder}"/>
+                            <Setter Property="Foreground" Value="{DynamicResource Accent}"/>
                             <Setter Property="FontWeight" Value="SemiBold"/>
                         </Trigger>
                     </ControlTemplate.Triggers>
@@ -418,14 +453,14 @@
             <Setter.Value>
                 <ControlTemplate TargetType="ToggleButton">
                     <Border x:Name="Track" Width="40" Height="22" CornerRadius="11"
-                            Background="{StaticResource BorderStrong}" SnapsToDevicePixels="True">
+                            Background="{DynamicResource BorderStrong}" SnapsToDevicePixels="True">
                         <Ellipse x:Name="Knob" Width="16" Height="16" Fill="White"
                                  HorizontalAlignment="Left" Margin="3,0,0,0"/>
                     </Border>
                     <ControlTemplate.Triggers>
                         <Trigger Property="IsChecked" Value="True">
                             <Setter TargetName="Track" Property="Background"
-                                    Value="{StaticResource Accent}"/>
+                                    Value="{DynamicResource AccentSolid}"/>
                             <Setter TargetName="Knob" Property="HorizontalAlignment" Value="Right"/>
                             <Setter TargetName="Knob" Property="Margin" Value="0,0,3,0"/>
                         </Trigger>

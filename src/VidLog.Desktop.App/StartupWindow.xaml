@@ -5,7 +5,7 @@
         Width="400" SizeToContent="Height"
         WindowStyle="None" ResizeMode="NoResize"
         WindowStartupLocation="CenterScreen"
-        Background="{StaticResource Surface}"
+        Background="{DynamicResource Surface}"
         ShowInTaskbar="True">
     <!--
         ⚠️ 这个窗口存在的**唯一理由**是装配期有 4–6 秒，而在此之前一个窗口都没有
@@ -19,7 +19,7 @@
         ⚠️ 那句话刻意说得**含糊**（不写死「正在检测摄像头」）：首次运行时程序其实在
         等用户选用途，写死会当场说一句假话。
     -->
-    <Border BorderBrush="{StaticResource CardBorder}" BorderThickness="1">
+    <Border BorderBrush="{DynamicResource CardBorder}" BorderThickness="1">
         <StackPanel Margin="28,24,28,24">
             <TextBlock Text="VidLog 工位录像" Style="{StaticResource PageTitle}"/>
             <TextBlock Margin="0,6,0,0" Style="{StaticResource Caption}"
@@ -28,8 +28,8 @@
                  进度条自己在动，用户一眼就知道程序还活着。 -->
             <ProgressBar Margin="0,18,0,0" Height="4" IsIndeterminate="True"
                          BorderThickness="0"
-                         Foreground="{StaticResource Accent}"
-                         Background="{StaticResource SurfaceMuted}"/>
+                         Foreground="{DynamicResource AccentSolid}"
+                         Background="{DynamicResource SurfaceMuted}"/>
         </StackPanel>
     </Border>
 </Window>

@@ -7,7 +7,7 @@
         mc:Ignorable="d"
         Title="VidLog · 工位录像" Height="780" Width="1320" MinWidth="1100" MinHeight="660"
         FontFamily="{StaticResource UiFont}"
-        Background="{StaticResource PageBackground}"
+        Background="{DynamicResource PageBackground}"
         Closing="OnClosing">
     <!--
         ════════════════════════════════════════════════════════════════
@@ -73,8 +73,8 @@
         </Grid.RowDefinitions>
 
         <!-- ══ 顶栏 ════════════════════════════════════════════════════ -->
-        <Border Grid.Row="0" Background="{StaticResource Surface}"
-                BorderBrush="{StaticResource CardBorder}" BorderThickness="0,0,0,1"
+        <Border Grid.Row="0" Background="{DynamicResource Surface}"
+                BorderBrush="{DynamicResource CardBorder}" BorderThickness="0,0,0,1"
                 Padding="16,12">
             <Grid>
                 <Grid.ColumnDefinitions>
@@ -107,15 +107,15 @@
                      （WPF 没有那个属性），所以它必须 `IsHitTestVisible="False"`
                      才不会把点击吃掉。 -->
                 <Grid Grid.Column="1" Margin="12,0">
-                    <TextBox x:Name="WaybillBox" Background="{StaticResource PageBackground}"
-                             BorderBrush="{StaticResource BorderStrong}" BorderThickness="1"
+                    <TextBox x:Name="WaybillBox" Background="{DynamicResource PageBackground}"
+                             BorderBrush="{DynamicResource BorderStrong}" BorderThickness="1"
                              Padding="14,9" FontSize="15" IsEnabled="False"
                              VerticalContentAlignment="Center"
                              TextChanged="OnWaybillChanged"/>
                     <TextBlock Text="支持后台扫码，也可手动输入"
                                Margin="16,0,0,0" IsHitTestVisible="False"
                                VerticalAlignment="Center"
-                               Foreground="{StaticResource TextDisabled}" FontSize="15">
+                               Foreground="{DynamicResource TextDisabled}" FontSize="15">
                         <TextBlock.Style>
                             <Style TargetType="TextBlock">
                                 <Setter Property="Visibility" Value="Collapsed"/>
@@ -132,7 +132,7 @@
                             HorizontalAlignment="Right" VerticalAlignment="Center"
                             Margin="0,0,8,0" Width="28" Height="28"
                             Cursor="Hand" Background="Transparent" BorderThickness="0"
-                            Foreground="{StaticResource TextSecondary}"
+                            Foreground="{DynamicResource TextSecondary}"
                             Click="OnClearWaybill">
                         <Button.Style>
                             <Style TargetType="Button">
@@ -183,7 +183,7 @@
                     <RowDefinition Height="Auto"/>
                 </Grid.RowDefinitions>
 
-                <Border Grid.Row="0" Background="{StaticResource VideoBackground}"
+                <Border Grid.Row="0" Background="{DynamicResource VideoBackground}"
                         CornerRadius="{StaticResource RadiusCard}">
                     <Grid>
                         <!-- 取景画面（§62）。帧从**两个**源头来，但都投进同一只单槽：
@@ -209,8 +209,8 @@
                         <StackPanel x:Name="PreviewPlaceholder"
                                     HorizontalAlignment="Center" VerticalAlignment="Center">
                             <Grid Width="44" Height="44" HorizontalAlignment="Center">
-                                <Ellipse Stroke="{StaticResource TextDisabled}" StrokeThickness="1.6"/>
-                                <Path Data="M 18,15 L 30,22 L 18,29 Z" Fill="{StaticResource TextDisabled}"/>
+                                <Ellipse Stroke="{DynamicResource TextDisabled}" StrokeThickness="1.6"/>
+                                <Path Data="M 18,15 L 30,22 L 18,29 Z" Fill="{DynamicResource TextDisabled}"/>
                             </Grid>
                             <!-- ⚠️ 这句原来是「实时预览未接入」—— 画面接上之后它就成了假话
                                  （空框与「坏了」「还没开始」三种情况本来就长得一样，
@@ -221,7 +221,7 @@
                                        Foreground="White"/>
                             <TextBlock x:Name="PreviewHintText" Margin="0,6,0,0"
                                        MaxWidth="520" TextAlignment="Center" TextWrapping="Wrap"
-                                       Foreground="{StaticResource TextDisabled}" Text=""/>
+                                       Foreground="{DynamicResource TextDisabled}" Text=""/>
                         </StackPanel>
                     </Grid>
                 </Border>
@@ -232,12 +232,12 @@
                      ⚠️ 它**不打断录制** —— 只是页面里的一条，不弹窗、不挡取景。 -->
                 <Border x:Name="DurationPromptPanel" Grid.Row="1" Margin="0,10,0,0"
                         Padding="14,10" CornerRadius="{StaticResource RadiusControl}"
-                        Background="{StaticResource WarningSurface}"
-                        BorderBrush="{StaticResource Warning}" BorderThickness="1"
+                        Background="{DynamicResource WarningSurface}"
+                        BorderBrush="{DynamicResource Warning}" BorderThickness="1"
                         Visibility="Collapsed">
                     <StackPanel Orientation="Horizontal">
                         <TextBlock VerticalAlignment="Center" FontWeight="SemiBold"
-                                   Foreground="{StaticResource TextPrimary}"
+                                   Foreground="{DynamicResource TextPrimary}"
                                    Text="录制时间即将超时，是否需要停止录制？"/>
                         <Button x:Name="DurationStopButton" Content="停止" Padding="16,5"
                                 Margin="16,0,0,0"
@@ -251,8 +251,8 @@
                 </Border>
 
                 <!-- 底部统计条 -->
-                <Border Grid.Row="2" Background="{StaticResource Surface}"
-                        BorderBrush="{StaticResource CardBorder}" BorderThickness="1"
+                <Border Grid.Row="2" Background="{DynamicResource Surface}"
+                        BorderBrush="{DynamicResource CardBorder}" BorderThickness="1"
                         CornerRadius="{StaticResource RadiusCard}" Padding="16,10" Margin="0,10,0,0">
                     <Grid>
                         <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
@@ -291,8 +291,8 @@
             </Grid>
 
             <!-- ── 右：本机录制动态 ───────────────────────────────── -->
-            <Border Grid.Column="1" Background="{StaticResource Surface}"
-                    BorderBrush="{StaticResource CardBorder}" BorderThickness="1,0,0,0">
+            <Border Grid.Column="1" Background="{DynamicResource Surface}"
+                    BorderBrush="{DynamicResource CardBorder}" BorderThickness="1,0,0,0">
                 <ScrollViewer VerticalScrollBarVisibility="Auto" Padding="16">
                     <StackPanel>
 
@@ -319,7 +319,7 @@
                                            TextWrapping="Wrap"/>
                                 <Border Background="White" Padding="8" Margin="0,8,0,0"
                                         CornerRadius="{StaticResource RadiusControl}" HorizontalAlignment="Center"
-                                        BorderBrush="{StaticResource CardBorder}"
+                                        BorderBrush="{DynamicResource CardBorder}"
                                         BorderThickness="1">
                                     <Image x:Name="BusinessBarcodeImage" Height="64"
                                            Stretch="Fill"
@@ -334,13 +334,13 @@
 
                         <!-- 录制状态。⚠️ 它原来在左侧竖导航里，那栏没了之后
                              必须有新家 —— 不然「现在到底在不在录」就没地方看了。 -->
-                        <Border Background="{StaticResource SurfaceMuted}"
-                                BorderBrush="{StaticResource CardBorder}" BorderThickness="1"
+                        <Border Background="{DynamicResource SurfaceMuted}"
+                                BorderBrush="{DynamicResource CardBorder}" BorderThickness="1"
                                 CornerRadius="{StaticResource RadiusControl}" Padding="12,10">
                             <StackPanel>
                                 <TextBlock x:Name="NavRecordingText" FontSize="13"
                                            FontWeight="SemiBold"
-                                           Foreground="{StaticResource TextSecondary}"
+                                           Foreground="{DynamicResource TextSecondary}"
                                            Text="空闲"/>
                                 <TextBlock x:Name="RecordingStatus" Style="{StaticResource Caption}"
                                            Margin="0,6,0,0" TextWrapping="Wrap"/>
@@ -444,8 +444,8 @@
 
                         <!-- 待办：没有内容时整张卡藏起来，不摆一个「0 条」占地方 -->
                         <Border x:Name="OvTodoCard" Margin="0,14,0,0" Padding="12,10"
-                                CornerRadius="{StaticResource RadiusControl}" Background="{StaticResource WarningSurface}"
-                                BorderBrush="{StaticResource Warning}" BorderThickness="1"
+                                CornerRadius="{StaticResource RadiusControl}" Background="{DynamicResource WarningSurface}"
+                                BorderBrush="{DynamicResource Warning}" BorderThickness="1"
                                 Visibility="Collapsed">
                             <StackPanel>
                                 <TextBlock Style="{StaticResource SectionTitle}" Text="需要注意"/>
@@ -484,7 +484,7 @@
 
                         <TextBlock Style="{StaticResource SectionTitle}" Text="动态"/>
                         <TextBlock x:Name="NoticesText" TextWrapping="Wrap"
-                                   Foreground="{StaticResource TextSecondary}"/>
+                                   Foreground="{DynamicResource TextSecondary}"/>
 
                         <!-- ══ 扫码开始录像（图 `_35` 右栏最底下）══════════════
                              ⚠️ 它等于按一下顶栏那颗【开始录制】（`StartWork()`），
@@ -500,7 +500,7 @@
                                            Text="等同于按一下上面的【开始录制】；之后扫面单才会开录。（那一颗要求单号框里已经有单号。）"/>
                                 <Border Background="White" Padding="8" Margin="0,8,0,0"
                                         CornerRadius="{StaticResource RadiusControl}" HorizontalAlignment="Center"
-                                        BorderBrush="{StaticResource CardBorder}"
+                                        BorderBrush="{DynamicResource CardBorder}"
                                         BorderThickness="1">
                                     <Image x:Name="RecordBarcodeImage" Height="64"
                                            Stretch="Fill"
@@ -535,8 +535,8 @@
         </Grid.RowDefinitions>
 
         <!-- ── 顶栏：机器名 + 地址 + 切换用途 ───────────────────── -->
-        <Border Grid.Row="0" Background="{StaticResource Surface}"
-                BorderBrush="{StaticResource CardBorder}" BorderThickness="0,0,0,1"
+        <Border Grid.Row="0" Background="{DynamicResource Surface}"
+                BorderBrush="{DynamicResource CardBorder}" BorderThickness="0,0,0,1"
                 Padding="20,16">
             <Grid>
                 <Grid.ColumnDefinitions>
@@ -548,11 +548,11 @@
                     <StackPanel Orientation="Horizontal">
                         <TextBlock x:Name="BackupMachineText" FontSize="22"
                                    FontWeight="Bold"
-                                   Foreground="{StaticResource TextPrimary}" Text="电脑"/>
+                                   Foreground="{DynamicResource TextPrimary}" Text="电脑"/>
                         <!-- 图上是灰字、与机器名同一行的**下沿对齐** -->
                         <TextBlock x:Name="BackupAddressText" Margin="12,0,0,0"
                                    VerticalAlignment="Bottom" FontSize="14"
-                                   Foreground="{StaticResource TextSecondary}" Text=""/>
+                                   Foreground="{DynamicResource TextSecondary}" Text=""/>
                     </StackPanel>
                     <TextBlock x:Name="BackupRoleText" Style="{StaticResource Caption}"
                                FontSize="13" Margin="0,8,0,0"/>
@@ -571,7 +571,7 @@
                         Click="OnSwitchRole">
                     <StackPanel Orientation="Horizontal">
                         <!-- ⇄：两条带箭头的反向横线，内联矢量 -->
-                        <Path Stroke="{StaticResource TextPrimary}" StrokeThickness="1.5"
+                        <Path Stroke="{DynamicResource TextPrimary}" StrokeThickness="1.5"
                               StrokeStartLineCap="Round" StrokeEndLineCap="Round"
                               StrokeLineJoin="Round" VerticalAlignment="Center"
                               Data="M 0,4.5 L 13,4.5 M 10,1.5 L 13,4.5 L 10,7.5
@@ -596,7 +596,7 @@
                         <!-- 手机 / 电脑备份 -->
                         <Grid>
                             <StackPanel Orientation="Horizontal">
-                                <Path Stroke="{StaticResource TextSecondary}" StrokeThickness="1.4"
+                                <Path Stroke="{DynamicResource TextSecondary}" StrokeThickness="1.4"
                                       StrokeStartLineCap="Round" StrokeEndLineCap="Round"
                                       VerticalAlignment="Center"
                                       Data="M 0,5.5 A 9,9 0 0 1 14,5.5
@@ -609,7 +609,7 @@
                             <!-- 图上「已就绪」是绿的、右对齐 -->
                             <TextBlock x:Name="BackupDeviceTag" HorizontalAlignment="Right"
                                        VerticalAlignment="Center" FontSize="12"
-                                       Foreground="{StaticResource Success}" Text="已就绪"/>
+                                       Foreground="{DynamicResource Success}" Text="已就绪"/>
                         </Grid>
                         <TextBlock x:Name="BackupDeviceText" Style="{StaticResource Caption}"
                                    FontSize="13" Margin="0,9,0,0" Text="暂无手机/电脑设备"/>
@@ -619,7 +619,7 @@
                         <!-- 订单联动 -->
                         <Grid>
                             <StackPanel Orientation="Horizontal">
-                                <Path Stroke="{StaticResource TextSecondary}" StrokeThickness="1.4"
+                                <Path Stroke="{DynamicResource TextSecondary}" StrokeThickness="1.4"
                                       StrokeStartLineCap="Round" StrokeEndLineCap="Round"
                                       VerticalAlignment="Center"
                                       Data="M 2,7 A 5,5 0 1 1 7,12 L 2,12 L 2,7 Z"/>
@@ -628,7 +628,7 @@
                             </StackPanel>
                             <TextBlock x:Name="BackupOrderTag" HorizontalAlignment="Right"
                                        VerticalAlignment="Center" FontSize="12"
-                                       Foreground="{StaticResource Warning}" Text="暂无设备"/>
+                                       Foreground="{DynamicResource Warning}" Text="暂无设备"/>
                         </Grid>
                         <TextBlock x:Name="BackupOrderText" Style="{StaticResource Caption}"
                                    FontSize="13" Margin="0,9,0,0" Text="暂无订单接收设备"/>
@@ -650,7 +650,7 @@
                             Style="{StaticResource SecondaryButton}" Padding="16,12"
                             Click="OnEnroll">
                         <StackPanel Orientation="Horizontal">
-                            <Path Stroke="{StaticResource Accent}" StrokeThickness="1.4"
+                            <Path Stroke="{DynamicResource Accent}" StrokeThickness="1.4"
                                   StrokeStartLineCap="Round" StrokeEndLineCap="Round"
                                   VerticalAlignment="Center"
                                   Data="M 0,5.5 A 9,9 0 0 1 14,5.5
@@ -665,7 +665,7 @@
                             Style="{StaticResource SecondaryButton}" Padding="16,12"
                             Click="OnOpenPlaybackPage">
                         <StackPanel Orientation="Horizontal">
-                            <Path Stroke="{StaticResource Accent}" StrokeThickness="1.4"
+                            <Path Stroke="{DynamicResource Accent}" StrokeThickness="1.4"
                                   StrokeLineJoin="Round" VerticalAlignment="Center"
                                   Data="M 2,1 L 13,6.5 L 2,12 Z"/>
                             <TextBlock Text="网页回放" Margin="9,0,0,0"/>
@@ -682,7 +682,7 @@
                             Style="{StaticResource SecondaryButton}" Padding="16,12"
                             Click="OnInstallOrderLink">
                         <StackPanel Orientation="Horizontal">
-                            <Path Stroke="{StaticResource Accent}" StrokeThickness="1.4"
+                            <Path Stroke="{DynamicResource Accent}" StrokeThickness="1.4"
                                   StrokeStartLineCap="Round" StrokeEndLineCap="Round"
                                   VerticalAlignment="Center"
                                   Data="M 2,7 A 5,5 0 1 1 7,12 L 2,12 L 2,7 Z"/>
@@ -694,7 +694,7 @@
                             Style="{StaticResource SecondaryButton}" Padding="16,12"
                             Click="OnSendTestOrder">
                         <StackPanel Orientation="Horizontal">
-                            <Path Stroke="{StaticResource Accent}" StrokeThickness="1.4"
+                            <Path Stroke="{DynamicResource Accent}" StrokeThickness="1.4"
                                   StrokeStartLineCap="Round" StrokeEndLineCap="Round"
                                   StrokeLineJoin="Round" VerticalAlignment="Center"
                                   Data="M 1,7.5 L 12,1.5 L 12,13.5 Z M 1,1.5 L 1,13.5"/>
@@ -711,7 +711,7 @@
                             Click="OnOpenMultiView"
                             ToolTip="看每台手机现在的实时画面。手机端在「设置 → 实时共享」里打开之后才会出现在这里。">
                         <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
-                            <Path Stroke="{StaticResource Accent}" StrokeThickness="1.4"
+                            <Path Stroke="{DynamicResource Accent}" StrokeThickness="1.4"
                                   StrokeLineJoin="Round" VerticalAlignment="Center"
                                   Data="M 0,2 L 7,2 L 7,10 L 0,10 Z M 7,4.5 L 11,2 L 11,10 L 7,7.5 Z"/>
                             <TextBlock Text="实时多画面" Margin="9,0,0,0"/>
@@ -722,29 +722,29 @@
         </ScrollViewer>
 
         <!-- ── 底栏：两个计数 + 三颗入口 ─────────────────────────── -->
-        <Border Grid.Row="2" Background="{StaticResource Surface}"
-                BorderBrush="{StaticResource CardBorder}" BorderThickness="0,1,0,0"
+        <Border Grid.Row="2" Background="{DynamicResource Surface}"
+                BorderBrush="{DynamicResource CardBorder}" BorderThickness="0,1,0,0"
                 Padding="20,12">
             <Grid>
                 <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
                     <TextBlock Text="今日备份" FontSize="14"
-                               Foreground="{StaticResource TextSecondary}"
+                               Foreground="{DynamicResource TextSecondary}"
                                VerticalAlignment="Center"/>
                     <TextBlock x:Name="BackupTodayText" Text="0" Margin="8,0,0,0"
                                FontSize="22" FontWeight="Bold"
-                               Foreground="{StaticResource Accent}"/>
+                               Foreground="{DynamicResource Accent}"/>
                     <TextBlock Text="个" FontSize="14" Margin="4,0,0,0"
-                               Foreground="{StaticResource TextSecondary}"
+                               Foreground="{DynamicResource TextSecondary}"
                                VerticalAlignment="Center"/>
 
                     <TextBlock Text="累计备份" FontSize="14" Margin="26,0,0,0"
-                               Foreground="{StaticResource TextSecondary}"
+                               Foreground="{DynamicResource TextSecondary}"
                                VerticalAlignment="Center"/>
                     <TextBlock x:Name="BackupTotalText" Text="0" Margin="8,0,0,0"
                                FontSize="22" FontWeight="Bold"
-                               Foreground="{StaticResource Accent}"/>
+                               Foreground="{DynamicResource Accent}"/>
                     <TextBlock Text="个" FontSize="14" Margin="4,0,0,0"
-                               Foreground="{StaticResource TextSecondary}"
+                               Foreground="{DynamicResource TextSecondary}"
                                VerticalAlignment="Center"/>
                 </StackPanel>
 
@@ -772,8 +772,8 @@
          ⚠️ 没有分隔符点心：点太浅（`CardBorder` 压在 `Surface` 上几乎看不见），
             改成左边距 18 —— 状态栏本来就该是几段各自独立的文字。
          ════════════════════════════════════════════════════════════ -->
-    <Border Grid.Row="1" Background="{StaticResource Surface}"
-            BorderBrush="{StaticResource CardBorder}" BorderThickness="0,1,0,0"
+    <Border Grid.Row="1" Background="{DynamicResource Surface}"
+            BorderBrush="{DynamicResource CardBorder}" BorderThickness="0,1,0,0"
             Padding="16,7">
         <Grid>
             <StackPanel Orientation="Horizontal" VerticalAlignment="Center">

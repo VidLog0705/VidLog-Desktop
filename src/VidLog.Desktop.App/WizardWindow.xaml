@@ -7,7 +7,7 @@
         mc:Ignorable="d"
         Title="电脑录像配置向导" Height="685" Width="900" MinWidth="820" MinHeight="620"
         FontFamily="{StaticResource UiFont}"
-        Background="{StaticResource PageBackground}"
+        Background="{DynamicResource PageBackground}"
         WindowStartupLocation="CenterOwner"
         Closing="OnClosing"
         PreviewKeyDown="OnPreviewKeyDown">
@@ -38,7 +38,7 @@
             <Setter Property="FontFamily" Value="{StaticResource UiFont}"/>
             <Setter Property="FontSize" Value="20"/>
             <Setter Property="FontWeight" Value="Bold"/>
-            <Setter Property="Foreground" Value="{StaticResource TextPrimary}"/>
+            <Setter Property="Foreground" Value="{DynamicResource TextPrimary}"/>
         </Style>
 
         <!--
@@ -50,7 +50,7 @@
         <Style x:Key="WizardStep" TargetType="RadioButton">
             <Setter Property="FontFamily" Value="{StaticResource UiFont}"/>
             <Setter Property="FontSize" Value="13"/>
-            <Setter Property="Foreground" Value="{StaticResource TextPrimary}"/>
+            <Setter Property="Foreground" Value="{DynamicResource TextPrimary}"/>
             <Setter Property="Cursor" Value="Hand"/>
             <Setter Property="Template">
                 <Setter.Value>
@@ -62,10 +62,10 @@
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsMouseOver" Value="True">
                                 <Setter TargetName="Bd" Property="Background"
-                                        Value="{StaticResource SurfaceAlt}"/>
+                                        Value="{DynamicResource SurfaceAlt}"/>
                             </Trigger>
                             <Trigger Property="IsChecked" Value="True">
-                                <Setter Property="Foreground" Value="{StaticResource Accent}"/>
+                                <Setter Property="Foreground" Value="{DynamicResource Accent}"/>
                                 <Setter Property="FontWeight" Value="SemiBold"/>
                             </Trigger>
                         </ControlTemplate.Triggers>
@@ -85,8 +85,8 @@
             <Setter Property="Template">
                 <Setter.Value>
                     <ControlTemplate TargetType="RadioButton">
-                        <Border x:Name="Bd" Background="{StaticResource Surface}"
-                                BorderBrush="{StaticResource CardBorder}" BorderThickness="1"
+                        <Border x:Name="Bd" Background="{DynamicResource Surface}"
+                                BorderBrush="{DynamicResource CardBorder}" BorderThickness="1"
                                 CornerRadius="8" Padding="15,12" SnapsToDevicePixels="True">
                             <Grid>
                                 <Grid.ColumnDefinitions>
@@ -95,7 +95,7 @@
                                 </Grid.ColumnDefinitions>
                                 <Grid Grid.Column="0" Width="16" Height="16"
                                       Margin="0,2,12,0" VerticalAlignment="Top">
-                                    <Ellipse x:Name="Ring" Stroke="{StaticResource BorderStrong}"
+                                    <Ellipse x:Name="Ring" Stroke="{DynamicResource BorderStrong}"
                                              StrokeThickness="2" Fill="Transparent"/>
                                     <Ellipse x:Name="Dot" Width="7" Height="7" Fill="Transparent"/>
                                 </Grid>
@@ -105,17 +105,17 @@
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsMouseOver" Value="True">
                                 <Setter TargetName="Bd" Property="BorderBrush"
-                                        Value="{StaticResource BorderStrong}"/>
+                                        Value="{DynamicResource BorderStrong}"/>
                             </Trigger>
                             <Trigger Property="IsChecked" Value="True">
                                 <Setter TargetName="Bd" Property="BorderBrush"
-                                        Value="{StaticResource Accent}"/>
+                                        Value="{DynamicResource Accent}"/>
                                 <Setter TargetName="Bd" Property="BorderThickness" Value="2"/>
                                 <Setter TargetName="Bd" Property="Padding" Value="14,11"/>
                                 <Setter TargetName="Ring" Property="Stroke"
-                                        Value="{StaticResource Accent}"/>
+                                        Value="{DynamicResource Accent}"/>
                                 <Setter TargetName="Dot" Property="Fill"
-                                        Value="{StaticResource Accent}"/>
+                                        Value="{DynamicResource Accent}"/>
                             </Trigger>
                         </ControlTemplate.Triggers>
                     </ControlTemplate>
@@ -132,8 +132,8 @@
         <Style x:Key="WizardProgress" TargetType="ProgressBar">
             <Setter Property="Height" Value="6"/>
             <Setter Property="Maximum" Value="1"/>
-            <Setter Property="Background" Value="{StaticResource AccentWeak}"/>
-            <Setter Property="Foreground" Value="{StaticResource Accent}"/>
+            <Setter Property="Background" Value="{DynamicResource AccentWeak}"/>
+            <Setter Property="Foreground" Value="{DynamicResource AccentSolid}"/>
             <Setter Property="Template">
                 <Setter.Value>
                     <ControlTemplate TargetType="ProgressBar">
@@ -153,12 +153,12 @@
 
         <!-- 音量条：同一个模板，绿底（照图 `_32`）。 -->
         <Style x:Key="LevelBar" TargetType="ProgressBar" BasedOn="{StaticResource WizardProgress}">
-            <Setter Property="Foreground" Value="{StaticResource Success}"/>
+            <Setter Property="Foreground" Value="{DynamicResource Success}"/>
         </Style>
 
         <!-- 预览区：深底 + 中间一句说明。 -->
         <Style x:Key="PreviewSurface" TargetType="Border">
-            <Setter Property="Background" Value="{StaticResource VideoBackground}"/>
+            <Setter Property="Background" Value="{DynamicResource VideoBackground}"/>
             <Setter Property="CornerRadius" Value="8"/>
             <Setter Property="ClipToBounds" Value="True"/>
         </Style>
@@ -169,7 +169,7 @@
             TextBlock 的 `x:Name`，两者同名的话读起来永远要猜这句指的是哪个。
         -->
         <Style x:Key="OverlayPill" TargetType="Border">
-            <Setter Property="Background" Value="{StaticResource OverlayPillBackground}"/>
+            <Setter Property="Background" Value="{DynamicResource OverlayPillBackground}"/>
             <Setter Property="CornerRadius" Value="4"/>
             <Setter Property="Padding" Value="10,5"/>
             <Setter Property="HorizontalAlignment" Value="Center"/>
@@ -188,9 +188,9 @@
         <!-- ══ 顶部标题 ═══════════════════════════════════════════════ -->
         <StackPanel Grid.Row="0" Margin="0,0,0,20">
             <TextBlock Text="电脑录像配置向导" FontSize="24" FontWeight="Bold"
-                       Foreground="{StaticResource TextPrimary}"/>
+                       Foreground="{DynamicResource TextPrimary}"/>
             <TextBlock Margin="0,6,0,0" FontSize="13"
-                       Foreground="{StaticResource TextSecondary}"
+                       Foreground="{DynamicResource TextSecondary}"
                        Text="按步骤配置摄像头、面单识别方式、麦克风和可选扫码枪"/>
         </StackPanel>
 
@@ -201,8 +201,8 @@
                 <ColumnDefinition Width="*"/>
             </Grid.ColumnDefinitions>
 
-            <Border Grid.Column="0" Background="{StaticResource Surface}"
-                    BorderBrush="{StaticResource CardBorder}" BorderThickness="1"
+            <Border Grid.Column="0" Background="{DynamicResource Surface}"
+                    BorderBrush="{DynamicResource CardBorder}" BorderThickness="1"
                     CornerRadius="{StaticResource RadiusCard}" Padding="8,12">
                 <StackPanel>
                     <!-- ⚠️ `Checked` 在 InitializeComponent 里就会为默认项响一次，
@@ -231,8 +231,8 @@
                 </StackPanel>
             </Border>
 
-            <Border Grid.Column="1" Margin="26,0,0,0" Background="{StaticResource Surface}"
-                    BorderBrush="{StaticResource CardBorder}" BorderThickness="1"
+            <Border Grid.Column="1" Margin="26,0,0,0" Background="{DynamicResource Surface}"
+                    BorderBrush="{DynamicResource CardBorder}" BorderThickness="1"
                     CornerRadius="{StaticResource RadiusCard}">
                 <ScrollViewer VerticalScrollBarVisibility="Auto" Padding="24,22">
                     <Grid>
@@ -252,9 +252,9 @@
                                     <StackPanel Orientation="Horizontal">
                                         <TextBlock Text="连续打包模式" FontSize="14"
                                                    FontWeight="SemiBold"
-                                                   Foreground="{StaticResource TextPrimary}"/>
+                                                   Foreground="{DynamicResource TextPrimary}"/>
                                         <Border Style="{StaticResource TagPill}" Margin="8,0,0,0"
-                                                Background="{StaticResource Accent}">
+                                                Background="{DynamicResource AccentSolid}">
                                             <TextBlock Text="推荐" FontSize="11" Foreground="White"/>
                                         </Border>
                                     </StackPanel>
@@ -269,7 +269,7 @@
                                 <StackPanel>
                                     <TextBlock Text="同码停录模式" FontSize="14"
                                                FontWeight="SemiBold"
-                                               Foreground="{StaticResource TextPrimary}"/>
+                                               Foreground="{DynamicResource TextPrimary}"/>
                                     <TextBlock Style="{StaticResource Caption}" Margin="0,4,0,0"
                                                TextWrapping="Wrap"
                                                Text="识别或扫描面单条码开始录制，再次识别同一条码停止录制"/>
@@ -359,9 +359,9 @@
                                         <StackPanel Orientation="Horizontal">
                                             <TextBlock Text="使用摄像头识别" FontSize="14"
                                                        FontWeight="SemiBold"
-                                                       Foreground="{StaticResource TextPrimary}"/>
+                                                       Foreground="{DynamicResource TextPrimary}"/>
                                             <Border Style="{StaticResource TagPill}" Margin="8,0,0,0"
-                                                    Background="{StaticResource Accent}">
+                                                    Background="{DynamicResource AccentSolid}">
                                                 <TextBlock Text="推荐" FontSize="11" Foreground="White"/>
                                             </Border>
                                         </StackPanel>
@@ -377,7 +377,7 @@
                                     <StackPanel>
                                         <TextBlock Text="不使用摄像头识别" FontSize="14"
                                                    FontWeight="SemiBold"
-                                                   Foreground="{StaticResource TextPrimary}"/>
+                                                   Foreground="{DynamicResource TextPrimary}"/>
                                         <TextBlock Style="{StaticResource Caption}" Margin="0,4,0,0"
                                                    TextWrapping="Wrap"
                                                    Text="改用扫码枪或手动输入面单号"/>
@@ -396,7 +396,7 @@
                                          把「码略微出框」变成识别不了）。 -->
                                     <!-- 取景框顶边让开上面那颗提示药丸（它高约 26px）。 -->
                                     <Border Margin="90,46,90,16" BorderThickness="2"
-                                            BorderBrush="{StaticResource Accent}"
+                                            BorderBrush="{DynamicResource Accent}"
                                             CornerRadius="{StaticResource RadiusTag}" IsHitTestVisible="False"/>
                                     <Border Style="{StaticResource OverlayPill}"
                                             VerticalAlignment="Top" Margin="0,10,0,0">
@@ -419,11 +419,11 @@
                                     <TextBlock x:Name="RecognitionDeviceLabel"
                                                VerticalAlignment="Bottom" HorizontalAlignment="Left"
                                                Margin="10,0,0,8" FontSize="11"
-                                               Foreground="{StaticResource BorderStrong}"/>
+                                               Foreground="{DynamicResource BorderStrong}"/>
                                     <Border x:Name="RecognitionResultBox"
                                             HorizontalAlignment="Right" VerticalAlignment="Bottom"
                                             Margin="0,0,10,8" Padding="8,4" CornerRadius="{StaticResource RadiusTag}"
-                                            Background="{StaticResource Success}"
+                                            Background="{DynamicResource Success}"
                                             Visibility="Collapsed">
                                         <TextBlock x:Name="RecognitionResultText" FontSize="11"
                                                    Foreground="White"/>
@@ -433,13 +433,13 @@
 
                             <!-- 关掉：一句话说明，不画假预览 -->
                             <Border x:Name="RecognitionOffBox" Height="190" Visibility="Collapsed"
-                                    Background="{StaticResource SurfaceMuted}"
-                                    BorderBrush="{StaticResource CardBorder}" BorderThickness="1"
+                                    Background="{DynamicResource SurfaceMuted}"
+                                    BorderBrush="{DynamicResource CardBorder}" BorderThickness="1"
                                     CornerRadius="{StaticResource RadiusCard}">
                                 <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center">
                                     <TextBlock Text="已选择不使用摄像头识别" FontSize="14"
                                                FontWeight="SemiBold" HorizontalAlignment="Center"
-                                               Foreground="{StaticResource TextPrimary}"/>
+                                               Foreground="{DynamicResource TextPrimary}"/>
                                     <TextBlock Style="{StaticResource Caption}" Margin="0,6,0,0"
                                                HorizontalAlignment="Center"
                                                Text="仍可使用扫码枪或在主页面手动输入面单号"/>
@@ -457,12 +457,12 @@
                                        Text="正在根据这台电脑的编码能力，为已选摄像头推荐稳定的原生分辨率和帧率"/>
 
                             <!-- 跑着 -->
-                            <Border x:Name="PerfRunningBox" Background="{StaticResource SurfaceMuted}"
-                                    BorderBrush="{StaticResource CardBorder}" BorderThickness="1"
+                            <Border x:Name="PerfRunningBox" Background="{DynamicResource SurfaceMuted}"
+                                    BorderBrush="{DynamicResource CardBorder}" BorderThickness="1"
                                     CornerRadius="{StaticResource RadiusCard}" Padding="18,16">
                                 <StackPanel>
                                     <TextBlock x:Name="PerfRunningText" FontSize="13"
-                                               Foreground="{StaticResource Accent}"
+                                               Foreground="{DynamicResource Accent}"
                                                TextWrapping="Wrap" Text="正在检测…"/>
                                     <ProgressBar x:Name="PerfBar" Style="{StaticResource WizardProgress}"
                                                  Margin="0,12,0,0" IsIndeterminate="True"/>
@@ -472,15 +472,15 @@
                             <!-- 结果（成功 / 未完成两种情形共用一张卡） -->
                             <StackPanel x:Name="PerfResultBox" Visibility="Collapsed">
                                 <TextBlock x:Name="PerfBanner" FontSize="13" TextWrapping="Wrap"
-                                           Foreground="{StaticResource TextPrimary}"/>
+                                           Foreground="{DynamicResource TextPrimary}"/>
 
-                                <Border Background="{StaticResource SurfaceMuted}"
-                                        BorderBrush="{StaticResource CardBorder}" BorderThickness="1"
+                                <Border Background="{DynamicResource SurfaceMuted}"
+                                        BorderBrush="{DynamicResource CardBorder}" BorderThickness="1"
                                         CornerRadius="{StaticResource RadiusCard}" Padding="18,16" Margin="0,14,0,0">
                                     <StackPanel>
                                         <TextBlock x:Name="PerfResultTitle" FontSize="14"
                                                    FontWeight="SemiBold"
-                                                   Foreground="{StaticResource TextPrimary}"/>
+                                                   Foreground="{DynamicResource TextPrimary}"/>
                                         <TextBlock x:Name="PerfResultSpec" Style="{StaticResource Body}"
                                                    Margin="0,6,0,0"/>
                                         <TextBlock x:Name="PerfResultDetail"
@@ -511,15 +511,15 @@
                             <ComboBox x:Name="MicrophoneCombo" Height="32"
                                       SelectionChanged="OnMicrophoneChanged"/>
 
-                            <Border Background="{StaticResource Surface}"
-                                    BorderBrush="{StaticResource CardBorder}" BorderThickness="1"
+                            <Border Background="{DynamicResource Surface}"
+                                    BorderBrush="{DynamicResource CardBorder}" BorderThickness="1"
                                     CornerRadius="{StaticResource RadiusCard}" Padding="14,12" Margin="0,12,0,0">
                                 <StackPanel>
                                     <ProgressBar x:Name="MicLevelBar"
                                                  Style="{StaticResource LevelBar}" Height="8"/>
                                     <TextBlock x:Name="MicLevelText" Margin="0,10,0,0"
                                                FontSize="12"
-                                               Foreground="{StaticResource TextSecondary}"
+                                               Foreground="{DynamicResource TextSecondary}"
                                                Text="还没有听到声音 —— 对着麦克风说句话试试"/>
                                 </StackPanel>
                             </Border>
@@ -538,8 +538,8 @@
                                        TextWrapping="Wrap"
                                        Text="没有扫码枪也可手动输入面单号；如需使用，可在这里测试扫码枪"/>
 
-                            <Border Background="{StaticResource SurfaceMuted}"
-                                    BorderBrush="{StaticResource CardBorder}" BorderThickness="1"
+                            <Border Background="{DynamicResource SurfaceMuted}"
+                                    BorderBrush="{DynamicResource CardBorder}" BorderThickness="1"
                                     CornerRadius="{StaticResource RadiusCard}" Padding="18,16">
                                 <StackPanel>
                                     <!-- ⚠️ 最近邻缩放：插值会把条与空之间的边界糊成灰边，
@@ -565,7 +565,7 @@
                                      TextChanged="OnBarcodeTyped"/>
                             <TextBlock x:Name="BarcodeHint" Style="{StaticResource Caption}"
                                        Margin="0,10,0,0" TextWrapping="Wrap"
-                                       Foreground="{StaticResource TextSecondary}"
+                                       Foreground="{DynamicResource TextSecondary}"
                                        Text="没有扫码枪可直接进入下一步"/>
                         </StackPanel>
 
@@ -577,8 +577,8 @@
                             <TextBlock Style="{StaticResource Caption}" Margin="0,6,0,14"
                                        Text="下面是日常打包流程"/>
 
-                            <Border Background="{StaticResource Surface}"
-                                    BorderBrush="{StaticResource CardBorder}" BorderThickness="1"
+                            <Border Background="{DynamicResource Surface}"
+                                    BorderBrush="{DynamicResource CardBorder}" BorderThickness="1"
                                     CornerRadius="{StaticResource RadiusCard}" Padding="18,16">
                                 <StackPanel>
                                     <TextBlock Style="{StaticResource Body}" Margin="0,0,0,6"
@@ -592,13 +592,13 @@
                                 </StackPanel>
                             </Border>
 
-                            <Border Background="{StaticResource SurfaceMuted}"
-                                    BorderBrush="{StaticResource CardBorder}" BorderThickness="1"
+                            <Border Background="{DynamicResource SurfaceMuted}"
+                                    BorderBrush="{DynamicResource CardBorder}" BorderThickness="1"
                                     CornerRadius="{StaticResource RadiusCard}" Padding="18,16" Margin="0,12,0,0">
                                 <StackPanel>
                                     <TextBlock Text="局域网查看视频" FontSize="14"
                                                FontWeight="SemiBold"
-                                               Foreground="{StaticResource TextPrimary}"/>
+                                               Foreground="{DynamicResource TextPrimary}"/>
                                     <TextBlock Style="{StaticResource Caption}" Margin="0,6,0,0"
                                                TextWrapping="Wrap"
                                                Text="完成向导后会显示手机连接二维码。手机与这台电脑连接同一个局域网，扫码即可打开打包视频和回放页面"/>
@@ -619,7 +619,7 @@
                             -->
                             <TextBlock Style="{StaticResource Caption}" Margin="0,12,0,0"
                                        TextWrapping="Wrap"
-                                       Foreground="{StaticResource Warning}"
+                                       Foreground="{DynamicResource Warning}"
                                        Text="⚠️ 摄像头那一项（换成另一台设备、或改成网络摄像头地址）和「摄像头识别」开关，要重启软件才生效；其余各项立即生效。"/>
                         </StackPanel>
 
