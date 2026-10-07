@@ -32,6 +32,7 @@ using VidLog.Desktop.Core.Clock;
 using VidLog.Desktop.Core.Cloud;
 using VidLog.Desktop.Core.Configuration;
 using VidLog.Desktop.Core.Diagnostics;
+using VidLog.Desktop.Core.License;
 using VidLog.Desktop.Core.Media;
 using VidLog.Desktop.Core.Recording;
 using VidLog.Desktop.Core.Upload;
@@ -81,29 +82,35 @@ public partial class SettingsWindow : Window
               + "同型号的机器可能算出一样的码 —— 请先查清为什么读不到（常见是 WMI 被禁用了）。"
             : string.Empty;
 
-        // ⚠️ 试用**必须先判**（见 `LicenseStatus` 的注释：试用中 `Activated` 也是 true）。
+        // ⚠️ 骨架那句（含「试用要先判」那条顺序）**不在这里**（T30）——
+        // 它在 `LicenseStatus.SummaryText` 上，与主窗那三处**共用同一句**。
+        // 这里只补设置页特有的上下文，别把那句再抄一遍。
         //
         // ⚠️ 「购买入口」是**一句话，不是一个按钮** —— 到今天为止没有真实的购买渠道
         // （没有下单页、没有联系方式），摆一颗按钮就是假开关（§63 / 踩坑 #13）。
         // 等到真有渠道了，把这里换成按钮，别在那之前先摆上。
-        LicenseNote.Text = status switch
+        LicenseNote.Text = status.SummaryText + status switch
         {
+            // ⚠️ 「试用期 7 天」与机位数**都得现算**：原来这里写死的是
+            // 「试用期 7 天 / 4 机位」（T30）。⚠️ 2026-10-07 核过：**今天这两个数
+            // 与权威值正好一致**（`TrialRecordStore.Window` 是 168 小时；试用码的
+            // 机位数在码格式层就钉死为 4，见 `LicenseTests` 里
+            // 「试用码的机位数不是 4 时回无效」）—— 所以这是**潜在漂移，不是当前说错**，
+            // 别把它当「已经显示错了」去修。7 天的权威值是 `TrialRecordStore.Window`（§6.1），
+            // 机位的权威值是 `Slots`，都不是这个文件里的字面量。
             { IsTrial: true, Activated: true } =>
-                $"✅ 试用中：还剩 {status.TrialRemainingText}（试用期 7 天 / 4 机位）。"
+                $"（试用期 {TrialRecordStore.Window.TotalDays:0} 天 / {status.Slots} 机位）"
                 + "试用到期只挡住新的录制与接入 —— 已有的录像照常可以检索、回放、导出。"
                 + "要长期用得换一个长期激活码：把上面的机器码给提供方。"
                 + degraded,
 
             { IsTrial: true } =>
-                $"⛔ {status.FailureReason}"
-                + "试用期里才能录新的、接手机、看手机的实时画面；"
+                "试用期里才能录新的、接手机、看手机的实时画面；"
                 + "已有的录像照常可以检索、回放、导出。"
                 + "要接着用得激活 —— 把上面的机器码给提供方。"
                 + degraded,
 
-            { Activated: true } => $"✅ 已激活：允许接入 {status.Slots} 台手机端。{degraded}",
-
-            _ => $"⛔ {status.FailureReason}允许接入 0 台手机端。{degraded}",
+            _ => degraded,
         };
 
         ActivationBox.IsEnabled = true;

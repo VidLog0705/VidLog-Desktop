@@ -703,3 +703,69 @@ public class LicenseTests
         Assert.Equal(3, SeatUsage.For(3, SeatUsage.Cameras));
     }
 }
+
+/// <summary>
+/// 许可状态的**那句话**（T30）：<see cref="LicenseStatus.SummaryText"/>。
+/// </summary>
+/// <remarks>
+/// <para>
+/// ⚠️ <b>修之前这句话有两份</b>（<c>StatusSummaries</c> 与设置页的许可页），
+/// 而设置页那份把机位数写死成「4 机位」。所以这里钉的不是「措辞好看」，
+/// 是那条**顺序**与那个**数**：顺序错了会藏掉试用还剩多久，数写死了会与
+/// <see cref="LicenseStatus.Slots"/> 漂开。
+/// </para>
+/// <para>
+/// ⚠️ 「同样的一句只此一处」这件事**测试挡不住**（App 层没有测试工程）——
+/// 挡它的是 <c>DesktopServicesTests</c> 里那条文本绊线。
+/// </para>
+/// </remarks>
+public class LicenseStatusTextTests
+{
+    private static LicenseStatus Status(
+        bool activated, int slots, string? reason = null,
+        bool trial = false, TimeSpan? remaining = null) =>
+        new(activated, slots, reason, "机器码-占位", Degraded: false, IsTrial: trial, TrialRemaining: remaining);
+
+    [Fact]
+    public void 试用中必须先判_不能只说已激活()
+    {
+        // ⚠️ 试用中 `Activated` **也是 true**（见 `LicenseStatus` 的注释）。
+        // 顺序反了的话这里会印出「✅ 已激活」，而那正是用户此刻最该知道的
+        // 「还剩多久」被藏掉的那一刻。
+        var text = Status(
+            activated: true, slots: 4, trial: true,
+            remaining: TimeSpan.FromDays(3) + TimeSpan.FromHours(4)).SummaryText;
+
+        Assert.Equal("✅ 试用中：还剩 3 天 4 小时，可接入 4 台手机端。", text);
+        Assert.DoesNotContain("已激活", text, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void 三种状态各说各的_逐字钉住()
+    {
+        Assert.Equal(
+            "✅ 已激活：允许接入 6 台手机端。",
+            Status(activated: true, slots: 6).SummaryText);
+
+        // 没激活：`FailureReason` 是 Core 写好的那句，原样接在 ⛔ 后面，不改写。
+        Assert.Equal(
+            "⛔ 激活码不适用于本机。允许接入 0 台手机端。",
+            Status(activated: false, slots: 0, reason: "激活码不适用于本机。").SummaryText);
+    }
+
+    [Fact]
+    public void 机位数读的是实时的_Slots_不是写死的_4()
+    {
+        // ⚠️ 这条是 T30 的正题。设置页那份原本写死「4 机位」，而 4 只是
+        // **试用码格式**的档位（`LicenseTests.试用码的机位数不是_4_时回无效`）；
+        // 长期码可以是 6 / 9。写死之后，同一个用户会在两处看到两个机位数。
+        //
+        // ⚠️ **两个分支都要验**：第一版这条只构造了「已激活」，
+        // 于是把**试用**那句的 `{Slots}` 改回 `4` 时它照样绿（2026-10-07 证伪时当场发现）。
+        Assert.Contains("9 台手机端", Status(activated: true, slots: 9).SummaryText, StringComparison.Ordinal);
+        Assert.Contains(
+            "9 台手机端",
+            Status(activated: true, slots: 9, trial: true, remaining: TimeSpan.FromDays(1)).SummaryText,
+            StringComparison.Ordinal);
+    }
+}

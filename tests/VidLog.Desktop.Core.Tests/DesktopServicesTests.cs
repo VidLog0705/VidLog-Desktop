@@ -405,6 +405,64 @@ public class DesktopServicesTests
     }
 
     /// <summary>
+    /// 钉住「许可那句话只有一份」（T30）—— 侧栏与设置页都必须走
+    /// <see cref="LicenseStatus.SummaryText"/>。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// 修之前这句话在 <c>StatusSummaries</c> 与设置页的许可页里**各写了一份**，
+    /// 而设置页那份把机位数写死成「4 机位」（不读 <c>Slots</c>）。
+    /// 那句话本身对不对由 <c>LicenseStatusTextTests</c> 管；这条管的只是
+    /// **两个渲染点有没有用它** —— 那是单测够不着的那一跳。
+    /// </para>
+    /// <para>
+    /// ⚠️ <b>天花板</b>（与上面几条同）：只挡「那句话又被抄了一遍」，
+    /// 挡不住「引对了 `SummaryText`、但把它接在一句错话后面」。
+    /// </para>
+    /// <para>
+    /// ⚠️ 那条 `Assert.True`（要求**引用到了**）不是凑数：只留「不许出现字面量」
+    /// 那半边的话，**扫到零个文件**也会绿 —— 而 `ReadSplit` 不递归，
+    /// 目录写浅一层就正好是这个形状（2026-10-07 写这条时当场撞到过）。
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public void 许可那句话只有一份_两个渲染点都走Core()
+    {
+        var app = Path.Combine(RepoRoot(), "src", "VidLog.Desktop.App");
+
+        // 两个渲染点：侧栏（`StatusSummaries`，主窗三个显示位都走它）
+        // 与设置页的许可页（`SettingsWindow.*` 那一组 partial）。
+        //
+        // ⚠️ 目录**必须写全**：`ReadSplit` 只扫**顶层**（不递归），
+        // 而 `StatusSummaries.cs` 在 `Platform/` 下 —— 少一层它扫到零个文件，
+        // 于是断言拿到空串、报的却是「没有走 SummaryText」，指错地方。
+        var sites = new (string Folder, string Stem, string What)[]
+        {
+            (Path.Combine(app, "Platform"), "StatusSummaries", "侧栏那句"),
+            (app, "SettingsWindow", "设置页那句"),
+        };
+
+        foreach (var (folder, stem, what) in sites)
+        {
+            Assert.True(
+                ReadSplit(folder, stem).Contains("SummaryText", StringComparison.Ordinal),
+                $"{what}没有走 SummaryText —— 许可那句话又被抄了一份。见 T30。");
+        }
+
+        // ⚠️ 整个 App 工程此刻**一处字面量都没有**（2026-10-07 核过），
+        // 所以这两条不会因为不相干的代码假红。
+        foreach (var literal in new[] { "试用中：还剩", "已激活：允许接入" })
+        {
+            foreach (var (folder, stem, _) in sites)
+            {
+                Assert.False(
+                    ReadSplit(folder, stem).Contains(literal, StringComparison.Ordinal),
+                    $"{stem} 里又出现了写死的「{literal}」—— 那句话只该在 Core 的 SummaryText 上。见 T30。");
+            }
+        }
+    }
+
+    /// <summary>
     /// 钉住「保留期真的执行了」—— <c>AppHost</c> 必须调 <c>FileLogger.PurgeExpired</c>。
     /// </summary>
     /// <remarks>

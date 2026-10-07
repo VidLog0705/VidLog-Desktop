@@ -107,8 +107,9 @@ public sealed class EntitlementStore
 /// **下游一行都不用改**。
 /// <para>
 /// 代价是「<c>Activated = true</c>」会被读成「已激活」，所以**凡是把它渲染成人话的地方，
-/// 都必须先看 <see cref="IsTrial"/>**。全仓这样的地方只有两处
-/// （<c>StatusSummaries</c> 与 <c>SettingsWindow</c> 的许可页），两处都分了支。
+/// 都必须先看 <see cref="IsTrial"/>**。全仓渲染成人话的地方只有一处
+/// （<see cref="SummaryText"/>），那个分支就写在那里 —— T30 之前它是两份，
+/// 两份的分支顺序都对，但设置页那份**写死了机位数**（「4 机位」）。
 /// </para>
 /// <para>
 /// ⚠️ 新字段**必须带默认值、且放在最后**：这个 record 是位置参数，
@@ -146,6 +147,42 @@ public sealed record LicenseStatus(
             return left.TotalDays >= 1
                 ? $"{(int)left.TotalDays} 天 {left.Hours} 小时"
                 : $"{Math.Max(1, (int)Math.Ceiling(left.TotalHours))} 小时";
+        }
+    }
+
+    /// <summary>
+    /// 许可状态的一句话 —— 界面上**只此一处**（T30）。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// ⚠️ <b>试用必须先判</b>：试用中 <see cref="Activated"/> 也是 <see langword="true"/>
+    /// （见本类型注释），不先看 <see cref="IsTrial"/> 的话，一行「✅ 已激活」就把
+    /// 还剩几小时藏掉了 —— 而那正是用户此刻最该知道的一件事。
+    /// </para>
+    /// <para>
+    /// ⚠️ <b>修之前这句话在 <c>StatusSummaries</c> 与 <c>SettingsWindow</c> 的许可页里
+    /// 各写了一份</b>，而设置页那份把机位数**写死成「4 机位」**（不读
+    /// <see cref="Slots"/>）。两边一旦漂开，用户会在两处看到**不一样的机位数** ——
+    /// 与「右栏说已激活、状态栏说未激活」是同一类不可信（<c>MainWindow.Recording.cs</c>
+    /// 里那条注释点名过这件事）。
+    /// </para>
+    /// <para>
+    /// 这一句是**共用**的骨架；各处要补的上下文（设置页那段「已有的录像照常可以检索」
+    /// 与降级警告）由调用点自己接在后面。
+    /// </para>
+    /// </remarks>
+    public string SummaryText
+    {
+        get
+        {
+            if (IsTrial && Activated)
+            {
+                return $"✅ 试用中：还剩 {TrialRemainingText}，可接入 {Slots} 台手机端。";
+            }
+
+            return Activated
+                ? $"✅ 已激活：允许接入 {Slots} 台手机端。"
+                : $"⛔ {FailureReason}允许接入 0 台手机端。";
         }
     }
 }

@@ -1,4 +1,5 @@
 using VidLog.Desktop.Core.Clock;
+using VidLog.Desktop.Core.License;
 
 namespace VidLog.Desktop.App.Platform;
 
@@ -45,31 +46,18 @@ internal static class StatusSummaries
     /// 许可状态的一句话。
     /// </summary>
     /// <remarks>
+    /// <para>
     /// ⚠️ <b>「本机软件没配好公钥」与「没激活」是两回事</b>，必须分开说 ——
     /// 混成一句话，用户会拿着机器码一直去找提供方换码，而换了也没用。
+    /// </para>
+    /// <para>
+    /// ⚠️ 那句话本身<b>不在这里</b>（T30）：它在 <see cref="LicenseStatus.SummaryText"/> 上。
+    /// 这里原本也写了一份、设置页又写了一份，两份都靠人记住「试用要先判」——
+    /// 现在 Core 上只有一处，<c>LicenseTests</c> 盯着它。
+    /// </para>
     /// </remarks>
-    public static string License(AppHost host)
-    {
-        var license = host.Services.License;
-
-        if (license is null)
-        {
-            return "⛔ 本机软件没配好许可公钥（部署时漏了）";
-        }
-
-        var status = license.Status;
-
-        // ⚠️ 试用**必须先判**：试用中 `Activated` 也是 true（见 `LicenseStatus` 的注释），
-        // 不先看 `IsTrial` 的话，一行「✅ 已激活」就把还剩几小时藏掉了 ——
-        // 而那正是用户此刻最该知道的一件事。
-        if (status.IsTrial && status.Activated)
-        {
-            return $"✅ 试用中：还剩 {status.TrialRemainingText}，"
-                + $"可接入 {status.Slots} 台手机端。";
-        }
-
-        return status.Activated
-            ? $"✅ 已激活：允许接入 {status.Slots} 台手机端。"
-            : $"⛔ {status.FailureReason}允许接入 0 台手机端。";
-    }
+    public static string License(AppHost host) =>
+        host.Services.License is { } license
+            ? license.Status.SummaryText
+            : "⛔ 本机软件没配好许可公钥（部署时漏了）";
 }
