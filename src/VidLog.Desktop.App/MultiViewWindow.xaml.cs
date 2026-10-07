@@ -24,6 +24,9 @@ using Image = System.Windows.Controls.Image;
 using MenuItem = System.Windows.Controls.MenuItem;
 using Orientation = System.Windows.Controls.Orientation;
 using TextBlock = System.Windows.Controls.TextBlock;
+// 眼睛那个图标是内联矢量（同 MainWindow 里那排图标）：`Path` 不钉的话
+// 会和 WinForms 那边的同名类型撞车。
+using Path = System.Windows.Shapes.Path;
 
 namespace VidLog.Desktop.App;
 
@@ -757,13 +760,40 @@ public partial class MultiViewWindow : Window
         /// </remarks>
         private const string TurnedOff = "已关闭";
 
-        /// <summary>「眼睛」那两个字形（开着 / 关着）。</summary>
+        /// <summary>
+        /// 「已关闭」那一格的底色键；字色与「未接入」共用 <see cref="MutedKey"/>。
+        /// </summary>
         /// <remarks>
-        /// ⚠️ 用字形不用 emoji：`👁` 走的是 Segoe UI Emoji 那条路，WPF 里各版本渲染不一
-        ///（有的出彩色、有的缺字），而 `⟳` 那颗已经证明这套字形在这台机器上稳。
+        /// <para>
+        /// ⚠️ <b>底色必须与「未接入」那格（<see cref="SlotKey"/>）**不是同一个键**。</b>
+        /// 2026-10-07 之前两者长得一模一样、区别只在字，需求方当场点了名（「要一眼分得出」）。
+        /// 这一对是个**能失败的检查**（见 `MultiViewWindowCellTests`）。
+        /// </para>
+        /// <para>
+        /// ⚠️ <b>字不许用琥珀。</b>量过：`Warning` <c>#F59E0B</c> 压在 `WarningSurface`
+        /// <c>#FFFBEB</c> 上只有 <b>2.07:1</b> —— 远低于 AA 正文档的 4.5。所以这一格的
+        /// **颜色差走底子、不走字**：字还是 <see cref="MutedKey"/>（<b>4.59:1</b>，刚够）。
+        /// 这两条一起钉在那条绊线里。
+        /// </para>
         /// </remarks>
-        private const string EyeOn = "◉";
-        private const string EyeOff = "○";
+        private const string OffSlotKey = "WarningSurface";
+
+        /// <summary>「未接入」那一格的底色。</summary>
+        private const string SlotKey = "SurfaceMuted";
+
+        /// <summary>两种空位共用的字色（也是「已关闭」那一格的字色）。</summary>
+        private const string MutedKey = "TextSecondary";
+
+        //  ⚠️ 「眼睛」是**画出来的**（内联矢量 Path），不是字形（`◉` / `○` 那种）——
+        //  需求方 2026-10-07 拍的：字形看不出是眼睛。坐标系 18×18，两处（按钮上那颗、
+        //  空位中间那颗大的）**共用同一份数据**，大的那个走 Viewbox 放大。
+        private const string EyeOutline = "M1.8,9 C5.4,4.1 12.6,4.1 16.2,9 C12.6,13.9 5.4,13.9 1.8,9 Z";
+        private const string EyePupil = "M9,6.8 A2.2,2.2 0 1 0 9,11.2 A2.2,2.2 0 1 0 9,6.8 Z";
+        private const string EyeSlash = "M3.2,14.8 L14.8,3.2";
+
+        /// <summary>眼睛的外形：关着的那一支多一道斜杠（同一个 Path 上换个 Data）。</summary>
+        private static Geometry EyeShape(bool slashed) =>
+            Geometry.Parse(slashed ? $"{EyeOutline} {EyeSlash}" : EyeOutline);
 
         private readonly MultiViewWindow _owner;
         private readonly int _index;
@@ -774,9 +804,14 @@ public partial class MultiViewWindow : Window
         private readonly Brush _textSub;
         private readonly Brush _videoBg;
         private readonly Brush _slotBg;
+        private readonly Brush _offBg;
         private readonly TextBlock _name;
         private readonly Button _rotate;
         private readonly Button _eye;
+        private readonly Path _eyeShape;
+        private readonly Path _eyeDot;
+        private readonly Viewbox _offMark;
+        private readonly StackPanel _emptyStack;
         private long _shownAt;
 
         /// <summary>这一格现在是被用户（或最小化）关着的（见 <see cref="Adopt"/>）。</summary>
@@ -799,9 +834,12 @@ public partial class MultiViewWindow : Window
 
             // ★ T10 的两种格子各有各的脸色（见 `Paint`）：空位是浅底 + 次级灰字，
             // 「有机位没画面」是黑底 + 白字 —— 两句话之外再给一眼就能看出的底色差。
-            _textSub = (Brush)owner.FindResource("TextSecondary");
+            _textSub = (Brush)owner.FindResource(MutedKey);
             _videoBg = (Brush)owner.FindResource("VideoBackground");
-            _slotBg = (Brush)owner.FindResource("SurfaceMuted");
+            _slotBg = (Brush)owner.FindResource(SlotKey);
+
+            // ★ 第三种脸色（2026-10-07，需求方要求「一眼分得出」）：「已关闭」那块**淡琥珀底**。
+            _offBg = (Brush)owner.FindResource(OffSlotKey);
 
             Surface = new Image
             {
@@ -826,6 +864,32 @@ public partial class MultiViewWindow : Window
                 TextWrapping = TextWrapping.Wrap,
                 TextAlignment = TextAlignment.Center,
             };
+
+            // ★ 空位正中那颗**大的叉眼**（2026-10-07 需求方要求「一眼分得出」）：
+            // 只有「已关闭」那一格露出来 —— 与「未接入」的差别除了底色，还有这么大一件东西。
+            // ⚠️ 与按钮上那颗**共用同一份几何数据**（`EyeOutline`/`EyePupil`/`EyeSlash`），
+            // 靠 Viewbox 放大到 34；抄第二份的话，下次改形状只会改到一处。
+            // ⚠️ 挂在 `_offMark`（那个 **Viewbox**）上开关，不挂在里面那两支漆上：
+            // Viewbox 的宽高是写死的，孩子收起来了它照样占着 34 像素。
+            _offMark = IconBox(
+                34,
+                StrokeShape($"{EyeOutline} {EyeSlash}", _textSub, 1.5),
+                new Path { Data = Geometry.Parse(EyePupil), Fill = _textSub });
+
+            _offMark.Margin = new Thickness(0, 0, 0, 10);
+            _offMark.Visibility = Visibility.Collapsed;
+
+            // ⚠️ `Empty` 挪进这个 StackPanel（原来直接挂在 inner 里）：两样都居中、
+            // 又各自是 inner 的孩子的话，它们是**叠在一起**的。
+            // 竖排的 StackPanel 量孩子时给的仍是**格子的宽度**，所以 `LiveTile.Problem`
+            // 那几句长话照样折得开、伸不出去。
+            _emptyStack = new StackPanel
+            {
+                HorizontalAlignment = HorizontalAlignment.Center,
+                VerticalAlignment = VerticalAlignment.Center,
+            };
+            _emptyStack.Children.Add(_offMark);
+            _emptyStack.Children.Add(Empty);
 
             _name = new TextBlock
             {
@@ -856,11 +920,13 @@ public partial class MultiViewWindow : Window
             _rotate.Click += (_, _) => Rotate();
 
             // ★ T9 的「眼睛」：关掉这一格（**真的停掉它那一路 ffmpeg**，不是把画面藏起来）。
-            // ⚠️ 用的字与旁边那颗一样是**字形**（`⟳` 就是字形）—— 不引图标库，
-            // 也不为此画一条 Path。
+            // 两笔：外圈那道梭形（含斜杠）走 Stroke，瞳走 Fill —— 换色时两笔一起换。
+            _eyeShape = StrokeShape(EyeOutline, _textSub, 1.5);
+            _eyeDot = new Path { Data = Geometry.Parse(EyePupil), Fill = _textSub };
+
             _eye = new Button
             {
-                Content = EyeOn,
+                Content = IconBox(18, _eyeShape, _eyeDot),
                 Width = 28,
                 Height = 28,
                 Style = (Style)((FrameworkElement)owner).FindResource("IconButton"),
@@ -900,7 +966,7 @@ public partial class MultiViewWindow : Window
 
             var inner = new Grid();
             inner.Children.Add(Surface);
-            inner.Children.Add(Empty);
+            inner.Children.Add(_emptyStack);
             inner.Children.Add(_name);
             inner.Children.Add(corner);
             inner.Children.Add(Counts);
@@ -921,13 +987,47 @@ public partial class MultiViewWindow : Window
             // 对账那一路碰上「本来就没有机位」会被 `Adopt` 的同对象判断直接跳掉
             //（`null` 与初值 `null` 相等），不在这儿画就永远是裸的默认色。
             // 眼睛这时也收起来：还没有机位，没什么可关的。
-            Paint(empty: true, NoSeat, showEye: false);
+            Paint(empty: true, NoSeat, turnedOff: false);
         }
 
         private static string EyeTooltip(bool on) =>
             on
                 ? "不看这一格（停掉它的画面，省一路解码）"
                 : "重新看这一格";
+
+        /// <summary>一笔描边（外圈、斜杠那种）。</summary>
+        private static Path StrokeShape(string data, Brush ink, double thickness) => new()
+        {
+            Data = Geometry.Parse(data),
+            Stroke = ink,
+            StrokeThickness = thickness,
+            // ⚠️ 外圈那道梭形是**闭合**的，不写这一行它会按默认的黑色填满 ——
+            // 那颗眼睛会变成一个实心黑疙瘩。
+            Fill = Brushes.Transparent,
+            StrokeLineJoin = PenLineJoin.Round,
+            StrokeStartLineCap = PenLineCap.Round,
+            StrokeEndLineCap = PenLineCap.Round,
+        };
+
+        /// <summary>把两笔拢成一个固定大小的方框，并**缩放到这个大小**。</summary>
+        /// <remarks>
+        /// ⚠️ 必须走 <c>Viewbox</c>：几何数据是 18×18 的，直接塞进一个 34 的 Grid 里
+        /// 不会被放大 —— 它照原样画，外面那块方框只是白占地方（WPF 默认也不裁）。
+        /// </remarks>
+        private static Viewbox IconBox(double size, Path shape, Path dot)
+        {
+            var strokes = new Grid();
+            strokes.Children.Add(shape);
+            strokes.Children.Add(dot);
+
+            return new Viewbox
+            {
+                Width = size,
+                Height = size,
+                Child = strokes,
+                Stretch = Stretch.Uniform,
+            };
+        }
 
         /// <summary>
         /// 这一格的机位；**用户选了几格而机位不够时是 <see langword="null"/>**。
@@ -966,10 +1066,7 @@ public partial class MultiViewWindow : Window
             Paint(
                 empty: tile is null,
                 turnedOff ? TurnedOff : tile?.Problem ?? NoSignal,
-                // ⚠️ 眼睛**只有在这一格有机位、或者它正被关着**时才露面：
-                // 没有机位就没有什么可关的；而关着的那一格必须留着眼睛，
-                // 不然用户再也点不回来。
-                showEye: tile is not null || turnedOff);
+                turnedOff);
 
             UpdateEye();
 
@@ -989,9 +1086,13 @@ public partial class MultiViewWindow : Window
         }
 
         /// <summary>把「眼睛」画成现在的样子（<see cref="_off"/> 是唯一的准）。</summary>
+        /// <remarks>
+        /// ⚠️ 就**换一根线**（同一支 Path 换个 <c>Data</c>），不是换一颗控件 ——
+        /// 外圈那道梭形两支共用，关着的那支只多一道斜杠。
+        /// </remarks>
         private void UpdateEye()
         {
-            _eye.Content = _off ? EyeOff : EyeOn;
+            _eyeShape.Data = EyeShape(_off);
             _eye.ToolTip = EyeTooltip(on: !_off);
         }
 
@@ -1004,12 +1105,27 @@ public partial class MultiViewWindow : Window
         /// 别把这几行抄回构造里：抄一份，两边就会慢慢长歪，而歪掉的那一种（永远没接过
         /// 机位的格子）正是最不容易被看见的。
         /// </remarks>
-        private void Paint(bool empty, string note, bool showEye)
+        private void Paint(bool empty, string note, bool turnedOff)
         {
-            Root.Background = empty ? _slotBg : _videoBg;
-            _name.Foreground = empty ? _textSub : Brushes.White;
+            // ★ 三种脸色（T10 + 2026-10-07 追加的第三种）：
+            //   · 未接入（浅底灰字）· 已关闭（**淡琥珀底**，一眼分得开）
+            //   · 有机位没画面（黑底白字）。
+            Root.Background = turnedOff ? _offBg : empty ? _slotBg : _videoBg;
+
+            // ⚠️ 这一笔的墨色得跟着底走：有画面时格子是黑的（白墨），空位是浅的（灰墨）。
+            var ink = empty ? _textSub : Brushes.White;
+
+            _name.Foreground = ink;
             _rotate.Visibility = empty ? Visibility.Collapsed : Visibility.Visible;
-            _eye.Visibility = showEye ? Visibility.Visible : Visibility.Collapsed;
+
+            // ⚠️ 眼睛**只有在这一格有机位、或者它正被关着**时才露面：
+            // 没有机位就没有什么可关的；而关着的那一格必须留着眼睛，
+            // 不然用户再也点不回来。
+            _eye.Visibility = empty && !turnedOff ? Visibility.Collapsed : Visibility.Visible;
+            _eyeShape.Stroke = ink;
+            _eyeDot.Fill = ink;
+
+            _offMark.Visibility = turnedOff ? Visibility.Visible : Visibility.Collapsed;
 
             Empty.Foreground = empty ? _textSub : _countDim;
             Empty.Text = note;
