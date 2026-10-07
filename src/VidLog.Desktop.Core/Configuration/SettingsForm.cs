@@ -239,9 +239,15 @@ public static class SettingsForm
 
             // ── 百度网盘（批次 5，设计图 `_45` / `_46`）──
             // ⚠️ `AutoUploadSince` **刻意不在这里**：盖章的是
-            // `AppHost.SaveSettingsAsync`（拨开那一刻），因为这组设置还有别的入口，
-            // 而这条时间戳是「仅此开关开启后**新开始录制**的视频会上传」唯一的判据 ——
-            // 少盖一次，打开开关就会把整库历史录像一次全传上去。
+            // `SettingsSavePlan.WithAutoUploadStamp`（存设置那一刻，拨开关才盖），
+            // 因为这组设置还有别的入口，而这条时间戳是「仅此开关开启后
+            // **新开始录制**的视频会上传」唯一的判据 —— 少盖一次，
+            // 打开开关就会把整库历史录像一次全传上去。
+            //
+            // ⚠️ 上面那句 `current.Cloud with` 里的 **`current` 是承重的**：
+            // 那张 `with` 表里没有 `AutoUploadSince`，所以已经盖好的那枚章
+            // 是**这样**一路带下来的。改成从头 new 一份 Cloud，章就悄悄没了
+            // （`SettingsSavePlan` 那头为此留了另一道）。
             Cloud = current.Cloud with
             {
                 AutoUpload = input.CloudAutoUpload,

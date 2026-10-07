@@ -386,6 +386,24 @@ public class SettingsStoreTests
     }
 
     [Fact]
+    public void 拨开自动上传盖的那枚章要出现在变更留痕里()
+    {
+        // ⚠️ 这条问的是「事后查不查得出来」。原先这张比较表里**没有这一格**，
+        // 于是「开关开着却一直没传」与「章压根没盖上」在日志上一模一样 ——
+        // 而后者是真实发生过的一个缺陷（拿自己的值喂给自己，
+        // 见 `SettingsSavePlan.WithAutoUploadStamp`）：它没被任何测试或日志发现。
+        var before = AppSettings.Default;
+        var after = SettingsSavePlan.WithAutoUploadStamp(
+            before,
+            before with { Cloud = before.Cloud with { AutoUpload = true } },
+            DateTimeOffset.Now);
+
+        var changes = SettingsStore.DescribeChanges(before, after);
+
+        Assert.Contains(changes, c => c.Contains("起始时间", StringComparison.Ordinal));
+    }
+
+    [Fact]
     public void 没有变化时留痕为空()
     {
         Assert.Empty(SettingsStore.DescribeChanges(AppSettings.Default, AppSettings.Default));

@@ -834,24 +834,19 @@ public sealed class AppHost : IAsyncDisposable
     public async Task SaveSettingsAsync(AppSettings next)
     {
         // ⚠️ 「启用自动上传」被**拨开**的那一刻要盖章（设计图 `_45` 原话：
-        // 「仅此开关开启后新开始录制的视频会上传」）。没有这个时间戳的话，
-        // 「从现在起」会变成「把库里所有历史录像一次全传上去」——
-        // 而那是往外发几个 GB 的数据，用户完全没同意过。
-        // 盖在这里而不是界面上：无论哪条路径存设置，这一刻都会被记下来。
-        if (next.Cloud.AutoUpload != Settings.Cloud.AutoUpload)
-        {
-            next = next with
-            {
-                Cloud = next.Cloud.WithAutoUpload(next.Cloud.AutoUpload, DateTimeOffset.Now),
-            };
-        }
+        // 「仅此开关开启后新开始录制的视频会上传」）。为什么必须盖、为什么
+        // 也不能每次存都重盖，写在 `SettingsSavePlan.WithAutoUploadStamp` 那头。
+        //
+        // ⚠️ 盖在这里而不是界面上：无论哪条路径存设置，这一刻都会被记下来。
+        // 这条不加条件（`if` 收在 Core 里）—— 不加条件时它就是「原样带过去」，
+        // 带过去的正是已经盖好的那枚章。
+        next = SettingsSavePlan.WithAutoUploadStamp(Settings, next, DateTimeOffset.Now);
 
         var changes = SettingsStore.DescribeChanges(Settings, next);
 
-        // ⚠️ 必须在 `Settings = next` **之前**算：赋值之后这两个比较就恒为假了。
-        var audioChanged =
-            next.RecordAudio != Settings.RecordAudio
-            || !string.Equals(next.MicrophoneDevice, Settings.MicrophoneDevice, StringComparison.Ordinal);
+        // ⚠️ 必须在 `Settings = next` **之前**算：赋值之后这两个比较就恒为假了
+        // （那个判据收的是新旧两份，见 `SettingsSavePlan.AudioChanged`）。
+        var audioChanged = SettingsSavePlan.AudioChanged(Settings, next);
 
         await new SettingsStore(Services.Layout.SettingsPath).SaveAsync(next);
         Settings = next;

@@ -783,6 +783,11 @@ public sealed class SettingsStore
         // 网盘目录名不是凭据（AppKey 才是，而它根本不在这里），可以照记。
         Compare("百度网盘.目录名", previous.Cloud.AppName, next.Cloud.AppName);
 
+        // ⚠️ 上面那一格开关的**落点**：开的时候盖的那枚时间戳，它决定「哪些录像
+        // 会被传上去」，而日志里原先一个字都没有 —— 于是「开了开关却一直没传」
+        // 与「章没盖上（拿自己的值喂自己）」这两件事在日志上长得一模一样。
+        Compare("百度网盘.起始时间", previous.Cloud.AutoUploadSince, next.Cloud.AutoUploadSince);
+
         return changes;
     }
 

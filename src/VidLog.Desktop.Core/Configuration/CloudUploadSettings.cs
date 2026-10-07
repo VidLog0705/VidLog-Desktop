@@ -93,20 +93,6 @@ public sealed record CloudUploadSettings
         && !string.IsNullOrWhiteSpace(s.AppName);
 
     /// <summary>
-    /// 把「启用自动上传」拨到某个位置，<b>并顺手盖上前时间戳</b>。
-    /// </summary>
-    /// <remarks>
-    /// ⚠️ 拨开的那一刻必须留下 <see cref="AutoUploadSince"/>，否则
-    /// 「仅此开关开启后新开始录制的视频会上传」这句话就是假的：
-    /// 没有时间戳时服务只能按「库里全都要传」算，而那是往外发几个 GB。
-    /// 关掉时**不动**时间戳（开关本身已经挡住了一切）。
-    /// </remarks>
-    public CloudUploadSettings WithAutoUpload(bool on, DateTimeOffset now) =>
-        AutoUpload == on
-            ? this
-            : this with { AutoUpload = on, AutoUploadSince = on ? now : AutoUploadSince };
-
-    /// <summary>
     /// 补传的下界（含）。
     /// </summary>
     /// <remarks>
