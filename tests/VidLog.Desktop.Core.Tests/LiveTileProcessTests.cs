@@ -194,13 +194,19 @@ public class LiveTileProcessTests
 
         // ⚠️ 这里起的是**进程那一层**（不是 `LiveTile`）：`ErrorTail` 只有它有，
         // 而「进度行有没有灌进错误尾巴」正是这条用例的另一半。
-        await using var tile = LiveTileProcess.Start(ffmpeg!, phone.LiveUrl, 320, 180, logger);
+        // ⚠️ 报数间隔调到 1 秒（生产上是 10 秒，见 `ProgressWatch.DefaultIntervalMs`）：
+        // 那条日志是**攒够一段才报**的，而「攒够」是个墙上时钟 —— 原先照生产的 10 秒
+        // 等，本机 11 秒能成、托管 runner 上就超了 30 秒的预算（2026-10-07 红过一次）。
+        // 调短之后断言的是**同一段逻辑**（认进度行、攒数、跟错误尾巴分开），
+        // 代价只是不再顺带证明「连续十秒都有进度」—— 那一件事由上面等帧那一步盖着。
+        await using var tile = LiveTileProcess.Start(
+            ffmpeg!, phone.LiveUrl, 320, 180, logger, progressInterval: TimeSpan.FromSeconds(1));
         Assert.NotNull(tile);
 
         Assert.True(await WaitForFrameAsync(tile!, TimeSpan.FromSeconds(30)) is not null);
 
-        // 攒够一段才报（10 秒），所以这里等得比别的用例久一点。
         var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(30);
+        var waitingFrom = DateTime.UtcNow;
 
         while (DateTime.UtcNow < deadline && !logger.Messages.Any(m => m.Contains("ffmpeg 自报")))
         {
@@ -210,6 +216,21 @@ public class LiveTileProcessTests
         var line = logger.Messages.FirstOrDefault(m => m.Contains("ffmpeg 自报"));
 
         Assert.NotNull(line);
+
+        // ★ 上面那个 `progressInterval: 1 秒` 的**绊线** —— 少了这一条，谁把那个实参
+        // 去掉都不会有测试喊（两种写法在本机都绿，只差 2 秒与 11 秒）。
+        // 判据是硬的、不是估的：`ProgressWatch.Take` 里那句
+        // `if (now - _atMs < _intervalMs) return false;` —— 间隔写死成生产的
+        // `DefaultIntervalMs`（10 000）时，**第一个 `progress` 块之后不满 10 秒，
+        // 这句日志一个字都出不来**。所以 9 秒是个能失败的下界（走生产间隔必红），
+        // 同时留着 4.5 倍的余量（2026-10-07 本机实测 2 秒）—— 比原先「11 秒等 30 秒」
+        // 那点 2.7 倍余量宽。
+        Assert.True(
+            DateTime.UtcNow - waitingFrom < TimeSpan.FromSeconds(9),
+            $"「ffmpeg 自报」等了 {(DateTime.UtcNow - waitingFrom).TotalSeconds:F1} 秒 —— "
+            + "要么传下去的 progressInterval 没生效（又回到生产的 10 秒），"
+            + "要么这台机器慢到不适合跑这条用例。");
+
         Assert.Contains("我们收到", line);
         Assert.Contains("复制", line);
 

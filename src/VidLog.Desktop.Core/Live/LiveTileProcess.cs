@@ -65,19 +65,24 @@ public sealed class LiveTileProcess : IAsyncDisposable
     private bool _hadFrame;
 
     /// <summary>ffmpeg 自报的那几个数（`-progress pipe:2`）。见 <see cref="DrainErrorsAsync"/>。</summary>
-    private readonly ProgressWatch _progress = new();
+    private readonly ProgressWatch _progress;
 
     /// <summary>读帧那一趟。⚠️ 它有**一次赋值、一次读**，都在同一线程的
     /// 构造与 <see cref="DisposeAsync"/> 上，所以不加锁。</summary>
     private Task _readLoop = Task.CompletedTask;
 
     private LiveTileProcess(
-        Process process, BoundedTextTail errors, IAppLogger logger, Action<LiveTileProcess>? onEnded)
+        Process process,
+        BoundedTextTail errors,
+        IAppLogger logger,
+        Action<LiveTileProcess>? onEnded,
+        long progressIntervalMs)
     {
         _process = process;
         _errors = errors;
         _logger = logger;
         _onEnded = onEnded;
+        _progress = new ProgressWatch(progressIntervalMs);
     }
 
     /// <summary>最新那一帧。还没有就是 <see langword="null"/>（界面画「无信号输入」）。</summary>
@@ -139,6 +144,14 @@ public sealed class LiveTileProcess : IAsyncDisposable
     /// 一格退了 → 用户折腾了六次改档 → 最后还是把窗口关掉重开的。
     /// </para>
     /// </param>
+    /// <param name="progressInterval">
+    /// 「ffmpeg 自报」那句日志**隔多久放一条**（默认 <see cref="ProgressWatch.DefaultIntervalMs"/>）。
+    /// ⚠️ <b>这个口子是给测试开的，生产上别传。</b>那条日志的节奏是**给眼睛看的**
+    /// （10 秒既够看清哪一段时间不对、又不至于把日志淹掉），可它同时也把
+    /// 「等这句日志出现」这件事**钉在了墙上时钟上** —— 2026-10-07 CI 上就这么红过一次
+    /// （本机 11 秒，托管 runner 上超了 30 秒的预算）。测试把它调到一两秒，
+    /// 断言的还是**同一段逻辑**（认进度行、攒数、跟错误尾巴分开），只是不必真等十秒。
+    /// </param>
     /// <remarks>
     /// ⚠️ <b>起不来返回 <see langword="null"/>，不抛。</b>一格拉不起来不该让整个
     /// 多画面窗口开不了 —— 它自己那一格画「无信号输入」并写明原因就够了。
@@ -149,7 +162,8 @@ public sealed class LiveTileProcess : IAsyncDisposable
         int width,
         int height,
         IAppLogger? logger = null,
-        Action<LiveTileProcess>? onEnded = null)
+        Action<LiveTileProcess>? onEnded = null,
+        TimeSpan? progressInterval = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(ffmpegPath);
         ArgumentException.ThrowIfNullOrWhiteSpace(url);
@@ -188,7 +202,12 @@ public sealed class LiveTileProcess : IAsyncDisposable
 
         // ⚠️ 先建实例再起读循环，**而且只建一个**：读循环要挂在返回出去的那一个上。
         // （先前写成「建两个、循环挂在前一个上」，返回的那个永远读不到帧。）
-        var tile = new LiveTileProcess(process, errors, log, onEnded);
+        var tile = new LiveTileProcess(
+            process,
+            errors,
+            log,
+            onEnded,
+            progressInterval is { } span ? (long)span.TotalMilliseconds : ProgressWatch.DefaultIntervalMs);
         var startedAt = Environment.TickCount64;
 
         // stderr 必须排空：一次刷屏就能把它灌满、把进程顶住。
@@ -518,14 +537,19 @@ public sealed class LiveTileProcess : IAsyncDisposable
     /// </remarks>
     private sealed class ProgressWatch
     {
-        /// <summary>多久放一条。</summary>
+        /// <summary>多久放一条（生产上的那一个）。</summary>
         /// <remarks>
         /// 10 秒：ffmpeg 每秒来一段，这个节奏既够看清「哪一段时间不对」，
         /// 又不至于把日志淹掉（9 格 × 6 条/分）。窗口再短，量出来的也只是噪声。
         /// </remarks>
-        private const long IntervalMs = 10_000;
+        public const long DefaultIntervalMs = 10_000;
+
+        /// <summary>这一路实际用的间隔 —— <b>测试会把它调短</b>（见 <see cref="Start"/>）。</summary>
+        private readonly long _intervalMs;
 
         private long _atMs;
+
+        public ProgressWatch(long intervalMs) => _intervalMs = intervalMs;
 
         /// <summary>ffmpeg 自报的输出帧率。</summary>
         public string Fps { get; private set; } = "?";
@@ -568,7 +592,7 @@ public sealed class LiveTileProcess : IAsyncDisposable
                 return false;
             }
 
-            if (now - _atMs < IntervalMs) return false;
+            if (now - _atMs < _intervalMs) return false;
 
             _atMs = now;
             return true;
