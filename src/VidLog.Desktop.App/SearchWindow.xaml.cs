@@ -144,31 +144,15 @@ public partial class SearchWindow : Window
 
     private async Task SearchAsync()
     {
-        var from = FromDate.SelectedDate;
-        var to = ToDate.SelectedDate;
-
-        var query = new RecordingQuery
-        {
-            WaybillText = string.IsNullOrWhiteSpace(SearchBox.Text) ? null : SearchBox.Text.Trim(),
-            MatchMode = TagOf(MatchCombo) switch
-            {
-                "Prefix" => WaybillMatchMode.Prefix,
-                "Fuzzy" => WaybillMatchMode.Contains,
-                _ => WaybillMatchMode.Exact,
-            },
-            // 结束那一天要**整日包含**，所以右边界取次日零点（半开区间）。
-            From = from is null ? null : new DateTimeOffset(from.Value.Date, DateTimeOffset.Now.Offset),
-            To = to is null ? null : new DateTimeOffset(to.Value.Date.AddDays(1), DateTimeOffset.Now.Offset),
-            BusinessType = TagOf(BusinessCombo) switch
-            {
-                "Outbound" => BusinessType.Outbound,
-                "Return" => BusinessType.Return,
-                _ => null,
-            },
-            // ⚠️ `Limit` 默认只有 200，必须显式顶高：分页在客户端切，
-            // 截断了的话「共 N 条」是假的，而界面上一点都看不出来。
-            Limit = int.MaxValue,
-        };
+        // ⚠️ 条件映射在 `SearchForm.BuildQuery` 里（T27② 第 2 批）：这里只管把控件上
+        // 的值读出来 —— 映射写错是一份**少了半截**的列表，界面上看不出来。
+        var query = SearchForm.BuildQuery(
+            SearchBox.Text,
+            TagOf(MatchCombo),
+            TagOf(BusinessCombo),
+            FromDate.SelectedDate is { } f ? DateOnly.FromDateTime(f) : null,
+            ToDate.SelectedDate is { } t ? DateOnly.FromDateTime(t) : null,
+            DateTimeOffset.Now.Offset);
 
         CountText.Text = "正在检索…";
 
@@ -224,9 +208,7 @@ public partial class SearchWindow : Window
                 h);
         }).ToList();
 
-        CountText.Text = _hits.Count == 0
-            ? "共 0 条"
-            : $"共 {_hits.Count} 条，第 {_page + 1} / {PageCount()} 页";
+        CountText.Text = SearchForm.SummaryText(_hits.Count, _page, PageCount());
 
         // T10 空态。⚠️ 一片空白说不出「查过了没有」「还没查」「坏了」的区别，
         // 而这三种情况下用户该做的事**不一样**（换条件 / 动手查 / 报缺陷）。
@@ -244,7 +226,7 @@ public partial class SearchWindow : Window
         }
 
         PrevPageButton.IsEnabled = _page > 0;
-        NextPageButton.IsEnabled = _page + 1 < PageCount();
+        NextPageButton.IsEnabled = SearchForm.CanGoNext(_page, PageCount());
 
         ExportButton.IsEnabled = false;
 
@@ -265,7 +247,8 @@ public partial class SearchWindow : Window
         SearchBox.Focus();
     }
 
-    private int PageCount() => Math.Max(1, (_hits.Count + PageSize - 1) / PageSize);
+    /// <summary>一共几页。算术在 <see cref="SearchForm.PageCount"/> 里（T27② 第 2 批）。</summary>
+    private int PageCount() => SearchForm.PageCount(_hits.Count, PageSize);
 
     private void OnPrevPage(object sender, RoutedEventArgs e)
     {
