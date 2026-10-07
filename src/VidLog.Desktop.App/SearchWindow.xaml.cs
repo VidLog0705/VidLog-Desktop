@@ -8,9 +8,10 @@ using System.Windows.Threading;
 
 // 本工程同时开了 UseWPF 与 UseWindowsForms（后者只为托盘图标），
 // ImplicitUsings 会把两边的同名类型都带进来。这里钉死成 WPF 的那套。
+// ⚠️ 原来这儿还有 `Brush` 与 `Brushes` 两行：2026-10-07 日历那个转换器改成
+// **只回答 true / false**（上色交给模板里的 DataTrigger）之后，本文件不再出现
+// 这两个标识符，那两行一并删掉。
 using Application = System.Windows.Application;
-using Brush = System.Windows.Media.Brush;
-using Brushes = System.Windows.Media.Brushes;
 using ComboBox = System.Windows.Controls.ComboBox;
 using ComboBoxItem = System.Windows.Controls.ComboBoxItem;
 using KeyEventArgs = System.Windows.Input.KeyEventArgs;
@@ -807,13 +808,21 @@ public partial class SearchWindow : Window
 }
 
 /// <summary>
-/// 日历上给「这一天有录像」涂色（T14）。
+/// 日历上「这一天有没有录像」（T14）。
 /// </summary>
 /// <remarks>
 /// ⚠️ 它是个**手里拿着表的转换器**。WPF 的 <c>CalendarDayButton</c> 没有
 /// 「这几天要突出」这种接口，它只把它代表的那一天放在 <c>DataContext</c> 上 ——
 /// 所以只能由这里拿着全库有录像的那些天，在日的模板里被问一句「这天算不算」。
 /// 表由 <see cref="SearchWindow"/> 填（<see cref="Days"/>）。
+/// </remarks>
+/// <remarks>
+/// ⚠️ <b>它只回答 true / false，<u>不</u>返回画刷</b>（2026-10-07 改）。
+/// 原来它返回 `AccentWeak` 那支笔刷、每次换算时拿去 <c>Application.Current.TryFindResource</c>
+/// 现查 —— 现查解决了「亮色焊死」，但**转换器的结果不会被主题切换重新算一遍**：
+/// 日历开着不动时改系统主题，这一天还得再滚一次/再搜一次才跟上。
+/// 现在色由日的模板里那条 <c>DataTrigger</c> 给、走 <c>{DynamicResource}</c>：
+/// 字典一换 WPF 自己重解析，跟别的控件同一条路。
 /// </remarks>
 internal sealed class DayMarkConverter : IValueConverter
 {
@@ -824,26 +833,10 @@ internal sealed class DayMarkConverter : IValueConverter
     /// </remarks>
     public HashSet<DateTime> Days { get; } = [];
 
-    /// <summary>有录像的那天涂成哪个资源的色。</summary>
-    private const string MarkedKey = "AccentWeak";
-
     public object Convert(object? value, Type targetType, object? parameter, CultureInfo culture)
-        => value is DateTime day && Days.Contains(day) ? MarkedBrush() : Brushes.Transparent;
+        => value is DateTime day && Days.Contains(day);
 
-    /// <summary>
-    /// 「有录像的那天」那个点的颜色，**每次换算时按名字现查**。
-    /// </summary>
-    /// <remarks>
-    /// ⚠️ 为什么不是 XAML 传进来的一支笔刷：这个类是普通 <see cref="IValueConverter"/>，
-    /// 想收 <c>{DynamicResource AccentWeak}</c> 就得把属性改成 DependencyProperty
-    /// （普通属性收不了动态资源）；而 <c>{StaticResource}</c> 会在窗口加载那一刻
-    /// 把**亮色**那支焊死 —— 暗色主题下这个点是错的（2026-10-07 实测：换完主题字典，
-    /// 新建控件从 <c>Style</c> 里拿到的仍是亮色笔刷）。现查这条路两个毛病都没有。
-    /// </remarks>
-    private static Brush MarkedBrush() =>
-        Application.Current?.TryFindResource(MarkedKey) as Brush ?? Brushes.Transparent;
-
-    /// <remarks>只读的涂色，没人往回写。</remarks>
+    /// <remarks>只读的判定，没人往回写。</remarks>
     public object ConvertBack(object? value, Type targetType, object? parameter, CultureInfo culture)
         => throw new NotSupportedException();
 }

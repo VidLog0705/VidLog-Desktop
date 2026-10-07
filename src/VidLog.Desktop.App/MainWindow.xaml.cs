@@ -355,9 +355,16 @@ public partial class MainWindow : Window
         //
         // ⚠️ 颜色**只在这里给**（XAML 那颗字上不再写 `Foreground`）：
         // 两处各写一份的话，「哪种状态是什么色」就有了两个来源。
-        PreviewClockText.Foreground = clock.IsCalibrated
-            ? Brushes.White
-            : (Brush)FindResource("Warning");
+        // ⚠️ 走 `SetResourceReference`：`Warning` 那支要是用 `FindResource` 取，
+        // 取到的是一支**冻结的**笔刷，用户开着程序改系统主题时它不跟着换。
+        if (clock.IsCalibrated)
+        {
+            PreviewClockText.Foreground = Brushes.White;
+        }
+        else
+        {
+            PreviewClockText.SetResourceReference(TextBlock.ForegroundProperty, "Warning");
+        }
     }
 
     /// <summary>

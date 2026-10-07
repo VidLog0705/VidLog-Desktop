@@ -46,14 +46,13 @@
 
     <Window.Resources>
         <!--
+            ⚠️ 这个转换器**只回答 true / false，不返回画刷**（2026-10-07 改）。
+            原来它返回 `AccentWeak` 那支笔刷、每次换算时现查 —— 现查解决了「亮色焊死」，
+            但**转换器的结果不会被主题切换重新算一遍**：日历开着不动时改系统主题，
+            这一天还得再滚一次 / 再搜一次才跟上。色现在由下面那条 `DataTrigger` 给、
+            走 `{DynamicResource}`，字典一换 WPF 自己重解析，与别的控件同一条路。
             ⚠️ 顺序不能反：下面那个日的模板用 `{StaticResource DayMark}` 取它，
             StaticResource 只认**写在前面**的。表由后台填（见 `SearchWindow.xaml.cs`）。
-        -->
-        <!--
-            ⚠️ 这个转换器**没有**取色的属性：它是普通 IValueConverter、`Marked` 是普通
-            属性，`{DynamicResource}` 在它上面用不了，而 `{StaticResource}` 会把亮色
-            那支焊死（暗色下这个点就是错的）。色由它自己在换算时按名字现查 ——
-            见 `DayMarkConverter.Convert` 的说明。
         -->
         <local:DayMarkConverter x:Key="DayMark"/>
 
@@ -113,12 +112,18 @@
             <Setter Property="Template">
                 <Setter.Value>
                     <ControlTemplate TargetType="CalendarDayButton">
-                        <Border x:Name="Bd" CornerRadius="4" SnapsToDevicePixels="True"
-                                Background="{Binding Converter={StaticResource DayMark}}">
+                        <Border x:Name="Bd" CornerRadius="4" SnapsToDevicePixels="True">
                             <ContentPresenter HorizontalAlignment="Center"
                                               VerticalAlignment="Center"/>
                         </Border>
                         <ControlTemplate.Triggers>
+                            <!-- ⚠️ 这一条**必须排在**下面悬停 / 选中那两条**前面**：
+                                 同一个 TriggerCollection 里，后面的会盖掉前面的。 -->
+                            <DataTrigger Binding="{Binding Converter={StaticResource DayMark}}"
+                                         Value="True">
+                                <Setter TargetName="Bd" Property="Border.Background"
+                                        Value="{DynamicResource AccentWeak}"/>
+                            </DataTrigger>
                             <!-- ⚠️ 悬停**不能**也用 AccentWeak —— 那是「有录像」的色，
                                  鼠标一划过就分不清这天到底有没有东西了。用中性灰。 -->
                             <Trigger Property="IsMouseOver" Value="True">

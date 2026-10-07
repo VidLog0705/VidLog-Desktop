@@ -760,6 +760,8 @@ public class DesktopServicesTests
     /// <para>
     /// ⚠️ 颜色改成**只在 <c>UpdatePreviewClock</c> 里给**（XAML 那颗字上不再写
     /// <c>Foreground</c>）：两处各写一份的话，「哪种状态是什么色」就有两个来源。
+    /// ⚠️ 这里钉的是「**这一处**两支各有各的颜色」，形状是 <c>if/else</c>
+    /// （2026-10-07 之前是同一个三元、未校准那支走 <c>FindResource</c>）。
     /// </para>
     /// <para>
     /// ⚠️ 为什么只能看源码文本：App 层没有测试工程（与上面几条同一条理由）。
@@ -775,11 +777,19 @@ public class DesktopServicesTests
 
         // 哨兵：扫到的是真文件（ReadSplit 扫到零个文件时这两条会红）。
         Assert.Contains("PreviewClockText.Text =", main, StringComparison.Ordinal);
-        Assert.Equal(1, CountOf(main, "PreviewClockText.Foreground ="));
 
-        // 两支都要在同一个三元里：校准了恢复白色，没校准是警示色。
-        Assert.Contains("Brushes.White", main, StringComparison.Ordinal);
-        Assert.Contains("FindResource(\"Warning\")", main, StringComparison.Ordinal);
+        // 两支都必须**在这一处给**（XAML 那颗字上不许再写 `Foreground`）：
+        // 校准了恢复白色（字面量，不是主题键），没校准是警示色。
+        // ⚠️ 2026-10-07 起那两支是 if/else 而不是同一个三元 —— 未校准那支
+        // 从 `FindResource("Warning")` 改成了 `SetResourceReference(...)`，
+        // 因为它取的是**一支冻结的笔刷**，用户开着程序改系统主题时不跟着换。
+        Assert.Equal(1, CountOf(main, "PreviewClockText.Foreground ="));
+        Assert.Equal(1, CountOf(main, "PreviewClockText.SetResourceReference("));
+        Assert.Contains("PreviewClockText.Foreground = Brushes.White;", main, StringComparison.Ordinal);
+        Assert.Contains(
+            "PreviewClockText.SetResourceReference(TextBlock.ForegroundProperty, \"Warning\");",
+            main,
+            StringComparison.Ordinal);
     }
 
     /// <summary>

@@ -161,16 +161,28 @@ internal static class AppTheme
     /// 别去改 <c>Theme.xaml</c> 那份 —— 它是 <c>Source</c> 装的、只读。
     /// </para>
     /// <para>
-    /// <b>已知够不着的一类（2026-10-07 查出来的，没修）：</b>
-    /// C# 里用 <c>FindResource("X")</c> / <c>TryFindResource("X")</c>
-    /// <b>取到手就存进字段</b>的那几支 —— 换字典它们不会跟着变，因为
-    /// <c>FindResource</c> 是**当场把对象给你**，不是 <c>DynamicResource</c> 那种订阅。
-    /// 现在有 <c>MultiViewWindow</c> 的九格底色/计数色、<c>WizardWindow</c> 的四支、
-    /// <c>SearchWindow.DayMarkConverter</c>、以及 <c>MainWindow</c> / <c>ImportWindow</c> /
-    /// <c>SettingsWindow</c> 里几处状态字色。
-    /// <b>开机就是暗色的没问题</b>（那些窗口是之后才构造的，取到的就是暗色值）；
-    /// 只有「程序开着的时候去改 Windows 主题」那一瞬间，这几处会停在亮色，
-    /// 直到重开那个窗口。
+    /// ⚠️ <b>取颜色别用 <c>FindResource</c>。</b> 它是**当场把对象给你**，
+    /// 不是 <c>DynamicResource</c> 那种订阅：拿到的是一支**冻结的**笔刷，
+    /// 赋给 DP 之后就跟这份字典脱钩了 —— 换主题换不掉它，
+    /// 而且没有任何东西会喊。C# 里要取主题色，一律走
+    /// <c>element.SetResourceReference(dp, "Key")</c> 或
+    /// <c>new DynamicResourceExtension("Key").ProvideValue(...)</c>。
+    /// ⚠️ 它**只对已经进了可视树**的元素重解析：挂在一棵没上屏的树上的元素
+    /// 不会收到字典变动（2026-10-07 用真 `Window` 正反各量过一次）。本仓的用法全在窗口里，够。
+    /// </para>
+    /// <para>
+    /// ⚠️ 上面那句「重解析」是**量过的**，不是照文档抄的（2026-10-07，同一台机器上）：
+    /// 同一个键，`SetResourceReference` 那支 <c>#FF00FF00</c> → <c>#FFFF00FF</c>；
+    /// `FindResource` 取到再赋给 DP 的那支，字典换完**仍是** <c>#FF00FF00</c>。
+    /// </para>
+    /// <para>
+    /// 这条**是修出来的**：2026-10-07 之前有九格底色/计数色（<c>MultiViewWindow.Cell</c>
+    /// 的九个 <c>readonly Brush</c> 字段）、<c>WizardWindow</c> 的四支、
+    /// <c>SearchWindow.DayMarkConverter</c>、以及 <c>MainWindow</c> /
+    /// <c>ImportWindow</c> / <c>SettingsWindow</c> 里几处状态字色都这么写。
+    /// 症状是「开机就是暗色没事，**开着程序去改 Windows 主题**时那几处停在亮色」
+    /// （那些窗口是之后才构造的，所以开机路径看着是对的 —— 这正是它难被发现的原因）。
+    /// 现在全仓 C# 里已经没有一处那么取了。
     /// </para>
     /// </remarks>
     /// <returns>这次真的改动了没有（调用方靠它决定要不要记一条）。</returns>

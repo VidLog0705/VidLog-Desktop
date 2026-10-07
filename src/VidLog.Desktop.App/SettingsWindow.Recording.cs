@@ -324,8 +324,10 @@ public partial class SettingsWindow : Window
         var (text, warning) = EffectiveSpecNotice.Describe(
             wanted, _host.EffectiveSpec, _host.ProbedSpec, _host.SpecFallbackReason);
 
-        EffectiveSpecText.Foreground = (System.Windows.Media.Brush)FindResource(
-            warning ? "Warning" : "TextSecondary");
+        // ⚠️ 走 `SetResourceReference`：`Foreground = FindResource(...)` 只在这一刻取一支
+        // **冻结的**笔刷，用户开着程序改系统主题时它不跟着换。
+        EffectiveSpecText.SetResourceReference(
+            TextBlock.ForegroundProperty, warning ? "Warning" : "TextSecondary");
         EffectiveSpecText.Text = text;
     }
 

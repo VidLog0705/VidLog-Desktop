@@ -5,9 +5,10 @@ using System.Windows.Media.Imaging;
 using System.Windows.Threading;
 
 // 本工程同时开了 UseWPF 与 UseWindowsForms（后者只为托盘图标），
-// ImplicitUsings 会把两边的命名空间都带进来，于是 Brush / MessageBox / RadioButton
+// ImplicitUsings 会把两边的命名空间都带进来，于是 MessageBox / RadioButton
 // 这类同名类型变成「不明确」。这里用**别名钉死成 WPF 的那套**（与拆窗那几个文件同一条口径）。
-using Brush = System.Windows.Media.Brush;
+// ⚠️ 原来这儿还举了 `Brush` 当例子、也真钉了一行：2026-10-07 那四个笔刷字段删掉
+// （改成 `Tint` 走 `SetResourceReference`）之后本文件不再出现 `Brush`，那行别名已删。
 using ComboBoxItem = System.Windows.Controls.ComboBoxItem;
 using KeyEventArgs = System.Windows.Input.KeyEventArgs;
 using MessageBox = System.Windows.MessageBox;
@@ -116,10 +117,11 @@ public partial class WizardWindow : Window
     private bool _closingNow;
     private int _step;
 
-    private readonly Brush _warning;
-    private readonly Brush _textPrimary;
-    private readonly Brush _textSecondary;
-    private readonly Brush _success;
+    // ⚠️ 这里原来有四个 `readonly Brush` 字段（`_warning` / `_textPrimary` /
+    // `_textSecondary` / `_success`），构造里 `FindResource` 取一次就焊死。
+    // 2026-10-07 全删掉，改在用的地方走 `SetResourceReference`：取一次的做法在
+    // 「开机就是暗色」时没问题，但用户**开着程序去改 Windows 主题**时，已经建好的
+    // 控件会一直停在亮色 —— 换字典换不掉已经赋给 DP 的那支笔刷（`Brush` 是冻结的）。
 
     public WizardWindow(AppHost host)
     {
@@ -127,11 +129,6 @@ public partial class WizardWindow : Window
         _logger = host.Logger;
 
         InitializeComponent();
-
-        _warning = (Brush)FindResource("Warning");
-        _textPrimary = (Brush)FindResource("TextPrimary");
-        _textSecondary = (Brush)FindResource("TextSecondary");
-        _success = (Brush)FindResource("Success");
 
         _previewTimer.Tick += OnPreviewTick;
         _micTimer.Tick += OnMicrophoneTick;
@@ -979,7 +976,7 @@ public partial class WizardWindow : Window
         PerfResultBox.Visibility = Visibility.Visible;
 
         PerfBanner.Text = reason;
-        PerfBanner.Foreground = _warning;
+        Tint(PerfBanner, "Warning");
         PerfResultTitle.Text = "性能建议未完成";
         PerfResultSpec.Text = $"当前按 {wanted.Label} 录制";
         PerfResultDetail.Text = "这一次检测没跑起来，所以这一档没有被验过 —— 上面那句话是这次失败的原因，不是这一档的结论。";
@@ -1013,7 +1010,7 @@ public partial class WizardWindow : Window
         if (!selection.ChangedFromRequested)
         {
             PerfBanner.Text = "本机编码能力检测通过，可以继续";
-            PerfBanner.Foreground = _textPrimary;
+            Tint(PerfBanner, "TextPrimary");
             PerfResultTitle.Text = "性能建议已完成";
             PerfResultSpec.Text = $"当前采用：{measured}";
             PerfResultDetail.Text =
@@ -1029,7 +1026,7 @@ public partial class WizardWindow : Window
         PerfBanner.Text = selection.NativeFallback
             ? "当前选择未通过编码器检测，已采用可用的原生配置，仍可继续"
             : $"当前选择没跑通，已改用 {selection.Spec.Label}，仍可继续";
-        PerfBanner.Foreground = _warning;
+        Tint(PerfBanner, "Warning");
 
         PerfResultTitle.Text = selection.NativeFallback ? "性能建议未完成" : "性能建议已调整";
         PerfResultSpec.Text = $"当前采用：{measured}";
@@ -1187,12 +1184,25 @@ public partial class WizardWindow : Window
         MicLevelText.Text = heard
             ? "已检测到麦克风音量"
             : "还没有听到声音 —— 对着麦克风说句话试试";
-        MicLevelText.Foreground = heard ? _success : _textSecondary;
+        Tint(MicLevelText, heard ? "Success" : "TextSecondary");
     }
 
     // ─────────────────────────────────────────────
     // 步 6 · 扫码枪（可选）
     // ─────────────────────────────────────────────
+
+    /// <summary>
+    /// 把一个 DP 指到资源键上。
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ 别改回 <c>X.Foreground = (Brush)FindResource("…")</c>：那样取到的是一支
+    /// **冻结的**笔刷，赋给 DP 之后就跟资源字典脱钩了 —— 用户**开着程序去改
+    /// Windows 主题**时，这个控件会一直停在亮色，而且没有任何东西会喊。
+    /// <c>SetResourceReference</c> 找不到时**只是先不赋值**（不像 <c>FindResource</c>
+    /// 那样抛），字典一换 WPF 自己重解析。
+    /// </remarks>
+    private static void Tint(FrameworkElement target, string key) =>
+        target.SetResourceReference(System.Windows.Controls.TextBlock.ForegroundProperty, key);
 
     private void ShowBarcode()
     {
@@ -1219,21 +1229,21 @@ public partial class WizardWindow : Window
         if (typed.Length == 0)
         {
             BarcodeHint.Text = "没有扫码枪可直接进入下一步";
-            BarcodeHint.Foreground = _textSecondary;
+            Tint(BarcodeHint, "TextSecondary");
             return;
         }
 
         if (typed.Contains(TestBarcode, StringComparison.OrdinalIgnoreCase))
         {
             BarcodeHint.Text = "✅ 扫码枪工作正常 —— 条码内容已经打进上面的框里了。";
-            BarcodeHint.Foreground = _success;
+            Tint(BarcodeHint, "Success");
             return;
         }
 
         // 打进别的单号也算数（照图那句「也可以扫描任意真实面单条码」）——
         // 判据是「字有没有进来」，不是「进来的是不是这一串」。
         BarcodeHint.Text = $"读到「{typed}」—— 扫码枪能把字打进输入框，就是能用。";
-        BarcodeHint.Foreground = _success;
+        Tint(BarcodeHint, "Success");
     }
 
     // ─────────────────────────────────────────────

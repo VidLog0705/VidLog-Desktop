@@ -235,7 +235,10 @@ public partial class ImportWindow : Window
 
         // ⚠️ 失败那一句必须与说明文字**在颜色上拉开**：混在一起时用户会把
         // 「导入没成」当成又一行说明读过去。
-        StatusText.Foreground = (System.Windows.Media.Brush)FindResource(
+        // ⚠️ 走 `SetResourceReference` 而不是 `Foreground = FindResource(...)`：
+        // 后者只在这一次赋值时取一支**冻结的**笔刷，用户开着程序改系统主题时不跟着换。
+        StatusText.SetResourceReference(
+            System.Windows.Controls.TextBlock.ForegroundProperty,
             level == LogLevel.Warn ? "Warning" : "TextSecondary");
     }
 

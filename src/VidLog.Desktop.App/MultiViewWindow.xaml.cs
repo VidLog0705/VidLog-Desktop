@@ -27,6 +27,7 @@ using TextBlock = System.Windows.Controls.TextBlock;
 // 眼睛那个图标是内联矢量（同 MainWindow 里那排图标）：`Path` 不钉的话
 // 会和 WinForms 那边的同名类型撞车。
 using Path = System.Windows.Shapes.Path;
+using Shape = System.Windows.Shapes.Shape;
 
 namespace VidLog.Desktop.App;
 
@@ -626,7 +627,6 @@ public partial class MultiViewWindow : Window
         _fullscreenNote = new TextBlock
         {
             Text = "无信号输入",
-            Foreground = (Brush)FindResource("TextDisabled"),
             HorizontalAlignment = HorizontalAlignment.Center,
             VerticalAlignment = VerticalAlignment.Center,
             TextWrapping = TextWrapping.Wrap,
@@ -634,6 +634,10 @@ public partial class MultiViewWindow : Window
             MaxWidth = 520,
             Visibility = Visibility.Collapsed,
         };
+
+        // ⚠️ 不写 `Foreground = (Brush)FindResource(...)`：那一支只在建的时候取一次，
+        // 之后用户改系统主题它不跟着换（理由与 `Cell.Tint` 那段完全一样）。
+        _fullscreenNote.SetResourceReference(TextBlock.ForegroundProperty, "TextDisabled");
 
         FullscreenHost.Children.Clear();
         FullscreenHost.Children.Add(_fullscreenImage);
@@ -801,15 +805,12 @@ public partial class MultiViewWindow : Window
 
         private readonly MultiViewWindow _owner;
         private readonly int _index;
-        private readonly Brush _countGreen;
-        private readonly Brush _countRed;
-        private readonly Brush _countDim;
-        private readonly Brush _countWarn;
-        private readonly Brush _textSub;
-        private readonly Brush _textMain;
-        private readonly Brush _videoBg;
-        private readonly Brush _slotBg;
-        private readonly Brush _offBg;
+
+        // ⚠️ 这里原来有**九个 `readonly Brush` 字段**（`_countGreen` / `_textSub` / `_videoBg`
+        // 那一批），构造里 `FindResource` 取一次就焊死。2026-10-07 全部删掉，改走
+        // `SetResourceReference`（见 `Tint` 那段注释）：取一次的做法在「开机就是暗色」
+        // 时没问题，但用户**开着程序去改 Windows 主题**时，已经建好的格子会一直停在
+        // 亮色 —— 换字典换不掉已经赋给 DP 的那支笔刷。
         private readonly TextBlock _name;
         private readonly Button _rotate;
         private readonly Button _eye;
@@ -826,31 +827,6 @@ public partial class MultiViewWindow : Window
         {
             _owner = owner;
             _index = index;
-
-            // ⚠️ 颜色在这一刻就取好（构造里 `FindResource` 是**验过能用**的 ——
-            // 别的几个键就是在这儿取的）。放到每帧的渲染路径里去查，一查不到
-            // 就是**一条被丢掉的异常**：字不出现，而没有任何地方会说话。
-            _countGreen = (Brush)owner.FindResource("Success");
-            _countRed = (Brush)owner.FindResource("Danger");
-
-            // 推流健康度那一行（T11）用的两个：帧率是**说明**（暗），丢帧是**要看的**（琥珀）。
-            _countDim = (Brush)owner.FindResource("TextDisabled");
-            _countWarn = (Brush)owner.FindResource("Warning");
-
-            // ★ T10 的两种格子各有各的脸色（见 `Paint`）：空位是浅底 + 次级灰字，
-            // 「有机位没画面」是黑底 + 白字 —— 两句话之外再给一眼就能看出的底色差。
-            _textSub = (Brush)owner.FindResource(MutedKey);
-
-            // 浅底上那颗 `⟳` 的墨色（见 `Paint`）。⚠️ 用正文墨不用纯黑：主题里
-            // 从来没有纯黑这一个值，而 #1E293B 压在浅底上是 **13.98:1**，
-            // 一样是「黑色」（量的，不是估的）。
-            _textMain = (Brush)owner.FindResource("TextPrimary");
-
-            _videoBg = (Brush)owner.FindResource("VideoBackground");
-            _slotBg = (Brush)owner.FindResource(SlotKey);
-
-            // ★ 第三种脸色（2026-10-07，需求方要求「一眼分得出」）：「已关闭」那块**淡琥珀底**。
-            _offBg = (Brush)owner.FindResource(OffSlotKey);
 
             Surface = new Image
             {
@@ -884,8 +860,8 @@ public partial class MultiViewWindow : Window
             // Viewbox 的宽高是写死的，孩子收起来了它照样占着 34 像素。
             _offMark = IconBox(
                 34,
-                StrokeShape($"{EyeOutline} {EyeSlash}", _textSub, 1.5),
-                new Path { Data = Geometry.Parse(EyePupil), Fill = _textSub });
+                StrokeShape($"{EyeOutline} {EyeSlash}", MutedKey, 1.5),
+                Pupil(MutedKey));
 
             _offMark.Margin = new Thickness(0, 0, 0, 10);
             _offMark.Visibility = Visibility.Collapsed;
@@ -932,8 +908,9 @@ public partial class MultiViewWindow : Window
 
             // ★ T9 的「眼睛」：关掉这一格（**真的停掉它那一路 ffmpeg**，不是把画面藏起来）。
             // 两笔：外圈那道梭形（含斜杠）走 Stroke，瞳走 Fill —— 换色时两笔一起换。
-            _eyeShape = StrokeShape(EyeOutline, _textSub, 1.5);
-            _eyeDot = new Path { Data = Geometry.Parse(EyePupil), Fill = _textSub };
+            // ⚠️ 这两笔的墨色**由 `Paint` 每画一次重指**（跟着底走，见那儿的 `Tint`）。
+            _eyeShape = StrokeShape(EyeOutline, MutedKey, 1.5);
+            _eyeDot = Pupil(MutedKey);
 
             _eye = new Button
             {
@@ -986,11 +963,13 @@ public partial class MultiViewWindow : Window
             {
                 Margin = new Thickness(4),
                 CornerRadius = new CornerRadius(6),
-                BorderBrush = (Brush)((FrameworkElement)owner).FindResource("CardBorder"),
                 BorderThickness = new Thickness(1),
                 Child = inner,
                 Tag = this,
             };
+
+            // ⚠️ 同上：指到键上，别在建的时候取一次（`Cell.Tint` 那段注释）。
+            Root.SetResourceReference(Border.BorderBrushProperty, "CardBorder");
 
             Root.MouseLeftButtonDown += OnMouseDown;
 
@@ -1007,18 +986,69 @@ public partial class MultiViewWindow : Window
                 : "重新看这一格";
 
         /// <summary>一笔描边（外圈、斜杠那种）。</summary>
-        private static Path StrokeShape(string data, Brush ink, double thickness) => new()
+        /// <summary>
+        /// 一道描边、不填色的形状。墨色收**资源键**而不是笔刷 —— 见 <see cref="Tint"/>。
+        /// </summary>
+        private static Path StrokeShape(string data, string inkKey, double thickness)
         {
-            Data = Geometry.Parse(data),
-            Stroke = ink,
-            StrokeThickness = thickness,
-            // ⚠️ 外圈那道梭形是**闭合**的，不写这一行它会按默认的黑色填满 ——
-            // 那颗眼睛会变成一个实心黑疙瘩。
-            Fill = Brushes.Transparent,
-            StrokeLineJoin = PenLineJoin.Round,
-            StrokeStartLineCap = PenLineCap.Round,
-            StrokeEndLineCap = PenLineCap.Round,
-        };
+            var path = new Path
+            {
+                Data = Geometry.Parse(data),
+                StrokeThickness = thickness,
+                // ⚠️ 外圈那道梭形是**闭合**的，不写这一行它会按默认的黑色填满 ——
+                // 那颗眼睛会变成一个实心黑疙瘩。
+                Fill = Brushes.Transparent,
+                StrokeLineJoin = PenLineJoin.Round,
+                StrokeStartLineCap = PenLineCap.Round,
+                StrokeEndLineCap = PenLineCap.Round,
+            };
+
+            path.SetResourceReference(Shape.StrokeProperty, inkKey);
+
+            return path;
+        }
+
+        /// <summary>眼睛中间那个瞳。墨色同样走资源键。</summary>
+        private static Path Pupil(string inkKey)
+        {
+            var dot = new Path { Data = Geometry.Parse(EyePupil) };
+
+            dot.SetResourceReference(Shape.FillProperty, inkKey);
+
+            return dot;
+        }
+
+        /// <summary>
+        /// 把一个 DP 指到资源键上；<paramref name="key"/> 是 <c>null</c> 就是纯白。
+        /// </summary>
+        /// <remarks>
+        /// <para>
+        /// ⚠️ <b>全类不再缓存 <c>Brush</c> 字段</b>（2026-10-07 改）。
+        /// <c>FindResource</c> 取一次就把那支**冻结**的笔刷焊在 DP 上：换主题字典换不掉
+        /// 它。开机就是暗色没问题（构造时取的就是暗色那支），但用户**开着程序去改
+        /// Windows 主题**时，已经建好的格子会一直停在亮色 —— 而没有任何东西会喊。
+        /// </para>
+        /// <para>
+        /// <c>SetResourceReference</c> 两个毛病都没有：找不到**只是先不赋值**
+        ///（不像 <c>FindResource</c> 那样抛 —— 原来那些字段正是为了躲这个才在构造里取的），
+        /// 而且字典一换 WPF **自己重解析**，不需要谁去通知格子。
+        /// </para>
+        /// <para>
+        /// 纯白那一支仍写字面量：它不是主题里的键（两套主题下画面区都是近黑底，
+        /// 白不随之变），硬塞一个键反而要多维护一个值不会变的资源。
+        /// </para>
+        /// </remarks>
+        private static void Tint(FrameworkElement target, DependencyProperty dp, string? key)
+        {
+            if (key is null)
+            {
+                target.SetValue(dp, Brushes.White);
+            }
+            else
+            {
+                target.SetResourceReference(dp, key);
+            }
+        }
 
         /// <summary>把两笔拢成一个固定大小的方框，并**缩放到这个大小**。</summary>
         /// <remarks>
@@ -1121,12 +1151,17 @@ public partial class MultiViewWindow : Window
             // ★ 三种脸色（T10 + 2026-10-07 追加的第三种）：
             //   · 未接入（浅底灰字）· 已关闭（**淡琥珀底**，一眼分得开）
             //   · 有机位没画面（黑底白字）。
-            Root.Background = turnedOff ? _offBg : empty ? _slotBg : _videoBg;
+            Root.SetResourceReference(
+                Border.BackgroundProperty,
+                turnedOff ? OffSlotKey : empty ? SlotKey : "VideoBackground");
 
-            // ⚠️ 这一笔的墨色得跟着底走：有画面时格子是黑的（白墨），空位是浅的（灰墨）。
-            var ink = empty ? _textSub : Brushes.White;
+            // ⚠️ 这几笔的墨色得跟着底走：有画面时格子是近黑的（白墨），空位是浅的（次级灰）。
+            // 白是**字面量**、不是资源键 —— 两套主题下画面区都是近黑底，白不随之变。
+            var inkKey = empty ? MutedKey : null;
 
-            _name.Foreground = ink;
+            Tint(_name, TextBlock.ForegroundProperty, inkKey);
+            Tint(_eyeShape, Shape.StrokeProperty, inkKey);
+            Tint(_eyeDot, Shape.FillProperty, inkKey);
 
             // ⚠️ 这颗 `⟳` 的墨色**必须自己给** —— 它是全格唯一一笔没指定墨色的字
             //（`_name` / `Empty` / `Counts` 每一笔都显式给了画刷），不给的话它拿到的是
@@ -1136,21 +1171,21 @@ public partial class MultiViewWindow : Window
             // ⚠️ 这个数**改过一次**：`9c9067c` 的提交消息里写的是「1.09:1」，那是估的；
             // 把整个色板按 WCAG 相对亮度公式重算后是 1.18:1（结论不变，数字错了）。
             // 需求方 2026-10-07：「深底用白色、浅底用黑色，要让用户明显看到这个按钮。」
-            // ⚠️ 浅底那一支眼下走不到（浅底的格子这颗按钮是收起来的），留着是给
-            // 底下那条绊线一个**能失败**的形状 —— 写死一个颜色它就红。
-            _rotate.Foreground = empty ? _textMain : Brushes.White;
+            // ⚠️ 浅底那一支走 `TextPrimary`（正文墨；主题里从来没有纯黑这一个值，
+            // 而 #1E293B 压在浅底上是 **13.98:1** —— 一样是「黑色」，量的不是估的）。
+            // 它眼下走不到（浅底的格子这颗按钮是收起来的），留着是给底下那条绊线
+            // 一个**能失败**的形状 —— 写死一个颜色它就红。
+            Tint(_rotate, TextBlock.ForegroundProperty, empty ? "TextPrimary" : null);
             _rotate.Visibility = empty ? Visibility.Collapsed : Visibility.Visible;
 
             // ⚠️ 眼睛**只有在这一格有机位、或者它正被关着**时才露面：
             // 没有机位就没有什么可关的；而关着的那一格必须留着眼睛，
             // 不然用户再也点不回来。
             _eye.Visibility = empty && !turnedOff ? Visibility.Collapsed : Visibility.Visible;
-            _eyeShape.Stroke = ink;
-            _eyeDot.Fill = ink;
 
             _offMark.Visibility = turnedOff ? Visibility.Visible : Visibility.Collapsed;
 
-            Empty.Foreground = empty ? _textSub : _countDim;
+            Tint(Empty, TextBlock.ForegroundProperty, empty ? MutedKey : "TextDisabled");
             Empty.Text = note;
 
             // ⚠️ 必须重新露出来：`Pump` 在出了第一帧之后把它按下去了，
@@ -1258,7 +1293,7 @@ public partial class MultiViewWindow : Window
 
             Counts.Inlines.Clear();
 
-            Counts.Inlines.Add(new Run(LiveCountsText.Fps(fps)) { Foreground = _countDim });
+            Counts.Inlines.Add(Tinted(new Run(LiveCountsText.Fps(fps)), "TextDisabled"));
 
             // ⚠️ 两个丢帧数**没有就不出现**（而不是显示 0）：健康时这一行只有帧率，
             // 挂一串 0 会把「有东西要看了」这个信号淹掉 —— 而这行存在的全部意义
@@ -1271,9 +1306,9 @@ public partial class MultiViewWindow : Window
 
             Counts.Inlines.Add(new LineBreak());
 
-            Counts.Inlines.Add(new Run(LiveCountsText.Outbound(counts)) { Foreground = _countGreen });
+            Counts.Inlines.Add(Tinted(new Run(LiveCountsText.Outbound(counts)), "Success"));
             Counts.Inlines.Add(new Run("   "));
-            Counts.Inlines.Add(new Run(LiveCountsText.Returned(counts)) { Foreground = _countRed });
+            Counts.Inlines.Add(Tinted(new Run(LiveCountsText.Returned(counts)), "Danger"));
 
             Counts.Visibility = Visibility.Visible;
         }
@@ -1287,10 +1322,16 @@ public partial class MultiViewWindow : Window
         {
             if (LiveCountsText.Loss(label, dropped) is not { } text) return;
 
-            Counts.Inlines.Add(new Run(" · ") { Foreground = _countDim });
-            Counts.Inlines.Add(new Run(text) { Foreground = _countWarn });
+            Counts.Inlines.Add(Tinted(new Run(" · "), "TextDisabled"));
+            Counts.Inlines.Add(Tinted(new Run(text), "Warning"));
         }
 
-        private Brush FindResource(string key) => (Brush)_owner.FindResource(key);
+        /// <summary><c>Run</c> 那种墨色也走资源键（同 <see cref="Tint"/> 那段理由）。</summary>
+        private static Run Tinted(Run run, string key)
+        {
+            run.SetResourceReference(Run.ForegroundProperty, key);
+
+            return run;
+        }
     }
 }

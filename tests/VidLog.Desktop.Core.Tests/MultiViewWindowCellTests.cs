@@ -140,14 +140,19 @@ public class MultiViewWindowCellTests
         // 等于没有这颗按钮（2026-10-07 核 diff 时量出来的，需求方当场点了名：
         // 「要让用户明显看到这个按钮」）。这一条钉的是**给了、而且跟着底走** ——
         // 写死一个颜色（`Brushes.White` 或 `Brushes.Black`）它照样红。
+        // ⚠️ 2026-10-07 这几笔从「构造函数里 `FindResource` 存进 `readonly Brush` 字段」
+        // 改成 `SetResourceReference` 了（那些字段已经删掉，所以这里量的是**键**）。
+        // 形状变了，钉的两件事没变：这一笔**必须自己给**墨色（不给就是继承来的黑），
+        // 且「有画面」那一支落的必须是**纯白**。
         Assert.Contains(
-            "_rotate.Foreground = empty ? _textMain : Brushes.White;",
+            "Tint(_rotate, TextBlock.ForegroundProperty, empty ? \"TextPrimary\" : null);",
             window,
             StringComparison.Ordinal);
+        Assert.Contains("target.SetValue(dp, Brushes.White);", window, StringComparison.Ordinal);
 
-        var dark = Brush(window, theme, "_videoBg");
-        var light = Brush(window, theme, "_slotBg");
-        var inkOnLight = Brush(window, theme, "_textMain");
+        var dark = Brush(theme, "VideoBackground");
+        var light = Brush(theme, KeyConstant(window, "SlotKey"));
+        var inkOnLight = Brush(theme, "TextPrimary");
 
         // 「明显看到」那句量化下来就是 AA 正文档这条线，两种底各量一次。
         var onDark = Contrast("#FFFFFFFF", dark);
@@ -188,25 +193,6 @@ public class MultiViewWindowCellTests
         Assert.True(found.Success, $"MultiViewWindow 里没量到 {name}。");
 
         return found.Groups[1].Value;
-    }
-
-    /// <summary>格子上那个字段（<c>_videoBg</c> 这种）取的是哪个画刷、色值多少。</summary>
-    private static string Brush(string window, string theme, string field)
-    {
-        var found = Regex.Match(
-            window,
-            $@"{Regex.Escape(field)}\s*=\s*\(Brush\)[A-Za-z_]\w*\.FindResource\(([^)]+)\)");
-
-        Assert.True(found.Success, $"MultiViewWindow 里没量到 {field} 用的是哪个画刷。");
-
-        var argument = found.Groups[1].Value.Trim();
-
-        // ⚠️ 这里两种写法都得认：早先那几笔写的是**画刷键的字面量**（`"VideoBackground"`），
-        // 后加的两笔写的是**画刷键的常量**（`SlotKey` / `MutedKey`）—— 常量那支要先解一层，
-        // 不认的话量出来的是常量名，去 Theme.xaml 里当然找不到。
-        var key = argument.StartsWith('"') ? argument.Trim('"') : KeyConstant(window, argument);
-
-        return Brush(theme, key);
     }
 
     /// <summary>那个画刷在 Theme.xaml 里的颜色（<c>#AARRGGBB</c>）。</summary>

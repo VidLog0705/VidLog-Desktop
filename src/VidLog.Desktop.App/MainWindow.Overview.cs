@@ -6,10 +6,11 @@ using System.Windows.Media.Imaging;
 using System.Windows.Threading;
 
 // 本工程同时开了 UseWPF 与 UseWindowsForms（后者只为托盘图标），
-// ImplicitUsings 会把两边的命名空间都带进来，于是 MessageBox / Brush 这类
+// ImplicitUsings 会把两边的命名空间都带进来，于是 MessageBox / Image 这类
 // 同名类型变成「不明确」。这里用**别名钉死成 WPF 的那套** ——
 // 这个文件里的控件与画笔全是 WPF 的，WinForms 一个都不该出现。
-using Brush = System.Windows.Media.Brush;
+// ⚠️ 原来这儿还有一行 `using Brush = ...`：2026-10-07 把这一处颜色改成
+// `SetResourceReference` 之后，本文件不再出现 `Brush` 这个标识符，那一行一并删掉。
 // ⚠️ 这两个也必须钉死：WinForms 那一侧有 `System.Drawing.Image`，
 // 不钉的话 `Image` 会静默解析成**画图那个**（编译期只报一句「参数不对」，
 // 而真正的问题是类型选错了）。别名块存在的理由就在这里。
@@ -155,7 +156,11 @@ public partial class MainWindow : Window
                 BackupTotalText.Text = all.Count.ToString();
 
                 BackupDeviceTag.Text = OverviewTexts.BackupDeviceTag(devices.Count);
-                BackupDeviceTag.Foreground = (Brush)FindResource(
+
+                // ⚠️ 走 `SetResourceReference`：`Foreground = FindResource(...)` 只在这一刻
+                // 取一支**冻结的**笔刷，用户开着程序改系统主题时它不跟着换。
+                BackupDeviceTag.SetResourceReference(
+                    TextBlock.ForegroundProperty,
                     OverviewTexts.DeviceMissing(devices.Count) ? "Warning" : "Success");
                 BackupDeviceText.Text = OverviewTexts.BackupDeviceText(devices.Count);
             }

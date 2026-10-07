@@ -6,10 +6,11 @@ using System.Windows.Media.Imaging;
 using System.Windows.Threading;
 
 // 本工程同时开了 UseWPF 与 UseWindowsForms（后者只为托盘图标），
-// ImplicitUsings 会把两边的命名空间都带进来，于是 MessageBox / Brush 这类
+// ImplicitUsings 会把两边的命名空间都带进来，于是 MessageBox 这类
 // 同名类型变成「不明确」。这里用**别名钉死成 WPF 的那套** ——
-// 这个文件里的控件与画笔全是 WPF 的，WinForms 一个都不该出现。
-using Brush = System.Windows.Media.Brush;
+// 这个文件里的控件全是 WPF 的，WinForms 一个都不该出现。
+// ⚠️ 这里原来还举了 `Brush` 当例子：2026-10-07 那两处颜色改成
+// `SetResourceReference` 之后本文件不再出现 `Brush`，那一行别名已删。
 // ⚠️ 这两个也必须钉死：WinForms 那一侧有 `System.Drawing.Image`，
 // 不钉的话 `Image` 会静默解析成**画图那个**（编译期只报一句「参数不对」，
 // 而真正的问题是类型选错了）。别名块存在的理由就在这里。
@@ -322,9 +323,8 @@ public partial class MainWindow : Window
         RefreshStartButton();
 
         NavRecordingText.Text = waybill is null ? "空闲" : $"录制中 · {waybill.Value}";
-        NavRecordingText.Foreground = waybill is null
-            ? (Brush)FindResource("TextSecondary")
-            : (Brush)FindResource("Success");
+        NavRecordingText.SetResourceReference(
+            TextBlock.ForegroundProperty, waybill is null ? "TextSecondary" : "Success");
 
         if (waybill is null)
         {
@@ -367,8 +367,8 @@ public partial class MainWindow : Window
         StatusRecordingText.Text = waybill is null
             ? "空闲"
             : $"录制中 {Display.Timer(elapsed)}";
-        StatusRecordingText.Foreground =
-            (Brush)FindResource(waybill is null ? "TextSecondary" : "Success");
+        StatusRecordingText.SetResourceReference(
+            TextBlock.ForegroundProperty, waybill is null ? "TextSecondary" : "Success");
 
         var online = _host.Services.Live.Active().Count;
         StatusSeatsText.Text = _host.Services.License?.Status.Slots is { } limit

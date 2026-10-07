@@ -403,6 +403,105 @@ public class ThemePaletteTests
     }
 
     // ─────────────────────────────────────────────
+    // 取法：颜色一律得是「订阅」，不是「当场取一个对象」
+    // ─────────────────────────────────────────────
+
+    [Fact]
+    public void App层的C_里不许把FindResource的结果存成画刷()
+    {
+        // ⚠️ 这条守的是**整类**缺陷，不是某几处：`FindResource` 是**当场把对象给你**
+        //（拿到的是一支冻结的笔刷），赋给 DP 之后就跟资源字典脱钩了 ——
+        // 换主题换不掉它，而且**没有任何东西会喊**。
+        // 症状（2026-10-07 之前实际就这样）：「开机就是暗色没事，**开着程序去改
+        // Windows 主题**时那几处停在亮色」—— 那几个窗口是之后才构造的，
+        // 所以开机路径看着是对的，这正是它难被发现的原因。
+        // 正确写法是 `element.SetResourceReference(dp, "Key")`（`AppTheme.SetDark` 的
+        // `<remarks>` 里写死了这条）。
+        var files = AppSourceFiles(".cs");
+        var offenders = new List<string>();
+
+        // 两种形状：`(Brush)X.FindResource("…")` / `(SolidColorBrush)…`，
+        // 以及 `FindResource(…) as Brush`。
+        var cast = new Regex(
+            @"\(\s*(?:SolidColorBrush|Brush)\s*\)\s*[^;\r\n]{0,80}?(?:Find|TryFind)Resource\s*\(",
+            RegexOptions.Compiled);
+        var as_ = new Regex(
+            @"(?:Find|TryFind)Resource\s*\([^;\r\n]*?\)\s*as\s+(?:SolidColorBrush|Brush)\b",
+            RegexOptions.Compiled);
+
+        foreach (var path in files)
+        {
+            // ⚠️ 注释行要剥掉：`WizardWindow` / `MultiViewWindow` 里各留了一句
+            // 「别改回 `(Brush)FindResource(…)`」的说明，那不叫违规。
+            foreach (var line in File.ReadAllLines(path).Where(one => !one.TrimStart().StartsWith("//")))
+            {
+                if (cast.IsMatch(line) || as_.IsMatch(line))
+                {
+                    offenders.Add($"{Path.GetFileName(path)}: {line.Trim()}");
+                }
+            }
+        }
+
+        Assert.True(
+            offenders.Count == 0,
+            "这些地方是**当场取**颜色而不是订阅它 —— 开着程序换 Windows 主题时不会跟着变，"
+            + "而且不会报错。改成 `SetResourceReference(dp, \"Key\")`：\n"
+            + string.Join('\n', offenders));
+
+        // ⚠️ 空集永远绿 —— 路径写错、正则全不匹配，这一条照样过。
+        Assert.True(files.Count >= 30, $"只扫到 {files.Count} 个 .cs，绊线的路径可能过期了");
+    }
+
+    [Fact]
+    public void App的XAML里颜色键不许走StaticResource()
+    {
+        // ⚠️ 同一个病的 XAML 那一半：`StaticResource` 在加载那一刻就把值解析定了。
+        // 实测（2026-10-07）：换完字典，**新建的 `PrimaryButton` 拿到的仍是亮色那支**
+        // （`Style` 在 BAML 里已经 seal，`Setter` 里焊的是具体那支笔刷）。
+        // 所以颜色键一律 `{DynamicResource …}`；`StaticResource` 只留给
+        // 样式/模板/字号/圆角/转换器那些**本来就不该跟着主题走**的东西。
+        var files = AppSourceFiles(".xaml");
+        var offenders = new List<string>();
+
+        foreach (var path in files)
+        {
+            foreach (var line in File.ReadAllLines(path))
+            {
+                foreach (Match match in Regex.Matches(line, @"\{StaticResource\s+(?<key>[A-Za-z0-9_]+)\s*\}"))
+                {
+                    var key = match.Groups["key"].Value;
+
+                    if (LightColorKeys.ContainsKey(key))
+                    {
+                        offenders.Add($"{Path.GetFileName(path)}: {key}");
+                    }
+                }
+            }
+        }
+
+        Assert.True(
+            offenders.Count == 0,
+            "这些颜色键用了 StaticResource —— 换主题时它们停在旧值，而且不会报错。"
+            + "改成 `{DynamicResource …}`：\n" + string.Join('\n', offenders));
+
+        Assert.True(files.Count >= 10, $"只扫到 {files.Count} 个 .xaml，绊线的路径可能过期了");
+    }
+
+    /// <summary>
+    /// <c>src/VidLog.Desktop.App</c> 下某个后缀的源码文件（<b>不含</b> <c>obj</c>/<c>bin</c>）。
+    /// </summary>
+    private static IReadOnlyList<string> AppSourceFiles(string extension) =>
+        Directory
+            .EnumerateFiles(
+                Path.Combine(RepoRoot(), "src", "VidLog.Desktop.App"),
+                "*" + extension,
+                SearchOption.AllDirectories)
+            .Where(one => !one.Contains($"{Path.DirectorySeparatorChar}obj{Path.DirectorySeparatorChar}", StringComparison.Ordinal)
+                && !one.Contains($"{Path.DirectorySeparatorChar}bin{Path.DirectorySeparatorChar}", StringComparison.Ordinal))
+            .OrderBy(one => one, StringComparer.Ordinal)
+            .ToList();
+
+    // ─────────────────────────────────────────────
     // 工具
     // ─────────────────────────────────────────────
 
