@@ -833,6 +833,120 @@ public class DesktopServicesTests
     }
 
     /// <summary>
+    /// 钉住「主按钮的白字压在强调色上**要达标**」（2026-10-07 合并两套蓝时定的）。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// ⚠️ 这一条是**算出来的**，不是抄设计图：<c>PrimaryButton</c> 是白字、字号 13
+    /// （正文档），而 WCAG AA 对正文档要求 **4.5:1**。合并之前桌面端**一条对比度
+    /// 绊线都没有** —— 换算才发现原先主窗口那 10 处按钮（blue-500 `#3B82F6` + 白字）
+    /// 只有 **3.68:1**，长期不达标而没有任何东西挡得住。
+    /// </para>
+    /// <para>
+    /// ⚠️ 为什么值得一条绊线：这次的裁定（合并到 blue-600）**只要有人把 <c>Accent</c>
+    /// 改回浅色就静默失效**，而界面上完全看不出来 —— 正是「改成一条不跑的路」那一类，
+    /// 与 <c>DesktopServicesTests</c> 里那批装配绊线同一个理由。
+    /// </para>
+    /// <para>
+    /// ⚠️ 天花板：只量 <c>Accent</c> 与白这一对。别处新加一组「浅底 + 白字」它看不到。
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public void 主按钮的白字压在强调色上要达标()
+    {
+        var theme = File.ReadAllText(
+            Path.Combine(RepoRoot(), "src", "VidLog.Desktop.App", "Theme.xaml"));
+
+        // 哨兵：扫到的是真文件、拿到的是真模板。搬走或改名时这里先红，
+        // 而不是让下面那条断言对着一个空字符串「通过」。
+        var styleAt = theme.IndexOf("x:Key=\"PrimaryButton\"", StringComparison.Ordinal);
+        Assert.True(styleAt >= 0, "Theme.xaml 里找不到 PrimaryButton 模板。");
+
+        var button = theme[styleAt..theme.IndexOf("<Style", styleAt + 1, StringComparison.Ordinal)];
+
+        // 4.5 这个门槛的依据就是这两行：白字、13px（正文档）。哪天字号变大了，
+        // 门槛可以放宽到 3:1 —— 那时这条会红，是让你回来重算，不是它坏了。
+        Assert.Contains("Property=\"Foreground\" Value=\"White\"", button, StringComparison.Ordinal);
+        Assert.Contains("Property=\"FontSize\" Value=\"13\"", button, StringComparison.Ordinal);
+
+        var accent = Regex.Match(theme, "x:Key=\"Accent\"\\s+Color=\"#FF([0-9A-Fa-f]{6})\"");
+        Assert.True(accent.Success, "没从 Theme.xaml 里量到 Accent 的色值。");
+
+        var ratio = WhiteOn(accent.Groups[1].Value);
+
+        Assert.True(
+            ratio >= 4.5,
+            $"主按钮是白字 13px，压在 Accent #{accent.Groups[1].Value} 上只有 {ratio:0.00}:1；"
+            + "WCAG AA 对正文档要求 4.5:1。");
+    }
+
+    /// <summary>白字压在 <paramref name="hex"/>（`RRGGBB`，不带 alpha）上的 WCAG 对比度。</summary>
+    private static double WhiteOn(string hex)
+    {
+        static double Linear(double channel) =>
+            channel <= 0.03928 ? channel / 12.92 : Math.Pow((channel + 0.055) / 1.055, 2.4);
+
+        static double Luminance(string rgb) =>
+            (0.2126 * Linear(Convert.ToInt32(rgb[..2], 16) / 255.0))
+            + (0.7152 * Linear(Convert.ToInt32(rgb[2..4], 16) / 255.0))
+            + (0.0722 * Linear(Convert.ToInt32(rgb[4..], 16) / 255.0));
+
+        // 白是最亮的那一头，所以直接把白的 (L+0.05) 放分子。
+        return 1.05 / (Luminance(hex) + 0.05);
+    }
+
+    /// <summary>
+    /// 钉住「界面里引用的每一个资源键，都还有人定义」。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// ⚠️ 这一类错误**编译期查不出来**：WPF 的 <c>{StaticResource X}</c> 找不到 X 时
+    /// 只在**运行时**抛 <c>XamlParseException</c>，而且是在那个窗**第一次打开**的那一秒
+    /// —— 所以「删掉一个键 → 跑完测试 → 出包」可以全绿，坏在用户点开那个窗的一刻。
+    /// </para>
+    /// <para>
+    /// ⚠️ 起这条的由头：2026-10-07 合并两套蓝时删掉了 <c>AccentStrong</c> 与
+    /// <c>PrimaryButtonStrong</c> 两个键。当时确实 grep 核对过没有残留，**但那次核对
+    /// 没有留下任何能失败的东西** —— 下次谁再删一个键，还是要等用户来报「这个窗打不开」。
+    /// </para>
+    /// <para>
+    /// ⚠️ 天花板：只管界面（<c>.xaml</c>）里的引用。<c>.cs</c> 里用字符串
+    /// <c>FindResource("X")</c> 取的键它看不到。
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public void 界面里引用的资源键都还有人定义()
+    {
+        // ⚠️ 有意**不递归**：App 的 .xaml 全在顶层（14 个），递归会把 obj/ 下
+        // 生成物也扫进来。（2026-10-07 实测：子目录里一个 .xaml 都没有。）
+        var files = Directory.EnumerateFiles(
+            Path.Combine(RepoRoot(), "src", "VidLog.Desktop.App"), "*.xaml").ToList();
+
+        // 哨兵：扫到的是真文件，而不是对着一个空目录「通过」。
+        Assert.True(files.Count >= 10, $"只扫到 {files.Count} 个 .xaml，路径大概不对。");
+
+        var text = string.Join('\n', files.Select(File.ReadAllText));
+
+        var defined = Regex.Matches(text, "x:Key=\"([A-Za-z0-9_]+)\"")
+            .Select(one => one.Groups[1].Value)
+            .ToHashSet(StringComparer.Ordinal);
+
+        // 键名限定成标识符，于是 `{StaticResource {x:Type Button}}` 这种
+        // 标出类型的写法**天然不匹配**，不会产生空名字的假阳性。
+        var missing = Regex.Matches(text, "StaticResource\\s+([A-Za-z0-9_]+)")
+            .Select(one => one.Groups[1].Value)
+            .Where(one => !defined.Contains(one))
+            .Distinct(StringComparer.Ordinal)
+            .OrderBy(one => one, StringComparer.Ordinal)
+            .ToList();
+
+        Assert.True(
+            missing.Count == 0,
+            "这些键被界面引用了，但 App 的 .xaml 里没人定义（运行时会抛 XamlParseException）："
+            + string.Join("、", missing));
+    }
+
+    /// <summary>
     /// 钉住「设置校验不过时，那一句**既说给用户、也落进日志**」。
     /// </summary>
     /// <remarks>

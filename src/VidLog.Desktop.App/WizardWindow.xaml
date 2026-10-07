@@ -637,7 +637,7 @@
             <!-- 回车 = 下一步（最后一步是「完成」，同一颗按钮）。
                  ⚠️ **刻意没有 `IsCancel`**：向导中途被 Esc 关掉会把这一遍填的全丢掉，
                  而「回到哪一步」在这个控件里没有对应状态。要退出只能点窗口的 ✕。 -->
-            <Button x:Name="NextButton" Style="{StaticResource PrimaryButtonStrong}"
+            <Button x:Name="NextButton" Style="{StaticResource PrimaryButton}"
                     Width="96" Padding="0,8" Margin="8,0,0,0" Content="下一步"
                     Click="OnNext" IsDefault="True"/>
         </StackPanel>

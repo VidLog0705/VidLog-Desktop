@@ -11,10 +11,14 @@
         上一版那套 Material 蓝（`#1E88E5`，取自 `H:\LayoutBoard\Model.cs`）
         与更早那版 SaaS 外观**整表作废**。
 
-        ⚠️ **两套蓝并存是需求方的裁决**（2026-09-28，原话「严格照图」）：
+        ⚠️ ~~**两套蓝并存是需求方的裁决**（2026-09-28，原话「严格照图」）：
         主窗口用 `Accent` = blue-500 `#3B82F6`，设置窗口的主按钮用
         `AccentStrong` = blue-600 `#2563EB`。图上就是这样，**不要为了
-        「统一」把它合并成一个** —— 已问过，答案是照图。
+        「统一」把它合并成一个**——已问过，答案是照图。~~
+        → **2026-10-07 需求方推翻它，裁定合并成一套**：`Accent` = blue-600
+        `#2563EB`，`AccentStrong` 删除。理由**不是**「统一好看」，是**对比度**：
+        白字 13px 压 blue-500 只有 3.68:1、低于 AA 的 4.5:1，压 blue-600 是
+        5.17:1。与手机端 2026-10-04「放弃照草图原值、改为深色化到达标」同一把尺子。
 
         ⚠️ 洁净室（`AGENTS.md` §0）：这批图是需求方自绘/自有的界面，
         2026-09-28 已**书面豁免**「不得参照第三方产品界面」这一条，
@@ -66,10 +70,13 @@
     <SolidColorBrush x:Key="TextSecondary" Color="#FF64748B"/>
     <SolidColorBrush x:Key="TextDisabled" Color="#FF94A3B8"/>
 
-    <!-- 主窗口主按钮、选中导航、单选点：blue-500。 -->
-    <SolidColorBrush x:Key="Accent" Color="#FF3B82F6"/>
-    <!-- 设置窗主按钮（确定 / 下一步）：blue-600。 -->
-    <SolidColorBrush x:Key="AccentStrong" Color="#FF2563EB"/>
+    <!-- 主按钮、选中导航、单选点：blue-600。
+         ⚠️ 2026-10-07 需求方拍板：**两套蓝合并成这一套**（原 blue-500 `#3B82F6`
+         与 blue-600 `#2563EB` 并存）。留下的是**深的那一支**，理由是**对比度**：
+         按钮是白字 13px（见下面的模板），白字压 blue-500 只有 **3.68:1**、
+         低于 WCAG AA 正文档的 4.5:1；压 blue-600 是 **5.17:1**，达标。
+         原 `AccentStrong` 连同 `PrimaryButtonStrong` 一并删除（它只服务 3 处）。 -->
+    <SolidColorBrush x:Key="Accent" Color="#FF2563EB"/>
     <!-- 选中卡片底：blue-100。 -->
     <SolidColorBrush x:Key="AccentWeak" Color="#FFDBEAFE"/>
     <!-- 主按钮禁用态：blue-500 兑白，图上 `_31` 的「下一步」。 -->
@@ -222,9 +229,9 @@
 
         ⚠️ 悬停/按下**不用写死的色值**，而是在底色上叠一层半透明黑：
         图上 32 张全是静态截图，**没有任何一张量得到悬停态** ——
-        与其猜 Tailwind 的 hover 步进，不如用一条对任何底色都成立的规律。
-        好处是同一个模板同时服务 `Accent` 与 `AccentStrong` 两套蓝
-        （否则得为设置窗那份颜色再抄一遍三十行模板）。
+        与其猜 Tailwind 的 hover 步进，不如用一条对任何底色都成立的规律
+        —— 这也是它当年能**一套模板服务两套蓝**的原因；那两套蓝
+        2026-10-07 已合并（见文件头），但这条规律本身仍然值钱。
     -->
     <Style x:Key="PrimaryButton" TargetType="Button">
         <Setter Property="FontFamily" Value="{StaticResource UiFont}"/>
@@ -262,12 +269,9 @@
         </Setter>
     </Style>
 
-    <!--
-        设置窗专用：同一个模板，只把底色换成 blue-600（裁决「两套蓝并存」）。
-    -->
-    <Style x:Key="PrimaryButtonStrong" TargetType="Button" BasedOn="{StaticResource PrimaryButton}">
-        <Setter Property="Background" Value="{StaticResource AccentStrong}"/>
-    </Style>
+    <!-- ⚠️ 这里原有一个 `PrimaryButtonStrong`（设置窗专用，只把底色换成
+         blue-600）—— 2026-10-07 两套蓝合并后它没有存在意义，已删。
+         三个调用点改用 `PrimaryButton`（现在的底色本来就是 blue-600）。 -->
 
     <Style x:Key="SecondaryButton" TargetType="Button">
         <Setter Property="FontFamily" Value="{StaticResource UiFont}"/>

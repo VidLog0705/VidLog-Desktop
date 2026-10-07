@@ -539,7 +539,7 @@
                              ⚠️ 条子的**底色量到的是 #CBD5E1**（`BorderStrong`），
                              8px 高、圆角。图上写着 `0.0 / 504.4 GB` —— 也就是
                              **已用为 0**，所以那个颜色是轨道不是填充。
-                             填充色图上没有证据（空的），取设置窗那套蓝 `AccentStrong`；
+                             填充色图上没有证据（空的），取强调色 `Accent`；
                              它是个标定旋钮，见 `docs/实现决策.md`。 -->
                         <Grid>
                             <Grid.ColumnDefinitions>
@@ -553,7 +553,7 @@
                                     Background="{StaticResource BorderStrong}">
                                 <Border x:Name="CapacityFill" Width="0" CornerRadius="{StaticResource RadiusTag}"
                                         HorizontalAlignment="Left"
-                                        Background="{StaticResource AccentStrong}"/>
+                                        Background="{StaticResource Accent}"/>
                             </Border>
                             <TextBlock Grid.Column="1" x:Name="CapacityText"
                                        Style="{StaticResource Body}" Text="正在统计…"
@@ -1327,7 +1327,7 @@
                                      FontFamily="{StaticResource MonoFont}"
                                      VerticalAlignment="Center"/>
                             <Button x:Name="ActivateButton" Content="激活"
-                                    Style="{StaticResource PrimaryButtonStrong}"
+                                    Style="{StaticResource PrimaryButton}"
                                     Padding="16,5" Margin="8,0,0,0"
                                     Click="OnActivate"/>
                         </StackPanel>
@@ -1459,7 +1459,7 @@
                                Foreground="{StaticResource TextSecondary}"/>
                     <StackPanel Grid.Column="1" Orientation="Horizontal" HorizontalAlignment="Right">
                         <Button x:Name="OkButton" Content="确定"
-                                Style="{StaticResource PrimaryButtonStrong}"
+                                Style="{StaticResource PrimaryButton}"
                                 MinWidth="88" Click="OnOk" IsDefault="True"/>
                         <Button x:Name="ApplyButton" Content="应用"
                                 Style="{StaticResource SecondaryButton}"
