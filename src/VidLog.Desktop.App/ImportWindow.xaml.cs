@@ -128,7 +128,18 @@ public partial class ImportWindow : Window
 
     private async void OnImport(object sender, RoutedEventArgs e)
     {
-        if (!TryBuildRequest(out var request, out var problem))
+        // ⚠️ 收请求这一步**一个判断都不该有**（T27② 第 2 批）：校验与元数据组装
+        // 全在 `ImportRequestBuilder.Build` 里。这里只管把控件上的值读出来、
+        // 按结论去导入。
+        var (request, problem) = ImportRequestBuilder.Build(
+            _sourcePath,
+            WaybillBox.Text,
+            StartedDate.SelectedDate is { } date ? DateOnly.FromDateTime(date) : null,
+            StartedTime.Text,
+            isReturn: ReturnRadio.IsChecked == true,
+            DateTimeOffset.Now.Offset);
+
+        if (request is null)
         {
             ShowStatus(problem, LogLevel.Warn);
             return;
@@ -185,52 +196,6 @@ public partial class ImportWindow : Window
 
         // 关窗，让检索页重搜一遍。
         DialogResult = true;
-    }
-
-    /// <summary>把界面上的四项收成一个请求；收不成时说清是哪儿不行。</summary>
-    private bool TryBuildRequest(out ImportRequest request, out string problem)
-    {
-        request = null!;
-
-        if (_sourcePath is null)
-        {
-            problem = "先按【浏览…】挑一个要导入的文件。";
-            return false;
-        }
-
-        if (!WaybillNumber.TryParse(WaybillBox.Text, out var waybill, out var waybillError))
-        {
-            problem = $"单号这一项不行：{waybillError}";
-            return false;
-        }
-
-        if (StartedDate.SelectedDate is not { } date)
-        {
-            problem = "请选一个录制日期。";
-            return false;
-        }
-
-        // ⚠️ 用宽松的 `TryParse` 而不是 `TryParseExact`：用户手敲的时间
-        // 可能是 `9:5:3`、`09:05:03`、`9:05` 里的任何一种，都该收。
-        // 真正要挡住的是「跨了一天」—— 那种值会让 StartedAt 与 EndedAt
-        // 落到两个日子上，而用户以为自己只填了个时刻。
-        if (!TimeSpan.TryParse(StartedTime.Text.Trim(), CultureInfo.InvariantCulture, out var time)
-            || time < TimeSpan.Zero
-            || time >= TimeSpan.FromDays(1))
-        {
-            problem = "录制时间要写成「时:分:秒」，比如 14:05:30。";
-            return false;
-        }
-
-        request = new ImportRequest(
-            _sourcePath,
-            waybill,
-            ReturnRadio.IsChecked == true ? BusinessType.Return : BusinessType.Outbound,
-            // 本地偏移：用户填的就是**这台机器上看到的那个时刻**。
-            new DateTimeOffset(date.Date + time, DateTimeOffset.Now.Offset));
-
-        problem = string.Empty;
-        return true;
     }
 
     private void OnCancel(object sender, RoutedEventArgs e) => DialogResult = false;
