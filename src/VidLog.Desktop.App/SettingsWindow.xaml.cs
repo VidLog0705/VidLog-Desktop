@@ -506,6 +506,16 @@ public partial class SettingsWindow : Window
         if (next is null)
         {
             SettingsStatus.Text = problem;
+
+            // ⚠️ 说给用户的那一句**同时留痕**（需求方 2026-10-07 指定）。
+            // 校验不过时**窗不关**，用户多半当场改一格再存 —— 于是「他第一次
+            // 填的是什么」日志里只剩这一行；而这一行里就有那个越界值。
+            //
+            // ⚠️ 每条 problem 都是一句自足的话（都以「本次未保存。」收尾，
+            // 这是 `SettingsForm.Build` 那头的写法），所以这里**不加前缀** ——
+            // 加了就是「设置未保存：…，本次未保存。」。分类「设置」给的就是上下文。
+            _host.Log(LogLevel.Warn, "设置", problem);
+
             return false;
         }
 

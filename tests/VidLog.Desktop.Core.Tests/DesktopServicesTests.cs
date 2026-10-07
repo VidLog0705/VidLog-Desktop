@@ -744,6 +744,37 @@ public class DesktopServicesTests
     }
 
     /// <summary>
+    /// 钉住「设置校验不过时，那一句**既说给用户、也落进日志**」。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// ⚠️ 为什么必须落日志：校验不过时窗**不关**，用户多半当场改一格再存 ——
+    /// 于是「他第一次填的是什么」界面上再也看不到了，而那一句里就有那个越界值
+    /// —— 这正是 2026-10-07 那个缺陷（保留期手输 <c>9999</c> 把整份设置打回默认值）
+    /// 最缺的一环：用户即使来报「我设的东西全变回去了」，日志里也一个字都没有。
+    /// </para>
+    /// <para>
+    /// ⚠️ <b>为什么只能看源码文本</b>：App 层没有测试工程（与上面几条同一个理由）。
+    /// 天花板也一样：只挡「删了 / 改了」，挡不住「改成一条不跑的路径」。
+    /// </para>
+    /// <para>
+    /// ⚠️ 两条断言**成对**：`SettingsStatus.Text` 那条是「用户看得见」，
+    /// 它同时兼作「扫到的是真文件」的哨兵（`ReadSplit` 扫到零个文件时它会红）——
+    /// 只留日志那一条的话，文件名哪天改了，这条会**空着绿**。
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public void 设置校验不过时_那一句既说给用户也落进日志()
+    {
+        var settings = ReadSplit(
+            Path.Combine(RepoRoot(), "src", "VidLog.Desktop.App"), "SettingsWindow");
+
+        Assert.Contains("SettingsStatus.Text = problem;", settings, StringComparison.Ordinal);
+        Assert.Contains(
+            "_host.Log(LogLevel.Warn, \"设置\", problem);", settings, StringComparison.Ordinal);
+    }
+
+    /// <summary>
     /// 钉住「时长兜底的**询问**在界面上真的有出路」（规格 §3.3.4）。
     /// </summary>
     /// <remarks>
