@@ -192,34 +192,21 @@ public partial class EnrollWindow : Window
 
     /// <summary>现在发不出二维码的原因；发得出来返回 <see langword="null"/>。</summary>
     /// <remarks>
-    /// 这些都是**机器状态**，不是用户做错了什么，所以每条都给出「怎么才能好」。
-    /// 少了这几句的话，用户看到的是一张扫不动的码 —— 而他会以为是手机的问题。
+    /// ⚠️ 那四句话本身在 <see cref="EnrollBlockers.Blocker"/>（T27② 第 4 批）——
+    /// 它们是**机器状态**、不是用户做错了什么，所以每条都给出「怎么才能好」；
+    /// 而四条分支要用户做的事完全不同，说串了比不说更坏。这里只剩**取哪几样**。
     /// </remarks>
     private string? BlockerReason()
     {
-        if (_host.Services.Server is null)
-        {
-            return "回放服务没有装配（端口设成了空）。手机连不上本机，先看主窗口里的提示。";
-        }
+        var server = _host.Services.Server;
 
-        if (_host.Services.Server.BaseUrl is not { Length: > 0 })
-        {
-            return "回放服务没起来，手机连不上本机。原因见主窗口「需要注意」那一段。";
-        }
-
-        if (_host.Services.Server.IsUsingFallback)
-        {
-            return $"回放服务只绑到了本机（{_host.Services.Server.BaseUrl}），别的设备访问不了。"
-                + $"原因：{_host.Services.Server.FallbackReason} "
-                + $"按主窗口里的提示，以管理员身份执行一次 netsh http add urlacl url=http://+:{_host.Services.PlaybackPort}/ user=Everyone 之后再试。";
-        }
-
-        if (_address is null)
-        {
-            return "没有挑到可用的局域网地址 —— 这台电脑现在可能没连在网络上（无线没连上，或者只插了虚拟网卡）。";
-        }
-
-        return null;
+        return EnrollBlockers.Blocker(
+            hasServer: server is not null,
+            baseUrl: server?.BaseUrl,
+            usingFallback: server?.IsUsingFallback == true,
+            fallbackReason: server?.FallbackReason,
+            port: _host.Services.PlaybackPort,
+            hasAddress: _address is not null);
     }
 
     // ─────────────────────────────────────────────
