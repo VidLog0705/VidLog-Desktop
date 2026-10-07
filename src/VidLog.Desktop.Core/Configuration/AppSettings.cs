@@ -478,6 +478,31 @@ public sealed record AppSettings
     private static bool PlausibleDays(RetentionSetting setting) =>
         setting.Days is null or (>= 0 and <= 3650);
 
+    /// <summary>「录像保存 / 备份位置」每张表最多几行。</summary>
+    /// <remarks>
+    /// ⚠️ <b>界面必须读这个常量，不许另写一个 32</b>：设置页那张表也拦长度，
+    /// 两边对不上时的后果不是「多存了两行」，而是<b>整份设置被回落到默认值</b>
+    /// —— 界面放行的值 Core 判不过，下一次启动用户会发现<b>别的</b>设置
+    /// （保留期、云端、关窗行为）一起被打回原样，而他没有改过那些。
+    /// 见 <c>SettingsWindow.TryReadDisks</c>。
+    /// </remarks>
+    public const int MaxDiskSlots = 32;
+
+    /// <summary>单个磁盘槽位预留空间的上限（GB）。</summary>
+    /// <remarks>
+    /// 0 是允许的（「这块盘不预留」是用户的正当选择），负数不是 ——
+    /// 负的预留等于「允许写到负空间」，换算出来是个荒唐的阈值。
+    /// 同 <see cref="MaxDiskSlots"/>：界面读这个常量，别另写。
+    /// </remarks>
+    public const int MaxReservedGb = 1_000_000;
+
+    /// <summary>一个磁盘槽位路径的长度上限。</summary>
+    /// <remarks>
+    /// 只有这里判（界面那格是**只读文字**，路径只能由文件夹对话框挑进来，
+    /// 见 <c>DiskSlotRow.Folder</c>），留成常量是为了让这把尺子整体在一处。
+    /// </remarks>
+    public const int MaxDiskPathLength = 1024;
+
     /// <summary>
     /// 那两张「录像保存 / 备份位置」的表自洽吗。
     /// </summary>
@@ -495,7 +520,7 @@ public sealed record AppSettings
     /// </remarks>
     private static bool PlausibleSlots(IReadOnlyList<DiskSlot>? slots)
     {
-        if (slots is null || slots.Count > 32)
+        if (slots is null || slots.Count > MaxDiskSlots)
         {
             return false;
         }
@@ -504,10 +529,9 @@ public sealed record AppSettings
         {
             if (slot is null
                 || string.IsNullOrWhiteSpace(slot.Path)
-                || slot.Path.Length > 1024
+                || slot.Path.Length > MaxDiskPathLength
                 || !Path.IsPathFullyQualified(slot.Path)
-                // 0 是允许的（「这块盘不预留」是用户的正当选择），负数不是。
-                || slot.ReservedGb is < 0 or > 1_000_000)
+                || slot.ReservedGb is < 0 or > MaxReservedGb)
             {
                 return false;
             }

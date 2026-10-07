@@ -314,9 +314,18 @@ public partial class SettingsWindow : Window
     /// <summary>把表里的行读成设置里的 <see cref="DiskSlot"/> 串。</summary>
     /// <returns>读不出来时返回 <see langword="false"/>，原因写在 <paramref name="error"/>。</returns>
     /// <remarks>
+    /// <para>
     /// ⚠️ 预留空间那一格**空着是合法的**（= 按默认值现算，`ReservedGb` 给
     /// <see langword="null"/>），但填了一个读不懂的数就不合法 —— 那种时候
     /// **不保存**并说清楚，而不是静默换成默认值（用户会以为他填的生效了）。
+    /// </para>
+    /// <para>
+    /// ⚠️ <b>两个上限读的是 <see cref="AppSettings"/> 上的常量，不是这里的字面量</b>
+    /// （T29）。这不是洁癖：这两处原本各写各的 32 与 1000000，一旦界面放行的值
+    /// Core 判不过，坏掉的不是这一项 —— <c>AppSettings.IsValid</c> 判的是
+    /// **整份设置**，它会**整体回落到默认值**，于是保留期、云端、关窗行为
+    /// 一起被打回原样，而用户只碰过磁盘这一页。
+    /// </para>
     /// </remarks>
     private static bool TryReadDisks(
         List<DiskSlotRow> rows, string label, out List<DiskSlot> slots, out string error)
@@ -324,9 +333,9 @@ public partial class SettingsWindow : Window
         slots = [];
         error = string.Empty;
 
-        if (rows.Count > 32)
+        if (rows.Count > AppSettings.MaxDiskSlots)
         {
-            error = $"{label}最多 32 个，本次未保存。";
+            error = $"{label}最多 {AppSettings.MaxDiskSlots} 个，本次未保存。";
             return false;
         }
 
@@ -340,9 +349,10 @@ public partial class SettingsWindow : Window
                 continue;
             }
 
-            if (!int.TryParse(text, out var reserved) || reserved is < 0 or > 1_000_000)
+            if (!int.TryParse(text, out var reserved)
+                || reserved is < 0 or > AppSettings.MaxReservedGb)
             {
-                error = $"{label}里「{row.Folder}」的预留空间要是 0~1000000 之间的整数"
+                error = $"{label}里「{row.Folder}」的预留空间要是 0~{AppSettings.MaxReservedGb} 之间的整数"
                     + "（留空 = 用默认值），本次未保存。";
                 return false;
             }
