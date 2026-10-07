@@ -48,6 +48,9 @@ public class LiveWallTests
 
         public async Task Sync(params LiveEndpoint[] active) => await Wall.SyncAsync(active);
 
+        public async Task Sync(Func<int, bool> isLive, params LiveEndpoint[] active) =>
+            await Wall.SyncAsync(active, isLive);
+
         public IReadOnlyList<LiveTile?> Last => Lineups[^1];
     }
 
@@ -125,6 +128,99 @@ public class LiveWallTests
         Assert.Single(harness.Created);
     }
 
+    /// <summary>T9：不看的那一格**不起 ffmpeg，但位置照占**。</summary>
+    /// <remarks>
+    /// ⚠️ 这一条里「位置照占」比「省了一路」要紧。省一路是顺带的；位置要是塌了，
+    /// 用户关掉第 2 格却看到第 3 格换了台手机 —— 而每一格画面都还在动，
+    /// 看不出哪里错了（这一组别的几条也都盯这件事）。
+    /// </remarks>
+    [Fact]
+    public async Task 不看的那一格_不起画面但位置照占()
+    {
+        var harness = new Harness();
+        var all = new[] { Endpoint("phone-1", 1), Endpoint("phone-2", 2), Endpoint("phone-3", 3) };
+
+        await harness.Sync(all);
+        Assert.Equal(3, harness.Wall.Count);
+
+        var built = harness.Created.Count;
+
+        // 第 2 格不看了（下标 1）。
+        await harness.Sync(index => index != 1, all);
+
+        Assert.Equal(2, harness.Wall.Count);            // 那一路收了
+        Assert.Equal(built, harness.Created.Count);     // 也没有为了补位再建一格
+
+        var lineup = harness.Last;
+        Assert.Equal(3, lineup.Count);
+
+        Assert.NotNull(lineup[0]);
+        Assert.Null(lineup[1]);                 // ⚠️ 空的是**第 2 格**，不是整列往前挪
+        Assert.Equal("phone-3", lineup[2]!.Name);
+    }
+
+    /// <summary>T9：重新看上那一格 = **重新起一路**，不是把旧的捡回来。</summary>
+    /// <remarks>
+    /// ⚠️ 正因为它起的是新的一路，关掉才是真的省下了 ffmpeg —— 只把画面藏起来、
+    /// 进程还留着的做法在这条测试里当场露馅（那样 <see cref="Harness.Created"/>
+    /// 会停在 1，而 `Wall.Count` 一直是 2）。
+    /// </remarks>
+    [Fact]
+    public async Task 重新看上那一格_是重新起一路()
+    {
+        var harness = new Harness();
+        var all = new[] { Endpoint("phone-1", 1), Endpoint("phone-2", 2) };
+
+        await harness.Sync(all);
+        var first = harness.Last[0];
+
+        await harness.Sync(index => index != 0, all);
+        Assert.Null(harness.Last[0]);
+        Assert.Equal(1, harness.Wall.Count);
+
+        await harness.Sync(_ => true, all);
+
+        Assert.NotNull(harness.Last[0]);
+        Assert.NotSame(first, harness.Last[0]);
+        Assert.Equal(3, harness.Created.Count);   // 两格 + 重新看上那一格起的这一路
+        Assert.Equal(2, harness.Wall.Count);
+    }
+
+    /// <summary>T9：整面墙都不看了（最小化那一拍）—— 一路都不留，位置也不塌。</summary>
+    [Fact]
+    public async Task 全都不看了_一路都不留但位置还在()
+    {
+        var harness = new Harness();
+        var all = new[] { Endpoint("phone-1", 1), Endpoint("phone-2", 2) };
+
+        await harness.Sync(all);
+        await harness.Sync(_ => false, all);
+
+        Assert.Equal(0, harness.Wall.Count);
+
+        var lineup = harness.Last;
+        Assert.Equal(2, lineup.Count);
+        Assert.All(lineup, tile => Assert.Null(tile));
+
+        // 还原：两格都自己接回来。
+        await harness.Sync(_ => true, all);
+
+        Assert.Equal(2, harness.Wall.Count);
+        Assert.All(harness.Last, tile => Assert.NotNull(tile));
+    }
+
+    /// <summary>不传 <c>isLive</c> 时与从前一模一样（老调用处不受影响）。</summary>
+    [Fact]
+    public async Task 不传那一位时_谁都不关()
+    {
+        var harness = new Harness();
+
+        await harness.Sync(Endpoint("phone-1", 1), Endpoint("phone-2", 2));
+
+        Assert.All(harness.Last, tile => Assert.NotNull(tile));
+        Assert.Equal(2, harness.Wall.Count);
+    }
+
     [Fact]
     public async Task 收掉之后_再对账一个字都不动()
     {
@@ -182,6 +278,59 @@ public class LiveWallLayoutTests
         {
             var wall = LiveWall.Layout(count, 第一档, 九格);
 
+            Assert.True(
+                wall.Columns * wall.Rows >= wall.Count,
+                $"{count} 格摆成 {wall.Columns}×{wall.Rows}，装不下");
+        }
+    }
+
+    /// <summary>T9：工具栏上那几档（1 / 4 / 9 / 16）各自摆成什么形状。</summary>
+    [Theory]
+    [InlineData(1, 1, 1)]
+    [InlineData(4, 2, 2)]
+    [InlineData(9, 3, 3)]
+    [InlineData(16, 4, 4)]
+    public void 工具栏那四档摆成方块(int count, int columns, int rows)
+    {
+        var wall = LiveWall.Layout(count, 1, 16);
+
+        Assert.Equal(count, wall.Count);
+        Assert.Equal(columns, wall.Columns);
+        Assert.Equal(rows, wall.Rows);
+    }
+
+    /// <summary>
+    /// T9：十格到十六格**一个都不许漏**，而且十六格那一下要摆四列。
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ 从前那条 <c>_ =&gt; 3</c> 会把十六格摆成 3×6 —— 装得下，所以「装得下」那条
+    /// 绊线**拦不住它**（这正是要单独写一条的理由）：用户点的是「十六分割」，
+    /// 出来的却是个三列六行的怪东西，不像同一个手势放大一档。
+    /// </remarks>
+    [Fact]
+    public void 十格往上摆四列_而且一个格子都不许漏到墙外面()
+    {
+        for (var count = 10; count <= 16; count++)
+        {
+            var wall = LiveWall.Layout(count, 1, 16);
+
+            Assert.Equal(count, wall.Count);
+            Assert.Equal(4, wall.Columns);
+            Assert.True(
+                wall.Columns * wall.Rows >= wall.Count,
+                $"{count} 格摆成 {wall.Columns}×{wall.Rows}，装不下");
+        }
+    }
+
+    /// <summary>T9：一到十六格逐档扫一遍，没有一格被挤到墙外面去。</summary>
+    [Fact]
+    public void 一到十六格_每一档都装得下()
+    {
+        for (var count = 1; count <= 16; count++)
+        {
+            var wall = LiveWall.Layout(count, 1, 16);
+
+            Assert.Equal(count, wall.Count);
             Assert.True(
                 wall.Columns * wall.Rows >= wall.Count,
                 $"{count} 格摆成 {wall.Columns}×{wall.Rows}，装不下");

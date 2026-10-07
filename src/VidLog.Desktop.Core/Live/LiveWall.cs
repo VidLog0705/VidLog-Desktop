@@ -59,13 +59,18 @@ public sealed class LiveWall : IAsyncDisposable
 
     /// <summary>格数选好之后，这面墙摆几列几行（T27② 第 4 批）。</summary>
     /// <param name="requested">用户选的格数。</param>
-    /// <param name="min">最少几格（菜单上的第一档）。</param>
-    /// <param name="max">最多几格（九宫格那个九）。</param>
+    /// <param name="min">最少几格（菜单上最小那一档）。</param>
+    /// <param name="max">最多几格（工具栏上最大那一档，见 T9）。</param>
     /// <remarks>
     /// <para>
     /// ⚠️ <b>列数按最接近方形的来</b>：2 格 2×1、3 格 2×2、5 格 3×2、9 格 3×3 ——
     /// 与设计图的九宫格同一个口径。注意 3 格是 **2×2**（空一格），不是 3×1：
     /// 照原样搬的，没有改。
+    /// </para>
+    /// <para>
+    /// ⚠️ <b>十格以上摆四列</b>（T9 加的）：十六格那两个「四」是一对 ——
+    /// 照旧那条 <c>_ =&gt; 3</c> 会把它摆成 3×6，看着像随意长的，不像「四分割放大一档」。
+    /// 四列也是往上取整能装下的最小列数（4×4 = 16）。
     /// </para>
     /// <para>
     /// ⚠️ 行数是**向上取整**（<c>(n + cols - 1) / cols</c>）：摆不满的那一行照摆，
@@ -78,7 +83,7 @@ public sealed class LiveWall : IAsyncDisposable
     /// <para>
     /// ⚠️ <paramref name="min"/> 给 0 时 <see cref="Math.Clamp"/> 放得出 0，
     /// 而 0 列会让行数那个除法**当场抛**。所以列数兜底到至少 1 ——
-    /// 眼下唯一的调用处第一档就是 2，走不到那儿，是防着下一个调用处。
+    /// 眼下唯一的调用处最小那一档就是 1，走不到那儿，是防着下一个调用处。
     /// </para>
     /// </remarks>
     public static (int Count, int Columns, int Rows) Layout(int requested, int min, int max)
@@ -89,7 +94,8 @@ public sealed class LiveWall : IAsyncDisposable
         {
             <= 2 => Math.Max(count, 1),
             <= 4 => 2,
-            _ => 3,
+            <= 9 => 3,
+            _ => 4,
         };
 
         return (count, columns, (count + columns - 1) / columns);
@@ -99,11 +105,23 @@ public sealed class LiveWall : IAsyncDisposable
     /// 对一次账。<paramref name="active"/> 就是 <see cref="LiveDirectory.Active"/>
     /// 那一列（按 DeviceId 排好，所以同一台机位的位置是稳定的）。
     /// </summary>
+    /// <param name="isLive">
+    /// 第 <c>i</c> 格现在要不要看（<c>i</c> 是它在 <paramref name="active"/> 里的下标）。
+    /// 传 <see langword="null"/> = 全都要。T9 那两样都从这个口进来：工具栏的分割档位
+    /// （摆不下的格子不该白起 ffmpeg）与每一格的「眼睛」。
+    /// </param>
     /// <remarks>
+    /// <para>
     /// ⚠️ <b>顺序是「先摆新的、再收旧的」。</b>反过来的话，收到一半出岔子就会留下
     /// 一格指向**已经收掉的那个 tile** —— 而界面照旧每 1/12 秒去问它要帧。
+    /// </para>
+    /// <para>
+    /// ⚠️ <b>不看的那一格，位置照占</b>（阵容里摆一个 <see langword="null"/>）。
+    /// 把它整个抽掉的话后面几台会**往前挪一格**：用户关掉第 3 格，看到的却是
+    /// 第 4 格换了台手机 —— 而每一格的画面都还在动，看起来完全正常。
+    /// </para>
     /// </remarks>
-    public async Task SyncAsync(IReadOnlyList<LiveEndpoint> active)
+    public async Task SyncAsync(IReadOnlyList<LiveEndpoint> active, Func<int, bool>? isLive = null)
     {
         ArgumentNullException.ThrowIfNull(active);
 
@@ -112,10 +130,28 @@ public sealed class LiveWall : IAsyncDisposable
         var lineup = new List<LiveTile?>(active.Count);
         var kept = new HashSet<string>(StringComparer.Ordinal);
 
-        foreach (var endpoint in active)
+        // 这一拍里停掉的那几路（用户关的 / 摆不下的）。收的动作一律排在 `_adopt` 后面。
+        List<(int Index, LiveTile Tile)>? parked = null;
+
+        for (var index = 0; index < active.Count; index++)
         {
+            var endpoint = active[index];
+
             // 同一台报了两条是**不该发生**的（表按 DeviceId 索引）—— 真发生了也别翻车。
             if (!kept.Add(endpoint.DeviceId)) continue;
+
+            if (isLive is not null && !isLive(index))
+            {
+                // ⚠️ 位置照占（见上面那段）。它要是本来就没起，这一拍什么都不做。
+                lineup.Add(null);
+
+                if (_tiles.Remove(endpoint.DeviceId, out var stopped))
+                {
+                    (parked ??= []).Add((index, stopped));
+                }
+
+                continue;
+            }
 
             if (_tiles.TryGetValue(endpoint.DeviceId, out var tile))
             {
@@ -136,6 +172,22 @@ public sealed class LiveWall : IAsyncDisposable
         }
 
         _adopt(lineup);
+
+        // ⚠️ 停下来的那几路**在这里收**，不写在上面那个循环里：那会变成「一边收旧的、
+        // 一边摆新的」，正是这一条要在源头挡住的那个顺序（`DisposeAsync` 最多等 2 秒）。
+        // 停的原因不写死在这儿 —— 它是用户关的、摆不下的、还是窗口最小化了，
+        // 调用方那边各记了一条（这里只说明这一格停了）。
+        if (parked is not null)
+        {
+            foreach (var (index, tile) in parked)
+            {
+                _logger.Log(
+                    LogLevel.Info, "多画面",
+                    $"这一格停了：{tile.Name} —— 第 {index + 1} 格现在不看它（画面收掉了）");
+
+                await tile.DisposeAsync();
+            }
+        }
 
         List<(string DeviceId, LiveTile Tile)>? gone = null;
 

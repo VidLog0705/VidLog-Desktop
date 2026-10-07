@@ -22,15 +22,26 @@
                                Text="实时多画面"/>
                     <!-- ⚠️ 这句就是设计图上那句：双击进全屏、全屏内可旋转、Esc 返回。 -->
                     <TextBlock Style="{StaticResource Caption}" Margin="14,0,0,0"
-                               VerticalAlignment="Center" TextWrapping="Wrap" MaxWidth="640"
-                               Text="双击某一格进入全屏（全屏里能换画质），按 Esc 返回；右键选择画面数；每格右上角那颗按钮转 90°。"/>
+                               VerticalAlignment="Center" TextWrapping="Wrap" MaxWidth="560"
+                               Text="双击某一格进入全屏（全屏里能换画质），按 Esc 或再双击一次返回；每格右上角那颗按钮转 90°，旁边那颗眼睛是不看这一格；右键还能选别的画面数。"/>
                 </StackPanel>
-                <!-- ⚠️ `IsCancel` 与 `OnPreviewKeyDown` 里那个 Esc **互补，不冲突**：
-                     全屏时 PreviewKeyDown（隧道）先接住并 `Handled = true`，事件不再冒泡；
-                     网格态它什么都不做，这一颗才轮到 —— 补上了「在网格里按 Esc 没反应」。 -->
-                <Button Grid.Column="0" x:Name="CloseButton" Content="关闭"
-                        Style="{StaticResource SecondaryButton}" MinWidth="88"
-                        HorizontalAlignment="Right" Click="OnClose" IsCancel="True"/>
+
+                <StackPanel Orientation="Horizontal" HorizontalAlignment="Right"
+                            VerticalAlignment="Center">
+                    <!-- ★ T9：分割档位（1 / 4 / 9 / 16）。按钮由 code-behind 摆进来
+                         （`BuildSplitRow`）—— 与全屏那排画质按钮同一个做法。 -->
+                    <TextBlock Style="{StaticResource Caption}" Margin="0,0,8,0"
+                               VerticalAlignment="Center" Text="分割"/>
+                    <StackPanel x:Name="SplitRow" Orientation="Horizontal"
+                                VerticalAlignment="Center"/>
+
+                    <!-- ⚠️ `IsCancel` 与 `OnPreviewKeyDown` 里那个 Esc **互补，不冲突**：
+                         全屏时 PreviewKeyDown（隧道）先接住并 `Handled = true`，事件不再冒泡；
+                         网格态它什么都不做，这一颗才轮到 —— 补上了「在网格里按 Esc 没反应」。 -->
+                    <Button x:Name="CloseButton" Content="关闭"
+                            Style="{StaticResource SecondaryButton}" MinWidth="88"
+                            Margin="16,0,0,0" Click="OnClose" IsCancel="True"/>
+                </StackPanel>
             </Grid>
         </Border>
 
@@ -60,7 +71,7 @@
         <!-- ⚠️ 盖住整个窗口（RowSpan=2）：全屏就是「只看这一格」，
              工具条与别的格子都不该还在。 -->
         <Grid x:Name="FullscreenLayer" Grid.RowSpan="2" Background="{StaticResource VideoBackground}"
-              Visibility="Collapsed">
+              Visibility="Collapsed" MouseLeftButtonDown="OnFullscreenClick">
             <Grid.RowDefinitions>
                 <RowDefinition Height="*"/>
                 <RowDefinition Height="Auto"/>
@@ -76,7 +87,7 @@
                                    VerticalAlignment="Center" Text="全屏"/>
                         <TextBlock Style="{StaticResource Caption}" Margin="14,0,0,0"
                                    VerticalAlignment="Center"
-                                   Text="按 Esc 退出全屏。"/>
+                                   Text="按 Esc 或再双击一次退出全屏。"/>
                     </StackPanel>
 
                     <StackPanel x:Name="QualityRow" Orientation="Horizontal" Margin="0,10,0,0"/>

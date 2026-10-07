@@ -1345,6 +1345,72 @@ public class DesktopServicesTests
     }
 
     /// <summary>
+    /// 钉住 T9：多画面那面墙**起几路 ffmpeg 是用户说了算的**，而且档位摆得下。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// ⚠️ 这条盯的是三处**静默失效** —— 每一处的表现都是「点了没反应 / 少了一格」，
+    /// 而屏幕上看起来完全正常，测试不红就没人会知道：
+    /// </para>
+    /// <list type="number">
+    /// <item>工具栏最大那一档 &gt; <c>MaxCells</c>：<c>LiveWall.Layout</c> 会把它**夹小**，
+    /// 点了「16」只摆 9 格，一个字都不说。</item>
+    /// <item>摆格数时下界写成 <c>CellChoices[0]</c>（那是右键菜单上的 2）：
+    /// 工具栏那颗「1」会被静默夹成 2 格 —— 单画面这一档等于没有。</item>
+    /// <item>忘了 <c>Array.Fill(_eyes, true)</c>：<c>new bool[]</c> 全是 false，
+    /// 那就是**一开窗整面墙都关着**（而且用户看不出哪里不对：每格都写着「已关闭」，
+    /// 那本来是个正当状态）。</item>
+    /// </list>
+    /// <para>
+    /// ⚠️ 为什么只能看源码文本：App 层没有测试工程（与这一组别的几条同一条理由）。
+    /// 天花板也一样：它挡不住「判断写反了」—— 那条由
+    /// <c>LiveWallTests</c> 里那几条（真跑对账）来挡，两边分工不重。
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public void 多画面起几路是用户说了算的_档位一个都不许被夹掉()
+    {
+        var app = Path.Combine(RepoRoot(), "src", "VidLog.Desktop.App");
+        var window = ReadSplit(app, "MultiViewWindow");
+
+        // 哨兵：扫到的是真文件（ReadSplit 扫到零个文件时它会红）。
+        Assert.Contains("WindowState.Minimized", window, StringComparison.Ordinal);
+
+        var max = Regex.Match(window, @"MaxCells\s*=\s*(\d+)");
+        Assert.True(max.Success, "MultiViewWindow 里没量到 MaxCells。");
+
+        var choices = Regex.Match(window, @"SplitChoices\s*=\s*\[([^\]]*)\]");
+        Assert.True(choices.Success, "MultiViewWindow 里没量到 SplitChoices（T9 那四档）。");
+
+        var presets = choices.Groups[1].Value
+            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Select(one => int.Parse(one, System.Globalization.CultureInfo.InvariantCulture))
+            .ToList();
+
+        // ⚠️ 逐字钉住这四档：它们是需求方定的手势（1 → 4 → 9 → 16），
+        // 不是「随便几档」——少一档或多一档都得先问过。
+        Assert.Equal(new[] { 1, 4, 9, 16 }, presets);
+
+        var maxCells = int.Parse(max.Groups[1].Value, System.Globalization.CultureInfo.InvariantCulture);
+
+        Assert.True(
+            presets.Max() <= maxCells,
+            $"工具栏最大一档是 {presets.Max()} 格，而 MaxCells 只摆得下 {maxCells} 格 —— "
+                + "点了会被 LiveWall.Layout 静默夹小，用户只会觉得「这一档坏了」。");
+
+        // 下界必须是 1（那档单画面），不是菜单上的第一档（2）。
+        Assert.Contains("LiveWall.Layout(count, 1, MaxCells)", window, StringComparison.Ordinal);
+
+        // 摆不下的与关了眼睛的，一起走同一个判断；传进去的是**整个机位表**
+        //（挑着传的话关掉的那几格会塌掉位置，后面几台往前挪一格）。
+        Assert.Contains("SyncAsync(_cameras(), IsCellLive)", window, StringComparison.Ordinal);
+        Assert.Contains("private bool IsCellLive(int index)", window, StringComparison.Ordinal);
+
+        // 一开窗每一格都看（不 Fill 的话整面墙都是关着的）。
+        Assert.Contains("Array.Fill(_eyes, true)", window, StringComparison.Ordinal);
+    }
+
+    /// <summary>
     /// 读一个**拆成了 partial** 的窗口 / 服务的全部源码（整行注释已剥掉）。
     /// </summary>
     /// <remarks>

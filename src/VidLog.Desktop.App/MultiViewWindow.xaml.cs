@@ -32,22 +32,49 @@ namespace VidLog.Desktop.App;
 /// </summary>
 /// <remarks>
 /// <para>
-/// <b>默认九宫格；右键选画面数（2~9）；选几就摆几格</b>——机位不够时空格显示
-/// 「未接入」（浅底；不隐藏格子：格数是**用户选的**，不是机位数决定的）。
-/// 每格右上角一颗转动按钮（点一次 90°），双击进全屏，全屏里能换画质。
-/// 每格下方居中显示 <c>F</c>（发货，绿）与 <c>T</c>（退货，红）。
+/// <b>默认九宫格；工具栏那四档分割（1 / 4 / 9 / 16）与右键菜单（2~9）都能改格数；
+/// 选几就摆几格</b>——机位不够时空格显示「未接入」（浅底；不隐藏格子：格数是**用户选的**，
+/// 不是机位数决定的）。每格右上角一颗转动按钮（点一次 90°），双击进全屏，
+/// 全屏里能换画质。每格下方居中显示 <c>F</c>（发货，绿）与 <c>T</c>（退货，红）。
 /// </para>
 /// <para>
 /// ⚠️ <b>F / T 只在屏幕上，绝不进视频水印</b>（规格 §3.8 ⑦）。这一层压根不碰视频 ——
 /// 「不写进去」是结构上成立的，不是靠自觉。
 /// </para>
+/// <para>
+/// ★ <b>T9：起几路 ffmpeg 是用户说了算的。</b>两个口子，都走
+/// <see cref="IsCellLive"/> 这一个判断：<b>摆不下的格子</b>（选了 4 格而报到了 9 台）
+/// 与<b>用户关了眼睛的格子</b>。两者都省下一路 ffmpeg 与它的解码，
+/// 而**格子的位置一个都不动**（见 <see cref="LiveWall.SyncAsync"/> 那一段）。
+/// 加上最小化时整面墙都停 —— 「九格满负荷」从前是**从来没验过**的那条路。
+/// </para>
 /// </remarks>
 public partial class MultiViewWindow : Window
 {
-    /// <summary>能选的画面数（需求方逐字定的这几档）。</summary>
+    /// <summary>右键菜单上能选的画面数（需求方逐字定的这几档）。</summary>
     private static readonly int[] CellChoices = [2, 3, 4, 5, 6, 7, 8, 9];
 
-    private const int MaxCells = 9;
+    /// <summary>
+    /// 工具栏上那四档分割（T9）。
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ 四档就是**四的倍数**那一路：1 → 4 → 9 → 16（NVR 客户端的标准手势）。
+    /// 它们与 <see cref="CellChoices"/> 不冲突，后者是右键菜单里的细档。
+    /// ⚠️ 最大那一档**必须** ≤ <see cref="MaxCells"/>，否则会被
+    /// <see cref="LiveWall.Layout"/> 静默夹小（点了 16 却只摆 9）。
+    /// </remarks>
+    private static readonly int[] SplitChoices = [1, 4, 9, 16];
+
+    private const int MaxCells = 16;
+
+    /// <summary>
+    /// 开窗时摆几格（需求方 2026-10-07 拍的 P3：**照设计图，默认九宫格**）。
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ 它**不是** <see cref="MaxCells"/>：工具条上那档 16 是给「四分割再放大一档」
+    /// 用的，不该变成开窗的默认值 —— 一开窗就起 16 路 ffmpeg，而用户多半只要看两台手机。
+    /// </remarks>
+    private const int DefaultCells = 9;
 
     /// <summary>
     /// 三档各自的好处与坏处。
@@ -76,7 +103,20 @@ public partial class MultiViewWindow : Window
     private readonly DispatcherTimer _statusTimer;
     private readonly DispatcherTimer _syncTimer;
 
-    private int _cellCount = MaxCells;
+    /// <summary>
+    /// 每一格还看不看（T9 的「眼睛」）。**默认全看**。
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ 下标是**格子的位置**，不是机位 —— 关掉第 3 格，就得一直关着第 3 格，
+    /// 哪怕那台手机换了端口、或者中间某台退了休让后面的往前挪了位。
+    /// 按机位记的话，用户关掉的那一格会在下一拍**自己又亮起来**。
+    /// </remarks>
+    private readonly bool[] _eyes = new bool[MaxCells];
+
+    /// <summary>窗口最小化了：整面墙都停（T9 / P3 拍的「一并停」）。</summary>
+    private bool _suspended;
+
+    private int _cellCount = DefaultCells;
 
     /// <summary>墙上现在挂着几台机位（对完账才知道）。</summary>
     private int _onlineCount;
@@ -122,6 +162,9 @@ public partial class MultiViewWindow : Window
         _cameras = cameras;
         _logger = logger ?? Core.Diagnostics.NullLogger.Instance;
 
+        // 每一格默认都看（`new bool[]` 全是 false —— 那就是一开窗整面墙都关着）。
+        Array.Fill(_eyes, true);
+
         // ⚠️ 对账那面墙**归这个窗口造**：它要把阵容摆到下面那些格子上，
         // 而那件事只有窗口做得了（见 `ApplyLineup`）。
         _wall = create is null ? null : new LiveWall(create, ApplyLineup, _logger);
@@ -129,6 +172,7 @@ public partial class MultiViewWindow : Window
         BuildWall();
         BuildQualityRow();
         BuildLayoutMenu();
+        BuildSplitRow();
 
         // ⚠️ 12 fps 与格子那一路的 ffmpeg 同频：更快只是白烧 CPU，
         // 更慢会让画面看起来「不如手机流畅」。
@@ -166,6 +210,30 @@ public partial class MultiViewWindow : Window
             _logger.Log(
                 LogLevel.Info, "多画面",
                 $"多画面窗口开了：{_cellCount} 格、{_onlineCount} 台机位在线");
+        };
+
+        // ★ T9（P3 拍的「最小化一并停」）：最小化时整面墙的画面都收掉，
+        // 还原时自己接回来。收的是**解码与 ffmpeg 两样**—— 光是看不见，CPU 照样烧。
+        // ⚠️ 判的是 `WindowState` 而不是 `e.NewState`：最大化/还原都会响这一下，
+        // 用它就不必去猜「从最大化直接最小化」这种走法。
+        StateChanged += async (_, _) =>
+        {
+            var shouldStop = WindowState == WindowState.Minimized;
+
+            // 最大化、从最小化还原到最大化…… 都会响；状态没变就别去折腾那些 ffmpeg。
+            if (shouldStop == _suspended) return;
+
+            _suspended = shouldStop;
+
+            _logger.Log(
+                LogLevel.Info, "多画面",
+                shouldStop
+                    ? "多画面窗口最小化了：墙上的画面都停了（还原时自己接回来）"
+                    : "多画面窗口还原了：墙上的画面接回来");
+
+            // ⚠️ 这一拍要是正好撞上对账在跑，它会直接返回（`_syncing` 那道闸），
+            // 最迟两秒后那一拍也会按新的 `_suspended` 摆一次 —— 结果一样，只是慢一点。
+            await SyncCamerasAsync();
         };
 
         Closed += async (_, _) =>
@@ -217,8 +285,20 @@ public partial class MultiViewWindow : Window
     {
         for (var index = 0; index < _cells.Count; index++)
         {
-            // 机位比格子少是常态（用户选了几格而只有两台手机）—— 剩下的格子留空。
-            _cells[index].Adopt(index < lineup.Count ? lineup[index] : null);
+            // 两种空法**必须分开**（T9）：
+            //  · 阵容里**没有这一号**（`index >= lineup.Count`）= 压根没有这么多台机位 → 「未接入」；
+            //  · 阵容里**这一号是空的** = 有这台机位，只是现在不看它 → 「已关闭」。
+            // 合成一种的话，用户关了眼睛的那一格会写着「未接入」，而那是**假话**
+            //（它明明在推，只是你不看）—— 他会跑去找手机，而手机一直好好的。
+            if (index >= lineup.Count)
+            {
+                _cells[index].Adopt(null, turnedOff: false);
+                continue;
+            }
+
+            var tile = lineup[index];
+
+            _cells[index].Adopt(tile, turnedOff: tile is null);
         }
 
         _onlineCount = lineup.Count;
@@ -274,9 +354,7 @@ public partial class MultiViewWindow : Window
         ContextMenu = menu;
     }
 
-    /// <summary>
-    /// 摆成 [count] 格。
-    /// </summary>
+    /// <summary>摆成 [count] 格。</summary>
     /// <remarks>
     /// ⚠️ <b>格数由用户选，不由机位数决定。</b>选了 3 格但只有 2 台手机时，
     /// 第三格**照摆**、浅底写「未接入」—— 把它藏掉的话，用户只会以为
@@ -284,9 +362,22 @@ public partial class MultiViewWindow : Window
     /// </remarks>
     private void ApplyCellCount(int count)
     {
-        // 3×3 的墙要摆 N 格：夹到菜单上的档位、算列、算行 —— 那三件都在 Core 里
+        // 3×3 的墙要摆 N 格：夹到档位、算列、算行 —— 那三件都在 Core 里
         // （`LiveWall.Layout`，T27② 第 4 批搬下去的），这里只往控件上贴。
-        var wall = LiveWall.Layout(count, CellChoices[0], MaxCells);
+        //
+        // ⚠️ 下界是 **1**（T9 那档单画面），不是 `CellChoices[0]`（那是菜单上的 2）——
+        // 写成后者的话工具栏上那颗「1」会被静默夹成 2 格。
+        var wall = LiveWall.Layout(count, 1, MaxCells);
+
+        // ⚠️ 只在**真的变了**的时候记一句：装载时那一次 `_cellCount` 本来就是这个数
+        //（而开窗那一条日志已经写了格数），每次都记会在启动时留下两句一样的话。
+        // ⚠️ 这一句是**原因**：格数一改，墙那边就会「停了：… 第 N 格现在不看它」，
+        // 但那边不知道是用户点了 16 还是 4 —— 用户来问「怎么只出来 4 格」时，
+        // 答案在这一句里。
+        if (wall.Count != _cellCount)
+        {
+            _logger.Log(LogLevel.Info, "多画面", $"画面数改成 {wall.Count} 格（原来是 {_cellCount} 格）");
+        }
 
         _cellCount = wall.Count;
         Wall.Columns = wall.Columns;
@@ -299,10 +390,87 @@ public partial class MultiViewWindow : Window
                 : Visibility.Collapsed;
         }
 
-        TitleText.Text = $"实时多画面 · {_cellCount} 宫格";
+        TitleText.Text = _cellCount == 1
+            ? "实时多画面 · 单画面"
+            : $"实时多画面 · {_cellCount} 宫格";
+
+        UpdateSplitButtons();
 
         // 压字的问题由**说明另占一行**解决（见 .xaml），不是靠收格子。
         UpdateCameraNote();
+    }
+
+    /// <summary>
+    /// 工具栏上那四档分割（T9）。
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ 与右键菜单**并存**，不是替代：菜单里那几档（2 / 3 / 5 / 6 / 7 / 8）没有按钮，
+    /// 按钮上那四档也不进菜单 —— 两边合起来才是全部档位。
+    /// ⚠️ 选中的那一档用 <c>PrimaryButton</c> 上色（与全屏那排画质按钮同一个口径）——
+    /// 不给的话用户点完不知道自己在哪一档。
+    /// </remarks>
+    private void BuildSplitRow()
+    {
+        foreach (var count in SplitChoices)
+        {
+            var button = new Button
+            {
+                Content = count.ToString(),
+                Style = (Style)FindResource("SecondaryButton"),
+                MinWidth = 40,
+                Margin = new Thickness(0, 0, 6, 0),
+                Tag = count,
+                ToolTip = $"{count} 格",
+            };
+
+            AutomationProperties.SetAutomationId(button, $"LiveSplit{count}");
+
+            button.Click += (_, _) => ApplyCellCount(count);
+
+            SplitRow.Children.Add(button);
+        }
+
+        UpdateSplitButtons();
+    }
+
+    private void UpdateSplitButtons()
+    {
+        foreach (Button button in SplitRow.Children)
+        {
+            if (button.Tag is not int count) continue;
+
+            button.Style = (Style)FindResource(
+                count == _cellCount ? "PrimaryButton" : "SecondaryButton");
+        }
+    }
+
+    /// <summary>
+    /// 第 <paramref name="index"/> 格现在该不该起画面（T9）。
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ <b>这是「起几路 ffmpeg」唯一的那个判断。</b>三个口子合到一处：摆不下的格子、
+    /// 用户关了眼睛的格子、窗口最小化。散成三处的话，总有一处会漏掉 ——
+    /// 而漏掉的表现是「进程还在跑」：用户看不见，风扇听得见。
+    /// </remarks>
+    private bool IsCellLive(int index) =>
+        !_suspended && index < _cellCount && index < _eyes.Length && _eyes[index];
+
+    /// <summary>关掉 / 重新看上第 <paramref name="index"/> 格（T9 的「眼睛」）。</summary>
+    private async Task ToggleEyeAsync(int index)
+    {
+        if (index < 0 || index >= _eyes.Length) return;
+
+        _eyes[index] = !_eyes[index];
+
+        // ⚠️ 加一条日志：这一下**真的会杀掉一路 ffmpeg**（不只是把画面藏起来）——
+        // 「画面少了一格」的答案在这里。
+        _logger.Log(
+            LogLevel.Info, "多画面",
+            _eyes[index]
+                ? $"第 {index + 1} 格又看上了：给它重新起一路画面"
+                : $"第 {index + 1} 格不看了：停掉它那一路画面与解码");
+
+        await SyncCamerasAsync();
     }
 
     /// <summary>对一次账：机位表 → 格子。</summary>
@@ -319,7 +487,10 @@ public partial class MultiViewWindow : Window
 
         try
         {
-            await _wall.SyncAsync(_cameras());
+            // ⚠️ 传的是**整个机位表**（不是挑出来的那几台）：关掉的那几格必须在阵容里
+            // **占着位子**，否则后面几台会往前挪一格（见 `LiveWall.SyncAsync`）。
+            // 起不起由 `IsCellLive` 一格一格地说。
+            await _wall.SyncAsync(_cameras(), IsCellLive);
         }
         catch (Exception ex)
         {
@@ -540,6 +711,28 @@ public partial class MultiViewWindow : Window
         }
     }
 
+    /// <summary>
+    /// 全屏里再双击一次就回网格（T9；NVR 的标准手势，不需要菜单）。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// ⚠️ <b>这一下从前没有。</b>进全屏那一路（<see cref="Cell"/> 的 `OnMouseDown`）挂在
+    /// **格子的 Border** 上，而全屏层盖在它上面、铺满整个窗口 —— 双击落到全屏层上，
+    /// 根本冒泡不到格子那儿。所以「再双击回网格」一直只有 Esc 那条路。
+    /// </para>
+    /// <para>
+    /// ⚠️ 全屏层下面那排画质按钮**不会**误触：<c>ButtonBase</c> 自己把
+    /// <c>MouseLeftButtonDown</c> 标成 handled，那一下到不了这里。
+    /// </para>
+    /// </remarks>
+    private void OnFullscreenClick(object sender, MouseButtonEventArgs e)
+    {
+        if (e.ClickCount < 2) return;
+
+        e.Handled = true;
+        _ = ExitFullscreenAsync();
+    }
+
     /// <summary>一格。</summary>
     /// <remarks>
     /// ⚠️ <see cref="Tile"/> 为 <see langword="null"/> 是**正常的一种格子**：
@@ -555,6 +748,23 @@ public partial class MultiViewWindow : Window
         /// <summary>有机位、但一帧都还没上来时兜底的那句话。</summary>
         private const string NoSignal = "无信号输入";
 
+        /// <summary>
+        /// 用户关了眼睛的那一格写的话（T9）。
+        /// </summary>
+        /// <remarks>
+        /// ⚠️ <b>不能写成「未接入」</b>：那台手机在推，只是用户不看它。
+        /// 写「未接入」的话，用户会去手机上找原因，而手机一直是好的。
+        /// </remarks>
+        private const string TurnedOff = "已关闭";
+
+        /// <summary>「眼睛」那两个字形（开着 / 关着）。</summary>
+        /// <remarks>
+        /// ⚠️ 用字形不用 emoji：`👁` 走的是 Segoe UI Emoji 那条路，WPF 里各版本渲染不一
+        ///（有的出彩色、有的缺字），而 `⟳` 那颗已经证明这套字形在这台机器上稳。
+        /// </remarks>
+        private const string EyeOn = "◉";
+        private const string EyeOff = "○";
+
         private readonly MultiViewWindow _owner;
         private readonly int _index;
         private readonly Brush _countGreen;
@@ -566,7 +776,11 @@ public partial class MultiViewWindow : Window
         private readonly Brush _slotBg;
         private readonly TextBlock _name;
         private readonly Button _rotate;
+        private readonly Button _eye;
         private long _shownAt;
+
+        /// <summary>这一格现在是被用户（或最小化）关着的（见 <see cref="Adopt"/>）。</summary>
+        private bool _off;
 
         public Cell(MultiViewWindow owner, int index)
         {
@@ -635,14 +849,41 @@ public partial class MultiViewWindow : Window
                 Content = "⟳",
                 Width = 28,
                 Height = 28,
-                Margin = new Thickness(0, 6, 6, 0),
-                HorizontalAlignment = HorizontalAlignment.Right,
-                VerticalAlignment = VerticalAlignment.Top,
                 Style = (Style)((FrameworkElement)owner).FindResource("IconButton"),
                 ToolTip = "转 90°",
                 Visibility = Visibility.Collapsed,
             };
             _rotate.Click += (_, _) => Rotate();
+
+            // ★ T9 的「眼睛」：关掉这一格（**真的停掉它那一路 ffmpeg**，不是把画面藏起来）。
+            // ⚠️ 用的字与旁边那颗一样是**字形**（`⟳` 就是字形）—— 不引图标库，
+            // 也不为此画一条 Path。
+            _eye = new Button
+            {
+                Content = EyeOn,
+                Width = 28,
+                Height = 28,
+                Style = (Style)((FrameworkElement)owner).FindResource("IconButton"),
+                ToolTip = EyeTooltip(on: true),
+                Visibility = Visibility.Collapsed,
+            };
+            _eye.Click += async (_, _) => await _owner.ToggleEyeAsync(_index);
+
+            // ⚠️ AutomationId 挂在这两颗按钮上（T9）：截图脚本按 id 找，
+            // 不按中文标题找 —— PS 5.1 的控制台代码页会把中文读成乱码。
+            AutomationProperties.SetAutomationId(_eye, $"LiveCell{index + 1}Eye");
+
+            // 两颗按钮并排钉在右上角。⚠️ 放同一个 StackPanel 里，别再各自 `HorizontalAlignment`——
+            // 各自靠右的话它们会**叠在同一个位置**上。
+            var corner = new StackPanel
+            {
+                Orientation = Orientation.Horizontal,
+                HorizontalAlignment = HorizontalAlignment.Right,
+                VerticalAlignment = VerticalAlignment.Top,
+                Margin = new Thickness(0, 6, 6, 0),
+            };
+            corner.Children.Add(_eye);
+            corner.Children.Add(_rotate);
 
             Counts = new TextBlock
             {
@@ -661,7 +902,7 @@ public partial class MultiViewWindow : Window
             inner.Children.Add(Surface);
             inner.Children.Add(Empty);
             inner.Children.Add(_name);
-            inner.Children.Add(_rotate);
+            inner.Children.Add(corner);
             inner.Children.Add(Counts);
 
             Root = new Border
@@ -679,8 +920,14 @@ public partial class MultiViewWindow : Window
             // ⚠️ 新格子生下来就是**空位** —— 而且必须现在画：格子是先摆好、后对账的，
             // 对账那一路碰上「本来就没有机位」会被 `Adopt` 的同对象判断直接跳掉
             //（`null` 与初值 `null` 相等），不在这儿画就永远是裸的默认色。
-            Paint(empty: true, NoSeat);
+            // 眼睛这时也收起来：还没有机位，没什么可关的。
+            Paint(empty: true, NoSeat, showEye: false);
         }
+
+        private static string EyeTooltip(bool on) =>
+            on
+                ? "不看这一格（停掉它的画面，省一路解码）"
+                : "重新看这一格";
 
         /// <summary>
         /// 这一格的机位；**用户选了几格而机位不够时是 <see langword="null"/>**。
@@ -690,24 +937,41 @@ public partial class MultiViewWindow : Window
         public LiveTile? Tile { get; private set; }
 
         /// <summary>
-        /// 把这一格改挂到 <paramref name="tile"/> 上（<see langword="null"/> = 摘空）。
+        /// 把这一格改挂到 <paramref name="tile"/> 上（<see langword="null"/> = 这一格没有画面）。
         /// </summary>
+        /// <param name="turnedOff">
+        /// <see langword="null"/> 的那一格是**哪种空**：<see langword="true"/> = 有这台机位、
+        /// 只是现在不看它（T9）；<see langword="false"/> = 压根没有这么多台机位。
+        /// </param>
         /// <remarks>
         /// ⚠️ <b>换了一路就得把上一路留下的东西全抹掉</b>：画面、那两个计数、
         /// 那句话。抹不干净的话，新机位还没出画面时屏幕上会是**上一台手机的
         /// 计数和旧图** —— 而那看起来完全正常。
+        /// ⚠️ 同对象判断里**必须带上 <paramref name="turnedOff"/>**：关掉一格时
+        /// tile 前后都是 <see langword="null"/>，只看 tile 的话这一下会被整个跳掉，
+        /// 用户点了眼睛而屏幕上一动不动。
         /// </remarks>
-        public void Adopt(LiveTile? tile)
+        public void Adopt(LiveTile? tile, bool turnedOff)
         {
-            if (ReferenceEquals(Tile, tile)) return;
+            if (ReferenceEquals(Tile, tile) && _off == turnedOff) return;
 
             Tile = tile;
+            _off = turnedOff;
 
             _name.Text = tile?.Name ?? $"机位 {_index + 1}";
 
             // ★ T10：**空位**（用户选了 9 格、手机只有 2 台）与**有机位但画面没上来**
             // 原来是同一副样子 —— 都是一块深色 + 一句话，用户分不出今晚该去查哪一格。
-            Paint(tile is null, tile is null ? NoSeat : tile.Problem ?? NoSignal);
+            // ★ T9 加了第三种空：**用户自己关掉的**（见 `TurnedOff`）。
+            Paint(
+                empty: tile is null,
+                turnedOff ? TurnedOff : tile?.Problem ?? NoSignal,
+                // ⚠️ 眼睛**只有在这一格有机位、或者它正被关着**时才露面：
+                // 没有机位就没有什么可关的；而关着的那一格必须留着眼睛，
+                // 不然用户再也点不回来。
+                showEye: tile is not null || turnedOff);
+
+            UpdateEye();
 
             Surface.Source = null;
             Counts.Inlines.Clear();
@@ -716,12 +980,19 @@ public partial class MultiViewWindow : Window
             // 0 不可能等于任何一帧的时间戳 ⇒ 下一帧一定画得上（`Pump` 拿它去重）。
             _shownAt = 0;
 
-            // 正全屏看着的那一格被收了（机位过期了）：退出来 —— 不退的话全屏层会
-            // 冻在最后一帧上，标题还写着那台机位，而它已经不在了。
+            // 正全屏看着的那一格被收了（机位过期了，或者用户把它关了）：退出来 ——
+            // 不退的话全屏层会冻在最后一帧上，标题还写着那台机位，而它已经不在了。
             if (tile is null && ReferenceEquals(_owner._fullscreen, this))
             {
                 _ = _owner.ExitFullscreenAsync();
             }
+        }
+
+        /// <summary>把「眼睛」画成现在的样子（<see cref="_off"/> 是唯一的准）。</summary>
+        private void UpdateEye()
+        {
+            _eye.Content = _off ? EyeOff : EyeOn;
+            _eye.ToolTip = EyeTooltip(on: !_off);
         }
 
         /// <summary>
@@ -733,11 +1004,12 @@ public partial class MultiViewWindow : Window
         /// 别把这几行抄回构造里：抄一份，两边就会慢慢长歪，而歪掉的那一种（永远没接过
         /// 机位的格子）正是最不容易被看见的。
         /// </remarks>
-        private void Paint(bool empty, string note)
+        private void Paint(bool empty, string note, bool showEye)
         {
             Root.Background = empty ? _slotBg : _videoBg;
             _name.Foreground = empty ? _textSub : Brushes.White;
             _rotate.Visibility = empty ? Visibility.Collapsed : Visibility.Visible;
+            _eye.Visibility = showEye ? Visibility.Visible : Visibility.Collapsed;
 
             Empty.Foreground = empty ? _textSub : _countDim;
             Empty.Text = note;
