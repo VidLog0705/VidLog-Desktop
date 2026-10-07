@@ -40,4 +40,27 @@ public static class Display
         : span.TotalMinutes >= 1 ? $"{(int)span.TotalMinutes} 分 {span.Seconds} 秒"
         : span.TotalSeconds >= 1 ? $"{span.TotalSeconds:0.#} 秒"
         : "0 秒";
+
+    /// <summary>正在走的计时 / 播放进度写成 <c>HH:MM:SS</c>。</summary>
+    /// <remarks>
+    /// <para>
+    /// ⚠️ <b>与 <see cref="Duration"/> 是两种写法，别混用</b>：这个是**等宽**的
+    /// <c>00:01:23</c>，给那些**每一秒都在变**的地方（录制中已录多久、播放器
+    /// 进度条）—— 位数不变，数字才不会左右跳。总量那种给人看的地方用
+    /// <see cref="Duration"/>。
+    /// </para>
+    /// <para>
+    /// ⚠️ <b>2026-10-07 从 App 层搬下来的</b>（T27② 第 4 批）：这一段原先在
+    /// **五处**各写了一份（主窗两处、检索窗、导入窗各一处，其中两处还是
+    /// 一模一样的 <c>private static string Format(TimeSpan)</c>）。
+    /// 攒在这里是因为「同一句给人看的话写两遍，迟早有一处改漏」。
+    /// </para>
+    /// <para>
+    /// ⚠️ 超过 24 小时**照样往小时上加**（<c>25:00:00</c>），不回绕成
+    /// <c>01:00:00</c>：一整天没停的工位是真实存在的，回绕之后
+    /// 「录了多久」会比实际少一整天，而那正是这个数字唯一的用途。
+    /// </para>
+    /// </remarks>
+    public static string Timer(TimeSpan span) =>
+        $"{(int)span.TotalHours:00}:{span.Minutes:00}:{span.Seconds:00}";
 }

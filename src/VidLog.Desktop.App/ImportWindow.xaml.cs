@@ -189,7 +189,7 @@ public partial class ImportWindow : Window
         ImportedSummary = result.Duration is null
             ? $"已导入（证据 {result.EvidenceId}）。⚠️ 没能从这个文件里量出时长，库里那条记的是 0 秒，"
               + "录像本身是完整的。"
-            : $"已导入（证据 {result.EvidenceId}，时长 {Format(result.Duration.Value)}）。"
+            : $"已导入（证据 {result.EvidenceId}，时长 {Display.Timer(result.Duration.Value)}）。"
               + "它已经进库了 —— 当前这组筛选条件不一定筛得到它。";
 
         ShowStatus(ImportedSummary, LogLevel.Info);
@@ -231,9 +231,6 @@ public partial class ImportWindow : Window
         StatusText.Foreground = (System.Windows.Media.Brush)FindResource(
             level == LogLevel.Warn ? "Warning" : "TextSecondary");
     }
-
-    private static string Format(TimeSpan span) =>
-        $"{(int)span.TotalHours:00}:{span.Minutes:00}:{span.Seconds:00}";
 
     /// <summary>
     /// 关窗时如果还在导入中，说一句。

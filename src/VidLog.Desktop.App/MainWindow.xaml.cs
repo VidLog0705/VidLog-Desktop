@@ -30,6 +30,7 @@ using VidLog.Desktop.Core.Configuration;
 using VidLog.Desktop.Core.Diagnostics;
 using VidLog.Desktop.Core.Labels;
 using VidLog.Desktop.Core.Live;
+using VidLog.Desktop.Core.Media;
 using VidLog.Desktop.Core.Punches;
 using VidLog.Desktop.Core.Recording;
 using VidLog.Desktop.Core.Rendering;
@@ -324,27 +325,25 @@ public partial class MainWindow : Window
     /// 所以两者**必须是一个时间**。
     /// </para>
     /// <para>
-    /// ⚠️ <b>未校准时不许显示一个时间</b>：那时 <c>Now</c> 会静默回落到墙钟，
-    /// 而一个看起来正常、实际上不可信的时间比空着坏得多 ——
-    /// 用户会拿它去做判断。未校准就如实说未校准（规格 §3.6.4 的同一精神）。
+    /// ⚠️ 那句话本身在 <see cref="PreviewTexts.Watermark"/>（T27② 第 4 批），
+    /// 连同「未校准时不许显示一个时间」那条规矩；这里只剩**取哪一个时钟**、
+    /// 以及未校准时换一支警示色。
     /// </para>
     /// </remarks>
     private void UpdatePreviewClock()
     {
         var clock = _host.Services.TrustedClock;
 
+        PreviewClockText.Text = PreviewTexts.Watermark(clock.IsCalibrated, clock.Now);
+
+        // ⚠️ 只在未校准时改颜色（XAML 里那颗字是 White，压在取景画面上）。
+        // **校准那一支一个字都不动** —— 与搬走之前一样：这里没写过
+        // 「恢复成 White」，所以未校准过再重新校准之后，它会一直挂着警示色。
+        // （原样搬过来，没有改；要不要顺手修由需求方定。）
         if (!clock.IsCalibrated)
         {
-            PreviewClockText.Text = "时间未校准";
             PreviewClockText.Foreground = (Brush)FindResource("Warning");
-            return;
         }
-
-        var now = clock.Now.ToLocalTime();
-
-        PreviewClockText.Text =
-            $"UTC{(now.Offset < TimeSpan.Zero ? "-" : "+")}{Math.Abs(now.Offset.Hours):00}: "
-            + now.ToString("yyyy/MM/dd HH:mm:ss");
     }
 
     /// <summary>
@@ -415,35 +414,18 @@ public partial class MainWindow : Window
     /// 预览区中央那行说明。
     /// </summary>
     /// <remarks>
-    /// ⚠️ **必须说清楚为什么没有画面**。一个空框与「相机坏了」「还没开始」
-    /// 「程序卡住了」三种情况长得一模一样。
+    /// ⚠️ ⚠️ 三句话与它们的**先后次序**在 <see cref="PreviewTexts.Hint"/>
+    /// （T27② 第 4 批）；这里只剩**把三个事实读出来**：
+    /// 有没有 FFmpeg、有没有摄像头、在不在工作。
+    /// 「已装 FFmpeg 但找不着设备」那条与「工作中却没有画面」那条在界面上
+    /// 意思完全不同，次序排错了会把一台配置齐全、只是还没开工的机器
+    /// 显示成像是坏了。
     /// </remarks>
-    private void UpdatePreviewHint()
-    {
-        if (_host.Services.FfmpegPath is null)
-        {
-            PreviewHintText.Text = "本机没有 FFmpeg，无法采集，也没有画面。";
-            return;
-        }
-
-        if (_host.DeviceName.Length == 0)
-        {
-            PreviewHintText.Text = "没有找到摄像头，所以这里没有画面。到【设置 → 设备与外观】里看看。";
-            return;
-        }
-
-        // 走到这里说明「有 FFmpeg、有摄像头，但没有进程在出画面」。只剩两种情形，
-        // 而它们对用户的意思完全不同：
-        //  · 还没开始工作 —— 相机本来就没被占用，这是**正常的**；
-        //  · 工作中却一直没有画面 —— 那是真的掉了，得让他知道这与录制无关。
-        // ⚠️ 文案里点名的必须是**界面上真有的那颗按钮**：顶栏那颗叫【开始录制】
-        // （`StartWorkLabel`，「开始工作」是代码里的叫法，用户看不见）。
-        // 2026-10-02 截图核对时发现的 —— 原来写的是【开始工作】，
-        // 用户照着找一个不存在的按钮。
-        PreviewHintText.Text = _host.Coordinator.IsWorking
-            ? "取景画面没出来。录制本身不受影响，原因会记在通知里。"
-            : "还没开始工作。点【开始录制】之后，这里就会显示取景画面。";
-    }
+    private void UpdatePreviewHint() =>
+        PreviewHintText.Text = PreviewTexts.Hint(
+            hasFfmpeg: _host.Services.FfmpegPath is not null,
+            hasCamera: _host.DeviceName.Length != 0,
+            isWorking: _host.Coordinator.IsWorking);
 
     /// <summary>
     /// 启动时算一次清理计划，**给用户看过才动手**（规格 §3.5.5）。

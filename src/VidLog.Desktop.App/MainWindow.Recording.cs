@@ -231,6 +231,11 @@ public partial class MainWindow : Window
     /// ⚠️ 摄像头取 <see cref="AppHost.Camera"/>（启动时定的那个）——
     /// 拆窗之后主窗没有摄像头下拉了，它只能靠这一个属性回答「现在有没有摄像头」。
     /// </para>
+    /// <para>
+    /// ⚠️ 「能不能点」那个判断在 <see cref="StartButton.Enabled"/>（T27② 第 4 批）：
+    /// 那一串的**运算次序**是有讲究的（录制中一律能点），而这里只剩
+    /// **把三个事实读出来** —— 字与底色是文案/资源名，两样都留在这边。
+    /// </para>
     /// </remarks>
     private void RefreshStartButton()
     {
@@ -245,7 +250,7 @@ public partial class MainWindow : Window
         // `Theme.xaml` 里 `SuccessButton` 那段）。换样式没这个问题。
         StartWorkButton.Style = (Style)FindResource(recording ? "DangerButton" : "SuccessButton");
 
-        StartWorkButton.IsEnabled = recording || hasCamera && hasWaybill;
+        StartWorkButton.IsEnabled = StartButton.Enabled(recording, hasCamera, hasWaybill);
     }
 
     private async void OnStartOrStopWork(object sender, RoutedEventArgs e)
@@ -327,9 +332,8 @@ public partial class MainWindow : Window
         }
 
         var elapsed = _host.Coordinator.Elapsed;
-        var clock = $"{(int)elapsed.TotalHours:00}:{elapsed.Minutes:00}:{elapsed.Seconds:00}";
 
-        RecordingStatus.Text = $"录制中 {clock} · {waybill.Value}";
+        RecordingStatus.Text = $"录制中 {Display.Timer(elapsed)} · {waybill.Value}";
     }
 
     /// <summary>
@@ -362,7 +366,7 @@ public partial class MainWindow : Window
 
         StatusRecordingText.Text = waybill is null
             ? "空闲"
-            : $"录制中 {(int)elapsed.TotalHours:00}:{elapsed.Minutes:00}:{elapsed.Seconds:00}";
+            : $"录制中 {Display.Timer(elapsed)}";
         StatusRecordingText.Foreground =
             (Brush)FindResource(waybill is null ? "TextSecondary" : "Success");
 

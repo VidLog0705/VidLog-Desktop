@@ -18,6 +18,7 @@ using MessageBox = System.Windows.MessageBox;
 using MessageBoxImage = System.Windows.MessageBoxImage;
 using SelectionChangedEventArgs = System.Windows.Controls.SelectionChangedEventArgs;
 using VidLog.Desktop.App.Platform;
+using VidLog.Desktop.Core;
 using VidLog.Desktop.Core.Cleanup;
 using VidLog.Desktop.Core.Diagnostics;
 using VidLog.Desktop.Core.Export;
@@ -576,7 +577,7 @@ public partial class SearchWindow : Window
             PositionSlider.Value = position.TotalSeconds;
         }
 
-        TimeText.Text = $"{Format(position)} / {Format(total)}";
+        TimeText.Text = $"{Display.Timer(position)} / {Display.Timer(total)}";
     }
 
     private void OnSeekStarted(object sender, DragStartedEventArgs e) => _seeking = true;
@@ -600,9 +601,6 @@ public partial class SearchWindow : Window
         PlayerPlaceholder.Visibility = Visibility.Visible;
         PlayerHintText.Text = message;
     }
-
-    private static string Format(TimeSpan span) =>
-        $"{(int)span.TotalHours:00}:{span.Minutes:00}:{span.Seconds:00}";
 
     // ─────────────────────────────────────────────
     // 争议锁定（规格 §3.6.5）
