@@ -252,6 +252,35 @@ public class SettingsStoreTests
     }
 
     [Fact]
+    public async Task 老格式里那个超大的天数不该把整份设置带塌()
+    {
+        // ⚠️ 2026-10-07：这是**同一个缺陷的第二个门**，而设置页那次修复盖不到它。
+        //
+        // 老格式走的是 `RetentionSettingJsonConverter.ReadLegacy` → `FromConfig`，
+        // 而 `FromConfig` 原先只拦负数 ⇒ `{"Mode":1,"KeepDays":99999}` 原样穿成 99999
+        // ⇒ `IsPlausible` 一票否决 ⇒ **整份**回落默认值。
+        // 注意这与上面那条「手改越界 ⇒ 整份回落」**不是**矛盾：那条走的是新格式
+        // （数字直接落进槽位，转换器刻意不宽容）；这条是**老格式**，
+        // 而老格式的裁决本来就是「宽容」（`ReadLegacy` 一路都在回落）。
+        using var dir = new TempDir();
+        var path = dir.File("settings.json");
+        await File.WriteAllTextAsync(path,
+            """
+            {"ArchiveBackend":1,"Retention":{"Outbound":{"Mode":1,"KeepDays":99999},
+             "Return":{"Mode":1,"KeepDays":30}}}
+            """);
+
+        var result = await new SettingsStore(path).LoadAsync();
+
+        // 超大的那一格回落到「全部保留」（朝少删那头），旁边的 30 天**不受牵连** ——
+        // 整份回落的话这两个数会一起变成 KeepAll。
+        var r = result.Settings.Retention;
+        Assert.Equal(RetentionSetting.KeepAll, r.ArchivedOutbound);
+        Assert.Equal(30, r.ArchivedReturn.Days);
+        Assert.Contains(result.Warnings, w => w.Contains("旧格式"));
+    }
+
+    [Fact]
     public async Task 老配置里的扫码静止停录_回落到同码停并说出来()
     {
         // 规格 §3.3.1：电脑端删掉那个模式之后，「设置文件里存着它」要**回落到同码停**

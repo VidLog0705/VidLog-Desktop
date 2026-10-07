@@ -67,15 +67,50 @@ public sealed record RetentionSetting(int? Days)
     public bool KeepsEverything => Days is null;
 
     /// <summary>
+    /// 保留期天数的上限（<b>十年</b>）。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// ⚠️ <b>规格里没给这个数，它是「实现标定」的</b> —— 规格 §3.5.2.1 原话
+    /// 「上限不写死在这里……由实现标定并记进 <c>docs/实现决策.md</c>」。
+    /// 取 3650 的理由：它远大于任何真实工位的保留期，
+    /// 而小于「手抖多打几个 9」那种值。
+    /// </para>
+    /// <para>
+    /// ⚠️ <b>全仓只此一份</b>：<see cref="FromConfig"/> 与
+    /// <c>AppSettings.PlausibleDays</c> 都读它。两处各写一个数就会漂 ——
+    /// 而漂开的后果不是「这一项不生效」：<c>AppSettings.IsPlausible</c> 判的是
+    /// **整份设置**，宽容那头造出一个它判不过的值，下次启动**整体回落到默认值**，
+    /// 保留期、云端、磁盘表、关窗行为**一起**被打回原样，而用户只碰过其中一格。
+    /// </para>
+    /// </remarks>
+    public const int MaxDays = 3650;
+
+    /// <summary>
     /// 解析一个天数。**非法值一律回落到「全部保留」。**
     /// </summary>
     /// <remarks>
+    /// <para>
     /// 朝**少删**的那头落 —— 与手机端 <c>RetentionSetting.fromConfig</c>、
     /// 锁值认不出当「锁着」是同一条规矩。负数尤其要拦：它会让
     /// <c>now.AddDays(-(-5))</c> 把 cutoff 推到未来，于是**一律判超期 ⇒ 全删**。
+    /// </para>
+    /// <para>
+    /// ⚠️ <b>2026-10-07 补上「大于 <see cref="MaxDays"/>」那一档。</b>
+    /// 在这之前它只拦负数，于是**解析得出来但过大**的数（界面手输的 <c>9999天</c>、
+    /// 老设置文件里的 <c>{"Mode":1,"KeepDays":99999}</c>）原样穿过去 ——
+    /// 而上面那条「宽容留给另一头」的裁决是**建立在「宽容的产物仍然合法」之上**的：
+    /// 产物一旦越界，<c>PlausibleDays</c> 判否 ⇒ 整份设置回落默认值。
+    /// 这条规矩就是「宽容的那一头也得守住它自己的边界」。
+    /// </para>
+    /// <para>
+    /// ⚠️ 界面那一头另有一层（<c>SettingsForm.Build</c>）：它**不静默**换档，
+    /// 而是说清楚「这个天数不能用」。这里兜的是所有**别的**入口
+    /// （老格式读盘、程序内部调用），那些地方没有地方可说话。
+    /// </para>
     /// </remarks>
     public static RetentionSetting FromConfig(int? days) =>
-        days is null or < 0 ? KeepAll : new RetentionSetting(days);
+        days is null or < 0 or > MaxDays ? KeepAll : new RetentionSetting(days);
 }
 
 /// <summary>
@@ -111,6 +146,9 @@ public sealed class RetentionSettingJsonConverter : JsonConverter<RetentionSetti
     /// <para>
     /// 宽容留给**另一头**：界面上手输的文本、以及程序内部的调用，
     /// 那里「随便给什么都行」是对的（见 <see cref="RetentionSetting.FromConfig"/>）。
+    /// ⚠️ <b>2026-10-07 补一句限定</b>：「随便给什么都行」**指入参**，
+    /// 而它的**产物必须在 <c>PlausibleDays</c> 认的范围内** ——
+    /// 否则宽容那一头就成了这个判否的**制造者**，而不是它的兜底。
     /// </para>
     /// <para>
     /// 认不出**类型**的写法（字符串、数组…）给一个越界哨兵值 <c>-1</c>，

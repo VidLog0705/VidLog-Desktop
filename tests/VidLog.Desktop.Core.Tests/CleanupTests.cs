@@ -1,4 +1,5 @@
 using VidLog.Desktop.Core.Cleanup;
+using VidLog.Desktop.Core.Configuration;
 using VidLog.Desktop.Core.Diagnostics;
 using VidLog.Desktop.Core.Index;
 using VidLog.Desktop.Core.Labels;
@@ -387,6 +388,47 @@ public class CleanupTests
         Assert.Equal(RetentionSetting.KeepAll, RetentionSetting.FromConfig(-1));
         Assert.Equal(RetentionSetting.KeepAll, RetentionSetting.FromConfig(-999));
         Assert.Equal(0, RetentionSetting.FromConfig(0).Days);
+    }
+
+    [Fact]
+    public void 解析得出的天数超过上限也回落_因为宽容那头的产物必须合法()
+    {
+        // ⚠️ 2026-10-07 补：在这之前这里只拦负数，于是 9999 天原样穿过去 ——
+        // 而 `AppSettings.IsPlausible` 判的是**整份设置**，它一票否决。
+        // 也就是说「宽容的那一头」自己造出了那个判否，整份设置下次启动回落默认值。
+        Assert.Equal(3650, RetentionSetting.MaxDays);   // 十年，本仓标定
+        Assert.Equal(3650, RetentionSetting.FromConfig(3650).Days);
+        Assert.Equal(RetentionSetting.KeepAll, RetentionSetting.FromConfig(3651));
+        Assert.Equal(RetentionSetting.KeepAll, RetentionSetting.FromConfig(9999));
+        Assert.Equal(RetentionSetting.KeepAll, RetentionSetting.FromConfig(int.MaxValue));
+    }
+
+    [Fact]
+    public void 宽容那头产出的值一定让整份设置仍然合法()
+    {
+        // ⚠️ 这条才是承重的那条（上面几例只是它的抽样）。
+        //
+        // ⚠️ 判据走**公开的** `AppSettings.IsPlausible`，不在这里抄一遍 ——
+        // 抄一遍的话，`PlausibleDays` 哪天被改回字面量、而这里没跟着改，
+        // 这条会照旧绿。走公开入口才真的钉住「宽容那头的产物过得了外头那道关」。
+        foreach (int? days in new int?[]
+        {
+            null, 0, 1, 7, 30, 3650, 3651, 9999, -1, int.MaxValue, int.MinValue,
+        })
+        {
+            var setting = RetentionSetting.FromConfig(days);
+
+            var s = new AppSettings
+            {
+                Retention = new RetentionSettings(setting, setting, setting, setting),
+            };
+
+            Assert.True(
+                AppSettings.IsPlausible(s),
+                $"FromConfig({days}) 产出 {setting.Days} —— 这份设置过不了 IsPlausible。"
+                + "宽容那一头自己造出了那个判否，而这条路上没有任何地方能说话，"
+                + "用户下次启动会发现**整份**设置被打回默认值。");
+        }
     }
 
     // ─────────────────────────────────────────────

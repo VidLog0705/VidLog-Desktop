@@ -140,6 +140,28 @@ public static class SettingsForm
             return (null, backupDiskError);
         }
 
+        // 保留期那四格是**可编辑**下拉，界面上写着「档位可以手输天数（例如 45）」——
+        // 那就得管手打出来的数。
+        //
+        // ⚠️ 这里**不静默换档**，与上面三格数字同一条规矩：说清楚、并且不保存。
+        // 越界值本身在 `RetentionSetting.FromConfig` 那头已经兜住了（回落「全部保留」），
+        // 但那是给**别的入口**兜的（老格式读盘、程序内部调用，那里没有地方可说话）；
+        // 界面上有地方说话，就不该替用户把 `9999` 悄悄改成别的档。
+        foreach (var (label, one) in new (string Label, RetentionInput Input)[]
+        {
+            ("已备份 · 发货", input.ArchivedOutbound),
+            ("已备份 · 退货", input.ArchivedReturn),
+            ("未备份 · 发货", input.UnarchivedOutbound),
+            ("未备份 · 退货", input.UnarchivedReturn),
+        })
+        {
+            if (DaysOf(one) is { } typed && typed > RetentionSetting.MaxDays)
+            {
+                return (null, $"保留期「{label}」填了 {typed} 天，最多 {RetentionSetting.MaxDays} 天，"
+                    + "本次未保存。");
+            }
+        }
+
         // 自定义分钟数：只在选了「自定义」时才管它，否则保持原值
         //（用户先填了 7 分钟又改回 3 分钟，那 7 不该丢 —— 下次切回自定义还要用）。
         var idleMinutes = int.TryParse(input.IdleMinutes, out var parsedMinutes)
@@ -317,7 +339,19 @@ public static class SettingsForm
     /// 先按**选中项**认，认不出再看文本 —— 顺序反了的话，手输过一个数之后
     /// 再点列表里的项，读回来的会是旧文本。
     /// </remarks>
-    public static RetentionSetting RetentionOf(RetentionInput input)
+    public static RetentionSetting RetentionOf(RetentionInput input) =>
+        RetentionSetting.FromConfig(DaysOf(input));
+
+    /// <summary>
+    /// 那一格读出来的天数（<c>null</c> = 「全部保留」，<c>0</c> = 「不保留」）。
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ <b>这里刻意不夹、也不回落：它只负责读。</b>
+    /// 「越界怎么办」留在**外面**判 —— 界面那头要说话（说清是哪一格、填了多少），
+    /// <see cref="RetentionSetting.FromConfig"/> 那头要兜住（老格式读盘、程序内部调用，
+    /// 那些地方没有地方可说话）。夹在这里的话，外面就再也看不出用户填的是 9999 了。
+    /// </remarks>
+    private static int? DaysOf(RetentionInput input)
     {
         var standard = RetentionSetting.Standard;
 
@@ -326,26 +360,24 @@ public static class SettingsForm
             && string.Equals(
                 input.Text, standard[input.SelectedIndex].Label, StringComparison.Ordinal))
         {
-            return standard[input.SelectedIndex];
+            return standard[input.SelectedIndex].Days;
         }
 
         var text = input.Text?.Trim() ?? string.Empty;
 
         if (text is "全部保留" or "")
         {
-            return RetentionSetting.KeepAll;
+            return null;
         }
 
         if (text == "不保留")
         {
-            return RetentionSetting.Immediate;
+            return 0;
         }
 
         var digits = text.EndsWith('天') ? text[..^1].Trim() : text;
 
-        return int.TryParse(digits, out var days)
-            ? RetentionSetting.FromConfig(days)
-            : RetentionSetting.KeepAll;
+        return int.TryParse(digits, out var days) ? days : null;
     }
 
     /// <summary>认得出就换成那个 enum 值，认不出就保持原值。</summary>

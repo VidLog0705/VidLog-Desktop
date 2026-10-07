@@ -469,14 +469,14 @@ public sealed record AppSettings
     /// <c>now.AddDays(-(-5))</c> 变成「cutoff 在未来」，于是一律判超期 ⇒
     /// 除了被豁免的全删。这类值不会报错，只会把东西删光 —— 正是本方法存在的理由。
     /// <para>
-    /// ⚠️ <b>上限 10 年，而且它是「实现标定」的，不是规格里写的</b> ——
-    /// 规格 §3.5.2.1 原话「上限不写死在这里……由实现标定并记进
-    /// <c>docs/实现决策.md</c>」。取 3650 的理由：它远大于任何真实工位的保留期，
-    /// 而小于「手抖多打几个 9」那种值。
+    /// ⚠️ <b>上限读的是 <see cref="RetentionSetting.MaxDays"/>，不是这里的字面量</b>
+    /// （2026-10-07）。它与 <see cref="RetentionSetting.FromConfig"/>（宽容那一头）
+    /// 必须是同一个数：宽容那头造出这个数判不过的值，后果不是「这一项不生效」，
+    /// 而是**整份设置回落默认值** —— 保留期、云端、磁盘表、关窗行为一起被打回原样。
     /// </para>
     /// </remarks>
     private static bool PlausibleDays(RetentionSetting setting) =>
-        setting.Days is null or (>= 0 and <= 3650);
+        setting.Days is null or (>= 0 and <= RetentionSetting.MaxDays);
 
     /// <summary>「录像保存 / 备份位置」每张表最多几行。</summary>
     /// <remarks>

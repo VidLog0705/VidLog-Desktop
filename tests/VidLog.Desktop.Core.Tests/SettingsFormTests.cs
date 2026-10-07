@@ -442,9 +442,9 @@ public class SettingsFormTests
             // ⚠️ 越界的输入也照样走一遍：它们该被拒（返回 null），
             // 但**万一**哪一项被放行了，产物也得是自洽的。
             //
-            // ⚠️ 保留期那四格**刻意只喂「认不出来的写法」**（`-1` / 长到解析不出来 / `??`），
-            // 不喂「解析得出来但过大」的数（`9999天`）—— 那是一个**已实证的缺陷**，
-            // 单独钉在下面那条 `已知缺陷` 里，不混在这一条的用例表里假装它不存在。
+            // ⚠️ 保留期那四格两种写法都喂：解析不出来的（`??`、长到溢出）与
+            // **解析得出来但过大**的（`9999天`）。后者原先是个已实证的缺陷
+            // （放行 ⇒ 整份设置回落默认值），2026-10-07 已修成「说清哪一格、不保存」。
             ("全是不合法的值",
              new SettingsFormInput
              {
@@ -453,7 +453,7 @@ public class SettingsFormTests
                  CloudParallelText = "99", LogLevelTag = "没有这个",
                  ArchivedOutbound = new RetentionInput(-1, "999999999999999999999"),
                  ArchivedReturn = new RetentionInput(-1, "??"),
-                 UnarchivedOutbound = new RetentionInput(-1, ""),
+                 UnarchivedOutbound = new RetentionInput(-1, "9999天"),
                  UnarchivedReturn = new RetentionInput(-1, ""),
              },
              [(@"D:\rec", "99999999"), (@"E:\rec2", "-5")]),
@@ -512,6 +512,8 @@ public class SettingsFormTests
             ("只有一处磁盘预留空间是负数", good, [(@"D:\rec", "-1")], []),
             ("只有保存表太长", good, tooMany, []),
             ("只有备份表太长", good, goodDisks, tooMany),
+            ("只有保留期手输超大数", good with { ArchivedOutbound = new RetentionInput(-1, "9999天") },
+                goodDisks, []),
         };
 
         foreach (var (name, input, disks, backups) in rejects)
@@ -552,51 +554,66 @@ public class SettingsFormTests
         }
     }
 
-    /// <summary>
-    /// ⚠️⚠️ <b>已知缺陷（不是测试问题，是代码问题）</b> —— 保留期那四格里
-    /// 手输一个**解析得出来但过大**的数（比如 <c>9999天</c>），
-    /// <see cref="SettingsForm.Build"/> 会**放行**，而产物过不了
-    /// <see cref="AppSettings.IsPlausible"/>。
-    /// </summary>
-    /// <remarks>
-    /// <para>
-    /// <b>实证过的完整后果链</b>（2026-10-07）：
-    /// </para>
-    /// <list type="number">
-    /// <item>四个框的 XAML 都是 <c>IsEditable="True"</c>（`SettingsWindow.xaml:751,754,761,764`）
-    /// ⇒ 界面上**打得出来**，不是只有手改 JSON 才够得着。</item>
-    /// <item><see cref="SettingsForm.RetentionOf"/> 对解析得出的数一律
-    /// <c>RetentionSetting.FromConfig(days)</c>，**没有 3650 那个上限**；
-    /// 而 <c>AppSettings.PlausibleDays</c> 的上限是 3650。</item>
-    /// <item><c>AppHost.SaveSettingsAsync</c> **不校验**（`AppHost.cs:856` 直接写盘）
-    /// ⇒ 这个值真的落进设置文件。</item>
-    /// <item>下次启动 <c>AppSettings</c> 读到 <c>!IsPlausible</c> ⇒ **整份设置回落默认值**
-    /// （`AppSettings.cs:598`）—— 保留期、云端、磁盘表、关窗行为**一起**被打回原样，
-    /// 而用户只碰过保留期那一格，且当场看不到任何提示。</item>
-    /// </list>
-    /// <para>
-    /// ⚠️ <b>这是搬过来之前就有的</b>（`SettingsWindow` 里那份一模一样），
-    /// 不是这次搬运引入的 —— 所以按「不混在搬家这一项里」的规矩**没有动手修**，
-    /// 报给需求方定序。
-    /// </para>
-    /// <para>
-    /// ⚠️ <b>这条断言在缺陷修好之后会变红</b>，那是**对的**：意思是
-    /// 「洞补上了，回来把这条连同上面用例表里的那条注释一起删掉」。
-    /// 写成「钉住当前错行为」是为了不让这个洞**静默地绿着**。
-    /// </para>
-    /// </remarks>
     [Fact]
-    public void 已知缺陷_保留期手输超大数会被放行_而且产物过不了IsPlausible()
+    public void 保留期手输超大数要说清楚_不许静默换成别的档()
     {
+        // ⚠️ 2026-10-07 修掉的缺陷（原先这条钉的是「错行为」，见提交信息）：
+        // 那四格 XAML 都是 `IsEditable="True"`（`SettingsWindow.xaml:751,754,761,764`），
+        // 界面上写着「档位可以手输天数（例如 45）」，所以**手输是被邀请的**。
+        // 手输 9999 天原先原样穿过去 ⇒ 产物过不了 `AppSettings.IsPlausible`
+        // ⇒ 下次启动**整份设置回落默认值**（保留期、云端、磁盘表、关窗行为一起），
+        // 而用户只碰过这一格。
+        //
+        // 兜底那半在 `RetentionSetting.FromConfig`（别的入口没有地方说话），
+        // 界面这半**不静默** —— 说清是哪一格、填了多少。
         var (next, problem) = Build(new SettingsFormInput
         {
             SegmentMinutes = "3", PlaybackPort = "8720", DuplicateCheckDays = "7",
             ArchivedOutbound = new RetentionInput(-1, "9999天"),
         });
 
-        Assert.Equal(string.Empty, problem);
-        Assert.Equal(9999, next!.Retention.ArchivedOutbound.Days);
-        Assert.False(AppSettings.IsPlausible(next));
+        Assert.Null(next);
+        Assert.Contains("已备份 · 发货", problem, StringComparison.Ordinal);
+        Assert.Contains("9999", problem, StringComparison.Ordinal);
+        Assert.Contains(RetentionSetting.MaxDays.ToString(), problem, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void 保留期四格各自报自己那一格()
+    {
+        // ⚠️ 四格长得很像，报错了格用户会去改另一格 —— 改完还是存不上。
+        foreach (var (label, input) in new (string, SettingsFormInput)[]
+        {
+            ("已备份 · 发货", new SettingsFormInput { ArchivedOutbound = new RetentionInput(-1, "9999天") }),
+            ("已备份 · 退货", new SettingsFormInput { ArchivedReturn = new RetentionInput(-1, "9999天") }),
+            ("未备份 · 发货", new SettingsFormInput { UnarchivedOutbound = new RetentionInput(-1, "9999天") }),
+            ("未备份 · 退货", new SettingsFormInput { UnarchivedReturn = new RetentionInput(-1, "9999天") }),
+        })
+        {
+            var (next, problem) = Build(input with
+            {
+                SegmentMinutes = "3",
+                PlaybackPort = "8720",
+                DuplicateCheckDays = "7",
+            });
+
+            Assert.Null(next);
+            Assert.Contains(label, problem, StringComparison.Ordinal);
+        }
+    }
+
+    [Fact]
+    public void 保留期正好在上限上是收的()
+    {
+        // ⚠️ 边界两边都要试：`>` 写成 `>=` 只有这一条会红。
+        var next = Build(new SettingsFormInput
+        {
+            SegmentMinutes = "3", PlaybackPort = "8720", DuplicateCheckDays = "7",
+            ArchivedOutbound = new RetentionInput(-1, $"{RetentionSetting.MaxDays}天"),
+        }).Next!;
+
+        Assert.Equal(RetentionSetting.MaxDays, next.Retention.ArchivedOutbound.Days);
+        Assert.True(AppSettings.IsPlausible(next));
     }
 
     // ─────────────────────────────────────────────
