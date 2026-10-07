@@ -345,6 +345,13 @@ public partial class SettingsWindow : Window
         }
         catch (Exception ex)
         {
+            // ⚠️ 界面那句会被**关窗抹掉**，而「校不上时间」正是用户会来报的那种事
+            // （未校准就录不了，规格 §3.6.4）。所以那一次的原话必须落进日志 ——
+            // §6.1 的老坑：有个用户可见通道，看起来像缺口被满足了，其实没有。
+            // 与 2026-10-06 补的「清理没能进行」那三处同一个口径（分类沿用
+            // `TrustedClock` 里那条成功记录的分类）。
+            _host.Log(LogLevel.Warn, "校时", $"取不到公网时间：{ex.Message}");
+
             CalibrationNote.Text = $"⛔ 取不到公网时间：{ex.Message}";
             return;
         }

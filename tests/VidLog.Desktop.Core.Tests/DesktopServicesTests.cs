@@ -744,6 +744,95 @@ public class DesktopServicesTests
     }
 
     /// <summary>
+    /// 钉住「取景框那颗时间水印，可不可信两个状态**都给颜色**」（2026-10-07 需求方拍板）。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// ⚠️ 原先只给「未校准」那一支（另一支靠 XAML 里写死的 <c>Foreground="White"</c>），
+    /// 于是**校准成功之后它会一直挂着警示色** —— 那次会话里水印已经写着可信时间了，
+    /// 颜色还在喊「不可信」；用户学会忽略这个颜色之后，下一次真未校准就没人看了。
+    /// 而且警示色是琥珀（<c>#FFF59E0B</c>），压在明亮画面上**比白色更难读** ——
+    /// 语义与可读性两头都错。
+    /// </para>
+    /// <para>
+    /// ⚠️ 颜色改成**只在 <c>UpdatePreviewClock</c> 里给**（XAML 那颗字上不再写
+    /// <c>Foreground</c>）：两处各写一份的话，「哪种状态是什么色」就有两个来源。
+    /// </para>
+    /// <para>
+    /// ⚠️ 为什么只能看源码文本：App 层没有测试工程（与上面几条同一条理由）。
+    /// 天花板也一样：只挡「又变回只管一支」，挡不住「颜色令牌选错了」；
+    /// XAML 那边去掉了 <c>Foreground</c> 是**人工约定**，这条绊线管不到它（只扫 .cs）。
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public void 水印那颗字_可不可信两种状态都要给颜色()
+    {
+        var app = Path.Combine(RepoRoot(), "src", "VidLog.Desktop.App");
+        var main = ReadSplit(app, "MainWindow");
+
+        // 哨兵：扫到的是真文件（ReadSplit 扫到零个文件时这两条会红）。
+        Assert.Contains("PreviewClockText.Text =", main, StringComparison.Ordinal);
+        Assert.Equal(1, CountOf(main, "PreviewClockText.Foreground ="));
+
+        // 两支都要在同一个三元里：校准了恢复白色，没校准是警示色。
+        Assert.Contains("Brushes.White", main, StringComparison.Ordinal);
+        Assert.Contains("FindResource(\"Warning\")", main, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// 钉住「导入那句的时长走**人话总量**，不走等宽的计时那一套」（2026-10-07 需求方拍板）。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// ⚠️ <c>Display.Timer</c>（等宽 <c>HH:MM:SS</c>）的存在理由是**每一秒都在变**的地方
+    /// —— 位数不变，数字才不左右跳。导入结果那句是**一次性写上去的总量**，用它就是把
+    /// 两种东西混着用（<c>Display.Duration</c> 的文档里写着「界面上用它的地方全是给人看的总量」）。
+    /// </para>
+    /// <para>
+    /// ⚠️ 补一句为什么不是「无所谓」：那句话里紧挨着**证据号与日期**，
+    /// <c>00:01:23</c> 读起来像**时刻**，<c>1 分 23 秒</c> 不会；而且人话更短（6 字 vs 8 字）。
+    /// </para>
+    /// <para>
+    /// ⚠️ 检索列表那一行（<c>SearchWindow</c>）仍按设计图写 <c>1:23</c> —— 那是**另一处**，
+    /// 这条绊线管不到、也不该管。
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public void 导入那句的时长走人话而不是等宽的计时()
+    {
+        var app = Path.Combine(RepoRoot(), "src", "VidLog.Desktop.App");
+        var import = ReadSplit(app, "ImportWindow");
+
+        Assert.Contains("已导入（证据", import, StringComparison.Ordinal);
+        Assert.Contains("Display.Duration(result.Duration.Value)", import, StringComparison.Ordinal);
+        Assert.DoesNotContain("Display.Timer", import, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// 钉住「取不到公网时间那一次**也要留痕**」（2026-10-07 需求方拍板补的）。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// ⚠️ 与「清理没能进行」那三处同一个口径：那条 <c>catch</c> 原先**只写界面**
+    /// （只在设置页里，用户一关窗就没了），而「校不上时间」正是用户会来报的那种事 ——
+    /// 未校准就录不了（规格 §3.6.4），那时日志里必须找得到那一次的原话。
+    /// </para>
+    /// <para>
+    /// ⚠️ 两条断言**成对**：界面那句是「用户看得见」，兼作「扫到的是真文件」的哨兵
+    /// （<c>ReadSplit</c> 扫到零个文件时它会红）。
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public void 取不到公网时间时也要留痕()
+    {
+        var app = Path.Combine(RepoRoot(), "src", "VidLog.Desktop.App");
+        var settings = ReadSplit(app, "SettingsWindow");
+
+        Assert.Contains("取不到公网时间：", settings, StringComparison.Ordinal);
+        Assert.Contains("Log(LogLevel.Warn, \"校时\"", settings, StringComparison.Ordinal);
+    }
+
+    /// <summary>
     /// 钉住「设置校验不过时，那一句**既说给用户、也落进日志**」。
     /// </summary>
     /// <remarks>
