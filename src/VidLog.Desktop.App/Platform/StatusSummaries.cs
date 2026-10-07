@@ -4,7 +4,7 @@ using VidLog.Desktop.Core.License;
 namespace VidLog.Desktop.App.Platform;
 
 /// <summary>
-/// 校准与许可那两句话。
+/// 校准与许可那两句话**取值**的地方。
 /// </summary>
 /// <remarks>
 /// <para>
@@ -14,32 +14,21 @@ namespace VidLog.Desktop.App.Platform;
 /// 不敢信这个界面」。拆窗之后主窗与设置窗各要一份，那个风险只会更大。
 /// </para>
 /// <para>
-/// 放在 <c>Platform</c> 而不是 Core：它读的是 <see cref="AppHost"/>（装配层），
-/// 而 Core 不认识 <see cref="AppHost"/>。
+/// ⚠️ <b>句子本身现在在 Core</b>（T27② 第 4 批）：校准那句搬去了
+/// <see cref="CalibrationText"/>，许可那句早就在
+/// <see cref="LicenseStatus.SummaryText"/>（T30）。留在这里的只有
+/// 「从 <see cref="AppHost"/> 的哪一处去取」—— 而 Core 不认识
+/// <see cref="AppHost"/>，所以**取值这一步只能在这边**。
 /// </para>
 /// </remarks>
 internal static class StatusSummaries
 {
-    /// <summary>
-    /// 校准状态的一句话。
-    /// </summary>
-    /// <remarks>
-    /// ⚠️ 未校准**要说清「为什么」**（<c>BlockedReason</c> 里已经写了），
-    /// 而不是笼统一句「未校准」—— 用户得知道是去联网、还是去点重新校准。
-    /// </remarks>
+    /// <summary>校准状态的一句话（写法的规矩在 <see cref="CalibrationText"/>）。</summary>
     public static string Calibration(AppHost host)
     {
         var clock = host.Services.TrustedClock;
 
-        if (!clock.IsCalibrated)
-        {
-            return $"⛔ {clock.BlockedReason}";
-        }
-
-        var source = clock.State.Source == CalibrationSource.PublicTime ? "公网时间" : "归档回执";
-        var at = clock.State.CalibratedAtUtc?.ToLocalTime().ToString("yyyy-MM-dd HH:mm") ?? "—";
-
-        return $"✅ 已校准（来源：{source}，校准于 {at}）。可以录制。";
+        return CalibrationText.Describe(clock.IsCalibrated, clock.BlockedReason, clock.State);
     }
 
     /// <summary>

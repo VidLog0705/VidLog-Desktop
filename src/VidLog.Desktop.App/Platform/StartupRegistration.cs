@@ -1,4 +1,5 @@
 ﻿using Microsoft.Win32;
+using VidLog.Desktop.Core.Configuration;
 using VidLog.Desktop.Core.Diagnostics;
 
 // 本工程同时开了 UseWPF 与 UseWindowsForms（后者只为托盘图标），
@@ -105,15 +106,13 @@ internal static class StartupRegistration
         }
     }
 
-    /// <summary>要写进 Run 键的那条命令行；拿不到 exe 路径时为 <see langword="null"/>。</summary>
+    /// <summary>
+    /// 要写进 Run 键的那条命令行；拿不到 exe 路径时为 <see langword="null"/>。
+    /// </summary>
     /// <remarks>
-    /// 抽出来只为让「引号加对了没有」这件事**看得见** —— 它是这一整套里
-    /// 唯一一处错了会让 Windows 启动**别的程序**的地方。
+    /// ⚠️ 引号那件事在 <see cref="StartupCommand.Build"/> 里（T27② 第 4 批）——
+    /// 它是这一整套里唯一一处错了会让 Windows 启动**别的程序**的地方，
+    /// 所以有一条测试钉着它。这里只剩「本进程的 exe 是哪一个」。
     /// </remarks>
-    private static string? BuildCommand()
-    {
-        var path = Environment.ProcessPath;
-
-        return string.IsNullOrWhiteSpace(path) ? null : $"\"{path}\"";
-    }
+    private static string? BuildCommand() => StartupCommand.Build(Environment.ProcessPath);
 }

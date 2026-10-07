@@ -1,6 +1,5 @@
 using System.Net.Http;
-using System.Net.Http.Json;
-using System.Text.Json;
+using VidLog.Desktop.Core.Update;
 
 namespace VidLog.Desktop.App.Platform;
 
@@ -44,18 +43,11 @@ internal static class ReleaseFeed
         using var response = await http.GetAsync(Feed, cancellationToken);
         response.EnsureSuccessStatusCode();
 
-        // ⚠️ 只读 `tag_name`，**不建一个与对端字段一一对应的 DTO** ——
-        // 那等于把 GitHub 的响应结构变成我们的编译期契约，对端加一个字段
-        // 我们就得跟着改。这里只取一个字符串。
-        var items = await response.Content.ReadFromJsonAsync<JsonElement>(cancellationToken);
+        // ⚠️ 怎么读这一段在 Core 的 `ReleaseFeedJson.ReadLatestTag` 里
+        // （T27② 第 4 批）—— 那边还管着「空数组」与「被限流的那个对象」
+        // 怎么分开，这一层只管把文本取回来。
+        var json = await response.Content.ReadAsStringAsync(cancellationToken);
 
-        if (items.ValueKind != JsonValueKind.Array || items.GetArrayLength() == 0)
-        {
-            return null;
-        }
-
-        var first = items[0];
-
-        return first.TryGetProperty("tag_name", out var tag) ? tag.GetString() : null;
+        return ReleaseFeedJson.ReadLatestTag(json);
     }
 }

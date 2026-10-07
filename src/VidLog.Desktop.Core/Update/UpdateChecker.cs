@@ -1,3 +1,4 @@
+using System.Text.Json;
 using VidLog.Desktop.Core.Diagnostics;
 
 namespace VidLog.Desktop.Core.Update;
@@ -174,5 +175,51 @@ public sealed class UpdateChecker
             _logger.Log(LogLevel.Warn, "更新检查", $"检查更新失败（不影响使用）：{ex.Message}");
             return new UpdateCheckResult(false, null, ex.Message);
         }
+    }
+}
+
+/// <summary>
+/// GitHub「最新发布」那一段响应的读法（T27② 第 4 批）。
+/// </summary>
+/// <remarks>
+/// <para>
+/// ⚠️ <b>「对端一个版本都没发过」与「没问到」必须分得开</b>：前者是**空数组**
+/// （正常状态，永远可能是这样），被限流时对端给的是一个**对象**
+/// <c>{"message":"API rate limit exceeded…"}</c>。
+/// </para>
+/// <para>
+/// ⚠️ 所以结构认不出来时**抛**（<see cref="UpdateChecker.CheckAsync"/> 会收成
+/// 「没问到」），只有「确实是空数组」与「有元素但没有 <c>tag_name</c>」才回
+/// <see langword="null"/>。两个都当成 <see langword="null"/> 的话，
+/// 一次被限流的请求会变成界面上那句「对端还没有发布过任何版本」——
+/// 而它的意思是**对端的问题**，与「我们没问到」正好相反。
+/// </para>
+/// <para>
+/// ⚠️ 只读 <c>tag_name</c>，**不建一个与对端字段一一对应的 DTO**：那等于把
+/// GitHub 的响应结构变成我们的编译期契约，对端加一个字段我们就得跟着改。
+/// </para>
+/// </remarks>
+public static class ReleaseFeedJson
+{
+    /// <summary>最新一个发布的 tag；一个都没发过时给 <see langword="null"/>。</summary>
+    /// <exception cref="JsonException">这段文本不是 JSON。</exception>
+    /// <exception cref="FormatException">是 JSON，但根不是一个数组（多半是限流/报错）。</exception>
+    public static string? ReadLatestTag(string json)
+    {
+        using var document = JsonDocument.Parse(json);
+        var root = document.RootElement;
+
+        if (root.ValueKind != JsonValueKind.Array)
+        {
+            throw new FormatException(
+                $"发布列表的根是 {root.ValueKind}，不是一个数组 —— 多半是被限流或者报错了。");
+        }
+
+        if (root.GetArrayLength() == 0)
+        {
+            return null;
+        }
+
+        return root[0].TryGetProperty("tag_name", out var tag) ? tag.GetString() : null;
     }
 }

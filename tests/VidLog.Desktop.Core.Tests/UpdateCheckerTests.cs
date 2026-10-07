@@ -1,3 +1,4 @@
+using System.Text.Json;
 using VidLog.Desktop.Core.Diagnostics;
 using VidLog.Desktop.Core.Update;
 
@@ -120,6 +121,61 @@ public class UpdateCheckerTests
 
         Assert.True(result.Succeeded);
         Assert.False(result.SuggestUpdate("1.0.0"));
+    }
+
+    // ─────────────────────────────────────────────
+    // 读发布列表那一段 JSON（T27② 第 4 批）
+    // ─────────────────────────────────────────────
+    //
+    // ⚠️ 这一段原来在 `App/Platform/ReleaseFeed.cs` 里，而那个工程没有测试工程。
+    // 搬下来正是因为「`[]`」与「被限流那个对象」分不分得开**只有这里能挡**。
+
+    [Fact]
+    public void 一个版本都没发过时读到空()
+    {
+        // ⚠️ 与上面那条「不算失败」是一对：`[]` 是**真的没有发布过**。
+        Assert.Null(ReleaseFeedJson.ReadLatestTag("[]"));
+    }
+
+    [Fact]
+    public void 列表里第一个就是最新的那一个()
+    {
+        // 接口按发布时间倒序给，取第 0 个。
+        Assert.Equal("v1.2.0", ReleaseFeedJson.ReadLatestTag(
+            """[{"tag_name":"v1.2.0"},{"tag_name":"v1.1.9"}]"""));
+    }
+
+    [Fact]
+    public void 那一段里没有tag_name时当成没问到()
+    {
+        Assert.Null(ReleaseFeedJson.ReadLatestTag("""[{"name":"发布 1.2"}]"""));
+    }
+
+    [Fact]
+    public void 被限流的那个对象要抛_不许当成没发布过()
+    {
+        // ⚠️ 这一段里最要紧的一条。被限流时 GitHub 回的是**一个对象**
+        // （未认证的接口每小时只给 60 次），若它和 `[]` 一样回 null，
+        // 界面上显示的就是「已经是最新」—— 而真实情况是**根本没问到**。
+        // 抛出去由 UpdateChecker 收成 Succeeded=false，那才是实话。
+        Assert.Throws<FormatException>(() =>
+        {
+            _ = ReleaseFeedJson.ReadLatestTag("""{"message":"API rate limit exceeded"}""");
+        });
+    }
+
+    [Fact]
+    public void 根本不是json的也要抛()
+    {
+        // 代理返回一个 502 的 HTML 页时就是这样。
+        // ⚠️ 用 `ThrowsAny`：`JsonDocument.Parse` 抛的是内部的
+        // `JsonReaderException`，它是 `JsonException` 的**子类**，
+        // 而 `Assert.Throws<T>` 要求类型**完全相符**。这里要断的是
+        // 「按 `JsonException` 接得住」，不是「恰好是基类那一个」。
+        Assert.ThrowsAny<JsonException>(() =>
+        {
+            _ = ReleaseFeedJson.ReadLatestTag("<html>502 Bad Gateway</html>");
+        });
     }
 
     private sealed class CapturingLogger : IAppLogger
