@@ -142,6 +142,73 @@ public class LiveWallTests
     }
 }
 
+/// <summary>
+/// 那面墙摆几列几行（<see cref="LiveWall.Layout"/>，T27② 第 4 批）。
+/// </summary>
+/// <remarks>
+/// ⚠️ 行数算错不会报错，只会**有一格跑到墙外面看不见** —— 用户看到的是
+/// 「我明明选了 9 格，只出来 6 个」。原先长在 <c>MultiViewWindow</c> 里，
+/// 那个工程没有测试工程。
+/// </remarks>
+public class LiveWallLayoutTests
+{
+    private const int 第一档 = 2;
+    private const int 九格 = 9;
+
+    [Theory]
+    [InlineData(2, 2, 1)]
+    [InlineData(3, 2, 2)]
+    [InlineData(4, 2, 2)]
+    [InlineData(5, 3, 2)]
+    [InlineData(6, 3, 2)]
+    [InlineData(7, 3, 3)]
+    [InlineData(8, 3, 3)]
+    [InlineData(9, 3, 3)]
+    public void 每一档摆成设计图那个形状(int count, int columns, int rows)
+    {
+        var wall = LiveWall.Layout(count, 第一档, 九格);
+
+        Assert.Equal(count, wall.Count);
+        Assert.Equal(columns, wall.Columns);
+        Assert.Equal(rows, wall.Rows);
+    }
+
+    [Fact]
+    public void 每一档都装得下_一个格子都不许漏到墙外面()
+    {
+        // ⚠️ 这一条是全部意义所在：行数要**向上取整**（`(n + cols - 1) / cols`）。
+        // 写成 `n / cols` 的话 5 格 → 3 列 1 行 ⇒ 第 4、5 格没地方摆。
+        for (var count = 第一档; count <= 九格; count++)
+        {
+            var wall = LiveWall.Layout(count, 第一档, 九格);
+
+            Assert.True(
+                wall.Columns * wall.Rows >= wall.Count,
+                $"{count} 格摆成 {wall.Columns}×{wall.Rows}，装不下");
+        }
+    }
+
+    [Fact]
+    public void 选到档位外面就夹回边界那一档()
+    {
+        // 格数来自菜单，将来档位会变；夹在这里，越界最坏也就是摆成边界那一档。
+        Assert.Equal(第一档, LiveWall.Layout(0, 第一档, 九格).Count);
+        Assert.Equal(第一档, LiveWall.Layout(-3, 第一档, 九格).Count);
+        Assert.Equal(九格, LiveWall.Layout(99, 第一档, 九格).Count);
+    }
+
+    [Fact]
+    public void 第一档给零时不许把行数那个除法炸掉()
+    {
+        // 走到这儿的话列数是 0，`(n + cols - 1) / cols` 当场 DivideByZero。
+        // 眼下的调用处第一档就是 2，走不到 —— 这一条是防着下一个调用处的。
+        var wall = LiveWall.Layout(0, min: 0, max: 九格);
+
+        Assert.Equal(0, wall.Count);
+        Assert.Equal(0, wall.Rows);
+    }
+}
+
 /// <summary>重连的节拍（<see cref="LiveTile.RetryDelay"/>）。</summary>
 public class LiveTileRetryTests
 {

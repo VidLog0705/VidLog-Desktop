@@ -14,12 +14,6 @@ using VidLog.Desktop.Core.Search;
 
 namespace VidLog.Desktop.App;
 
-/// <summary>图里的一行（一个时间桶）。</summary>
-/// <param name="Ratio">
-/// 这一行相对**最高的那一行**的比例（0–1）。条的长度用它。
-/// </param>
-internal sealed record BucketRow(string Label, double Ratio, string Value);
-
 /// <summary>
 /// 打包数据深度分析（照需求方设计图 `_40`）。
 /// </summary>
@@ -264,9 +258,10 @@ public partial class DataWindow : Window
         TotalDurationText.Text = Display.Duration(summary.Duration);
         AverageText.Text = Display.Duration(summary.AveragePerWaybill);
 
-        ChartTitleText.Text = $"{GranularityLabel(by)} · {DimensionLabel(Dimension())}";
+        ChartTitleText.Text =
+            $"{StatsChart.GranularityLabel(by)} · {StatsChart.DimensionLabel(Dimension())}";
 
-        var rows = BuildRows(buckets, by);
+        var rows = StatsChart.Rows(buckets, by, Dimension());
         BucketList.ItemsSource = rows;
 
         // 空态：一句话摆在图表区的正中间，比一块大白框诚实得多。
@@ -278,68 +273,8 @@ public partial class DataWindow : Window
         ChartStatusText.Text = $"共 {rows.Count} 个时间段 · {summary.Count} 段录像";
     }
 
-    private static string GranularityLabel(StatsGranularity by) => by switch
-    {
-        StatsGranularity.Week => "按周",
-        StatsGranularity.Month => "按月",
-        _ => "按日",
-    };
-
-    /// <remarks>
-    /// ⚠️ 数量那一档写「录像段数」而不是图上两个字「数量」：图上的「数量」
-    /// 在一张只有一个数字的卡片里没有歧义，但这里是**条的长度**，
-    /// 是段还是件会直接改变每根条的长短 —— 写清楚，不靠猜。
-    /// </remarks>
-    private static string DimensionLabel(string dimension) => dimension switch
-    {
-        "duration" => "时长",
-        "bytes" => "大小（约）",
-        _ => "录像段数",
-    };
-
-    /// <summary>
-    /// 图里的每一行。
-    /// </summary>
-    /// <remarks>
-    /// 条的长度是**相对最高的那一行**，不是绝对值：一个只有 2 段的上午与一个
-    /// 300 段的旺季放在一起，绝对刻度会把前者压成一条看不见的线。
-    /// 具体数值在右边一列写着，所以「相对」不丢信息。
-    /// </remarks>
-    private IReadOnlyList<BucketRow> BuildRows(IReadOnlyList<StatsBucket> buckets, StatsGranularity by)
-    {
-        var dimension = Dimension();
-
-        double Measure(StatsBucket b) => dimension switch
-        {
-            "duration" => b.Duration.TotalSeconds,
-            "bytes" => b.EstimatedBytes,
-            _ => b.Count,
-        };
-
-        var max = buckets.Count == 0 ? 0 : buckets.Max(Measure);
-
-        return buckets.Select(b =>
-        {
-            var value = Measure(b);
-
-            return new BucketRow(
-                Label(b.Start, by),
-                max <= 0 ? 0 : value / max,
-                dimension switch
-                {
-                    "duration" => Display.Duration(b.Duration),
-                    "bytes" => $"约 {Display.Bytes(b.EstimatedBytes)}",
-                    _ => $"{b.Count} 段",
-                });
-        }).ToList();
-    }
-
-    private static string Label(DateOnly start, StatsGranularity by) => by switch
-    {
-        StatsGranularity.Month => start.ToString("yyyy-MM"),
-        // 「起」这个字不能省：按周时它是那一周的**周一**，不写的话
-        // 会被读成「这一周就那一天有录像」。
-        StatsGranularity.Week => $"{start:MM-dd} 起",
-        _ => start.ToString("MM-dd"),
-    };
+    // ⚠️ 下面这四件（图里每一行怎么算、两个标题、左边那一列时间）
+    // 2026-10-07 搬到 `VidLog.Desktop.Core.Search.StatsChart`（T27② 第 4 批）——
+    // 这个工程没有测试工程，而条的长度是**相对**的这件事没人挡得住。
+    // 界面这边只剩「单选框选了哪一档」这一件，由 `Dimension()` 负责。
 }

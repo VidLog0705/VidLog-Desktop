@@ -1,4 +1,3 @@
-using System.Globalization;
 using System.Windows;
 using System.Windows.Automation;
 using System.Windows.Controls;
@@ -285,19 +284,13 @@ public partial class MultiViewWindow : Window
     /// </remarks>
     private void ApplyCellCount(int count)
     {
-        _cellCount = Math.Clamp(count, CellChoices[0], MaxCells);
+        // 3×3 的墙要摆 N 格：夹到菜单上的档位、算列、算行 —— 那三件都在 Core 里
+        // （`LiveWall.Layout`，T27② 第 4 批搬下去的），这里只往控件上贴。
+        var wall = LiveWall.Layout(count, CellChoices[0], MaxCells);
 
-        // 3×3 的墙要摆 N 格：列数按最接近方形的来，与设计图的九宫格同一个口径。
-        Wall.Columns = _cellCount switch
-        {
-            <= 2 => _cellCount,
-            <= 4 => 2,
-            <= 6 => 3,
-            <= 9 => 3,
-            _ => 3,
-        };
-
-        Wall.Rows = (_cellCount + Wall.Columns - 1) / Wall.Columns;
+        _cellCount = wall.Count;
+        Wall.Columns = wall.Columns;
+        Wall.Rows = wall.Rows;
 
         for (var index = 0; index < _cells.Count; index++)
         {
@@ -854,13 +847,7 @@ public partial class MultiViewWindow : Window
 
             Counts.Inlines.Clear();
 
-            Counts.Inlines.Add(new Run(
-                fps is null
-                    ? "– fps"
-                    : fps.Value.ToString("0.0", CultureInfo.InvariantCulture) + " fps")
-            {
-                Foreground = _countDim,
-            });
+            Counts.Inlines.Add(new Run(LiveCountsText.Fps(fps)) { Foreground = _countDim });
 
             // ⚠️ 两个丢帧数**没有就不出现**（而不是显示 0）：健康时这一行只有帧率，
             // 挂一串 0 会把「有东西要看了」这个信号淹掉 —— 而这行存在的全部意义
@@ -873,32 +860,24 @@ public partial class MultiViewWindow : Window
 
             Counts.Inlines.Add(new LineBreak());
 
-            Counts.Inlines.Add(new Run(
-                $"F {(counts is null ? "–" : counts.Outbound.ToString(CultureInfo.InvariantCulture))}")
-            {
-                Foreground = _countGreen,
-            });
+            Counts.Inlines.Add(new Run(LiveCountsText.Outbound(counts)) { Foreground = _countGreen });
             Counts.Inlines.Add(new Run("   "));
-            Counts.Inlines.Add(new Run(
-                $"T {(counts is null ? "–" : counts.Returned.ToString(CultureInfo.InvariantCulture))}")
-            {
-                Foreground = _countRed,
-            });
+            Counts.Inlines.Add(new Run(LiveCountsText.Returned(counts)) { Foreground = _countRed });
 
             Counts.Visibility = Visibility.Visible;
         }
 
         /// <summary>丢帧数非零才把那一段追加上去（T11）。</summary>
+        /// <remarks>
+        /// 那句话与「0 就不出现」这一判在 Core 里（`LiveCountsText.Loss`）；
+        /// 这里只剩摆 <c>Run</c> 与上色。
+        /// </remarks>
         private void AppendLoss(string label, long dropped)
         {
-            if (dropped <= 0) return;
+            if (LiveCountsText.Loss(label, dropped) is not { } text) return;
 
             Counts.Inlines.Add(new Run(" · ") { Foreground = _countDim });
-            Counts.Inlines.Add(new Run(
-                $"{label} {dropped.ToString(CultureInfo.InvariantCulture)}")
-            {
-                Foreground = _countWarn,
-            });
+            Counts.Inlines.Add(new Run(text) { Foreground = _countWarn });
         }
 
         private Brush FindResource(string key) => (Brush)_owner.FindResource(key);

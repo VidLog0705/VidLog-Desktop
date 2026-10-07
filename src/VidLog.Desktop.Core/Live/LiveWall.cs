@@ -57,6 +57,44 @@ public sealed class LiveWall : IAsyncDisposable
     /// <summary>现在挂着几格（诊断用）。</summary>
     public int Count => _tiles.Count;
 
+    /// <summary>格数选好之后，这面墙摆几列几行（T27② 第 4 批）。</summary>
+    /// <param name="requested">用户选的格数。</param>
+    /// <param name="min">最少几格（菜单上的第一档）。</param>
+    /// <param name="max">最多几格（九宫格那个九）。</param>
+    /// <remarks>
+    /// <para>
+    /// ⚠️ <b>列数按最接近方形的来</b>：2 格 2×1、3 格 2×2、5 格 3×2、9 格 3×3 ——
+    /// 与设计图的九宫格同一个口径。注意 3 格是 **2×2**（空一格），不是 3×1：
+    /// 照原样搬的，没有改。
+    /// </para>
+    /// <para>
+    /// ⚠️ 行数是**向上取整**（<c>(n + cols - 1) / cols</c>）：摆不满的那一行照摆，
+    /// 格子一个都**不许挤到下一行去** —— 挤下去的话最后一个会跑到墙外面看不见。
+    /// </para>
+    /// <para>
+    /// ⚠️ 顺手夹到 <c>[min, max]</c>：格数来自菜单，而菜单上的档位将来会变。
+    /// 夹在这里，越界的一档最坏也只是摆成边界那一档，不会算出个负数行。
+    /// </para>
+    /// <para>
+    /// ⚠️ <paramref name="min"/> 给 0 时 <see cref="Math.Clamp"/> 放得出 0，
+    /// 而 0 列会让行数那个除法**当场抛**。所以列数兜底到至少 1 ——
+    /// 眼下唯一的调用处第一档就是 2，走不到那儿，是防着下一个调用处。
+    /// </para>
+    /// </remarks>
+    public static (int Count, int Columns, int Rows) Layout(int requested, int min, int max)
+    {
+        var count = Math.Clamp(requested, min, max);
+
+        var columns = count switch
+        {
+            <= 2 => Math.Max(count, 1),
+            <= 4 => 2,
+            _ => 3,
+        };
+
+        return (count, columns, (count + columns - 1) / columns);
+    }
+
     /// <summary>
     /// 对一次账。<paramref name="active"/> 就是 <see cref="LiveDirectory.Active"/>
     /// 那一列（按 DeviceId 排好，所以同一台机位的位置是稳定的）。
