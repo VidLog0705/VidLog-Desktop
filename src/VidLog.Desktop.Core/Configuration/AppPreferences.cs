@@ -35,6 +35,41 @@ public enum CloseWindowAction
 }
 
 /// <summary>
+/// 「外观主题」那一行的三档（设计图 `_42`）。
+/// </summary>
+/// <remarks>
+/// <para>
+/// ⚠️ <b><see cref="FollowSystem"/> 必须显式写 0，而且这是承重的</b>：老设置文件里
+/// 没有这个字段 ⇒ 反序列化取枚举默认值。而本程序在做出这三档**之前**的行为就是
+/// 「跟随系统」（<c>AppTheme</c> 从注册表读 `AppsUseLightTheme`）——
+/// 把 0 让给别人，所有升级过的机器从某天起界面会突然**固定**成一种颜色，
+/// 而用户什么都没改过。与 <see cref="CloseWindowAction"/>、<c>StationRole</c> 同一条规矩。
+/// </para>
+/// <para>
+/// ⚠️ 枚举值落进 <c>settings.json</c>，而 <see cref="AppPreferences.Themes"/> 那张表的
+/// **次序就是这里的次序**（那条由 <c>AppPreferencesTests</c> 钉着）⇒
+/// <b>顺序即格式，别重排</b>。
+/// </para>
+/// </remarks>
+public enum AppThemeMode
+{
+    /// <summary>
+    /// 跟随 Windows 的「应用模式」（做出这三档之前的行为，也是升级后的默认）。
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ 它读的是 <c>AppsUseLightTheme</c>，**不是**标题栏那个
+    /// <c>SystemUsesLightTheme</c> —— 这是「应用」那一档，见 <c>AppTheme</c>。
+    /// </remarks>
+    FollowSystem = 0,
+
+    /// <summary>固定浅色 —— 不管 Windows 怎么设。</summary>
+    Light = 1,
+
+    /// <summary>固定深色 —— 不管 Windows 怎么设。</summary>
+    Dark = 2,
+}
+
+/// <summary>
 /// 设置里那些「图上能点、而本程序还没做」的选项呈现成什么样。
 /// </summary>
 /// <remarks>
@@ -57,10 +92,16 @@ public enum CloseWindowAction
 /// 点了没反应、让用户以为是自己那边的问题。
 /// </para>
 /// <para>
-/// ⚠️ <b>为什么这两行仍然不进 <see cref="AppSettings"/></b>：一个只有一种取值的设置
-/// 是个假开关 —— 存下来、读回来、做什么都不变。所以它们**不落盘**，
+/// ⚠️ <b>为什么它们原先不进 <see cref="AppSettings"/></b>：一个只有一种取值的设置
+/// 是个假开关 —— 存下来、读回来、做什么都不变。所以那时它们**不落盘**，
 /// 界面上把真做了的那一档显示出来、其余各挂一句为什么还不能用。
-/// 等真的做出第二档（英文界面、深色主题），再往 <see cref="AppSettings"/> 里加字段。
+/// 等真的做出第二档，再往 <see cref="AppSettings"/> 里加字段。
+/// </para>
+/// <para>
+/// ⚠️ <b>外观主题那一行 2026-10-08 走到了这一句的后半</b>：三档都做出来了
+/// （<see cref="AppThemeMode"/>），于是它有了 <see cref="AppSettings.ThemeMode"/>、
+/// 真的落盘、真的当场换色 —— 这一行那张档位表（<see cref="Themes"/>）现在三档全是「已做」。
+/// <b>界面语言那一行仍停在原处</b>（只有中文一档）。
 /// </para>
 /// <para>
 /// ⚠️ 文案放 Core 而不是 XAML，理由与 <c>StationRoles.Describe</c> 一致：
@@ -101,26 +142,82 @@ public static class AppPreferences
 
     /// <summary>外观主题的选项。</summary>
     /// <remarks>
-    /// ⚠️ <b>真做了的只有浅色</b>：设计图整套是浅色（Tailwind 色板逐像素量出来的，
-    /// 见 `docs/实现决策.md` §59），而需求方的裁决是「**严格照图**」。
-    /// 深色主题要**整表**再来一套配色 —— 在那之前它点下去只回一句话，
-    /// **不会真的切过去**（切一半的深色比不切更糟）。
+    /// <para>
+    /// ⚠️ <b>三档现在都是真的</b>（2026-10-08）：<see cref="AppThemeMode"/> 那三档
+    /// 各有一套配色，选中就真的换（亮暗两套色盘 + 标题栏，见 <c>AppTheme</c>）。
+    /// 所以这张表**只剩「档位叫什么名字」这一个用途**，
+    /// <see cref="PreferenceOption.Hint"/> 三档都是 <see langword="null"/>、
+    /// 而「点了没做的那一档要退回来」那套机制对**这一张**表已经不适用了
+    /// （它在 <see cref="Languages"/> 那头仍然是活的）。
+    /// </para>
+    /// <para>
+    /// ⚠️ <b>表的次序 = <see cref="AppThemeMode"/> 的次序</b>，这条是**承重的**：
+    /// 界面按下标填下拉、设置里按下标选档（<see cref="IndexOf"/> 就是
+    /// <c>(int)mode</c>）。两者错开一位，「固定深色」会选中「浅色」那一档，
+    /// 而屏幕上只是颜色不对 —— 不会有任何东西喊。<c>AppPreferencesTests</c> 钉着它。
+    /// </para>
     /// </remarks>
     public static IReadOnlyList<PreferenceOption> Themes { get; } =
     [
-        new("跟随系统", false,
-            "深色主题还没做，跟随系统没有可切的目标 —— 现在一律是设计图上的浅色。"),
+        new("跟随系统", true, null),
         new("浅色", true, null),
-        new("深色", false,
-            "深色主题还没做。设计图全套是浅色，需求方定了「严格照图」，所以先只做浅色。"),
+        new("深色", true, null),
     ];
+
+    /// <summary>某一档在下拉里是第几项。</summary>
+    /// <remarks>
+    /// ⚠️ 直接吃枚举的数值 —— 表的次序与 <see cref="AppThemeMode"/> 的次序必须一致，
+    /// 理由与钉子都在 <see cref="Themes"/> 的 remarks 里。
+    /// </remarks>
+    public static int IndexOf(AppThemeMode mode) => (int)mode;
+
+    /// <summary>下拉里第几项对应哪一档；认不出来时回最保守的那一档。</summary>
+    /// <remarks>
+    /// ⚠️ 认不出来（下拉被清空、下标是 -1、将来枚举加了值而这个方法没跟上）
+    /// 退的是 <see cref="AppThemeMode.FollowSystem"/>：它是**升级前的行为**，
+    /// 也是「用户没表态」时唯一说得通的那一档。与
+    /// <c>SettingsWindow.DescribeCloseAction</c> 退「最小化到托盘」同一个理由。
+    /// </remarks>
+    public static AppThemeMode ThemeOf(int index) =>
+        Enum.IsDefined((AppThemeMode)index) ? (AppThemeMode)index : AppThemeMode.FollowSystem;
+
+    /// <summary>某一档在下拉里显示的字。</summary>
+    /// <remarks>
+    /// ⚠️ 从 <see cref="Themes"/> 取，**不另写一份**：写两份的下场是同一边写「跟随系统」、
+    /// 另一边写「跟随 Windows」，用户会以为是两件事（与 <c>StationRoles.Describe</c> 同）。
+    /// </remarks>
+    public static string Describe(AppThemeMode mode) => Themes[IndexOf(mode)].Label;
+
+    /// <summary>
+    /// 某一档的**后果**那句话（显示在那一行下面）。
+    /// </summary>
+    /// <param name="mode">选中的那一档。</param>
+    /// <param name="systemIsDark">Windows 现在是不是深色（只有跟随系统那一档用得上）。</param>
+    /// <remarks>
+    /// ⚠️ <b>「跟随系统」那一档必须把系统的现状说出来</b>：不说的话，
+    /// 系统是亮色的用户选了「跟随系统」会看到**什么都没变** ——
+    /// 那正是踩坑 #13 要防的「点了像没反应」。这一句就是本功能存在的一半理由。
+    /// </remarks>
+    public static string ThemeNote(AppThemeMode mode, bool systemIsDark) => mode switch
+    {
+        AppThemeMode.Light => "固定浅色：不管 Windows 怎么设，界面一直是浅色。",
+        AppThemeMode.Dark => "固定深色：不管 Windows 怎么设，界面一直是深色。",
+        _ => systemIsDark
+            ? "跟随系统：Windows 现在是深色，界面就是深的。"
+            : "跟随系统：Windows 现在是浅色，界面就是浅的。",
+    };
 
     /// <summary>下拉该选中第几档 —— **真做了的那一档**（照实显示现状）。</summary>
     /// <remarks>
     /// <para>
     /// ⚠️ 取的是**最后一个** <see cref="PreferenceOption.Implemented"/>，不是第一个：
-    /// 表里眼下只有一档是真的，所以两种取法今天等价；写成「最后一个」是因为
-    /// 将来真做出第二档时，那一档多半排在后面，而「选中第一个真的」会静默选错。
+    /// 表里眼下只有一档是真的（只有<see cref="Languages"/>还用得着这个方法），
+    /// 所以两种取法今天等价；写成「最后一个」是因为将来真做出第二档时，
+    /// 那一档多半排在后面，而「选中第一个真的」会静默选错。
+    /// </para>
+    /// <para>
+    /// ⚠️ <b>外观主题那一行已经不用它了</b>（2026-10-08 起三档都真了）——
+    /// 那一行选中的是「设置里存着的那一档」，没有「真做了的」可挑。
     /// </para>
     /// <para>
     /// ⚠️ 一档都没做时回 <c>0</c>（与搬走之前的写法一致）：那不是正常情形，

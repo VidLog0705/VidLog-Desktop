@@ -264,6 +264,7 @@ public partial class SettingsWindow : Window
         ShowCalibration();
         ShowLicense();
         ShowCloseActionNote();
+        ShowThemeNote();
         ShowAbout();
         LoadCameras();
         LoadAudio();
@@ -593,6 +594,7 @@ public partial class SettingsWindow : Window
         IdleReminderTag = TagOf(IdleCombo),
         DurationFallbackTag = TagOf(DurationCombo),
         CloseActionTag = TagOf(CloseActionCombo),
+        ThemeTag = TagOf(ThemeCombo),
         ArchiveBackendTag = TagOf(ArchiveCombo),
         CloudBackfillScopeTag = TagOf(CloudScopeCombo),
         LogLevelTag = TagOf(LogLevelCombo),

@@ -43,6 +43,7 @@ public sealed record SettingsFormInput
     public string? IdleReminderTag { get; init; }
     public string? DurationFallbackTag { get; init; }
     public string? CloseActionTag { get; init; }
+    public string? ThemeTag { get; init; }
     public string? ArchiveBackendTag { get; init; }
     public string? CloudBackfillScopeTag { get; init; }
     public string? LogLevelTag { get; init; }
@@ -198,11 +199,16 @@ public static class SettingsForm
             DuplicateCheckDays = duplicateDays,
             PlaybackPort = port,
 
-            // ── 外观与启动（批次 9，设计图 `_49`）──
-            // ⚠️ 「界面语言」与「外观主题」**刻意不在这里读**：它们各自只有一档能选，
+            // ── 外观与启动（批次 9，设计图 `_49` / `_42`）──
+            // ⚠️ 「界面语言」**仍然刻意不在这里读**：它只有中文一档能选，
             // 落进设置文件就是一个永远为真的假开关（踩坑 #13）。
+            // ⚠️ 「外观主题」2026-10-08 起**要读了**：三档都做出来了，改它是真的换色
+            // ⇒ 那条例外不再成立（见 `AppSettings.ThemeMode`）。
+            // 认不出 tag 就保持原值，与 `CloseWindowAction` 同理：把「固定深色」
+            // 静默换成「跟随系统」会让用户在暗色房间里突然被闪一下白屏。
             RunAtStartup = input.RunAtStartup,
             CloseWindowAction = ParseOr(input.CloseActionTag, current.CloseWindowAction),
+            ThemeMode = ParseOr(input.ThemeTag, current.ThemeMode),
             CheckForUpdates = input.CheckForUpdates,
 
             // ── 日志（2026-10-01 需求方要「级别可配」）──

@@ -274,6 +274,29 @@ public sealed record AppSettings
     public CloseWindowAction CloseWindowAction { get; init; } = CloseWindowAction.MinimizeToTray;
 
     /// <summary>
+    /// 外观主题（设计图 `_42`「外观主题」那一行）。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// ⚠️ <b>这一项是 2026-10-08 才有的</b>。在那之前它是「图上能点、程序没做」那一类，
+    /// 所以**不进设置文件** —— 一个只有一种取值的设置是个假开关
+    /// （那条例外写在 <see cref="AppPreferences"/> 的类型注释里）。
+    /// 三档做出来之后那条例外不再成立，于是有了这个字段。
+    /// </para>
+    /// <para>
+    /// ⚠️ 默认 <see cref="AppThemeMode.FollowSystem"/> = 做出这三档**之前**的行为
+    /// （<c>AppTheme</c> 一直是从注册表读、跟随系统）。老设置文件里没有这个键时
+    /// 取到的正是它 —— 所以升级过的机器界面颜色**一个像素都不会变**。
+    /// </para>
+    /// <para>
+    /// ⚠️ 它与 <see cref="CheckForUpdates"/> 那类「后台功能」不同：改它**当场**就要
+    /// 换色（不必重启），所以保存之后那道应用写在
+    /// <c>AppHost.SaveSettingsAsync</c> 里、而不是界面上。
+    /// </para>
+    /// </remarks>
+    public AppThemeMode ThemeMode { get; init; } = AppThemeMode.FollowSystem;
+
+    /// <summary>
     /// 启动后自动检查有没有新版本（设计图 `_49`「高级设置」第三行）。
     /// </summary>
     /// <remarks>
@@ -457,6 +480,10 @@ public sealed record AppSettings
         // 哪个分支上全靠命令行 switch 的兜底 —— 而那里兜底错了的后果是
         // 「关不掉的窗口」或者「一不小心就退出了」。
         && Enum.IsDefined(s.CloseWindowAction)
+        // 外观主题（设计图 `_42`）：认不出的值（手改成 7、或者降级装了老版本又回来）
+        // 会让界面停在一种**用户没有选过**的颜色上 —— 而同样的错法在别的项上
+        // 好歹有个「保守的那一头」，这里两头都不保守。
+        && Enum.IsDefined(s.ThemeMode)
         // 百度网盘那一组（设计图 `_45`/`_46`）。越界即整体回落默认值 ——
         // 「同时上传数」被手改成 100 的后果不是慢一点，而是**整个应用被风控限流**。
         && CloudUploadSettings.IsPlausible(s.Cloud);
@@ -725,6 +752,10 @@ public sealed class SettingsStore
         // 开始自己启动的、谁开的」。
         Compare(nameof(AppSettings.RunAtStartup), previous.RunAtStartup, next.RunAtStartup);
         Compare(nameof(AppSettings.CloseWindowAction), previous.CloseWindowAction, next.CloseWindowAction);
+        // 外观主题（设计图 `_42`，2026-10-08 起可改）。⚠️ 它必须留痕：
+        // 「我的界面怎么变成深色了」最常见的真因是**别人在这台机器上改过这一档**，
+        // 而屏幕上看不出是谁、什么时候 —— 这句是唯一能回答的地方。
+        Compare(nameof(AppSettings.ThemeMode), previous.ThemeMode, next.ThemeMode);
         Compare(nameof(AppSettings.CheckForUpdates), previous.CheckForUpdates, next.CheckForUpdates);
         Compare(nameof(AppSettings.Mode), previous.Mode, next.Mode);
         Compare(nameof(AppSettings.Codec), previous.Codec, next.Codec);

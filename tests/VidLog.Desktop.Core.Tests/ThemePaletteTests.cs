@@ -487,6 +487,62 @@ public class ThemePaletteTests
         Assert.True(files.Count >= 10, $"只扫到 {files.Count} 个 .xaml，绊线的路径可能过期了");
     }
 
+    // ─────────────────────────────────────────────
+    // 换主题这条链的接线（App 层没有测试工程 ⇒ 只能读源码文本）
+    // ─────────────────────────────────────────────
+
+    [Fact]
+    public void 换主题这条链上的接线一处都不许断()
+    {
+        // ⚠️ 这一条守的是「三档开关**真的接得上**」。Core 那边（那张表、枚举、
+        // 存盘、认 tag）都有测试了；但从「设置里存着的那一档」到「界面真的换了颜色」
+        // 中间隔着几跳，**每一跳都是一次赋值或一次传参**，编译器一个都不管，
+        // 而断了以后只是「颜色不对」—— 没有任何东西会喊（App 层没有测试工程）。
+        var app = Path.Combine(RepoRoot(), "src", "VidLog.Desktop.App");
+
+        var host = Code(Path.Combine(app, "AppHost.cs"));
+        var startup = Code(Path.Combine(app, "App.xaml.cs"));
+        var window = Code(Path.Combine(app, "SettingsWindow.xaml.cs"));
+        var prefs = Code(Path.Combine(app, "SettingsWindow.Preferences.cs"));
+
+        // ① 启动时补一次（`App.OnStartup` 调 `Start` 时设置还没读出来，
+        //    所以那里只能读注册表 —— 存着的覆盖得靠这一跳）。
+        // ② 保存设置时也来一次（换档**当场**生效，不用重启）。
+        // ⚠️ 恰好两处，而且两处的实参必须各是各的：少一处是断链，
+        //    多一处说明有人另开了一条不经过设置的换档路（那「改完停在哪一档」
+        //    就跟界面说的对不上了）。
+        Assert.Equal(2, Regex.Matches(host, @"AppTheme\.Apply\(").Count);
+        Assert.Contains("AppTheme.Apply(settings.ThemeMode, logger)", host, StringComparison.Ordinal);
+        Assert.Contains("AppTheme.Apply(next.ThemeMode, _logger)", host, StringComparison.Ordinal);
+
+        // ③ 启动路径本身还在（它是 `Start` 不是 `Apply` —— 上面那个计数故意没算它）。
+        Assert.Contains("AppTheme.Start(logger)", startup, StringComparison.Ordinal);
+
+        // ④ 下拉里选中的那一档真的递进了 `SettingsFormInput`。
+        Assert.Contains("ThemeTag = TagOf(ThemeCombo)", window, StringComparison.Ordinal);
+
+        // ⑤ 进设置页时选中的是**存着的那一档**（不是表里「真做了的那一档」——
+        //    那套是语言那一行的，三档全真的主题行照抄会选错），
+        //    且那一档的名字从 Core 那张表里取，不在这儿写第二份。
+        Assert.Contains(
+            "SelectByTag(ThemeCombo, _host.Settings.ThemeMode.ToString())", prefs, StringComparison.Ordinal);
+        Assert.Contains("AppPreferences.Describe(mode)", prefs, StringComparison.Ordinal);
+
+        // ⑥ XAML：这一个下拉真的有名字、真的挂了处理器 —— 少了它，
+        //    上面 ④⑤ 全都编不过，但「没挂处理器」是编得过的（选完什么都不发生）。
+        var xaml = File.ReadAllText(Path.Combine(app, "SettingsWindow.xaml"));
+
+        Assert.Contains("x:Name=\"ThemeCombo\"", xaml, StringComparison.Ordinal);
+        Assert.Contains("SelectionChanged=\"OnThemeChanged\"", xaml, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// 读一份 App 层源码，剥掉**整行注释** —— 文本绊线别被注释里举的例子骗过去。
+    /// </summary>
+    private static string Code(string path) => string.Join(
+        '\n',
+        File.ReadAllLines(path).Where(line => !line.TrimStart().StartsWith("//")));
+
     /// <summary>
     /// <c>src/VidLog.Desktop.App</c> 下某个后缀的源码文件（<b>不含</b> <c>obj</c>/<c>bin</c>）。
     /// </summary>

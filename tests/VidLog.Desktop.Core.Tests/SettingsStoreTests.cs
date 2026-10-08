@@ -521,6 +521,67 @@ public class SettingsStoreTests
     }
 
     [Fact]
+    public async Task 老设置文件里没有外观主题那一档_读回来是跟随系统()
+    {
+        // ⚠️ 这条是**承重**的。枚举里 `FollowSystem` 必须是 0，而且这一项
+        // 从没存过时必须落到它 —— 落错档的后果是**升级上来的老用户界面颜色
+        // 当场变了**（老设置文件里根本没有这一项），而「界面突然变黑/变白」
+        // 会被当成程序坏了。跟随系统正好等于做出这三档之前的行为。
+        using var dir = new TempDir();
+        var path = dir.File("settings.json");
+        await File.WriteAllTextAsync(path, """{"SegmentMinutes":3}""");
+
+        var result = await new SettingsStore(path).LoadAsync();
+
+        Assert.Empty(result.Warnings);
+        Assert.Equal(AppThemeMode.FollowSystem, result.Settings.ThemeMode);
+    }
+
+    [Fact]
+    public async Task 外观主题那一档存得住()
+    {
+        using var dir = new TempDir();
+        var path = dir.File("settings.json");
+
+        await new SettingsStore(path).SaveAsync(
+            AppSettings.Default with { ThemeMode = AppThemeMode.Dark });
+
+        var result = await new SettingsStore(path).LoadAsync();
+
+        Assert.Empty(result.Warnings);
+        Assert.Equal(AppThemeMode.Dark, result.Settings.ThemeMode);
+    }
+
+    [Fact]
+    public async Task 手改出来的越界外观主题整体回落()
+    {
+        // 手改成 99 这种：认它的话，`AppTheme.Apply` 里那个 switch 会掉进
+        // 兜底分支（眼下正好也是跟随系统，看着没事）—— 但那是**碰巧**，
+        // 兜底分支是什么行为取决于写的人当时怎么想。宁可整份回落 + 说一句。
+        using var dir = new TempDir();
+        var path = dir.File("settings.json");
+        await File.WriteAllTextAsync(path, """{"ThemeMode":99}""");
+
+        var result = await new SettingsStore(path).LoadAsync();
+
+        Assert.Equal(AppSettings.Default, result.Settings);
+        Assert.NotEmpty(result.Warnings);
+    }
+
+    [Fact]
+    public void 外观主题改了要留一行痕()
+    {
+        // 界面颜色变了却什么都没记，事后没法回答「它什么时候变黑的」。
+        var changes = SettingsStore.DescribeChanges(
+            AppSettings.Default,
+            AppSettings.Default with { ThemeMode = AppThemeMode.Light });
+
+        var line = Assert.Single(changes);
+
+        Assert.Contains(nameof(AppSettings.ThemeMode), line, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task 开机自启动与自动检查更新存得住()
     {
         using var dir = new TempDir();
@@ -564,28 +625,13 @@ public class SettingsStoreTests
         Assert.Contains(changes, c => c.Contains(nameof(AppSettings.CheckForUpdates), StringComparison.Ordinal));
     }
 
-    [Fact]
-    public void 两张偏好表各自恰好只有一档真做了()
-    {
-        // ⚠️ 这条是**承重**的。「界面语言」与「外观主题」那两个下拉靠
-        // 「真做了的那一档就是选中的那一档」来显示现状 —— 表里一档都没有的话
-        // 下拉会是空的，而它旁边正写着「中文（简体）」，界面自相矛盾，
-        // 且 App 层没有测试工程，这种事没有任何东西挡得住。
-        //
-        // ⚠️ 2026-10-01 改了字段名：`Enabled` → `Implemented`。
-        // 没做的那几档**现在也点得动**（需求方裁决：点开显示「正在开发中」），
-        // 所以「能不能点」不再是这一档的属性 —— 「做没做」才是。
-        Assert.Single(AppPreferences.Languages, o => o.Implemented);
-        Assert.Single(AppPreferences.Themes, o => o.Implemented);
-
-        // 还没做的那几档**必须**有一句实话可显示（点下去就要用它）。
-        Assert.All(
-            AppPreferences.Languages.Where(o => !o.Implemented),
-            o => Assert.False(string.IsNullOrWhiteSpace(o.Hint)));
-        Assert.All(
-            AppPreferences.Themes.Where(o => !o.Implemented),
-            o => Assert.False(string.IsNullOrWhiteSpace(o.Hint)));
-    }
+    // ⚠️ 这里原先有一条 `两张偏好表各自恰好只有一档真做了`。
+    // 2026-10-08 外观主题三档都做出来之后，它在这份文件里已经**被完全顶掉**了：
+    // 「语言那张表恰好一档真做了」与「没做的那几档都有 Hint」两条都在
+    // `AppPreferencesTests` 里（那里才是这两张表的家），主题那一半更是被
+    // `外观主题三档现在都是真的` 反向断言（三档全真、Hint 全空）——
+    // 留着它只是同一件事说三遍，且其中一遍会立刻红。
+    // 详情见 `tests/VidLog.Desktop.Core.Tests/AppPreferencesTests.cs`。
 
     private sealed class TempDir : IDisposable
     {

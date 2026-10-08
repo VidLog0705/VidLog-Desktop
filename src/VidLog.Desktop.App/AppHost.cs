@@ -383,6 +383,13 @@ public sealed class AppHost : IAsyncDisposable
         var logOptions = LogOptionsFor(layout, settings);
         logger ??= new FileLogger(logOptions);
 
+        // 外观主题（设计图 `_42`，2026-10-08 起三档可改）。
+        // ⚠️ 必须**在这里**补一次：`App.OnStartup` 调 `AppTheme.Start` 时设置还没读出来
+        // （`AppHost` 都还没构造），那一次是按「跟随系统」画的；用户固定成浅色/深色时
+        // 真正该生效的是这一档。放在装配期（而不是等主窗口）是为了让**启动窗之后
+        // 的每一帧都是对的颜色**。
+        Platform.AppTheme.Apply(settings.ThemeMode, logger);
+
         // 保留期的那一跳（2026-09-26 补）。`LogRetention.SelectExpired` 一直是写对的、
         // 也一直有测试，**只是从来没有人调它** —— 于是「保留 N 天」是个死值，日志只增不减。
         // 与「装配的最后一跳」同一类毛病（见 docs/实现决策.md）：方法写对了、没人调。
@@ -850,6 +857,12 @@ public sealed class AppHost : IAsyncDisposable
 
         await new SettingsStore(Services.Layout.SettingsPath).SaveAsync(next);
         Settings = next;
+
+        // 外观主题立刻生效（设计图 `_42`）。⚠️ 界面上那一行**没写**「重启生效」——
+        // 写了就该是真的，所以存下去之后必须当场换，与「日志级别」那一条同理。
+        // ⚠️ 落点在这儿（不是设置窗里）是为了让**每一条**存设置的路径都算数：
+        // 设置窗、配置向导、用途选择窗都走这个方法。
+        Platform.AppTheme.Apply(next.ThemeMode, _logger);
 
         // 百度网盘那一组立刻生效（下一次 tick、下一次上传就用新值）。
         // ⚠️ 归档层不是网盘那一档时它是 null —— 那时这一页在界面上整页禁用，

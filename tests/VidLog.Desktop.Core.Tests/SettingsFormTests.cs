@@ -248,6 +248,39 @@ public class SettingsFormTests
     }
 
     [Fact]
+    public void 认不出来的外观主题保持原值()
+    {
+        // ⚠️ 与上面那条同一个规矩，但这一档的**落错方向**不一样：`follow` 是
+        // 枚举里的第 0 项，认不出来时若图省事落到 0，一台被用户固定成「深色」的
+        // 机器会**悄悄变回跟着系统走** —— 屏幕颜色当场变了，且写的是「跟随系统」，
+        // 看起来像用户自己选的。
+        var current = Current with { ThemeMode = AppThemeMode.Dark };
+
+        foreach (var tag in new[] { null, "", "午夜" })
+        {
+            Assert.Equal(AppThemeMode.Dark, Build(new SettingsFormInput
+            {
+                SegmentMinutes = "3",
+                PlaybackPort = "8720",
+                DuplicateCheckDays = "7",
+                ThemeTag = tag,
+            }, current).Next!.ThemeMode);
+        }
+
+        // 边界另一头：三档各自认得出、各自换得过去（下标与名字都得对上）。
+        foreach (var mode in Enum.GetValues<AppThemeMode>())
+        {
+            Assert.Equal(mode, Build(new SettingsFormInput
+            {
+                SegmentMinutes = "3",
+                PlaybackPort = "8720",
+                DuplicateCheckDays = "7",
+                ThemeTag = mode.ToString(),
+            }, current).Next!.ThemeMode);
+        }
+    }
+
+    [Fact]
     public void 日志级别认不出来退的是Info_不是原值()
     {
         // ⚠️ 与上面那条**方向相反**，是刻意的：这一格四项写死，
@@ -411,6 +444,7 @@ public class SettingsFormTests
                  IdleReminderTag = nameof(IdleReminderOption.Custom),
                  DurationFallbackTag = nameof(DurationFallbackOption.Six),
                  CloseActionTag = nameof(CloseWindowAction.MinimizeToTray),
+                 ThemeTag = nameof(AppThemeMode.Dark),
                  ArchiveBackendTag = nameof(ArchiveBackendKind.Nas),
                  CloudBackfillScopeTag = nameof(BackfillScope.All),
                  LogLevelTag = nameof(LogLevel.Warn),

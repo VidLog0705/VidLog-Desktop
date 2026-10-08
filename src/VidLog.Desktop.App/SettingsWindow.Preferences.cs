@@ -54,11 +54,84 @@ public partial class SettingsWindow : Window
     /// ⚠️ 选了还没做的那一档：**说一句实话，然后退回**。
     /// 它只有一个真值，而选中的那一档**不会落盘** —— 留在那里就是骗人。
     /// </para>
+    /// <para>
+    /// ⚠️ <b>两行 2026-10-08 起不同步了</b>：界面语言仍只有中文一档（走
+    /// <see cref="FillPreferenceCombo"/> 那套「退回」），而外观主题三档都做出来了
+    /// （走 <see cref="LoadThemeChoices"/> 那套「选中就落盘」）。别把两行合成一条路 ——
+    /// 合起来要么让语言那两档不再退回（假开关），要么让主题跟着退回（点了没反应）。
+    /// </para>
     /// </remarks>
     private void LoadPreferences()
     {
         FillPreferenceCombo(LanguageCombo, AppPreferences.Languages);
-        FillPreferenceCombo(ThemeCombo, AppPreferences.Themes);
+        LoadThemeChoices();
+    }
+
+    /// <summary>
+    /// 填「外观主题」那个下拉，并选中**设置里存着的那一档**。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// ⚠️ 照 <see cref="LoadCloseActions"/> 那套写（同样是「三档都做了的下拉」），
+    /// 不照语言那行 —— 区别在于选中的依据：语言那行是「表里真做了的那一档」
+    /// （<see cref="AppPreferences.RealIndex"/>，因为只有一个真值），
+    /// 这一行是**存着的那一档**（三档都能选，没有「真做了的」可挑）。
+    /// </para>
+    /// <para>
+    /// ⚠️ 名字从 <see cref="AppPreferences.Describe"/> 取 —— 这里不写第二份，
+    /// 免得下拉说「跟随系统」而别处说「跟随 Windows」。
+    /// </para>
+    /// </remarks>
+    private void LoadThemeChoices()
+    {
+        foreach (var mode in Enum.GetValues<AppThemeMode>())
+        {
+            ThemeCombo.Items.Add(new ComboBoxItem
+            {
+                Content = AppPreferences.Describe(mode),
+                Tag = mode.ToString(),
+            });
+        }
+
+        SelectByTag(ThemeCombo, _host.Settings.ThemeMode.ToString());
+    }
+
+    /// <summary>「外观主题」换了档。</summary>
+    /// <remarks>
+    /// ⚠️ <b>与语言那行相反：这里不退回</b> —— 三档都是真的，用户选的算数。
+    /// 落盘走保存那条路（<c>MarkDirty</c> → 点【保存】），
+    /// 所以那句话得说清现在这一档意味着什么，而不是「已经生效了」。
+    /// </remarks>
+    private void OnThemeChanged(object sender, SelectionChangedEventArgs e)
+    {
+        MarkDirty();
+        ShowThemeNote();
+    }
+
+    /// <summary>
+    /// 把选中那一档**会怎样**写在下面（照 <c>ShowCloseActionNote</c> 那套）。
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ 开机也会调一次（与关闭行为那一行一样）：不调的话这一行进来时下面空着，
+    /// 用户只能自己猜「跟随系统」跟出个什么颜色来 —— 而**他猜不了**，
+    /// 系统现在是什么色只有程序知道。
+    /// <para>
+    /// ⚠️ 那句「Windows 现在是浅色」从 <see cref="AppTheme.SystemPrefersDark"/> 现读、
+    /// 不缓存 —— 缓存就会印一个过时的现状，而这一句的全部价值就是它是**现状**。
+    /// </para>
+    /// </remarks>
+    private void ShowThemeNote()
+    {
+        // ⚠️ 认不出 tag 时按 `AppPreferences.ThemeOf` 那一档说话（它退的是
+        // 跟随系统）—— 与 `SettingsForm` 那边退的**不是同一个东西**：
+        // 那边退的是「存什么值」（当前存着的那一份），这边退的只是「说哪句话」。
+        // 界面坏掉时两者不必一致，但都不能什么都不说。
+        var mode = Enum.TryParse<AppThemeMode>(TagOf(ThemeCombo), out var parsed)
+            ? parsed
+            : AppPreferences.ThemeOf(ThemeCombo.SelectedIndex);
+
+        PreferencesNote.Text = AppPreferences.ThemeNote(mode, AppTheme.SystemPrefersDark());
+        PreferencesNote.Visibility = Visibility.Visible;
     }
 
     private void FillPreferenceCombo(ComboBox combo, IReadOnlyList<PreferenceOption> options)

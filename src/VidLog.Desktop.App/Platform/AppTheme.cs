@@ -5,6 +5,7 @@ using System.Windows.Interop;
 
 using Microsoft.Win32;
 
+using VidLog.Desktop.Core.Configuration;
 using VidLog.Desktop.Core.Diagnostics;
 using VidLog.Desktop.Core.Theme;
 
@@ -17,9 +18,22 @@ using SolidColorBrush = System.Windows.Media.SolidColorBrush;
 namespace VidLog.Desktop.App.Platform;
 
 /// <summary>
-/// 跟随系统的亮/暗主题（改造清单第 5 批）。
+/// 亮/暗主题（改造清单第 5 批；2026-10-08 起「跟随系统 / 固定浅色 / 固定深色」三档）。
 /// </summary>
 /// <remarks>
+/// <para>
+/// <b>哪一档由设置说了算</b>（<see cref="AppSettings.ThemeMode"/>）：这一层不自作主张，
+/// 它只回答「这一档现在意味着暗色吗、要不要真的换」。三处入口：
+/// <see cref="Start"/>（启动时先按跟随系统画出来，免得启动窗闪一下）、
+/// <c>AppHost.StartAsync</c> 与 <c>AppHost.SaveSettingsAsync</c>（读/存了设置之后
+/// 各调一次 <see cref="Apply"/>）。
+/// </para>
+/// <para>
+/// ⚠️ <b>「系统换了主题」那条路只在跟随系统那一档是活的</b> —— 见
+/// <see cref="OnUserPreferenceChanged"/>。固定深色的用户在亮色系统上，
+/// 系统换不换主题都不该动他的界面。
+/// </para>
+///
 /// <para>
 /// <b>做法是「最后再合并一份暗色覆盖字典」，不是「改笔刷的颜色」。</b>
 /// 后者的路子走不通，实测过（2026-10-07）：
@@ -39,8 +53,8 @@ namespace VidLog.Desktop.App.Platform;
 /// </para>
 /// <para>
 /// ⚠️ <b>改哪些键、改成什么，全在 <c>VidLog.Desktop.Core/Theme/ThemePalette.cs</c></b>
-/// （那边有测试钉着「一个键都不能少、色值是量出来的」）。这里只负责三件事：
-/// 读注册表、合并/撤掉那份覆盖字典、听系统换主题。
+/// （那边有测试钉着「一个键都不能少、色值是量出来的」）。这里只负责四件事：
+/// 读注册表、算出「这一档现在该是暗色吗」、合并/撤掉那份覆盖字典、听系统换主题。
 /// </para>
 /// </remarks>
 internal static class AppTheme
@@ -61,6 +75,16 @@ internal static class AppTheme
     /// <summary>现在合并着的那份暗色覆盖字典；亮色时是 <see langword="null"/>。</summary>
     private static ResourceDictionary? _darkOverlay;
 
+    /// <summary>
+    /// 现在生效的那一档（设置里那个值；<see cref="Start"/> 之前是
+    /// <see cref="AppThemeMode.FollowSystem"/> = 做出这三档之前的行为）。
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ 它决定 <see cref="OnUserPreferenceChanged"/> 要不要理系统那条消息 ——
+    /// 固定成浅色/深色的用户不该被系统主题变动碰到。
+    /// </remarks>
+    private static AppThemeMode _mode = AppThemeMode.FollowSystem;
+
     private static bool _following;
 
     /// <summary>
@@ -76,17 +100,26 @@ internal static class AppTheme
     private static bool _titleBarFailureLogged;
 
     /// <summary>
-    /// 读一次系统偏好、应用一遍，并挂上「系统换了主题」的回调。
+    /// 读一次系统偏好、按「跟随系统」画出来，并挂上「系统换了主题」的回调。
     /// </summary>
     /// <remarks>
+    /// <para>
     /// ⚠️ 放在<b>所有窗口之前</b>调用（<c>App.OnStartup</c> 的第三行）：
     /// <c>DynamicResource</c> 其实允许之后再换，但先换掉能少闪一下亮色。
+    /// </para>
+    /// <para>
+    /// ⚠️ <b>这里还读不到设置</b>（`AppHost` 还没构造），所以先按「跟随系统」画 ——
+    /// 万一用户固定了另一档，真正的那一档由 <c>AppHost</c> 读完设置后调的
+    /// <see cref="Apply"/> 补上。代价是那一下切换看得见；收益是启动窗
+    /// **至少是其中一种对的颜色**，而不是先亮后亮再变暗。
+    /// </para>
     /// </remarks>
     public static void Start(IAppLogger? logger = null)
     {
         var (dark, failure) = ReadSystemPreference();
 
         _logger = logger;
+        _mode = AppThemeMode.FollowSystem;
         SetDark(dark);
 
         if (failure is null)
@@ -123,6 +156,57 @@ internal static class AppTheme
     }
 
     /// <summary>
+    /// 按设置里那一档把界面换成对应颜色。<b>幂等</b>。
+    /// </summary>
+    /// <param name="mode">要生效的那一档（<see cref="AppSettings.ThemeMode"/>）。</param>
+    /// <param name="logger">只有第一次传得上用场（见 <see cref="_logger"/> 那句）。</param>
+    /// <remarks>
+    /// <para>
+    /// ⚠️ 两个调用处都在 <c>AppHost</c>：读完设置那一次、每次存完设置那一次 ——
+    /// 放在这里而不是界面上，是为了让**每一条存设置的路径**（设置窗、向导、
+    /// 用途切换）都算数，而不是只让设置窗那一页算数。
+    /// </para>
+    /// <para>
+    /// ⚠️ 只在**界面真的换了色**的时候记一句（判据就是 <see cref="SetDark"/> 的返回值，
+    /// 与系统那条路同一条）。所以「固定深色」当选时按保存**不记**（什么都没发生），
+    /// 同一档位重复保存也不记 —— 不用另加条件。
+    /// 「设置里那一档从甲变成乙」是另一件事，那句由 <c>SettingsStore.DescribeChanges</c> 记。
+    /// </para>
+    /// </remarks>
+    public static void Apply(AppThemeMode mode, IAppLogger? logger = null)
+    {
+        _logger ??= logger;
+        _mode = mode;
+
+        var dark = mode switch
+        {
+            // ⚠️ 固定那两档**不读注册表** —— 这正是它们存在的意义。
+            AppThemeMode.Light => false,
+            AppThemeMode.Dark => true,
+
+            // 跟随系统（以及今后万一加了别的值，取保守的那一头）
+            _ => ReadSystemPreference().Dark,
+        };
+
+        if (SetDark(dark))
+        {
+            _logger?.Log(
+                LogLevel.Info, "主题",
+                $"外观主题改成{AppPreferences.Describe(mode)}，界面切到{(dark ? "暗色" : "亮色")}。");
+        }
+    }
+
+    /// <summary>
+    /// Windows 现在是不是深色（<c>AppsUseLightTheme</c>；读不到算浅色）。
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ 给设置页那句「跟随系统：Windows 现在是深色」用的。**不缓存** ——
+    /// 它只在用户点开那一页、换那一档时被问一次，而缓存就意味着可能报一个
+    /// 已经过时的现状（那正是那一句话必须避免的）。
+    /// </remarks>
+    public static bool SystemPrefersDark() => ReadSystemPreference().Dark;
+
+    /// <summary>
     /// 系统说换了主题。
     /// </summary>
     /// <remarks>
@@ -130,10 +214,16 @@ internal static class AppTheme
     /// 必须丢回 UI 线程。<see cref="UserPreferenceChangedEventArgs.Category"/> 会收到
     /// 一大堆类别（字体平滑、鼠标……），只有 <c>General</c> 是主题这一类 ——
     /// 不过滤的话每次系统偏好变动都会白跑一遍。
+    /// <para>
+    /// ⚠️ <b>而且只在「跟随系统」那一档才理它</b>（2026-10-08）：用户把外观固定成
+    /// 浅色/深色之后，系统怎么变都不该动他的界面 —— 但系统照旧会发这条消息，
+    /// 不挡的话「改 Windows 主题」会把他固定好的界面掀掉，而那看起来像设置没生效。
+    /// </para>
     /// </remarks>
     private static void OnUserPreferenceChanged(object sender, UserPreferenceChangedEventArgs e)
     {
-        if (e.Category is not UserPreferenceCategory.General)
+        if (e.Category is not UserPreferenceCategory.General
+            || _mode is not AppThemeMode.FollowSystem)
         {
             return;
         }
