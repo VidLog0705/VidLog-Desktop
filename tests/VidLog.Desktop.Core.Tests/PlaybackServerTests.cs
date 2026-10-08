@@ -2,6 +2,7 @@ using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Sockets;
 using System.Text.Json;
+using VidLog.Desktop.Core.Cleanup;
 using VidLog.Desktop.Core.Configuration;
 using VidLog.Desktop.Core.Diagnostics;
 using VidLog.Desktop.Core.Index;
@@ -93,6 +94,9 @@ public class PlaybackServerTests
         public required byte[] MediaBytes { get; init; }
         public required string EvidenceId { get; init; }
 
+        /// <summary>这一次跑用的临时根（`archive` 就在它下面）。I7 造交付副本要用。</summary>
+        public required string Root { get; init; }
+
         /// <summary>已入网那台设备的凭据（`/api/v1/*` 要它）。</summary>
         public required string Credential { get; init; }
 
@@ -139,12 +143,18 @@ public class PlaybackServerTests
     /// 接不接机位发现那一档。传 false 是给「没接那一档时如实说不」那一条用的 ——
     /// 生产组合根**总是**传它（`DesktopServices`）。
     /// </param>
+    /// <param name="archiveBackend">
+    /// 归档层那一档。不传就不接（**绝大多数用例要的正是「不接」**）。
+    /// 传一个指向死路径的实现，就是「这台机器现在够不着归档层」——
+    /// 那是 I10（无网）在归档这一侧的样子。
+    /// </param>
     private static async Task<Fixture> StartAsync(
         TempDir dir,
         IAppLogger? logger = null,
         string? lanHost = null,
         int retentionWindowDays = 7,
-        bool withLive = true)
+        bool withLive = true,
+        Core.Cleanup.IArchiveBackend? archiveBackend = null)
     {
         const string evidenceId = "e1";
         const string relative = "2026/09/16/SF1000000001/e1.mp4";
@@ -226,6 +236,7 @@ public class PlaybackServerTests
                 ArchiveRoot = archiveRoot,
                 LanHost = lanHost,
                 RetentionEstimateWindowDays = retentionWindowDays,
+                ArchiveBackend = archiveBackend,
             },
             new RecordingSearch(index, labels),
             index,
@@ -256,6 +267,7 @@ public class PlaybackServerTests
             Location = relative,
             Live = live,
             Seats = seats,
+            Root = dir.Path,
         };
     }
 
@@ -326,6 +338,76 @@ public class PlaybackServerTests
         var response = await fixture.Client.SendAsync(request);
 
         Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+    }
+
+    // ─────────────────────────────────────────────
+    // I7 · 交付副本够不着回放
+    // ─────────────────────────────────────────────
+
+    [Fact]
+    public async Task I7_盘上真有一份但没进索引_回放也没有任何地址能取到它()
+    {
+        using var dir = new TempDir();
+        await using var fixture = await StartAsync(dir);
+
+        // 「交付副本」：字节真在盘上、内容就是归档层那一份，但**没有索引条目**——
+        // 这正是导出器交出去的那一份的样子（它不写索引，规格 §3.7 / I7）。
+        var delivery = System.IO.Path.Combine(fixture.Root, "交付", "手抄一份.mp4");
+        Directory.CreateDirectory(System.IO.Path.GetDirectoryName(delivery)!);
+        await File.WriteAllBytesAsync(delivery, fixture.MediaBytes);
+
+        // 回放是**按 id** 走的，而 id 只能从索引里来 ⇒ 交付件没有 id，就没有地址取它。
+        // ⚠️ 这一条钉的是「回放只认索引」：哪天有人把它改成扫目录，它会红。
+        var byName = await fixture.Client.GetAsync("/media/手抄一份");
+        Assert.Equal(HttpStatusCode.NotFound, byName.StatusCode);
+
+        // 再放一份**落在归档根之内、同样没进索引**的 —— 比交付副本更刁：
+        // 它在路径上就在归档层里，「按路径解析」那一路会把它放出去。
+        var relativeStray = fixture.Location.Replace("e1.mp4", "野文件.mp4");
+        var stray = System.IO.Path.Combine(
+            fixture.Root, "archive", relativeStray.Replace('/', System.IO.Path.DirectorySeparatorChar));
+        Directory.CreateDirectory(System.IO.Path.GetDirectoryName(stray)!);
+        await File.WriteAllBytesAsync(stray, fixture.MediaBytes);
+
+        Assert.Equal(HttpStatusCode.NotFound,
+            (await fixture.Client.GetAsync("/media/野文件")).StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound,
+            (await fixture.Client.GetAsync($"/media/{relativeStray}")).StatusCode);
+
+        // 归档层里那一份照常取得到 —— 上面对付的是交付件，不是把回放整个关掉。
+        var real = await fixture.Client.GetAsync($"/media/{fixture.EvidenceId}");
+        Assert.Equal(HttpStatusCode.OK, real.StatusCode);
+    }
+
+    // ─────────────────────────────────────────────
+    // I10 · 够不着归档层（无网）时
+    // ─────────────────────────────────────────────
+
+    [Fact]
+    public async Task I10_归档层够不着时_检索与回放照常_而回查说得出查不了()
+    {
+        // 无网在这条路上的样子：**归档层够不着**（NAS 在别的机器上，网断了）。
+        // 三件事要同时成立：本机这份照常查得到、放得出来；而回查**不能**说「这份不存在」
+        // —— 那会让人以为唯一副本没了，进而把本机这份删掉（I8 的方向性判据）。
+        using var dir = new TempDir();
+        await using var fixture = await StartAsync(
+            dir,
+            archiveBackend: new DirectoryArchiveBackend(
+                System.IO.Path.Combine(dir.Path, "够不着的-NAS"), ArchiveBackendKind.Nas));
+
+        var search = await fixture.Client.GetAsync("/api/search");
+        Assert.Equal(HttpStatusCode.OK, search.StatusCode);
+
+        var media = await fixture.Client.GetAsync($"/media/{fixture.EvidenceId}");
+        Assert.Equal(HttpStatusCode.OK, media.StatusCode);
+
+        var verified = await fixture.Client.SendAsync(
+            VerifyRequest(fixture.Credential, fixture.Location));
+        var payload = JsonSerializer.Deserialize<JsonElement>(await verified.Content.ReadAsStringAsync());
+
+        Assert.True(payload.GetProperty("couldNotVerify").GetBoolean(),
+            "网断了是「查不了」，不是「这一份不存在」");
+        Assert.False(payload.GetProperty("exists").GetBoolean());
     }
 
     // ─────────────────────────────────────────────
