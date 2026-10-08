@@ -1232,7 +1232,18 @@ public partial class MultiViewWindow : Window
             var tile = Tile;
             if (target is null || tile is null) return;
 
-            var frame = tile.Latest();
+            // ⚠️ **取走**，不是看一眼：这一处就是「画一次」。用 `Latest()` 的话
+            // 从第一帧起每一帧都会被记成「界面丢了」（真机上 1069 帧收进来、
+            // 1068 帧「丢了」），而这个数是 T11 用来分「手机没编出来」与
+            // 「这台电脑画不过来」的。另一处只问「有没有画面」的
+            //（`PumpFullscreenNote` 那条提示）继续走 `Latest()` ——
+            // 它要是也去取走，就会把帧从这一处手里抢走。
+            //
+            // ⚠️ 取到空只代表「没有画面」：这个节拍（12 fps，见 `_frameTimer`）与
+            // 出帧的节拍各走各的，**总有一手落在两帧中间**（2026-10-08 量到 32.9%），
+            // 那种时候 `Take()` 拿回来的还是上一帧、`_shownAt` 一样、下面直接返回 ——
+            // 画面留着。**别把它当成「没画面」**（那会让格子一闪一闪地黑）。
+            var frame = tile.Take();
 
             if (frame is null)
             {
@@ -1246,7 +1257,7 @@ public partial class MultiViewWindow : Window
                 // ⚠️ **这句话要能重新露出来。** 出过画面之后 `Empty` 就被按下去了，
                 // 而断了之后 `Surface` 里还留着最后那张图 —— 不重新露的话，格子里是
                 // **一张冻住的旧画面，一个字都没有**，而它看起来与「正在看」一模一样
-                //（`LiveTile.Latest` 那边判定「老画面不算画面」，这一行负责把它说出来）。
+                //（`LiveTile` 那边判定「老画面不算画面」，这一行负责把它说出来）。
                 Empty.Visibility = Visibility.Visible;
 
                 // 旧图一起撤掉：留着它，那句话就压在图上（能看见，但底下是几秒前的

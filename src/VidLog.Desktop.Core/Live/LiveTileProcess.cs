@@ -58,7 +58,13 @@ public sealed class LiveTileProcess : IAsyncDisposable
     private readonly Action<LiveTileProcess>? _onEnded;
 
     private readonly object _gate = new();
+
+    /// <summary>还没被取走的那一帧（`_dropped` 数的是它被盖掉了几次）。</summary>
     private LiveFrame? _latest;
+
+    /// <summary>上一次被 <see cref="Take"/> 取走的那一帧 —— 取走不等于画面没了，
+    /// 它的用处是让「这一手还没新帧」与「真的没画面」分得开（见 <see cref="Take"/>）。</summary>
+    private LiveFrame? _shown;
     private long _dropped;
     private long _received;
     private int _stopped;
@@ -86,11 +92,51 @@ public sealed class LiveTileProcess : IAsyncDisposable
     }
 
     /// <summary>最新那一帧。还没有就是 <see langword="null"/>（界面画「无信号输入」）。</summary>
+    /// <remarks>
+    /// ⚠️ 这是**看一眼**，帧不会少（也不会让 <see cref="DroppedCount"/> 变准）。
+    /// 要「画一次」请用 <see cref="Take"/>，两条路的区别见那边。
+    /// </remarks>
     public LiveFrame? Latest()
     {
         lock (_gate)
         {
-            return _latest;
+            return _latest ?? _shown;
+        }
+    }
+
+    /// <summary>
+    /// 最新那一帧，**取走**：有新的就给新的，没有就把上一次给过的那一帧再给一次。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// ⚠️ <b>画的那一处必须用它。</b><see cref="DroppedCount"/> 数的正是
+    /// 「新的一帧来的时候，上一帧**还没被取走**」—— 也就是说，只有取走的人
+    /// 才能让这个数有意义。画的路上要是用 <see cref="Latest"/>（只看不拿），
+    /// 第一帧之后**每一帧都会被记成「我们丢了」**：2026-10-08 真机上量到的是
+    /// 「我们收到 1069 帧、界面丢了 1068」—— 恒等于收到数减一。
+    /// 而这个数正是 T11 用来分「手机上没编出来」与「这台电脑画不过来」的东西，
+    /// 恒非零就等于没有（与上面 <c>-r</c> 把 <c>drop_frames</c> 顶成恒非零同一条）。
+    /// </para>
+    /// <para>
+    /// ⚠️ <b>「这一手没新的」返回上一次那一帧，不返回 <see langword="null"/>。</b>
+    /// 界面那条画帧的路见空就抹画面写「无信号输入」，而**空只代表一件事：
+    /// 没有画面**（从没出过、或者已经过期）。两种空分不开的话，
+    /// 画面正常、只是这一拍还没轮到新帧时，格子会闪一下黑 ——
+    /// 2026-10-08 量过：界面按 12 fps 的节拍取，**73 手里有 24 手取到空（32.9%）**，
+    /// 因为取帧的钟与出帧的钟各走各的，总有一手落在两帧中间。
+    /// 判「有没有变」是界面自己的事（比 <c>CapturedAtMs</c>），
+    /// 这一层只保证「拿到的永远是画面，除非真的没画面」。
+    /// </para>
+    /// </remarks>
+    public LiveFrame? Take()
+    {
+        lock (_gate)
+        {
+            if (_latest is null) return _shown;
+
+            _shown = _latest;
+            _latest = null;
+            return _shown;
         }
     }
 

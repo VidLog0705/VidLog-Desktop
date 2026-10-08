@@ -107,6 +107,81 @@ public class LiveTileProcessTests
     }
 
     /// <summary>
+    /// <b>「取走」和「看一眼」是两件事</b>：取走才让那本账对得上，而取走**不等于画面没了**。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// ⚠️ <b>这条是 2026-10-08 真机上那本「说假话的账」的闸。</b>画的那一处原来走
+    /// 只看不拿的 <see cref="LiveTileProcess.Latest"/>，于是最新那一帧永远不被清掉 ⇒
+    /// <c>_dropped</c> 从第一帧起**每一帧都加一**：真机上量到「我们收到 1069 帧、
+    /// 界面丢了 1068」。而 T11 正是拿这两个数分「手机上没编出来」与「这台电脑画不过来」
+    /// —— 恒等于收到数减一就等于没有。
+    /// </para>
+    /// <para>
+    /// ⚠️ <b>判据是「一直取着，就不该有丢」。</b>取只是个锁、来帧是 30 fps，
+    /// 取的速度比来帧快几个数量级，所以正常应该一帧都不丢。反过来跑那条
+    /// 只看不拿的路（把 <c>Take</c> 里的 <c>_latest = null</c> 摘掉），这个数会
+    /// 贴着收到数走 —— 反证过。
+    /// </para>
+    /// <para>
+    /// ⚠️ <b>下面那半量的是另一件事：取走之后不许返回空。</b>界面那条画帧的路
+    /// 见空就抹画面写「无信号输入」（<c>MultiViewWindow</c> 的 <c>Cell.Pump</c>），
+    /// 所以「这一手还没轮到新帧」要是也返回空，格子在两帧之间会闪一下黑。
+    /// 2026-10-08 量到那个比例是 **73 手里 24 手（32.9%）** —— 取帧的钟与出帧的钟
+    /// 各走各的，总有一手落在两帧中间。空只许代表一件事：真的没画面。
+    /// </para>
+    /// </remarks>
+    [RequiresFfmpegFact]
+    public async Task 取走的一帧不该再算丢()
+    {
+        var ffmpeg = FfmpegLocator.TryFind();
+        Assert.NotNull(ffmpeg);
+
+        using var phone = new FakePhone(ffmpeg!, 480, 854, 30);
+
+        await using var tile = LiveTileProcess.Start(ffmpeg!, phone.LiveUrl, 320, 180);
+
+        Assert.NotNull(tile);
+
+        Assert.NotNull(await WaitForFrameAsync(tile!, TimeSpan.FromSeconds(30)));
+
+        // ⚠️ 只看**这一段里**长了多少：等第一帧那会儿是没人取的（`WaitForFrameAsync`
+        // 每 50 ms 才看一眼），那期间攒下的几帧本来就该算丢 —— 那部分不算数。
+        var droppedBefore = tile!.DroppedCount;
+
+        // 一直取（比 12 fps 的来帧快得多）。
+        var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(3);
+        while (DateTime.UtcNow < deadline) _ = tile.Take();
+
+        var grew = tile.DroppedCount - droppedBefore;
+
+        // 门槛给 5 帧：线程被抢走一下、正好卡在两帧中间，会真丢一两帧 ——
+        // 而「取走那条路没有真的拿走」那一版这里会贴着来帧数走（反证到过 54 帧）。
+        Assert.True(
+            grew <= 5,
+            $"一直取着的这 3 秒里还是记了 {grew} 帧「界面丢了」"
+                + $"（这 3 秒一共收到 {tile.ReceivedCount} 帧）—— 取走那条路没有把帧真的拿走。");
+
+        // ⚠️ 取走之后**不是空的**：取走只是「这一帧我看过了」，画面还在。
+        // 空只代表一件事 —— **没有画面**（从没出过、或者已经过期）。
+        // 这条与 `Cell.Pump` 那边是承重关系：它见空就抹掉画面写「无信号输入」。
+        Assert.NotNull(await WaitForFrameAsync(tile!, TimeSpan.FromSeconds(10)));
+        Assert.NotNull(tile!.Take());
+        Assert.NotNull(tile.Take());
+
+        // 而「没有新的」也确实是**同一帧**再给一次（界面比 CapturedAtMs 认得出，
+        // 所以不会重画）。连取三手，至少有一对挨着的是同一帧 —— 中间来新帧是允许的。
+        var seen = new List<long>();
+
+        for (var i = 0; i < 3; i++) seen.Add(tile.Take()!.CapturedAtMs);
+
+        Assert.True(
+            seen[0] == seen[1] || seen[1] == seen[2],
+            $"连着取三手拿到的是三个不同的帧（{string.Join('/', seen)}）—— "
+                + "「没有新的就把上一帧再给一次」这条没有兑现。");
+    }
+
+    /// <summary>
     /// 这一格的参数里**不许再有 <c>-fflags nobuffer</c>**，限速也**不许再走输出侧的 <c>-r</c>**。
     /// </summary>
     /// <remarks>

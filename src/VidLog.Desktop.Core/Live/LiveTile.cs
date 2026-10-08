@@ -124,15 +124,43 @@ public sealed class LiveTile : IAsyncDisposable
 
     /// <summary>最新一帧；**还没有就是「无信号输入」**。</summary>
     /// <remarks>
+    /// ⚠️ 这是**看一眼**（问「有没有画面」用），帧不会少，也不会让
+    /// <see cref="ScreenDropped"/> 变准。要「画一次」请用 <see cref="Take"/>。
+    /// </remarks>
+    public LiveFrame? Latest() => Accept(_process?.Latest());
+
+    /// <summary>
+    /// 最新一帧，**取走**：画的那一处用它（<c>MultiViewWindow</c> 的 <c>Pump</c>）。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// ⚠️ <b>为什么必须分成两条路</b>：<see cref="ScreenDropped"/> 数的是
+    /// 「新帧来的时候上一帧还没被取走」。画的那一处要是走 <see cref="Latest"/>
+    /// （只看不拿），从第一帧起**每一帧都会被记成我们丢了** ——
+    /// 真机上量到的是 1069 帧收进来、1068 帧「丢了」。而这个数是给
+    /// 「手机没编出来」和「这台电脑画不过来」分家的，恒非零等于没有。
+    /// 分开之后：真看一眼的地方（比如「这一格现在有没有画面」）仍旧不会
+    /// 把帧吃掉 —— 两条路各归各的，不要合并。
+    /// </para>
+    /// <para>
+    /// ⚠️ <b>返回空只代表「没有画面」</b>（从没出过、或者已经过期 —— 上面那句判的）。
+    /// 「这一手还没轮到新帧」**不是**空：那时候拿回来的还是上一次那一帧。
+    /// 这条对界面是承重的 —— 画帧那一路见空就抹画面写「无信号输入」，
+    /// 而取帧的钟与出帧的钟各走各的（2026-10-08 量到 12 fps 的节拍有 **32.9%**
+    /// 的手落在两帧中间），当成空就会一闪一闪地黑。
+    /// </para>
+    /// </remarks>
+    public LiveFrame? Take() => Accept(_process?.Take());
+
+    /// <summary>取/看一眼之后共同的那两步。</summary>
+    /// <remarks>
     /// ⚠️ <b>老画面不算画面。</b>一路断了之后 <see cref="LiveTileProcess"/> 里还留着
     /// 最后那一帧，不判的话格子里会**冻着一张静止的旧图** —— 而它看起来与「正在看」
     /// 一模一样，用户会拿几分钟前的画面当作现在（2026-10-03 那一格连着几次起不来时
     /// 就是这个形状：屏幕上一直有图，其实早就断了）。
     /// </remarks>
-    public LiveFrame? Latest()
+    private LiveFrame? Accept(LiveFrame? frame)
     {
-        var frame = _process?.Latest();
-
         if (frame is null
             || Environment.TickCount64 - frame.CapturedAtMs > StaleAfter.TotalMilliseconds)
         {

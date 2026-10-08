@@ -168,6 +168,38 @@ public class MultiViewWindowCellTests
             $"浅底（{light}）上那颗 ⟳ 用 {inkOnLight} 只有 {onLight:F2}:1，低于 {AaNormalText}。");
     }
 
+    /// <summary>
+    /// 画那一帧要走**取走**那条路，问「有没有画面」才走**看一眼**。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// ⚠️ <b>这一条不属于「空位长什么样」，放在这儿是因为它同样只能看源码文本</b>
+    /// （App 层没有测试工程）。它守的是 2026-10-08 真机上那本说假话的账：
+    /// 画的那一处（<c>Cell.Pump</c>）原来调 <c>Latest()</c>（只看不拿），
+    /// 于是最新那一帧永远不被清掉、<c>_dropped</c> 从第一帧起每帧加一 ——
+    /// 真机上「收到 1069 帧、界面丢了 1068」。那个数是 T11 用来分
+    /// 「手机上没编出来」与「这台电脑画不过来」的，恒非零就等于没有。
+    /// </para>
+    /// <para>
+    /// ⚠️ <b>两半都要钉：</b>画的必须取走；而只问「有没有画面」的那一处
+    /// （<c>PumpFullscreenNote</c> 那条提示）**必须留着不取走** ——
+    /// 它要是也取，就会把帧从画面那一处手里抢走（那一格会一顿一顿的）。
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public void 画那一帧要走取走_问有没有画面才走看一眼()
+    {
+        var window = WindowSource();
+
+        Assert.Contains("MultiViewWindow", window, StringComparison.Ordinal);
+
+        Assert.Contains("var frame = tile.Take();", window, StringComparison.Ordinal);
+        Assert.DoesNotContain("var frame = tile.Latest();", window, StringComparison.Ordinal);
+
+        // `tile.Latest()` 只许剩那**一处**（全屏那条提示）。
+        Assert.Equal(1, window.Split("tile.Latest()").Length - 1);
+    }
+
     private const string AppFolder = "VidLog.Desktop.App";
 
     /// <summary>读多画面那个窗口的源码（整行注释已剥掉，与别的绊线同一个读法）。</summary>
