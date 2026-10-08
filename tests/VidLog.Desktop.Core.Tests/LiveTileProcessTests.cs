@@ -213,6 +213,48 @@ public class LiveTileProcessTests
         Assert.Contains($"fps={LiveTileProcess.Fps}", filter, StringComparison.Ordinal);
     }
 
+    /// <summary>
+    /// 帧率要按**墙上时钟**算 —— 不许信 ffmpeg 替裸流猜的那个 25 fps。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// ⚠️ <b>手机推的是裸 H.264，没有容器时间戳，ffmpeg 就给输入填一个默认的 25 fps</b>
+    /// （`info` 那行印的 `25 fps, 1200k tbr, 1200k tbn` 里那两个 1200k 就是「没有信息」），
+    /// 而手机**真推 32–33 fps**。下面 `fps=12` 照输入时间轴数 ⇒ 出来的是
+    /// `12 × 33/25 ≈ 15.8`，比界面画得快，多出来的每一帧都被记成「界面丢了」。
+    /// 2026-10-08 真机三档实测：**480P 16.40 / 720P 15.80 / 1080P 15.80**（与档位无关），
+    /// 加上这一条之后三档都落回 **11.5–12**。
+    /// </para>
+    /// <para>
+    /// ⚠️ <b>位置是承重的。</b>这是 <c>avformat</c> 的选项，必须在 <c>-i</c> <b>前面</b>；
+    /// 放到后面 ffmpeg **不报错**、当输出侧选项默默忽略掉 —— 那就又回到 15.8 那条路上，
+    /// 而这一格的画面看起来一切正常。
+    /// </para>
+    /// <para>
+    /// ⚠️ <b>它换不掉那个「输入声明 <c>-r</c>」的写法。</b>实测过：`-r 30` 在 480P 是
+    /// 11.90 看着还行，720P/1080P 冲到 13.80/13.70 —— 手机真推 32–33 &gt; 30。
+    /// 那个数是手机给的，猜不得。
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public void 帧率要按墙上时钟算()
+    {
+        var arguments = LiveTileProcess.BuildArguments("http://127.0.0.1:1/live", 320, 180);
+
+        var at = arguments.IndexOf("-use_wallclock_as_timestamps");
+
+        Assert.True(
+            at >= 0,
+            "这一格的参数里没有 -use_wallclock_as_timestamps —— 帧率又会回到 ffmpeg 替裸流猜的 25 fps 上去，"
+                + "而 `fps=12` 出来的会是 15.8，一路健康也恒读一截「界面丢了」。");
+
+        Assert.Equal("1", arguments[at + 1]);
+
+        Assert.True(
+            at < arguments.IndexOf("-i"),
+            "-use_wallclock_as_timestamps 放在了 -i 后面 —— 那样 ffmpeg 不报错也不生效，等于没加。");
+    }
+
     [RequiresFfmpegFact]
     public async Task 一格_画面与计数都拿得到()
     {
