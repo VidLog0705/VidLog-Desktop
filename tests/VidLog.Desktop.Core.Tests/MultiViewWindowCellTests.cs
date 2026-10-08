@@ -200,6 +200,68 @@ public class MultiViewWindowCellTests
         Assert.Equal(1, window.Split("tile.Latest()").Length - 1);
     }
 
+    /// <summary>
+    /// 取帧的节拍要**比出帧的节拍快**（格子那一路 ffmpeg 走 12 fps）。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// ⚠️ <b>同频会打拍子。</b>取与出都走 12 fps 时，两个钟在慢慢互相追，
+    /// 丢帧率只看相位：2026-10-08 拿真机那一段来帧算，8 个相位上从 <b>0.2% 摆到 43%</b>
+    /// （平均一成），落在哪一档由开机那一刻的相位决定 —— App 实测正落在 14.6%
+    /// （收 501 / 丢 73）。改到 20 fps 之后**真机整跑**：收 1244 帧、界面丢了 6（0.48%）。
+    /// </para>
+    /// <para>
+    /// ⚠️ <b>为什么只能钉在这儿</b>：改回同频的代价是「画面丢一成」，编译得过、
+    /// 跑得起来、日志也不报错，**只有开真机盯那一行「这边丢」才看得见** ——
+    /// 那正是没有能失败的检查时的情形。这条读源码文本，改回去立刻红。
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public void 取帧的节拍要比出帧的节拍快()
+    {
+        var fps = PumpFps(WindowSource());
+
+        Assert.True(
+            fps > 12.0,
+            $"多画面取帧的节拍是 {fps:0.##} fps，不比格子那一路的 12 fps 快 —— "
+                + "同频会打拍子，丢帧率随相位在 0.2%–43% 之间摆（真机 2026-10-08 量过）。");
+    }
+
+    /// <summary>
+    /// 多画面那个取帧计时器写的是多少 fps —— 从 `Interval = TimeSpan.FromMilliseconds(1000.0 / N)`
+    /// 里取出 **N**（那个除法里 N 就是每秒几帧，不是毫秒）。
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ 只认 `1000.0 / N` 这一种写法。换成**算好的毫秒数**（`FromMilliseconds(50)`）时
+    /// 这条绊线会红并说清楚原因 —— 那是有意的：换个写法就该有人重新看一眼，
+    /// 而不是让这条去猜他写的是多少。（全行注释在 <see cref="WindowSource"/> 里已剥掉，
+    /// 所以上面那段说明里的 `1000.0 / 12` 不会被这里读到。）
+    /// </remarks>
+    private static double PumpFps(string window)
+    {
+        var block = Regex.Match(
+            window,
+            @"_frameTimer[\s\S]{0,400}?FromMilliseconds\(([^)]*)\)",
+            RegexOptions.None,
+            TimeSpan.FromSeconds(5));
+
+        Assert.True(block.Success, "找不到 `_frameTimer` 的 `Interval`（那一处是承重的，别删）。");
+
+        var arg = block.Groups[1].Value.Trim();
+
+        var ratio = Regex.Match(
+            arg,
+            @"^1000(?:\.0)?\s*/\s*(\d+(?:\.\d+)?)$",
+            RegexOptions.None,
+            TimeSpan.FromSeconds(5));
+
+        Assert.True(
+            ratio.Success,
+            $"`_frameTimer` 的 Interval 写成了 `{arg}` —— 这条绊线只认 `1000.0 / N` 那种写法。");
+
+        return double.Parse(ratio.Groups[1].Value, CultureInfo.InvariantCulture);
+    }
+
     private const string AppFolder = "VidLog.Desktop.App";
 
     /// <summary>读多画面那个窗口的源码（整行注释已剥掉，与别的绊线同一个读法）。</summary>

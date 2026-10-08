@@ -178,11 +178,16 @@ public partial class MultiViewWindow : Window
         BuildLayoutMenu();
         BuildSplitRow();
 
-        // ⚠️ 12 fps 与格子那一路的 ffmpeg 同频：更快只是白烧 CPU，
-        // 更慢会让画面看起来「不如手机流畅」。
+        // ⚠️ **20 fps —— 故意比格子那一路的 ffmpeg（12 fps）快，别改回同频。**
+        // 同频时两个钟会慢慢打拍子，丢帧率只看相位：2026-10-08 拿真机那一段来帧算，
+        // 12 fps 的节拍在 8 个相位上从 0.2% 摆到 43%（平均一成），落在哪一档由
+        // 开机那一刻的相位决定，你控制不了 —— App 实测正是落在 14.6%（收 501 / 丢 73）。
+        // **改完真机整跑了一遍**（同一部 iPhone、同一条管道）：收 1244 帧、界面丢了 6（0.48%）。
+        // 快出来的那几拍几乎不要钱：没新帧时 `Cell.Pump` 在
+        // `CapturedAtMs == _shownAt` 那一行直接返回（不建 BitmapSource、不碰 Surface）。
         _frameTimer = new DispatcherTimer(DispatcherPriority.Render)
         {
-            Interval = TimeSpan.FromMilliseconds(1000.0 / 12),
+            Interval = TimeSpan.FromMilliseconds(1000.0 / 20),
         };
         _frameTimer.Tick += (_, _) => PumpFrames();
 
@@ -1239,8 +1244,8 @@ public partial class MultiViewWindow : Window
             //（`PumpFullscreenNote` 那条提示）继续走 `Latest()` ——
             // 它要是也去取走，就会把帧从这一处手里抢走。
             //
-            // ⚠️ 取到空只代表「没有画面」：这个节拍（12 fps，见 `_frameTimer`）与
-            // 出帧的节拍各走各的，**总有一手落在两帧中间**（2026-10-08 量到 32.9%），
+            // ⚠️ 取到空只代表「没有画面」：这个节拍（20 fps，见 `_frameTimer`）比
+            // 出帧的节拍（12 fps）快，**总有好几手落在两帧中间**，
             // 那种时候 `Take()` 拿回来的还是上一帧、`_shownAt` 一样、下面直接返回 ——
             // 画面留着。**别把它当成「没画面」**（那会让格子一闪一闪地黑）。
             var frame = tile.Take();
