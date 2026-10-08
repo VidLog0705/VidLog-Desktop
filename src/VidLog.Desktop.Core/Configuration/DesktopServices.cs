@@ -39,6 +39,9 @@ public sealed record StartupReport(
 /// </remarks>
 public sealed class DesktopServices : IAsyncDisposable
 {
+    /// <summary>T23-B 那一趟补发的停机信号（见 <see cref="DisposeAsync"/>）。</summary>
+    private readonly CancellationTokenSource _archiveRetryStop = new();
+
     private DesktopServices(
         DataLayout layout,
         IRecordingIndex index,
@@ -153,6 +156,20 @@ public sealed class DesktopServices : IAsyncDisposable
     /// </para>
     /// </remarks>
     public ArchiveFailureLog ArchiveFailures { get; private init; } = null!;
+
+    /// <summary>
+    /// T23-B 那一趟补发：启动时把上次没发上去的条目重发一次。返回值是**试了几条**。
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ 生产代码**不要 await 它** —— 归档层是慢 NAS 时那会挂住窗口关闭。
+    /// 它只挂在这里一次，供测试断言「补发真的跑过」。
+    /// <para>
+    /// 归档层没配、或者是**本机磁盘**那一档时是 <see langword="null"/>（那时发布是空操作，没什么可补）；
+    /// 网盘那一档也是 <see langword="null"/> —— 它自己那本 <c>UploadQueue</c> 已经有一趟，
+    /// 两边同时补会变成两个写者。
+    /// </para>
+    /// </remarks>
+    public Task<int>? ArchiveRetry { get; private set; }
 
     /// <summary>
     /// 清理链路（规格 §3.5.4 / §3.5.5）。
@@ -750,6 +767,26 @@ public sealed class DesktopServices : IAsyncDisposable
             CloudUploads.Start();
         }
 
+        // ── 归档层没发上去的那些，补发一次（T23-B）────────────────────
+        //
+        // ⚠️ **只对目录型那一档**（NAS / 挂载盘）。网盘那一档有自己的**落盘重传队列**
+        // （`CloudUploadService` 的 `UploadQueue` + 定时 `TickAsync`），在这儿再补一次
+        // 就是两个写者同时发同一条 —— 而那正是 T23 里「只有网盘那档有重传」的反面。
+        // 目录型那一档才是真缺口：它的发布只发生一次，没有第二次。
+        //
+        // ⚠️ **不 await**：慢速 NAS 上补发一条能拖很久（一片就是几百 MB），
+        // 而它**不该挡住窗口出来**。这与「回放服务起不来不该让应用启动失败」同一条
+        // 精神（I4）：补发是补救，不是启动的前置条件。
+        //
+        // ⚠️ 正常机器上这本账是空的 ⇒ 这一趟**立刻返回、一条日志都不记**。
+        if (ArchiveRelay is not null && ArchiveTarget.IsDirectoryType)
+        {
+            ArchiveRetry = Task.Run(
+                () => ArchiveRelay.RetryOutstandingAsync(
+                    Storage.ResolveOrActive, _archiveRetryStop.Token),
+                _archiveRetryStop.Token);
+        }
+
         return new StartupReport(orphanOutcomes, playbackUrl, warnings);
     }
 
@@ -785,6 +822,16 @@ public sealed class DesktopServices : IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
+        // T23-B 那一趟补发：**只发停机信号，不等它**。
+        //
+        // 等的代价很具体：归档层是掉线的 NAS 时，`CopyAsync` 会一直卡在写盘上，
+        // 而那会把**关窗**也一起卡住 —— 用户只看到应用关不掉。
+        // 不等是安全的：目录型后端写的是 `<目标>.part`、写完才改名，所以被腰斩的那一份
+        // 回查时判「不存在」，下次启动照旧在账上、照旧补发。
+        // （被这一下打断的那一趟会以 `OperationCanceledException` 收场，而**没人 await 它** ——
+        // 停机路上的一次取消不是异常情况，正是上面「不等」的意思。）
+        _archiveRetryStop.Cancel();
+
         // ⚠️ 先停上传再停回放：上传是**往外发数据**的那一个，
         // 顺序反了的话，关窗的那一瞬间会有一条传到一半的录像 ——
         // 它下次会重传（分片摘要一样，网盘说「这片我有了」），

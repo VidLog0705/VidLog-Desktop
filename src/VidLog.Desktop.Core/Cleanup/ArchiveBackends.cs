@@ -472,6 +472,105 @@ public sealed class ArchiveRelay
         return result;
     }
 
+    /// <summary>
+    /// 把上次没发上去的那些**再发一次**（T23-B）。
+    /// </summary>
+    /// <param name="resolveLocalPath">
+    /// 归档层相对路径 → **本机那一份**的绝对路径（生产上是
+    /// <c>StorageLocations.ResolveOrActive</c>）。找不到给 <see langword="null"/>。
+    /// </param>
+    /// <returns>真的重发了几条（跳过的不算）。</returns>
+    /// <remarks>
+    /// <para>
+    /// <b>为什么要它。</b>目录型那一档（NAS / 挂载盘）**没有落盘重传队列** ——
+    /// 只有网盘那一档有（<c>CloudUploadService</c> 的 <c>UploadQueue</c> + 定时 tick）。
+    /// 于是「NAS 那份没发上去」在那条录像的**余生**里都不会再试：发布只在收尾那一刻
+    /// 发生一次（<c>SessionFinalizer</c>），而
+    /// <see cref="DirectoryArchiveBackend.PublishAsync"/> 里「已经有一份就不重发」
+    /// 那条判据在这儿够不着 —— 归档层上**根本没有**那一份，下次走的仍是「发一次」，
+    /// 而下次永远不会来。
+    /// </para>
+    /// <para>
+    /// 后果不是丢证据（回查会拒删，I2 / I8 都成立），而是**盘会满**：
+    /// 那一条永远清不掉，而用户以为已经双份了。
+    /// </para>
+    /// <para>
+    /// ⚠️ <b>只遍历这本失败账，绝不扫全库。</b>这本账只在「真出事」时才涨
+    /// （见 <see cref="ArchiveFailureLog"/>），所以这一趟在正常机器上是**空转**。
+    /// 扫全库在归档层是慢速 NAS 时会把启动拖死，而那条路上没有任何收益：
+    /// 没进这本账的那些，收尾那一刻已经发过了。
+    /// </para>
+    /// <para>
+    /// ⚠️ <b>本机那一份已经不在了的跳过</b>：没有东西可发。
+    /// 那不是「重发失败」，只是这笔欠账已经没有意义了。
+    /// </para>
+    /// </remarks>
+    public async Task<int> RetryOutstandingAsync(
+        Func<string, string?> resolveLocalPath, CancellationToken cancellationToken = default)
+    {
+        // ⚠️ 先拷一份：下面一边发一边把这本账里的条目划掉（发成功就撤欠账），
+        // 直接在 `Outstanding` 上遍历会「遍历时修改集合」。
+        var outstanding = _failures.Outstanding
+            .Where(record => record.Location is { Length: > 0 })
+            .ToArray();
+
+        if (outstanding.Length == 0)
+        {
+            // 正常机器上走的就是这一支 —— **一条日志都不记**（§6.1：不刷屏）。
+            return 0;
+        }
+
+        _logger.Log(LogLevel.Info, "归档",
+            $"上次有 {outstanding.Length} 条没发到{Label}，现在补发一次。");
+
+        var attempted = 0;
+        var skipped = 0;
+
+        foreach (var record in outstanding)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            try
+            {
+                // ⚠️ **先解析账上那一行**。它才是**能被人手改坏**的那一头
+                // （`RelativePath.Parse` 对 UNC / 根路径会抛），所以要在最前面挡住 ——
+                // 排在它后面的那些该发还是得发。
+                var location = RelativePath.Parse(record.Location!);
+                var localPath = resolveLocalPath(record.Location!);
+
+                if (localPath is null || !File.Exists(localPath))
+                {
+                    skipped++;
+                    continue;
+                }
+
+                attempted++;
+
+                // 成功 ⇒ `PublishAsync` 自己把这笔欠账撤掉、并记上「已归档」那本台账；
+                // 失败 ⇒ 它已经记了一条 Warn，欠账照旧留着（下次启动再试）。
+                await PublishAsync(record.EvidenceId, location, localPath, cancellationToken);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                // ⚠️ **一条坏账不许把整趟补发拖垮** —— 与索引、队列那些「坏行跳过」
+                // 同一条规矩。这里能抛的只有 `RelativePath.Parse`（账是手改过或写坏的）。
+                _logger.Log(LogLevel.Warn, "归档",
+                    $"补发这一条时出错（证据 {record.EvidenceId}）：{ex.Message}",
+                    new Dictionary<string, object?> { ["证据"] = record.EvidenceId });
+            }
+        }
+
+        var remaining = _failures.Outstanding.Count;
+
+        _logger.Log(
+            remaining == 0 ? LogLevel.Info : LogLevel.Warn,
+            "归档",
+            $"补发完了：试了 {attempted} 条，{Label}上还有 {remaining} 条没上去"
+            + (skipped > 0 ? $"，另有 {skipped} 条本机那一份已经不在了（跳过）。" : "。"));
+
+        return attempted;
+    }
+
     /// <summary>记一笔「这条已经发到归档层了」。**记不上不能把发布结果弄坏。**</summary>
     /// <remarks>
     /// ⚠️ <b>不传调用方的 <see cref="CancellationToken"/>，用 <see cref="CancellationToken.None"/>。</b>

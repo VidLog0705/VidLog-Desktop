@@ -3,6 +3,7 @@ using System.Net.Sockets;
 using System.Text.RegularExpressions;
 using VidLog.Desktop.Core.Configuration;
 using VidLog.Desktop.Core.Cleanup;
+using VidLog.Desktop.Core.Cloud;
 using VidLog.Desktop.Core.Diagnostics;
 using VidLog.Desktop.Core.Index;
 using VidLog.Desktop.Core.Media;
@@ -237,6 +238,108 @@ public class DesktopServicesTests
             archive: new ArchiveTarget(ArchiveBackendKind.Nas, nas));
 
         Assert.Empty(third.ArchiveFailures.Outstanding);
+    }
+
+    [Fact]
+    public async Task 上次没发上去的_启动时自己补发一次_发成了账就清了()
+    {
+        // ⚠️ **T23-B 的验收**（清单原话：「让发布失败 → 重启 → 断言**重发了一次**
+        // 且成功后失败表清空」）。
+        //
+        // 与上一条的分工：上一条是**手工**调 `PublishAsync` 去补，验的是那本账跨不跨得过重启；
+        // 这一条**一个字都不手动补** —— 全靠 `StartAsync` 自己发起，而且本机那一份
+        // 是由装配出来的 `Storage.ResolveOrActive` 去找的（补发只拿到一个委托，
+        // 「本机那份在哪个盘上」这件事它自己不知道）。
+        using var dir = new TempDir();
+        var layout = new DataLayout(dir.Dir("data"));
+
+        // 拿一个**文件**当归档根：发布必然失败。
+        var blocker = System.IO.Path.Combine(dir.Path, "not-a-directory");
+        await File.WriteAllTextAsync(blocker, "x");
+
+        var relative = RelativePath.Parse("2026/10/06/SF1000000001/e-000.mp4");
+        var local = System.IO.Path.Combine(layout.ArchiveRoot, relative.Value);
+        Directory.CreateDirectory(System.IO.Path.GetDirectoryName(local)!);
+        await File.WriteAllTextAsync(local, "x");
+
+        // ── 第一趟：发布失败，欠账落盘 ──────────────────────────────
+        await using (var first = DesktopServices.Create(
+            layout, playbackPort: null,
+            archive: new ArchiveTarget(ArchiveBackendKind.Nas, blocker)))
+        {
+            var published = await first.ArchiveRelay!.PublishAsync("e-000", relative, local);
+            Assert.False(published.Published);
+            Assert.Single(first.ArchiveFailures.Outstanding);
+        }
+
+        // ── 重启：换成能写进去的归档层，补发由 `StartAsync` 自己发起 ──
+        var nas = dir.Dir("nas");
+        Directory.CreateDirectory(nas);
+
+        await using var second = DesktopServices.Create(
+            layout, playbackPort: null,
+            archive: new ArchiveTarget(ArchiveBackendKind.Nas, nas));
+
+        await second.StartAsync();
+
+        // 前提：装配真的把这一趟挂上了。少了这句，下面「账清了」可能只是因为它压根没跑。
+        var retry = second.ArchiveRetry;
+        Assert.NotNull(retry);
+
+        Assert.Equal(1, await retry!);
+
+        // 归档层上**真的多了那一份** —— 这才是「发成了」，而不只是「账清了」。
+        Assert.True(File.Exists(System.IO.Path.Combine(nas, relative.Value)));
+        Assert.Empty(second.ArchiveFailures.Outstanding);
+    }
+
+    [Fact]
+    public async Task 归档层不是目录型时不补发_网盘那一档自己有重传队列()
+    {
+        // ⚠️ T23-B 的**克制**那一半（清单原话：「只针对有一张落盘失败表的那些，
+        // 不要全库扫」，以及「别搞出两个写者」）。
+        //
+        // 网盘那一档有自己的**落盘重传队列**（`CloudUploadService` 的 `UploadQueue`
+        // + 定时 tick），在这儿再补一次就是两个写者同时发同一条。
+        // 所以判据是 `ArchiveRelay is not null && ArchiveTarget.IsDirectoryType` ——
+        // 这条测的正是**后面那一半**：本机那一档 `ArchiveRelay` 是 null，撞不出这个分支。
+        //
+        // ⚠️ 清掉网盘凭据的环境变量，让这一档**必然**落到「没凭据 ⇒ 一个连不上的
+        // 目录型后端」那条路上：不碰网、也不起定时器，CI 与本机行为一致。
+        var saved = new[]
+        {
+            BaiduPanCredentials.AppKeyVariable,
+            BaiduPanCredentials.AppSecretVariable,
+            BaiduPanCredentials.SignKeyVariable,
+        }.ToDictionary(name => name, Environment.GetEnvironmentVariable);
+
+        try
+        {
+            foreach (var name in saved.Keys)
+            {
+                Environment.SetEnvironmentVariable(name, null);
+            }
+
+            using var dir = new TempDir();
+            var layout = new DataLayout(dir.Dir("data"));
+
+            await using var services = DesktopServices.Create(
+                layout, playbackPort: null,
+                archive: new ArchiveTarget(ArchiveBackendKind.Cloud));
+
+            await services.StartAsync();
+
+            Assert.NotNull(services.ArchiveRelay);
+            Assert.False(services.ArchiveTarget.IsDirectoryType);
+            Assert.Null(services.ArchiveRetry);
+        }
+        finally
+        {
+            foreach (var (name, value) in saved)
+            {
+                Environment.SetEnvironmentVariable(name, value);
+            }
+        }
     }
 
     [Fact]

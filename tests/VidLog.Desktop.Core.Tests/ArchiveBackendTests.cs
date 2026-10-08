@@ -488,6 +488,187 @@ public class ArchiveBackendTests
         Assert.Equal(first, anchors["e-000"]);
     }
 
+    // ─────────────────────────────────────────────
+    // T23-B：上次没发上去的那些，启动时补发一次
+    // ─────────────────────────────────────────────
+
+    [Fact]
+    public async Task 上次没发上去的_重启之后重发了一次_发成了那笔账就清了()
+    {
+        // ⚠️ 这条就是 T23-B 的验收本身（清单原话：「让发布失败 → 重启 →
+        // 断言**重发了一次**且成功后失败表清空」）。
+        //
+        // 「重启」在这里是**字面意思**：另开一个 ArchiveFailureLog 指向同一个文件，
+        // 内存全丢、文件还在。少了这一步，这条测的只是「同一个对象里还能重发一遍」——
+        // 而缺陷原样恰恰是「重启之后再也不会试第二次」。
+        using var published = new TempStore();
+        using var dir = new TempDir();
+        var location = Where("2026/10/06/SF1/e-000.mp4");
+        var local = System.IO.Path.Combine(dir.Path, "e-000.mp4");
+        await File.WriteAllTextAsync(local, "evidence");
+
+        // 第一次：收尾那一刻发失败，欠账落盘。
+        var first = new ArchiveRelay(
+            new AlwaysFailingPublisher(), "NAS", published.Store, published.Failures);
+        await first.PublishAsync("e-000", location, local);
+
+        // —— 重启 ——
+        var reopened = published.ReopenFailures();
+
+        // 前提：确实欠着。少了这句，下面「清了」可能本来就是空的。
+        Assert.Single(reopened.Outstanding);
+
+        var publisher = new CountingPublisher();
+        var second = new ArchiveRelay(publisher, "NAS", published.Store, reopened);
+
+        var attempted = await second.RetryOutstandingAsync(
+            rel => rel == location.Value ? local : null);
+
+        Assert.Equal(1, attempted);
+        Assert.Equal(1, publisher.Count);
+        Assert.Equal(location.Value, publisher.LastLocation);
+        Assert.Empty(reopened.Outstanding);
+
+        // ⚠️ 发成功**不只是撤欠账**，还要记上「已归档」那个锚 —— 清理层只认锚，
+        // 少了它那条录像会被**永久豁免**（盘满，且不报错）。
+        Assert.True((await published.Store.LoadAnchorMapAsync()).ContainsKey("e-000"));
+
+        // 再重启一次：账上已经没有它了（这条挡的是「只撤内存、没落盘」）。
+        Assert.Empty(published.ReopenFailures().Outstanding);
+    }
+
+    [Fact]
+    public async Task 本机那一份已经不在了_跳过_但账不许划掉()
+    {
+        // 没有东西可发。⚠️ 跳过**不等于**把账划掉：划掉的话界面会以为「已经没事了」，
+        // 而那条录像**从头到尾都没到过归档层** —— 用户可能因此手动删掉唯一那一份。
+        using var published = new TempStore();
+        using var dir = new TempDir();
+
+        var first = new ArchiveRelay(
+            new AlwaysFailingPublisher(), "NAS", published.Store, published.Failures);
+        await first.PublishAsync(
+            "e-000", Where("e-000.mp4"), System.IO.Path.Combine(dir.Path, "早就被删了.mp4"));
+
+        var reopened = published.ReopenFailures();
+        var publisher = new CountingPublisher();
+        var logger = new CapturingLogger();
+        var second = new ArchiveRelay(publisher, "NAS", published.Store, reopened, logger);
+
+        // 本机那份不在了 ⇒ 生产上这就是 `ResolveOrActive` 指到一个不存在的文件。
+        var attempted = await second.RetryOutstandingAsync(
+            _ => System.IO.Path.Combine(dir.Path, "早就被删了.mp4"));
+
+        Assert.Equal(0, attempted);
+        Assert.Equal(0, publisher.Count);
+        Assert.Single(reopened.Outstanding);
+
+        // 而且这件事要留痕：剩下几条、跳过了几条 —— 否则「补发过了但什么都没发生」
+        // 在日志上跟「根本没跑」长得一样。
+        Assert.Contains(logger.Entries, e => e.Message.Contains("本机那一份已经不在了"));
+    }
+
+    [Fact]
+    public async Task 没欠账的时候_一步都不动_连本机路径都不解析()
+    {
+        // ⚠️ 这是 T23-B 里**最要紧的克制**（清单原话：「只针对有一张落盘失败表的那些，
+        // **不要全库扫** —— 全库扫在归档层是慢速 NAS 时会拖死启动」）。
+        //
+        // 正常机器上这本账就是空的，所以这一趟必须是**纯空转**：一次路径解析、
+        // 一次发布都不许有。把这两件事钉住的办法是让它们各自计数、断言恰好为 0。
+        //
+        // ⚠️ **「绝不扫全库」这一半这条测不到，它是结构保证的**：`ArchiveRelay` 的
+        // 构造函数里根本没有索引、也没有 `StorageLocations`，它手上只有这本失败账
+        // 和一个 `IArchivePublisher` —— 想扫全库也没得扫。所以那条约束不是靠「记得别扫」，
+        // 是靠这个类**拿不到那个东西**。
+        using var published = new TempStore();
+        var publisher = new CountingPublisher();
+        var logger = new CapturingLogger();
+        var relay = new ArchiveRelay(publisher, "NAS", published.Store, published.Failures, logger);
+
+        var resolved = 0;
+        var attempted = await relay.RetryOutstandingAsync(_ => { resolved++; return "x.mp4"; });
+
+        Assert.Equal(0, attempted);
+        Assert.Equal(0, resolved);
+        Assert.Equal(0, publisher.Count);
+
+        // 而且**一条日志都不记**：正常机器上每次启动都刷一行的话，
+        // 真出事那天那一行会被自己的噪音淹掉（§6.1）。
+        Assert.Empty(logger.Entries);
+    }
+
+    [Fact]
+    public async Task 补发还是失败_欠账照旧留着_并且说得出还剩几条()
+    {
+        // 补发不是「再试一次就一定能成」—— NAS 可能还掉着。这时**不许把账划掉**，
+        // 否则用户重启一次就再也看不到这条了（那正是 T23-A 修的洞反过来）。
+        using var published = new TempStore();
+        using var dir = new TempDir();
+        var local = System.IO.Path.Combine(dir.Path, "e-000.mp4");
+        await File.WriteAllTextAsync(local, "evidence");
+
+        var first = new ArchiveRelay(
+            new AlwaysFailingPublisher(), "NAS", published.Store, published.Failures);
+        await first.PublishAsync("e-000", Where("e-000.mp4"), local);
+
+        var reopened = published.ReopenFailures();
+        var logger = new CapturingLogger();
+        var second = new ArchiveRelay(new AlwaysFailingPublisher(), "NAS", published.Store, reopened, logger);
+
+        var attempted = await second.RetryOutstandingAsync(_ => local);
+
+        Assert.Equal(1, attempted);
+        var entry = Assert.Single(reopened.Outstanding);
+        Assert.Equal("e-000", entry.EvidenceId);
+
+        // 收尾那行要说清「还剩几条」，且是 Warn —— 这是用户唯一的线索。
+        Assert.Contains(
+            logger.Entries,
+            e => e.Level == LogLevel.Warn && e.Message.Contains("还有 1 条没上去"));
+    }
+
+    [Fact]
+    public async Task 一条坏账不许把整趟补发拖垮()
+    {
+        // 账是**落盘**文件，会进诊断包、可能被人手改。一行 `location` 写成 UNC
+        // （`\\nas\x.mp4`，`RelativePath.Parse` 会抛）就能让整趟补发在它身上死掉 ——
+        // 而排在它后面的那些本来是发得上去的。所以每条各自 try/catch，坏的**只跳它自己**。
+        using var published = new TempStore();
+        using var dir = new TempDir();
+        var good = System.IO.Path.Combine(dir.Path, "good.mp4");
+        await File.WriteAllTextAsync(good, "evidence");
+
+        var first = new ArchiveRelay(
+            new AlwaysFailingPublisher(), "NAS", published.Store, published.Failures);
+
+        // 一条真欠账，加一条手改坏的（顺序刻意让坏的排在后面）。
+        await first.PublishAsync("好", Where("good.mp4"), good);
+        await published.Failures.NoteFailedAsync(new ArchiveFailureRecord(
+            "坏", @"\\nas\手改坏的.mp4", "手改文件写坏了", DateTimeOffset.Now,
+            ArchiveFailureState.Failed));
+
+        var reopened = published.ReopenFailures();
+
+        // 前提：两条都读进来了。少了这句，下面「好那条发出去了」可能只是因为它压根不在账上。
+        Assert.Equal(2, reopened.Outstanding.Count);
+
+        var publisher = new CountingPublisher();
+        var logger = new CapturingLogger();
+        var second = new ArchiveRelay(publisher, "NAS", published.Store, reopened, logger);
+
+        var attempted = await second.RetryOutstandingAsync(
+            rel => System.IO.Path.Combine(dir.Path, rel));
+
+        // ⚠️ 断言的是「好那条**照样发出去了**」—— 这才是这条的存在理由。
+        Assert.Equal(1, attempted);
+        Assert.Equal("good.mp4", publisher.LastLocation);
+
+        // 坏的那条留痕、且仍在账上（它不是「已经发过了」，是「这条只有本机一份」）。
+        Assert.Contains(logger.Entries, e => e.Message.Contains("补发这一条时出错"));
+        Assert.Equal("坏", Assert.Single(reopened.Outstanding).EvidenceId);
+    }
+
     /// <summary>一次性的 <c>published.jsonl</c>（临时目录，用完删）。</summary>
     private sealed class TempStore : IDisposable
     {
@@ -530,6 +711,22 @@ public class ArchiveBackendTests
         public Task<ArchivePublishResult> PublishAsync(
             RelativePath location, string localPath, CancellationToken cancellationToken = default) =>
             Task.FromResult(ArchivePublishResult.Ok);
+    }
+
+    /// <summary>发得成，但**数着发了几个**（T23-B 要断言的正是这个数）。</summary>
+    private sealed class CountingPublisher : IArchivePublisher
+    {
+        public int Count { get; private set; }
+
+        public string? LastLocation { get; private set; }
+
+        public Task<ArchivePublishResult> PublishAsync(
+            RelativePath location, string localPath, CancellationToken cancellationToken = default)
+        {
+            Count++;
+            LastLocation = location.Value;
+            return Task.FromResult(ArchivePublishResult.Ok);
+        }
     }
 
     private sealed class TempDir : IDisposable
