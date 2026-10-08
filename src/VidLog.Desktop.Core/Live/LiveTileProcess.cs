@@ -245,10 +245,23 @@ public sealed class LiveTileProcess : IAsyncDisposable
     /// 时间戳**；2026-10-08 真机上量到，那个开关一开，这一格**从头到尾只出 1 帧**
     /// （「自报 0.01 fps、累计出 1 帧、丢 3099」），而同一时刻去掉它出 215 帧。
     /// 为什么，**没验过** —— 推断是时间戳不可用 ⇒ 下面那步限速把每帧都判成
-    /// 「还不到时候」。现有那组用例抓不到它：它们喂进来的是一坨突发数据。
+    /// 「还不到时候」。
+    /// </para>
+    /// <para>
+    /// ⚠️ <b>行为层拦不住这个回归，闸落在参数上。</b>2026-10-08 试过两条路都失败：
+    /// 拿预编好的流按真时间喂，只是「差一截」不是「卡死」；起一个<b>现场按真时间
+    /// 编码</b>的假手机（<c>LiveTileProcessTests.FakePhone</c> 第二个构造函数），
+    /// 把那一版参数原样放回来这一格**照样出 71 帧**，与修好的版本分不出。
+    /// 所以改用 <c>LiveTileProcessTests.参数里不许再有nobuffer_限速也不许走输出侧</c>
+    /// —— 照参数本身判。
+    /// </para>
+    /// <para>
+    /// <c>public</c> 是本仓没有 <c>InternalsVisibleTo</c> 的结果（测试够得到的成员
+    /// 一律是 <c>public</c>，<c>FfmpegCameraCapture.BuildArguments</c> 同款），
+    /// 而上面那道闸正是照这个列表判的。
     /// </para>
     /// </remarks>
-    internal static List<string> BuildArguments(string url, int width, int height)
+    public static List<string> BuildArguments(string url, int width, int height)
     {
         var invariant = System.Globalization.CultureInfo.InvariantCulture;
 

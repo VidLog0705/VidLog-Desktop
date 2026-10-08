@@ -18,6 +18,11 @@ namespace VidLog.Desktop.Core.Tests;
 /// 外加 `/status` 与 `/quality`）把它喂出去。
 /// </para>
 /// <para>
+/// ⚠️ <b>喂法有两种，别只留一种。</b>「一整段循环喂」是**突发**形状，跑得快、
+/// 够绝大多数用例用；但它<strong>演不出「推流卡死」</strong>那一类缺陷（实测）。
+/// 要看那个，得用现场按真时间编码那一档（<see cref="FakePhone"/> 的第二个构造函数）。
+/// </para>
+/// <para>
 /// ⚠️ <b>它挡的是「两端契约对不上」这一类错</b>：电脑端少给 <c>-f h264</c>、
 /// 或者手机那侧不是 Annex-B、或者 SPS/PPS 没跟着关键帧走、或者改档的参数名两边
 /// 写得不一样 —— 这些在两边各自的单元测试里**都看不出来**，
@@ -54,6 +59,83 @@ public class LiveTileProcessTests
         Assert.Equal(320, frame!.Width);
         Assert.Equal(180, frame.Height);
         Assert.Equal(320 * 180 * 3, frame.Rgb.Length);
+    }
+
+    /// <summary>
+    /// **一直在推的流，画面就要一直在来** —— 不是「开头出了一帧，之后再也不动」。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// ⚠️ <b>判据是「后来又来了多少帧」，不是「有没有帧」。</b>别的用例等到一帧就
+    /// 返回，所以「第一帧之后画面就冻住」这一类毛病它们一概看不见。
+    /// </para>
+    /// <para>
+    /// ⚠️ <b>但这条**抓不到** 2026-10-08 真机上那个 <c>-fflags nobuffer</c> 缺陷，
+    /// 别把它当成那道闸。</b>当时按「真机那样按真时间喂」的思路做了这条用例，
+    /// 实测：把那一版参数原样放回来，这条**照样绿**（六秒里 71 帧、掉帧 0，
+    /// 与修好的版本分不出）。真机上也试过用预编好的字节去凑那个形状，
+    /// 同样只是「差一截」而不是「卡死」。那道闸落在
+    /// <see cref="参数里不许再有nobuffer_限速也不许走输出侧"/>（照参数本身判，
+    /// 不靠演）。</para>
+    /// </remarks>
+    [RequiresFfmpegFact]
+    public async Task 一直在推的流_画面要一直在来()
+    {
+        var ffmpeg = FfmpegLocator.TryFind();
+        Assert.NotNull(ffmpeg);
+
+        // 480x854：手机竖屏那一档，宽高比与格子也不同 —— 缩放那条路一并走到。
+        using var phone = new FakePhone(ffmpeg!, 480, 854, 30);
+
+        await using var tile = LiveTileProcess.Start(ffmpeg!, phone.LiveUrl, 320, 180);
+
+        Assert.NotNull(tile);
+
+        var first = await WaitForFrameAsync(tile!, TimeSpan.FromSeconds(30));
+
+        Assert.True(first is not null, $"三十秒没等到一帧。ffmpeg 说：{tile!.ErrorTail}");
+
+        var before = tile!.ReceivedCount;
+        await Task.Delay(TimeSpan.FromSeconds(6));
+        var got = tile.ReceivedCount - before;
+
+        // 这一格限速 12 fps ⇒ 理想值 72 帧。门槛 24（= 4 fps）给慢机器留了余量。
+        Assert.True(
+            got >= 24,
+            $"六秒里只接着收到 {got} 帧 —— 这一格卡住了（第一帧之后画面不动了）。"
+            + $"ffmpeg 说：{tile.ErrorTail}");
+    }
+
+    /// <summary>
+    /// 这一格的参数里**不许再有 <c>-fflags nobuffer</c>**，限速也**不许再走输出侧的 <c>-r</c>**。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// ⚠️ <b>这是 2026-10-08 那个缺陷唯一站得住的闸。</b>真机上量到的现象是
+    /// 「自报 0.01 fps（累计出 1 帧、丢 3099）」、画面从头到尾只有第一帧。
+    /// 拦在参数这一层是因为**行为层拦不住**：把那一版参数放回去，本仓「按真时间
+    /// 喂一台假手机」那条用例照样绿（实测 71 帧对 72 帧），真机那个形状在进程里
+    /// 复现不出来。所以退一步 —— 照**参数本身**判，这个判法不会漏。
+    /// </para>
+    /// <para>
+    /// ⚠️ 两条都要判：<c>nobuffer</c> 是那个开关，而输出侧 <c>-r</c> 会把
+    /// <c>drop_frames</c> 顶成恒非零 —— 那是这一格唯一看得见的异常信号，
+    /// 恒非零就等于没有。
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public void 参数里不许再有nobuffer_限速也不许走输出侧()
+    {
+        var arguments = LiveTileProcess.BuildArguments("http://127.0.0.1:1/live", 320, 180);
+
+        Assert.DoesNotContain("nobuffer", arguments);
+
+        // `-r` 的后面跟着的就是它自己那个值，这里只看有没有这个开关。
+        Assert.DoesNotContain("-r", arguments);
+
+        var filter = arguments[arguments.IndexOf("-vf") + 1];
+
+        Assert.Contains($"fps={LiveTileProcess.Fps}", filter, StringComparison.Ordinal);
     }
 
     [RequiresFfmpegFact]
@@ -569,16 +651,49 @@ public class LiveTileProcessTests
     private sealed class FakePhone : IDisposable
     {
         private readonly TcpListener _listener = new(IPAddress.Loopback, 0);
-        private readonly byte[] _payload;
+        private readonly byte[]? _payload;
+        private readonly string? _ffmpeg;
+        private readonly List<string> _liveArguments = [];
         private readonly CancellationTokenSource _cts = new();
 
         public FakePhone(byte[] payload)
         {
             _payload = payload;
-            _listener.Start();
+            BaseUrl = Listen();
+        }
 
-            BaseUrl = $"http://127.0.0.1:{((IPEndPoint)_listener.LocalEndpoint).Port}";
+        /// <summary>
+        /// 一台**真的在推流**的假手机：不喂预先编好的那段，而是**现场起一个 ffmpeg
+        /// 按真时间一帧一帧编**，把它的输出原样转出去。
+        /// </summary>
+        /// <remarks>
+        /// ⚠️ <b>`-re` 是这里的承重项。</b>不加的话编码器会把整段一口气吐出来 ——
+        /// 那是「先下完再播」的形状，**正好遮住 <c>-fflags nobuffer</c> 那个缺陷**
+        /// （2026-10-08 实测：同一段流，按真时间喂这一格从头到尾只出 1 帧，
+        /// 一口气喂就照常出帧）。拿预编好的字节循环喂也不行，试过：
+        /// 全 I 帧那段 12 帧对 30 帧、长 GOP 那段 24 帧对 57 帧 —— 都只是
+        /// 差一截，不像真机那样「卡死」。所以这一档必须现场编码。
+        /// </remarks>
+        public FakePhone(string ffmpeg, int width, int height, int fps)
+        {
+            _ffmpeg = ffmpeg;
+            _liveArguments.AddRange(
+            [
+                "-hide_banner", "-loglevel", "error",
+                "-re", "-f", "lavfi", "-i", $"testsrc=size={width}x{height}:rate={fps}",
+                "-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency",
+                "-pix_fmt", "yuv420p",
+                "-f", "h264", "pipe:1",
+            ]);
+            BaseUrl = Listen();
+        }
+
+        private string Listen()
+        {
+            _listener.Start();
             _ = Task.Run(AcceptLoopAsync);
+
+            return $"http://127.0.0.1:{((IPEndPoint)_listener.LocalEndpoint).Port}";
         }
 
         public string BaseUrl { get; }
@@ -720,13 +835,86 @@ public class LiveTileProcessTests
             // `using` 一退出，这条连接就关了）。
             if (Interlocked.Increment(ref _hungUp) <= HangUpLiveTimes) return;
 
-            // ⚠️ 一直循环喂：既是「实时流不结束」的形状，
-            // 也让每个循环开头都带上一组 SPS/PPS + IDR —— 正是手机那侧的契约。
-            while (!_cts.IsCancellationRequested)
+            if (_payload is { } payload)
             {
-                await stream.WriteAsync(_payload, _cts.Token);
-                await stream.FlushAsync(_cts.Token);
-                await Task.Delay(50, _cts.Token);
+                // ⚠️ 一直循环喂：既是「实时流不结束」的形状，
+                // 也让每个循环开头都带上一组 SPS/PPS + IDR —— 正是手机那侧的契约。
+                while (!_cts.IsCancellationRequested)
+                {
+                    await stream.WriteAsync(payload, _cts.Token);
+                    await stream.FlushAsync(_cts.Token);
+                    await Task.Delay(50, _cts.Token);
+                }
+
+                return;
+            }
+
+            await ServeLiveAsync(stream);
+        }
+
+        /// <summary>
+        /// 现场编码的推流：起一个 ffmpeg，把它吐出来的字节原样转给客户端。
+        /// </summary>
+        /// <remarks>
+        /// ⚠️ 编码器**每条连接起一个、断连就杀**：它是个无限流，不杀就会一直
+        /// 编下去（用例跑完进程还赖着）。每连接一个也正合手机那侧的契约 ——
+        /// 重新连上就是新的一段流，开头照例带 SPS/PPS + IDR。
+        /// </remarks>
+        private async Task ServeLiveAsync(NetworkStream stream)
+        {
+            var startInfo = new ProcessStartInfo(_ffmpeg!)
+            {
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false,
+                CreateNoWindow = true,
+            };
+
+            foreach (var argument in _liveArguments) startInfo.ArgumentList.Add(argument);
+
+            using var encoder = Process.Start(startInfo)!;
+
+            // stderr 要排空（不排的话管道一满编码器就顶住了），但内容不用留 ——
+            // 真出事时那几句会随用例断言一起从这一格自己的 `ErrorTail` 出来。
+            _ = encoder.StandardError.ReadToEndAsync(_cts.Token);
+
+            try
+            {
+                // ⚠️ <b>攒够一块再发，别「来多少发多少」。</b>编码器的管道是一小段
+                // 一小段吐的，照抄着转发就成了细水长流 —— 而**细水长流正好遮住
+                // `-fflags nobuffer` 那个缺陷**（2026-10-08 实测：细水长流 82 帧对
+                // 116 帧，攒成 4 KB 一块发则是 1 帧对 100 帧）。真机也是**一帧一块**。
+                var buffer = new byte[4096];
+                var filled = 0;
+
+                while (!_cts.IsCancellationRequested)
+                {
+                    var read = await encoder.StandardOutput.BaseStream.ReadAsync(
+                        buffer.AsMemory(filled), _cts.Token);
+                    if (read <= 0) return;
+
+                    filled += read;
+                    if (filled < buffer.Length) continue;
+
+                    await stream.WriteAsync(buffer, _cts.Token);
+                    await stream.FlushAsync(_cts.Token);
+                    filled = 0;
+                }
+            }
+            catch (Exception ex) when (ex is IOException or OperationCanceledException or ObjectDisposedException)
+            {
+                // 客户端走了 —— 正常路径。
+            }
+            finally
+            {
+                try
+                {
+                    if (!encoder.HasExited) encoder.Kill();
+                }
+                catch (InvalidOperationException)
+                {
+                    // 已经自己退了。
+                }
             }
         }
 
