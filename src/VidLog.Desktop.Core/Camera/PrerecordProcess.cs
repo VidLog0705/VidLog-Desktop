@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Text;
 using VidLog.Desktop.Core.Diagnostics;
 using VidLog.Desktop.Core.Media;
 using VidLog.Desktop.Core.Recording;
@@ -98,6 +99,12 @@ public sealed class PrerecordProcess
             RedirectStandardError = true,
             // 承重：不重定向 stdin 就没法用 q 优雅停止（见 FfmpegCaptureProcess 的说明）。
             RedirectStandardInput = true,
+
+            // ⚠️ 承重：ffmpeg 写的是 UTF-8，不声明就按控制台码页（中文 Windows = 936）读
+            // —— stderr 是「设备被占用」那类判定的唯一素材。stdout 那一路是**裸帧**，
+            // 走 BaseStream，与编码无关，所以只声明这一条。
+            // 见 `DshowDevices.ListAllAsync` 的实测记录。
+            StandardErrorEncoding = Encoding.UTF8,
         };
 
         foreach (var argument in arguments)

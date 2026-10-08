@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Text;
 using VidLog.Desktop.Core.Diagnostics;
 using VidLog.Desktop.Core.Media;
 using VidLog.Desktop.Core.Recording;
@@ -184,6 +185,11 @@ public sealed class PreviewProcess : IAsyncDisposable
             RedirectStandardError = true,
             // 承重：不重定向 stdin 就没法用 q 优雅停止。
             RedirectStandardInput = true,
+
+            // ⚠️ 承重：ffmpeg 写的是 UTF-8，不声明就按控制台码页（中文 Windows = 936）读
+            // —— 这一路留尾部就是为了「设备被占用」那类判定与界面提示。
+            // stdout 是**裸帧**（走 BaseStream），与编码无关，所以只声明这一条。
+            StandardErrorEncoding = Encoding.UTF8,
         };
 
         foreach (var argument in BuildArguments(source, rotation))

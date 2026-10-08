@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Text;
 using VidLog.Desktop.Core.Diagnostics;
 
 namespace VidLog.Desktop.Core.Media;
@@ -49,6 +50,12 @@ public sealed class SystemProcessRunner : IProcessRunner
             RedirectStandardError = true,
             UseShellExecute = false,
             CreateNoWindow = true,
+
+            // ⚠️ 承重：ffmpeg 写的是 UTF-8，不声明就按控制台码页（中文 Windows = 936）
+            // 读 —— 中文路径、中文设备名全变乱码，而这一路的 stderr 是**日志与诊断包**
+            // 唯一的素材来源（失败时记的就是它）。见 `DshowDevices.ListAllAsync`。
+            StandardOutputEncoding = Encoding.UTF8,
+            StandardErrorEncoding = Encoding.UTF8,
         };
 
         foreach (var argument in arguments)

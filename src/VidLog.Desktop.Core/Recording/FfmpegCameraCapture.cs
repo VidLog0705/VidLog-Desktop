@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Text;
 using VidLog.Desktop.Core.Camera;
 using VidLog.Desktop.Core.Media;
 
@@ -181,6 +182,13 @@ public sealed class FfmpegCameraCapture : ICameraCapture
             RedirectStandardError = true,
             // 承重：不重定向 stdin 就没法用 q 优雅停止（见 FfmpegCaptureProcess 的说明）。
             RedirectStandardInput = true,
+
+            // ⚠️ 承重：ffmpeg 写的是 UTF-8，不给这一条就是按控制台码页（中文 Windows
+            // = 936）读。stderr 尾部有两个**按内容判定**的用处 ——
+            // `device already in use` 那类文本，以及 `PickUsefulLine` 拿**设备名**
+            // 去认「这一路是不是麦克风的锅」—— 读错编码就两个都认不出来。
+            // 详见 `DshowDevices.ListAllAsync` 那一段的实测记录。
+            StandardErrorEncoding = Encoding.UTF8,
         };
 
         foreach (var argument in BuildArguments(

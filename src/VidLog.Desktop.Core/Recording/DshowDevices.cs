@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Text;
 using VidLog.Desktop.Core.Media;
 
 namespace VidLog.Desktop.Core.Recording;
@@ -62,6 +63,22 @@ public static class DshowDevices
             CreateNoWindow = true,
             // 只读 stderr：ffmpeg 的设备表就打在它上面，stdout 是空的。
             RedirectStandardError = true,
+
+            // ⚠️⚠️ **承重**：ffmpeg 往管道里写的是 **UTF-8**，而 .NET 不给
+            // <c>StandardErrorEncoding</c> 时用的是**进程的控制台码页**
+            // （中文 Windows = 936）—— 于是非 ASCII 的设备名当场变成乱码。
+            //
+            // 2026-10-08 实测（就是这一处把「接真麦克风时_产物里必须真的有音轨」
+            // 顶红的）：`麦克风 (USB Audio Device)` 被读成 `楹﹀厠椋?(USB Audio Device)`，
+            // 而这个乱码名字**又被回传给 ffmpeg 当设备名**（设置里存的就是它）
+            // ⇒ `Could not find audio only device with name [...]` ⇒ 音频那一路
+            // 永远起不来、静默降级成没有音轨的一段。
+            //
+            // ⚠️ 纯 ASCII 的设备名（`PC CAMERA-`）在任何码页下都活，所以视频那一路
+            // 从来没露过馅 —— 这个坑只在名字里有汉字时才炸。
+            // 同一个毛病在其余几处「读 ffmpeg 文本」的地方也一并声明了，见
+            // `Media/ProcessRunner`、`Camera/*Process`、`Live/LiveTileProcess`。
+            StandardErrorEncoding = Encoding.UTF8,
         };
 
         foreach (var argument in BuildListArguments())

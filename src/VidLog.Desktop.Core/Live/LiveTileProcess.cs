@@ -180,6 +180,11 @@ public sealed class LiveTileProcess : IAsyncDisposable
             RedirectStandardInput = true,
             UseShellExecute = false,
             CreateNoWindow = true,
+
+            // ⚠️ 承重：ffmpeg 写的是 UTF-8，不声明就按控制台码页（中文 Windows = 936）读
+            // —— 这一格掉线的原因就是从这儿进日志的。
+            // stdout 是 **MJPEG 裸流**，与编码无关，所以只声明这一条。
+            StandardErrorEncoding = Encoding.UTF8,
         };
 
         foreach (var argument in BuildArguments(url, width, height))
