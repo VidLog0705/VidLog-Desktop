@@ -284,6 +284,17 @@
         </Style.Triggers>
     </Style>
 
+    <!--
+        次要色的正文（13 号）。
+
+        ⚠️ 原来这 6 处是 `Caption` + 就地 `FontSize="13"`。拧 Caption 的字号是
+        **拧错了旋钮**：那份定义说的是「12 号的次要文字」，就地改它等于让定义和
+        用处对不上 —— 下一处想要同样效果的人只会再抄一遍这行覆盖。
+    -->
+    <Style x:Key="BodySecondary" TargetType="TextBlock" BasedOn="{StaticResource Caption}">
+        <Setter Property="FontSize" Value="13"/>
+    </Style>
+
     <!-- 标签列。原来是每处手写 `Width="66"`，现在一个样式收口。 -->
     <Style x:Key="FieldLabel" TargetType="TextBlock" BasedOn="{StaticResource Body}">
         <Setter Property="Width" Value="76"/>

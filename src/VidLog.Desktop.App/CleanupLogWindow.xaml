@@ -40,7 +40,7 @@
         <StackPanel Grid.Row="0" Margin="0,0,0,12">
             <TextBlock Style="{StaticResource PageTitle}" Text="清理流水"/>
             <TextBlock Style="{StaticResource Caption}" Margin="0,4,0,0" TextWrapping="Wrap"
-                       Text="系统清过哪一条、为什么清、哪几条按 I8 保留了，全记在这里。这份记录只增不改。"/>
+                       Text="系统清过哪一条、为什么清、哪几条在归档层上没查到所以留下，全记在这里。这份记录只增不改。"/>
         </StackPanel>
 
         <!-- 表头。⚠️ 五列宽度与下面 ItemTemplate 里那份**必须逐字相同** ——

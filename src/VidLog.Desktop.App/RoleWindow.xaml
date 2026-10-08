@@ -124,7 +124,7 @@
         <StackPanel Grid.Row="0" Margin="34,22,34,0">
             <TextBlock Style="{StaticResource PageTitle}" FontSize="28"
                        Text="选择这台电脑的用途"/>
-            <TextBlock Style="{StaticResource Caption}" FontSize="13" Margin="0,8,0,0"
+            <TextBlock Style="{StaticResource BodySecondary}" Margin="0,8,0,0"
                        Text="回答两个简单问题，系统会自动组合出合适的用途"/>
 
             <!-- ══ 问题一 ════════════════════════════════════════════════ -->
@@ -248,8 +248,8 @@
                         <TextBlock x:Name="ResultTitle" Style="{StaticResource PageTitle}"
                                    FontSize="20" Margin="0,5,0,0"
                                    Text="请完成上面两个选择"/>
-                        <TextBlock x:Name="ResultSummary" Style="{StaticResource Caption}"
-                                   FontSize="13" Margin="0,6,0,0"
+                        <TextBlock x:Name="ResultSummary" Style="{StaticResource BodySecondary}"
+                                   Margin="0,6,0,0"
                                    Text="完成后会在这里显示最终用途和支持的能力"/>
                         <ItemsControl x:Name="ResultAbilities" Margin="0,10,0,0"
                                       ItemTemplate="{StaticResource AbilityTemplate}"/>

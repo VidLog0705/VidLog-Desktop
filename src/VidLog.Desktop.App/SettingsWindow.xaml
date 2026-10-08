@@ -790,11 +790,11 @@
                                 <TextBlock Style="{StaticResource Caption}" Margin="0,8,0,0"
                                            Text="⚠️ 这会真的删：每次启动算一遍到期该清的，先弹窗告诉你多少条、多少容量，你点了同意才动手（禁止静默清理）。删的只是本机上这一份 —— 归档层上那份不动。"/>
                                 <TextBlock Style="{StaticResource Caption}" Margin="0,4,0,0"
-                                           Text="⚠️「不保留」不是立刻删：最近 24 小时内录的一律不动（硬性豁免，关不掉），所以它实际是「归档后最快 24 小时清理」。"/>
+                                           Text="⚠️「不保留」不是立刻删：最近 24 小时内录的一律不动（这一条关不掉），所以它实际是「归档后最快 24 小时清理」。"/>
                                 <TextBlock Style="{StaticResource Caption}" Margin="0,4,0,0"
                                            Text="⚠️「未备份」那一列永不自动删除 —— 那是唯一副本，删了就永久没了。它到期的动作只有提醒（列表标红 + 催上传），起算点是录完时刻。"/>
                                 <TextBlock Style="{StaticResource Caption}" Margin="0,4,0,0"
-                                           Text="⚠️「已备份 = 不保留」而归档层还没接上时，清理由 §3.5.4 的回查把关：查不到或查不了都不删。"/>
+                                           Text="⚠️「已备份 = 不保留」而归档层还没接上时，清理前会先回查归档层：查不到或查不了都不删。"/>
                             </StackPanel>
                         </Border>
                         <TextBlock x:Name="RetentionAbsentNote" Style="{StaticResource Caption}"
@@ -1231,7 +1231,7 @@
                                            Text="日志级别"/>
                                 <TextBlock Style="{StaticResource Caption}" Margin="0,2,0,0"
                                            TextWrapping="Wrap" MaxWidth="420"
-                                           Text="平时留在「信息」就够。在真机上排查问题时改成「调试」—— 改完立刻生效，不用重启，也不用等一个新版本。"/>
+                                           Text="平时留在「信息」就够。出了问题要查的时候改成「调试」—— 改完立刻生效，不用重启，也不用等一个新版本。"/>
                             </StackPanel>
                             <ComboBox Grid.Column="1" x:Name="LogLevelCombo" Width="220"
                                       VerticalAlignment="Center"

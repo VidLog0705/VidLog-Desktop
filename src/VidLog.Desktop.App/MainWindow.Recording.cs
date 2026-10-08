@@ -430,7 +430,7 @@ public partial class MainWindow : Window
         MessageBox.Show(
             this,
             "订单联动还在开发中。\n\n"
-            + "它要服务端先把订单接口做出来（规格里是还没开工的 M6），"
+            + "它要服务端先把订单接口做出来（那一头还没开工），"
             + "电脑端这边没有可装的东西 —— 卡在那一头，不是这台机器上缺了什么。",
             "还在开发中",
             MessageBoxButton.OK,
