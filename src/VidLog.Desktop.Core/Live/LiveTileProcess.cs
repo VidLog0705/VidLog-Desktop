@@ -237,9 +237,16 @@ public sealed class LiveTileProcess : IAsyncDisposable
     /// ffmpeg 的参数。
     /// </summary>
     /// <remarks>
-    /// ⚠️ <b>低延迟那几项是这条路的意义所在</b>：默认 ffmpeg 会攒够一段才出帧，
+    /// ⚠️ <b>低延迟那一项是这条路的意义所在</b>：默认 ffmpeg 会攒够一段才出帧，
     /// 那在实时画面上就是「比现实慢几秒」—— 而看的人以为那就是现在。
-    /// <c>nobuffer</c> / <c>low_delay</c> 让它来一帧出一帧。
+    /// <c>low_delay</c> 让它来一帧出一帧。
+    /// <para>
+    /// ⚠️ <b>不要加回 <c>-fflags nobuffer</c>。</b>手机推的是**裸 H.264、没有容器
+    /// 时间戳**；2026-10-08 真机上量到，那个开关一开，这一格**从头到尾只出 1 帧**
+    /// （「自报 0.01 fps、累计出 1 帧、丢 3099」），而同一时刻去掉它出 215 帧。
+    /// 为什么，**没验过** —— 推断是时间戳不可用 ⇒ 下面那步限速把每帧都判成
+    /// 「还不到时候」。现有那组用例抓不到它：它们喂进来的是一坨突发数据。
+    /// </para>
     /// </remarks>
     internal static List<string> BuildArguments(string url, int width, int height)
     {
@@ -263,7 +270,6 @@ public sealed class LiveTileProcess : IAsyncDisposable
             // 没有它这一格的 ffmpeg 就永远等下去。
             "-rw_timeout", "5000000",
 
-            "-fflags", "nobuffer",
             "-flags", "low_delay",
 
             // ⚠️ 裸流必须显式指定，别让 ffmpeg 去探测（它探不出来）。
@@ -274,10 +280,15 @@ public sealed class LiveTileProcess : IAsyncDisposable
             "-map", "0:v:0",
 
             // 按比例缩放、四周补黑：格子尺寸是固定的，而各路手机的宽高比可能不同。
+            //
+            // ⚠️ 限速走 `fps` 滤镜、**不用输出侧的 `-r`**：后者是帧率转换，会把
+            // `drop_frames` 顶成一个恒非零的数（30 fps 源上实测每秒 +15），而这个
+            // 丢帧数正是 T16 唯一看得见的异常信号 —— 恒非零就等于没有。走滤镜后
+            // 正常时是 0。
             "-vf", $"scale={width}:{height}:force_original_aspect_ratio=decrease,"
-                + $"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2",
+                + $"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,"
+                + $"fps={Fps.ToString(invariant)}",
 
-            "-r", Fps.ToString(invariant),
             "-f", "rawvideo",
             "-pix_fmt", "rgb24",
             "pipe:1",
