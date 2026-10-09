@@ -204,8 +204,23 @@ public sealed class PrerecordController : IAsyncDisposable
 
             if (NeedsFrames)
             {
-                _loop = new CancellationTokenSource();
-                _ = Task.Run(() => DecodeLoopAsync(_loop.Token), CancellationToken.None);
+                var loop = new CancellationTokenSource();
+                _loop = loop;
+
+                // ⚠️ **令牌必须在排任务之前取出来**（2026-10-09 实测的缺陷）：
+                // 这个 lambda 什么时候真正开跑是调度器说了算，而 <c>StopAsync</c>
+                // 会先把 <c>_loop</c> **Dispose 掉再置空** —— 取缓冲就紧贴在开工之后
+                // （见 <see cref="WindowIsTrimmable"/>），两者**差着亚毫秒**。
+                // 那时 lambda 里读 `_loop.Token` 撞空引用；把 `_loop` 直接捕进闭包
+                // 则撞 <c>ObjectDisposedException</c>（两种都实测到了）。
+                // 而 `Task.Run` 的返回值被丢掉了，异常没人接，最后由 finalizer
+                // 重抛成一条「没人处理的 Task 异常」（App 那边记为 ERROR/崩溃）。
+                //
+                // ⚠️ 取出来的**令牌值**在源被 Dispose 之后仍然可用：这个循环只读
+                // <c>IsCancellationRequested</c>，不 <c>Register</c>（见 DecodeLoopAsync）——
+                // 会抛的是后者。
+                var token = loop.Token;
+                _ = Task.Run(() => DecodeLoopAsync(token), CancellationToken.None);
             }
 
             if (recording is not null)
@@ -260,8 +275,20 @@ public sealed class PrerecordController : IAsyncDisposable
 
         await StopAsync(cancellationToken).ConfigureAwait(false);
 
-        if (recording is null || startedAt is not { } bufferStart || window <= TimeSpan.Zero)
+        if (recording is null || startedAt is not { } bufferStart)
         {
+            return null;
+        }
+
+        if (!WindowIsTrimmable(window))
+        {
+            // §6.1：这一段**合法地**没有开场画面（单号在开工前就在手上，缓冲没攒下东西），
+            // 但它也是「为什么这次录像开头是空的」唯一说得清的落点 ——
+            // 不记的话外面只看到「开录」后面直接是正式画面，没人分得清缓冲这条路
+            // 是走过了没东西、还是压根没走。
+            _logger.Log(
+                LogLevel.Info, "预录",
+                $"开工时缓冲还太短（{window.TotalSeconds:0.000} 秒），这一段没有开场画面");
             return null;
         }
 
@@ -621,6 +648,35 @@ public sealed class PrerecordController : IAsyncDisposable
     }
 
     private static TimeSpan Min(TimeSpan a, TimeSpan b) => a < b ? a : b;
+
+    /// <summary>
+    /// 裁窗口能不能拿去做 <c>-sseof</c>：**下界不是 0，是 <see cref="MinimumWindow"/>**。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// ⚠️ <b>这条是 2026-10-09 在界面上实测出来的缺陷</b>（三次真点【开始录制】，两次复现）：
+    /// 窗口的值用 <c>"0.###"</c> 拼成字符串，比 0.5 毫秒还短的窗口印出来就是 <c>0</c>，
+    /// 拼成参数是 <c>-0</c> —— 而 ffmpeg 明说
+    /// <c>-sseof value must be negative; aborting</c>，整条命令以 -22 退出，
+    /// <b>连裁剪都没开始</b>，开场画面直接没了。
+    /// </para>
+    /// <para>
+    /// ⚠️ <b>怎么走到这么短的窗口的</b>：手动填好单号再点【开始录制】时，
+    /// <c>StartPrerecordAsync</c> 是**发了不管**的，而单号那一刻已经在手上 ⇒
+    /// 取缓冲几乎紧贴着开工发生，窗口只有亚毫秒级。这不是缺陷（那时确实没攒下画面），
+    /// 缺陷只是「这么短的窗口还去调了一次 ffmpeg」。
+    /// </para>
+    /// <para>
+    /// ⚠️ 那种窗口也裁不出一帧：<c>-c copy</c> 要按关键帧对齐（预录那一路钉的是 1 秒一个），
+    /// 所以按「没有开场画面」处理才是对的。
+    /// </para>
+    /// </remarks>
+    public static bool WindowIsTrimmable(TimeSpan window) => window >= MinimumWindow;
+
+    /// <summary>
+    /// 低于它就当「没有开场画面」。取 1 毫秒：足以让 <c>"0.###"</c> 印出非零值。
+    /// </summary>
+    public static readonly TimeSpan MinimumWindow = TimeSpan.FromMilliseconds(1);
 
     public async ValueTask DisposeAsync()
     {

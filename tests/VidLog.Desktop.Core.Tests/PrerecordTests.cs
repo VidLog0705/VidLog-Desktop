@@ -444,6 +444,152 @@ public class PrerecordTests
             $"水印字幕没写出来（预录那一路会因此起不来）：{Text(logger)}");
     }
 
+    // ─────────────────────────────────────────────
+    // 场景 ⓪之二：2026-10-09 在界面上真点【开始录制】量出来的两条缺陷
+    // ─────────────────────────────────────────────
+
+    /// <summary>
+    /// 裁窗口太短时**不许**去做 <c>-sseof</c>：那个值是用 <c>"0.###"</c> 拼的。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// ⚠️ <b>这条补的是一个在真界面上量到的缺陷</b>（2026-10-09，三次真点【开始录制】，
+    /// 两次复现）：手动填好单号再点开始，取缓冲紧贴着开工发生，窗口只有亚毫秒级 ⇒
+    /// <c>"0.###"</c> 把它印成 <c>0</c> ⇒ 参数是 <c>-0</c> ⇒ ffmpeg
+    /// <c>-sseof value must be negative; aborting</c> 以 -22 退出 ⇒ **开场画面没了**。
+    /// </para>
+    /// <para>
+    /// ⚠️ 头两个断言是**绊线的本体**：把「那个格式下 0.4 毫秒就是 0」钉死。
+    /// 谁把格式改细，这里先红 —— 那时 <see cref="PrerecordController.MinimumWindow"/>
+    /// 该跟着重定，而不是悄悄变成另一个数。
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public void 亚毫秒的缓冲窗口不许拿去做sseof_否则拼出负零被ffmpeg拒掉()
+    {
+        var printed = TimeSpan.FromMilliseconds(0.4).TotalSeconds
+            .ToString("0.###", System.Globalization.CultureInfo.InvariantCulture);
+
+        Assert.Equal("0", printed);
+        Assert.Equal("-0", "-" + printed);
+
+        Assert.False(PrerecordController.WindowIsTrimmable(TimeSpan.Zero));
+        Assert.False(PrerecordController.WindowIsTrimmable(TimeSpan.FromTicks(1)));
+        Assert.False(PrerecordController.WindowIsTrimmable(TimeSpan.FromMilliseconds(0.4)));
+        Assert.True(PrerecordController.WindowIsTrimmable(PrerecordController.MinimumWindow));
+        Assert.True(PrerecordController.WindowIsTrimmable(TimeSpan.FromSeconds(2)));
+    }
+
+    /// <summary>
+    /// 紧贴着开工取缓冲，不许在识码那一轮留下**没人处理的 Task 异常**。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// ⚠️ <b>同一次真界面实测里的第二条缺陷</b>：<c>StartAsync</c> 里那个识码循环是
+    /// <c>Task.Run</c> 发出去的（返回值丢掉），而 lambda 读的是**字段** <c>_loop</c>；
+    /// <c>StopAsync</c> 会把那个字段置空。两者差着亚毫秒时 lambda 读到的就是空引用 ——
+    /// 异常没人接，最后由 finalizer 重抛成一条「没人处理的 Task 异常」
+    /// （App 那边记为 ERROR/崩溃）。
+    /// </para>
+    /// <para>
+    /// ⚠️ 源是连不上的（TEST-NET）：这一条要的不是画面，是**起进程 → 立刻停**这个竞态。
+    /// 循环多轮是为了别让「这一次恰好没撞上」变成绿。
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task 紧贴着开工取缓冲时_识码那一轮不许留下没人处理的异常()
+    {
+        using var dir = new TempDir();
+        var logger = new CapturingLogger();
+        var runner = new SystemProcessRunner(logger);
+
+        var unobserved = new List<Exception>();
+        EventHandler<UnobservedTaskExceptionEventArgs> handler = (_, args) =>
+        {
+            // ⚠️ 这个事件是**全进程**的。同一个测试程序集里并行跑的别家用例也会把
+            // 异常丢进来 —— 实测（2026-10-09 推送前的预检）一次就收进来 42 条，
+            // 全部出自 `HttpListener.EndGetContext`（回放服务那几条用例收摊时
+            // Dispose 掉监听器），**与本主题一个字的关系都没有**，却让这条绊线红了。
+            // 所以只收**栈里带 `PrerecordController` 的**：本主题要防的那个缺陷
+            // （`Task.Run` 的 lambda 去读已经被 Dispose 的 `_loop`）抛出来的栈
+            // 一定带这个类名（lambda 的闭包类就嵌在它里面）。
+            var ours = Mentioning(args.Exception).ToList();
+            if (ours.Count > 0)
+            {
+                lock (unobserved)
+                {
+                    unobserved.AddRange(ours);
+                }
+            }
+
+            args.SetObserved();
+        };
+
+        TaskScheduler.UnobservedTaskException += handler;
+        try
+        {
+            for (var i = 0; i < 15; i++)
+            {
+                await using var controller = new PrerecordController(
+                    Ffmpeg,
+                    CameraSource.Network("rtsp://192.0.2.1:1/x"),
+                    decoder: null,
+                    logger,
+                    runner,
+                    preview: new SingleSlotPreviewSink());
+
+                await controller.StartAsync(new PrerecordSetup(
+                    TimeSpan.FromSeconds(5), "libx264", RecordingSpec.Default, dir.Path));
+
+                // 窗口是亚毫秒的 —— 合法地没有开场画面（理由见上一条）。
+                Assert.Null(await controller.TakeBufferedAsync());
+            }
+
+            GC.Collect();
+            GC.WaitForPendingFinalizers();
+            GC.Collect();
+            GC.WaitForPendingFinalizers();
+        }
+        finally
+        {
+            TaskScheduler.UnobservedTaskException -= handler;
+        }
+
+        lock (unobserved)
+        {
+            Assert.True(
+                unobserved.Count == 0,
+                $"{unobserved.Count} 个没人处理的异常："
+                    + string.Join(" ／ ", unobserved.Select(exception => exception.ToString())));
+        }
+    }
+
+    /// <summary>
+    /// 从一条（可能是 <see cref="AggregateException"/> 的）异常里挑出**提到预录控制器**的那些。
+    /// </summary>
+    /// <remarks>
+    /// 给上面那条「不许留下没人处理的异常」当筛子用 —— 那条绊线订阅的是
+    /// <c>TaskScheduler.UnobservedTaskException</c>，也就是**全进程**的，
+    /// 别的用例（回放服务收摊）会把噪声丢进来。理由写在那条测试里，这里只说筛法：
+    /// <c>AggregateException</c> 自己那层往往没有业务栈，要拆到内层再判。
+    /// </remarks>
+    private static IEnumerable<Exception> Mentioning(Exception exception)
+    {
+        if (exception is AggregateException aggregate)
+        {
+            var matched = aggregate.InnerExceptions.SelectMany(Mentioning).ToList();
+            if (matched.Count > 0)
+            {
+                return matched;
+            }
+        }
+
+        return (exception.StackTrace ?? string.Empty)
+            .Contains(nameof(PrerecordController), StringComparison.Ordinal)
+            ? new[] { exception }
+            : Array.Empty<Exception>();
+    }
+
     /// <summary>按**生产那一条 argv** 起一个预录进程（不经过控制器）。</summary>
     private static Process StartPrerecord(
         string pattern, string encoder, bool grayTap, int? durationSeconds)
