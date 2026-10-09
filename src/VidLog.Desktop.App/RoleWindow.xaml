@@ -122,7 +122,7 @@
         </Grid.RowDefinitions>
 
         <StackPanel Grid.Row="0" Margin="34,22,34,0">
-            <TextBlock Style="{StaticResource PageTitle}" FontSize="28"
+            <TextBlock Style="{StaticResource PageTitle}"
                        Text="选择这台电脑的用途"/>
             <TextBlock Style="{StaticResource BodySecondary}" Margin="0,8,0,0"
                        Text="回答两个简单问题，系统会自动组合出合适的用途"/>
@@ -245,8 +245,8 @@
                     <StackPanel Grid.Column="1" Margin="15,0,0,0">
                         <TextBlock x:Name="ResultLabel" FontSize="12"
                                    Foreground="{DynamicResource Accent}" Text="选择结果"/>
-                        <TextBlock x:Name="ResultTitle" Style="{StaticResource PageTitle}"
-                                   FontSize="20" Margin="0,5,0,0"
+                        <TextBlock x:Name="ResultTitle" Style="{StaticResource CardTitle}"
+                                   Margin="0,5,0,0"
                                    Text="请完成上面两个选择"/>
                         <TextBlock x:Name="ResultSummary" Style="{StaticResource BodySecondary}"
                                    Margin="0,6,0,0"

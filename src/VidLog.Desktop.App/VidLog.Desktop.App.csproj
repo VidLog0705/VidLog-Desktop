@@ -6,6 +6,20 @@
 
   <ItemGroup>
     <!--
+      程序图标（`VidLog.ico`，多尺寸 16/32/48/64/128/256，圆角外是**透明**的）。
+
+      ⚠️ 同一个文件要编进去**两次**，两次去的不是同一个地方：
+        `ApplicationIcon`（下面 PropertyGroup 里）→ exe 的 Win32 图标资源，
+            管**资源管理器与任务栏**那一处；
+        `Resource`（这里）→ 程序集里的 WPF 资源，管 `Window.Icon` 与托盘 ——
+            那两处走的是 `Application.GetResourceStream`，**看不到** Win32 那份。
+      少任何一条都会「有的地方有图标、有的地方没有」，而且都不报错。
+    -->
+    <Resource Include="VidLog.ico" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!--
       语音播报（闲置提醒，规格 §3.3.3 要的是「**语音播报**提醒」）。
 
       ⚠️ 这是本仓的**第二个** NuGet 依赖（第一个是 Core 的 ZXing，只做条码解码）。
@@ -123,6 +137,8 @@
       而换来的只是「不引用 WinForms」，没有实际收益。
     -->
     <UseWindowsForms>true</UseWindowsForms>
+    <!-- 图标文件的另一份去处，见上面那个 ItemGroup 的说明。 -->
+    <ApplicationIcon>VidLog.ico</ApplicationIcon>
   </PropertyGroup>
 
 </Project>

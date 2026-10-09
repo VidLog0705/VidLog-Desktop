@@ -10,6 +10,9 @@ using VidLog.Desktop.Core.Recording;
 using MessageBox = System.Windows.MessageBox;
 using MessageBoxImage = System.Windows.MessageBoxImage;
 using MessageBoxResult = System.Windows.MessageBoxResult;
+// 同上：图标那个类型只取 WPF 那一套（隐式 using 里没有 `System.Windows.Media`，
+// 但全局有 `System.Drawing`，一旦 `using System.Windows.Media;` 就会撞 `Color`/`Brush`）。
+using ImageSource = System.Windows.Media.ImageSource;
 
 namespace VidLog.Desktop.App;
 
@@ -30,6 +33,78 @@ public partial class App : System.Windows.Application
     private AppHost? _host;
     private MainWindow? _window;
     private bool _exiting;
+
+    private static ImageSource? _appIcon;
+
+    /// <summary>
+    /// 给**每一个**窗口挂上标题栏图标。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// ⚠️ <b>这条路是探针实测选出来的，不是随手写的</b>（2026-10-09）。
+    /// 先写的那一版是「在 `Theme.xaml` 里放一条隐式样式
+    /// <c>&lt;Style TargetType="Window"&gt;</c>」—— 一个窗口都不用改，
+    /// 看着最省。**它不生效**：WPF 不给 <see cref="Window"/> 应用隐式样式，
+    /// 探针里连 `Window.Style` 都是 `null`，`Icon` / `Background` / `Title`
+    /// 三个 Setter 一个都没落地，而且**一声不吭**。
+    /// </para>
+    /// <para>
+    /// 另一条路是在 12 个 `&lt;Window&gt;` 上各抄一行 `Icon="/VidLog.ico"`：
+    /// 能生效，但是 12 处将来会漂的重复；而且 WPF 从多尺寸 .ico 里
+    /// **只取第一帧**（本仓那份的第一帧是 16），Alt+Tab 那颗 32 的是放大出来的。
+    /// </para>
+    /// <para>
+    /// 所以走**类处理器**：一条盖住所有窗口（含以后新加的），顺带自己挑帧。
+    /// 挂在 <c>Loaded</c> 上而不是构造函数里，是因为那一刻窗口才有 HWND，
+    /// 换图标才画得上去。
+    /// </para>
+    /// </remarks>
+    static App()
+    {
+        EventManager.RegisterClassHandler(
+            typeof(Window),
+            FrameworkElement.LoadedEvent,
+            new RoutedEventHandler((sender, _) =>
+            {
+                var window = (Window)sender;
+
+                // 哪个窗口自己指定了图标就听它的 —— 这条只在没人指定时才补。
+                if (window.Icon is null)
+                {
+                    window.Icon = _appIcon ??= LoadAppIcon();
+                }
+            }));
+    }
+
+    /// <summary>
+    /// 从程序集里的 <c>VidLog.ico</c> 取**最接近 32×32** 的那一帧。
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ 不能只写 <c>BitmapFrame.Create(uri)</c>（或 XAML 里的 <c>Icon="/VidLog.ico"</c>）
+    /// —— 那两个只取第一帧。挑 32 是因为它两头都够：标题栏往 16 缩是缩下去的，
+    /// 不是放上去的。
+    /// <para>
+    /// 路径走**程序集内的资源**（csproj 里那条 <c>&lt;Resource Include="VidLog.ico"&gt;</c>）。
+    /// <c>&lt;ApplicationIcon&gt;</c> 那份只进 exe 的 Win32 图标资源，WPF 这边看不见，
+    /// 两份都要有 —— 少哪一份都是「有的地方有图标、有的地方没有」，且都不报错。
+    /// </para>
+    /// </remarks>
+    private static ImageSource LoadAppIcon()
+    {
+        var decoder = System.Windows.Media.Imaging.BitmapDecoder.Create(
+            new Uri("pack://application:,,,/VidLog.ico"),
+            System.Windows.Media.Imaging.BitmapCreateOptions.None,
+            System.Windows.Media.Imaging.BitmapCacheOption.OnLoad);
+
+        var frame = decoder.Frames.OrderBy(f => Math.Abs(f.PixelWidth - 32)).First();
+
+        if (frame.CanFreeze)
+        {
+            frame.Freeze();
+        }
+
+        return frame;
+    }
 
     protected override async void OnStartup(StartupEventArgs e)
     {

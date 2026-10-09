@@ -129,8 +129,7 @@
                 </Grid.RowDefinitions>
 
                 <TextBlock Grid.Row="0" Text="设置" Margin="20,22,20,18"
-                           FontSize="15" FontWeight="SemiBold"
-                           Foreground="{DynamicResource TextPrimary}"/>
+                           Style="{StaticResource PageTitle}"/>
 
                 <StackPanel Grid.Row="1">
                     <RadioButton x:Name="NavDevice" Style="{StaticResource NavItem}"

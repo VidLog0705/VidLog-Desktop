@@ -228,12 +228,34 @@
     <CornerRadius x:Key="RadiusTab">4,4,0,0</CornerRadius>
 
     <!-- ── 文字 ──────────────────────────────────────────────────── -->
+    <!--
+        页面 / 窗口的大标题（28 加粗）。
+
+        ⚠️ 2026-10-09 需求方拍板「大标题统一成 28 加粗」。改之前这一个角色在五个
+        地方是**四个字号**：这个定义 20、`RoleWindow` 就地覆盖 28、
+        `WizardWindow` 手写 24 Bold、`SettingsWindow` 手写 15 —— 后两处连令牌
+        都没挂。就地覆盖和手写是同一个问题的两种写法：下一处想要「大标题」的人
+        只能再抄一遍，于是再多一个字号。
+    -->
     <Style x:Key="PageTitle" TargetType="TextBlock">
         <Setter Property="FontFamily" Value="{StaticResource UiFont}"/>
-        <Setter Property="FontSize" Value="20"/>
-        <Setter Property="FontWeight" Value="SemiBold"/>
+        <Setter Property="FontSize" Value="28"/>
+        <Setter Property="FontWeight" Value="Bold"/>
         <Setter Property="Foreground" Value="{DynamicResource TextPrimary}"/>
         <Setter Property="VerticalAlignment" Value="Center"/>
+    </Style>
+
+    <!--
+        卡片里的标题（20 半粗）。
+
+        ⚠️ 这是 `RoleWindow` 结果卡「请完成上面两个选择」原来的样子 —— 它当时挂的是
+        `PageTitle`（20）+ 就地 `FontSize="20"`，那个覆盖是**冗余**的（跟定义同值）。
+        现在 `PageTitle` 长到 28，卡片标题不该跟着长，所以要有个自己的名字。
+        **它不是大标题**：大标题是窗口/页面那一层，这个在卡里。
+    -->
+    <Style x:Key="CardTitle" TargetType="TextBlock" BasedOn="{StaticResource PageTitle}">
+        <Setter Property="FontSize" Value="20"/>
+        <Setter Property="FontWeight" Value="SemiBold"/>
     </Style>
 
     <Style x:Key="SectionTitle" TargetType="TextBlock">

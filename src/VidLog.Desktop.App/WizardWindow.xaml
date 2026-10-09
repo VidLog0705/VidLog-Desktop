@@ -187,8 +187,7 @@
 
         <!-- ══ 顶部标题 ═══════════════════════════════════════════════ -->
         <StackPanel Grid.Row="0" Margin="0,0,0,20">
-            <TextBlock Text="电脑录像配置向导" FontSize="24" FontWeight="Bold"
-                       Foreground="{DynamicResource TextPrimary}"/>
+            <TextBlock Text="电脑录像配置向导" Style="{StaticResource PageTitle}"/>
             <TextBlock Margin="0,6,0,0" FontSize="13"
                        Foreground="{DynamicResource TextSecondary}"
                        Text="按步骤配置摄像头、面单识别方式、麦克风和可选扫码枪"/>

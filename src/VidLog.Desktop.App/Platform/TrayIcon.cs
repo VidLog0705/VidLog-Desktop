@@ -14,8 +14,10 @@ namespace VidLog.Desktop.App.Platform;
 /// 应用继续跑、钩子继续收码。
 /// </para>
 /// <para>
-/// 图标借系统自带的应用图标，**不带任何图片资源** —— 与规格 §3.3.6
-/// 「不得引入音频素材」是同一条精神：能不给用户塞文件就不塞。
+/// ~~图标借系统自带的应用图标，**不带任何图片资源**~~
+/// → **2026-10-09 改成程序自己的图标**（需求方要求托盘 / 窗口标题栏 / exe
+/// 三处一起换）。托盘原先借的是 `SystemIcons.Application` ——
+/// 那是**任何** .NET 程序都长那样的一个通用图标，用户在托盘里认不出是自己哪个程序。
 /// </para>
 /// </remarks>
 public sealed class TrayIcon : IDisposable
@@ -29,7 +31,7 @@ public sealed class TrayIcon : IDisposable
 
         _icon = new WinForms.NotifyIcon
         {
-            Icon = System.Drawing.SystemIcons.Application,
+            Icon = LoadAppIcon(),
             Text = tooltip.Length > 63 ? tooltip[..63] : tooltip,
             Visible = true,
         };
@@ -41,6 +43,33 @@ public sealed class TrayIcon : IDisposable
 
     /// <summary>用户双击图标 —— 要求把窗口显示出来。</summary>
     public event Action? UiRequested;
+
+    /// <summary>
+    /// 程序图标，从编进程序集的那份多尺寸 `VidLog.ico` 里取。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// 要**指名尺寸**再交给 `NotifyIcon`：不带尺寸那一版给出的是默认档（32），
+    /// 而托盘位置只有 16（高 DPI 下是别的值），系统去缩它、边缘会糊。
+    /// `SmallIconSize` 是跟着 DPI/缩放走的，所以这里不写死 16。
+    /// </para>
+    /// <para>
+    /// 取不到就抛 —— 那说明 csproj 里那条 `<Resource Include="VidLog.ico">`
+    /// 掉了，是个**打包错误**，静默退回系统图标等于把这个错误藏起来。
+    /// </para>
+    /// </remarks>
+    private static System.Drawing.Icon LoadAppIcon()
+    {
+        var uri = new Uri("pack://application:,,,/VidLog.ico");
+        var stream = System.Windows.Application.GetResourceStream(uri)?.Stream
+            ?? throw new InvalidOperationException(
+                "VidLog.ico 没有编进程序集 —— 检查 VidLog.Desktop.App.csproj 里的 <Resource Include=\"VidLog.ico\">。");
+
+        using (stream)
+        {
+            return new System.Drawing.Icon(stream, WinForms.SystemInformation.SmallIconSize);
+        }
+    }
 
     /// <summary>建好右键菜单。窗口那边拿到菜单项引用后自己挂。</summary>
     public void BuildMenu(Action onShow, Action onExit)
