@@ -46,6 +46,14 @@ public partial class MainWindow : Window
     // 录制
     // ─────────────────────────────────────────────
 
+    /// <summary>上一跳还在录没有（<see cref="RecordingCoordinator.CurrentWaybill"/>）。</summary>
+    /// <remarks>只为一件事：认得出「一段收了」那一刻，好把单号框清掉（见 <see cref="UpdateRecordingStatus"/>）。</remarks>
+    private bool _wasRecording;
+
+    /// <summary>上一跳还在工作没有（<see cref="RecordingCoordinator.IsWorking"/>）。</summary>
+    /// <remarks>只为一件事：认得出「收工」那一刻，好把单号框清掉（见 <see cref="UpdateRecordingStatus"/>）。</remarks>
+    private bool _wasWorking;
+
     /// <summary>
     /// 从托盘恢复时把刷新重新开起来。
     /// </summary>
@@ -59,13 +67,9 @@ public partial class MainWindow : Window
         _previewTimer.Start();
         UpdatePreviewClock();
 
-        // ⚠️ 判据是**在工作**而不是「有当前单号」（2026-10-09，B2）：待扫态
-        // （工作上、还没扫到面单）里那一行也在变，也得接上。
-        if (_host.Coordinator.IsWorking)
-        {
-            _ticker.Start();
-            UpdateRecordingStatus();
-        }
+        // 那两处跟着协调器的当前状态重画一遍 —— 计时那一行的节拍也在里面
+        // （`SyncTicker`，判据是**在工作**而不是「有当前单号」）。
+        UpdateRecordingStatus();
     }
 
     /// <summary>扫码枪扫到了 —— 界面跟着填，让用户看得见识别到了什么。</summary>
@@ -104,24 +108,16 @@ public partial class MainWindow : Window
                 DurationPromptPanel.Visibility = Visibility.Visible;
                 break;
 
+            // ⚠️ 计时那一行的起停**不在这里按通知种类挑**（B2，2026-10-09）——
+            // 判据在 `SyncTicker`，下面 `UpdateRecordingStatus` 每回都调它。
+            // 起先写成「`WorkStarted` 起、`WorkStopped` 停」，而 `WorkStopped`
+            // **有两种**：真的收工（`StopWorkAsync`，那时已经不在工作），和
+            // **自己收起一段、还在工作**（时长兜底那几条，`IsWorking` 仍是 true）——
+            // 后一种会把下一段的计时冻住。
             case CoordinatorNoticeKind.SegmentStopped
-                or CoordinatorNoticeKind.SegmentStarted:
-                HideDurationPrompt();
-                break;
-
-            // ⚠️ **计时那一行的一秒一跳跟着「在不在工作」走，不跟着「哪一颗按钮被点了」走**
-            // （B2，2026-10-09）。从前来工作只能点按钮 ⇒ `_ticker` 在点按钮那一刻起来；
-            // 而工作也可以由**扫码枪**起来（扫 VLREC 那张码进待扫、或直接扫一张面单），
-            // 那条路上它从前**一次都没起来过** —— 右栏那一行就停在 `00:00:00` 上不动。
-            case CoordinatorNoticeKind.WorkStarted:
-                _ticker.Start();
-                HideDurationPrompt();
-                break;
-
-            // 结束工作（点的、或时长兜底自动结束的）⇒ 停跳。不停的话那一行会带着
-            // 上一段的时刻一直跳下去，而那正是 B2 报上来的那个自相矛盾。
-            case CoordinatorNoticeKind.WorkStopped:
-                _ticker.Stop();
+                or CoordinatorNoticeKind.SegmentStarted
+                or CoordinatorNoticeKind.WorkStarted
+                or CoordinatorNoticeKind.WorkStopped:
                 HideDurationPrompt();
                 break;
 
@@ -136,6 +132,34 @@ public partial class MainWindow : Window
         }
 
         UpdateRecordingStatus();
+    }
+
+    /// <summary>
+    /// 计时那一行的一秒一跳，跟「在不在工作」对齐。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// ⚠️ <b>判据是 <see cref="RecordingCoordinator.IsWorking"/>，不是「哪一条通知来了」</b>
+    /// （B2，2026-10-09）。从前来工作只能点按钮 ⇒ <c>_ticker</c> 在点按钮那一刻起来；
+    /// 而工作也可以由**扫码枪**起来（扫 <c>VLREC</c> 那张码进待扫、或直接扫一张面单），
+    /// 那条路上它从前**一次都没起来过** —— 右栏那一行就停在 <c>00:00:00</c> 上不动。
+    /// </para>
+    /// <para>
+    /// ⚠️ <b>它由 <see cref="UpdateRecordingStatus"/> 每回都调</b>（每一条通知、
+    /// 每一次点按钮、每一跳都会走到）：单开一处、由几条挑出来的通知去调，
+    /// 就是上面那个「<c>WorkStopped</c> 两种意思」的来路 —— 而这里没有哪条路能漏掉它。
+    /// </para>
+    /// </remarks>
+    private void SyncTicker()
+    {
+        if (_host.Coordinator.IsWorking)
+        {
+            _ticker.Start();
+        }
+        else
+        {
+            _ticker.Stop();
+        }
     }
 
     /// <summary>收起询问条（答完了、或者那一次询问已经作废）。</summary>
@@ -355,9 +379,8 @@ public partial class MainWindow : Window
 
         try
         {
-            // ⚠️ `_ticker` 不在这里停：计时那一行的一秒一跳跟着 `WorkStopped` 那条通知走
-            // （见 `OnNotice`），而结束工作一定会发那一条 —— 两处各停一次，
-            // 下一个人就分不清哪一处说了算。
+            // ⚠️ `_ticker` 不在这里停：计时那一行的一秒一跳跟着「在不在工作」走
+            // （`SyncTicker`），而下面那次 `UpdateRecordingStatus` 会把它对上。
             var outcome = await _host.Coordinator.StopWorkAsync();
 
             RecordingStatus.Text = outcome is null
@@ -395,9 +418,39 @@ public partial class MainWindow : Window
         var coordinator = _host.Coordinator;
         var waybill = coordinator.CurrentWaybill;
 
+        // ⚠️ **一段收了、或者收工了，就把单号框清掉**（2026-10-09 需求方拍的，
+        // 照 PackingProof 的做法 —— 它那个框是「下一单的输入」，被消费掉就不再留着，
+        // 见 `Scanner.cs` 里那几处 `ScanInputText = ""`）。
+        //
+        // 不清的话，待扫态里那个框会留着**上一段的单号**，于是顶栏那颗按钮
+        // 按下去是「用这个单号再录一段」而不是【结束工作】—— 同一个界面上
+        // 两句话有歧义。清掉之后：**待扫态里框总是空的**，那一颗永远是【结束工作】；
+        // 而「同一单号再录一段」走重扫一遍（或者记录列表里那条重录）。
+        //
+        // ⚠️ 判据写成**两件事各自的迁移**（上一跳还在录 / 上一跳还在工作，这一跳都不是了），
+        // 不是「哪条通知来了」：收段的路不止一条（点【停止录制】、扫到同一个单号、
+        // 时长兜底自己收、收尾失败……），按通知挑迟早漏一条 —— 而漏掉的那条
+        // 正好会把歧义放回界面上。
+        //
+        // ⚠️ 它排在下面两颗**之前**：那颗按钮要不要按得动，问的就是框里有没有单号
+        // （`StartButton.Kind`）—— 框没落定就先问，问到的是一句过期的话。
+        if (_wasRecording && waybill is null)
+        {
+            WaybillBox.Clear();
+        }
+
+        if (_wasWorking && !coordinator.IsWorking)
+        {
+            WaybillBox.Clear();
+        }
+
+        _wasRecording = waybill is not null;
+        _wasWorking = coordinator.IsWorking;
+
         // ⚠️ 「开始 / 结束」那个按钮的形态也要跟着走 —— 这一行每次重画都得重画它，
         // 因为录制的开始与结束都可能由**扫码枪**触发（那时没有点击事件可挂）。
         RefreshStartButton();
+        SyncTicker();
 
         NavRecordingText.Text = waybill is null ? IdleWord() : $"录制中 · {waybill.Value}";
         NavRecordingText.SetResourceReference(
