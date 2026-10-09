@@ -992,17 +992,26 @@ public sealed class RecordingCoordinator : IAsyncDisposable
 
         _current = null;
 
-        var outcome = await session.StopAsync(reason, cancellationToken);
-        ReportFinalize(session, outcome);
-        await session.DisposeAsync();
+        // ⚠️ 顺序是承重的（照 <see cref="SwitchSegmentAsync"/>）：**先把相机放掉、
+        // 把待扫接回来，再收尾**。收尾要 remux ＋ 解码校验，几秒起步；等它做完才
+        // 接待扫的话，那几秒里下一件包裹扫不进来 —— 用户会以为扫码枪/摄像头坏了。
+        // 相机是独占的，所以「放设备」必须排在「起待扫」之前。
+        //
+        // ⚠️ 收尾本身仍然**等**：调用方要拿它的结论，而且 I9 说了收尾只此一条路。
+        // 这里提前的只是「放设备」这一步（<see cref="RecordingSession.ReleaseCaptureAsync"/>
+        // 那一侧也是照这个用法写的）。
+        await session.ReleaseCaptureAsync(cancellationToken);
 
-        // 相机随收尾释放了 —— 还在工作中的话要把待扫接回去（识码 ＋ 预录，
-        // 下一件包裹的缓冲就从这一刻重新起算），否则下一件包裹扫不进来
-        // （用户会以为扫码枪/摄像头坏了）。
+        // 相机随「放设备」就空了 —— 还在工作中的话把待扫接回去（识码 ＋ 预录，
+        // 下一件包裹的缓冲就从这一刻重新起算）。
         if (IsWorking)
         {
             _ = StartPrerecordAsync();
         }
+
+        var outcome = await session.StopAsync(reason, cancellationToken);
+        ReportFinalize(session, outcome);
+        await session.DisposeAsync();
 
         return outcome;
     }

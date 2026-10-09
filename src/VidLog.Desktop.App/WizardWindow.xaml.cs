@@ -801,7 +801,7 @@ public partial class WizardWindow : Window
         string? text;
         try
         {
-            text = _decoder.TryDecode(ToGray(frame));
+            text = _decoder.TryDecode(frame.ToGray());
         }
         catch (Exception)
         {
@@ -820,31 +820,6 @@ public partial class WizardWindow : Window
         RecognitionResultBox.Visibility = Visibility.Visible;
 
         _logger.Log(LogLevel.Info, "向导", $"摄像头识别测试读到 {text}");
-    }
-
-    /// <summary>
-    /// RGB24 → 灰度（ZXing 的 <c>Gray8</c> 要的那一种）。
-    /// </summary>
-    /// <remarks>
-    /// ⚠️ 这几行**故意留在这里**，没往 Core 里放：Core 那一侧的帧通路
-    /// 从头到尾都是灰度的（`PrerecordProcess` 直接让 ffmpeg 出 gray），
-    /// 彩色帧只有向导这一处有（要给人看），而它需要灰度只是**顺带**。
-    /// 搬进 Core 会变成「一个只有界面层用的转换函数住在领域层里」。
-    /// <para>
-    /// 系数是 ITU-R BT.601 的亮度权重（与 ffmpeg 的 <c>gray</c> 滤镜同一套）。
-    /// </para>
-    /// </remarks>
-    private static CameraFrame ToGray(PreviewFrame frame)
-    {
-        var rgb = frame.Rgb;
-        var gray = new byte[frame.Width * frame.Height];
-
-        for (int i = 0, p = 0; p < gray.Length; p++, i += 3)
-        {
-            gray[p] = (byte)((rgb[i] * 299 + rgb[i + 1] * 587 + rgb[i + 2] * 114) / 1000);
-        }
-
-        return new CameraFrame(gray, frame.Width, frame.Height, frame.CapturedAtMs);
     }
 
     private void OnRecognitionChanged(object sender, RoutedEventArgs e)

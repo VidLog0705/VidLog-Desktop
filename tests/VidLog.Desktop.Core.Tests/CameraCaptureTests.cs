@@ -525,12 +525,12 @@ public class CameraCaptureTests
     }
 
     // ─────────────────────────────────────────────
-    // 取景识码那一档（与录制必须同向）
+    // 取景那一档（与录制必须同向）
     // ─────────────────────────────────────────────
 
     [Theory]
     [MemberData(nameof(AllRotations))]
-    public void 取景识码用同一个方向滤镜(CameraRotation rotation, string? expected)
+    public void 取景那一路用同一个方向滤镜(CameraRotation rotation, string? expected)
     {
         // ⚠️ 两边朝向不一致会出现「录出来是正的、识码却要倒着认」（或者反过来），
         // 而那种毛病看起来像「识码坏了」，不会有人想到是方向设置。
@@ -548,47 +548,61 @@ public class CameraCaptureTests
         {
             Assert.Contains(expected, filters, StringComparison.Ordinal);
 
-            // 几何先定（缩放 → 方向），再降频、转灰度。
+            // ⚠️ 顺序是承重的：**先转方向，再缩放补黑边**。
             Assert.True(
                 filters.IndexOf(expected, StringComparison.Ordinal)
-                    < filters.IndexOf("fps=", StringComparison.Ordinal),
-                $"方向要排在 fps/format 之前，实际：{filters}");
+                    < filters.IndexOf("scale=", StringComparison.Ordinal),
+                $"方向要排在缩放之前，实际：{filters}");
         }
     }
 
     [Theory]
-    [InlineData(CameraRotation.Left90, "scale=480:640")]
-    [InlineData(CameraRotation.Right90, "scale=480:640")]
-    [InlineData(CameraRotation.UpsideDown, "fps=3,format=gray")]   // 本机不转 90° ⇒ 不必缩
-    public void 识码转90度时采集侧要缩到480x640_转完才正好是读端要的(CameraRotation rotation, string expected)
+    [InlineData(CameraRotation.None)]
+    [InlineData(CameraRotation.Left90)]
+    [InlineData(CameraRotation.Right90)]
+    [InlineData(CameraRotation.UpsideDown)]
+    public void 取景那一路无论怎么转都落在同一个尺寸上(CameraRotation rotation)
     {
         // ⚠️ 这条守的是一个**会静默花屏**的坑：读端按 640×480 硬切裸帧
         // （裸帧没有容器告诉它宽高）。转 90° 会把画面变成 480×640 ⇒
-        // 切出来是错位的花屏，识码永远认不出来，**而且不报错**。
-        // 修法是采集侧先缩到 480×640（宽高一反），transpose 之后正好是 640×480。
+        // 切出来是错位的花屏、识码永远认不出来，**而且不报错**。
+        // 修法是「**先转方向，再按比例缩进 640×480 的框里，四周补黑边**」——
+        // 顺序反了（先缩再转）就会得到 480×640。
         var args = PrerecordProcess.ScannerArguments(CameraSource.Local("Cam"), rotation).ToList();
         var filters = args[args.IndexOf("-vf") + 1];
 
-        Assert.Contains(expected, filters, StringComparison.Ordinal);
-
-        // 缩放必须排在方向之前，否则转完再缩就晚了（尺寸已经错了）。
-        if (expected.StartsWith("scale=", StringComparison.Ordinal))
-        {
-            Assert.True(
-                filters.IndexOf("scale=", StringComparison.Ordinal)
-                    < filters.IndexOf("transpose=", StringComparison.Ordinal),
-                $"缩放要排在方向之前，实际：{filters}");
-        }
+        Assert.Contains($"pad={PrerecordProcess.Width}:{PrerecordProcess.Height}", filters,
+            StringComparison.Ordinal);
+        Assert.True(
+            filters.IndexOf("scale=", StringComparison.Ordinal)
+                < filters.IndexOf("pad=", StringComparison.Ordinal),
+            $"缩放要排在补边之前，实际：{filters}");
     }
 
     [Fact]
-    public void 取景识码不转时滤镜与改动前逐字一致()
+    public void 取景那一路出的是彩色12帧_而不是从前的灰度3帧()
     {
+        // ⚠️ 2026-10-09 改的：这一路**同时是主窗那个取景框**，而从前 ffmpeg 直接出
+        // `gray`、还只有 3 fps —— 现场看到的就是「取景画面又灰又卡」。
+        // 灰度改成 C# 侧在那几帧上按需转（`PreviewFrame.ToGray`）。
         var plain = PrerecordProcess.ScannerArguments(CameraSource.Local("Cam")).ToList();
         var network = PrerecordProcess.ScannerArguments(CameraSource.Network("rtsp://h/s")).ToList();
 
-        Assert.Equal("fps=3,format=gray", plain[plain.IndexOf("-vf") + 1]);
-        Assert.Equal("scale=640:480,fps=3,format=gray", network[network.IndexOf("-vf") + 1]);
+        foreach (var args in new[] { plain, network })
+        {
+            Assert.Equal("rgb24", args[args.IndexOf("-pix_fmt") + 1]);
+
+            var filters = args[args.IndexOf("-vf") + 1];
+            Assert.Contains($"fps={PrerecordProcess.Fps}", filters, StringComparison.Ordinal);
+            Assert.Contains("format=rgb24", filters, StringComparison.Ordinal);
+            Assert.DoesNotContain("gray", filters, StringComparison.Ordinal);
+        }
+
+        // ⚠️ 几何那两环是**两个调用方都过**的（从前网络那一档才缩、本机不缩）——
+        // 本机那一路的输入已经被 `-video_size 640x480` 钉住了，所以那两环是直通，
+        // 而网络那一档缩到 1080P 也落进同一个框里。
+        Assert.Contains("pad=640:480", plain[plain.IndexOf("-vf") + 1], StringComparison.Ordinal);
+        Assert.Contains("pad=640:480", network[network.IndexOf("-vf") + 1], StringComparison.Ordinal);
     }
 
     // ─────────────────────────────────────────────
@@ -668,38 +682,40 @@ public class CameraCaptureTests
     }
 
     [Fact]
-    public void 灰度那一路带着缩放与灰度输出_并且走stdout()
+    public void 取景那一路带着几何与彩色输出_并且走stdout()
     {
         var args = FfmpegCameraCapture.BuildArguments(
             CameraSource.Network("rtsp://h/s"), @"C:\work\pre-%03d.mkv", "libx264",
             // 输入按 1080p 开（用户的录制规格），而读端按 640×480 硬切裸帧
-            // ⇒ 这一路**必须**缩，否则切出来是错位的花屏、不报任何错。
+            // ⇒ 这一路**必须**过那两环几何，否则切出来是错位的花屏、不报任何错。
+            // 见 `PrerecordProcess.FrameFilters`。
             new RecordingSpec(VideoCodec.H264, VideoResolution.P1080),
-            segmentSeconds: 120, grayTap: true)
+            segmentSeconds: 120, frameTap: true)
             .ToList();
 
         Assert.Equal("pipe:1", args[^1]);
-        Assert.Equal("gray", args[args.IndexOf("-pix_fmt", args.IndexOf("-pix_fmt") + 1) + 1]);
+        // 取景那一路是**最后**加进 argv 的，所以取最后一次出现的那份。
+        Assert.Equal("rgb24", args[args.LastIndexOf("-pix_fmt") + 1]);
 
-        // 滤镜链与纯识码那一档**同一个函数**产出 —— 两处各写一份的话，
-        // 同一档识码会在「预录开着」与「关着」时收到两种尺寸的帧。
-        var grayFilters = args[args.IndexOf("-vf", args.IndexOf("-vf") + 1) + 1];
+        // 滤镜链与纯取景那一档（`ScannerArguments`）**同一个函数**产出 ——
+        // 两处各写一份的话，同一档取景会在「预录开着」与「关着」时收到两种尺寸的帧。
+        var filters = args[args.LastIndexOf("-vf") + 1];
         Assert.Equal(
-            string.Join(',', PrerecordProcess.GrayFilters(CameraRotation.None, scale: true)),
-            grayFilters);
-        Assert.Contains("scale=640:480", grayFilters, StringComparison.Ordinal);
+            string.Join(',', PrerecordProcess.FrameFilters(CameraRotation.None)),
+            filters);
+        Assert.Contains("pad=640:480", filters, StringComparison.Ordinal);
     }
 
     [Fact]
-    public void 预览与灰度那两路不能同时要_一个进程只有一条stdout()
+    public void 预览与取景那两路不能同时要_一个进程只有一条stdout()
     {
         // ⚠️ 放过去的话不是报错，是**两条输出互相咬**：读端按预览的 640×360 rgb24 切，
-        // 实际流里混着 640×480 的灰度帧 ⇒ 两路都是花屏，而且不会有任何报错。
+        // 实际流里混着 640×480 的取景帧 ⇒ 两路都是花屏，而且不会有任何报错。
         var thrown = Assert.Throws<InvalidOperationException>(() =>
             FfmpegCameraCapture.BuildArguments(
                 CameraSource.Local("Cam"), @"C:\work\s.mkv", "libx264",
                 new RecordingSpec(VideoCodec.H264, VideoResolution.P720),
-                preview: true, grayTap: true));
+                preview: true, frameTap: true));
 
         Assert.Contains("stdout", thrown.Message, StringComparison.Ordinal);
     }

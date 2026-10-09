@@ -194,6 +194,15 @@ public sealed class RecordingSession : IAsyncDisposable
     private TimeSpan _clockOrigin;
     private readonly Func<TimeSpan, CancellationToken, Task> _delay;
 
+    /// <summary>采集进程被放掉那一刻的 <see cref="Elapsed"/>（谁放谁记，只记一次）。</summary>
+    /// <remarks>
+    /// ⚠️ <b>收尾要的「停录时刻」用它，不是收尾时现读 <see cref="Elapsed"/></b>：
+    /// 放设备现在会被**提前**调用（换件与停止都走「先放设备、后收尾」），
+    /// 而优雅停机那几百毫秒、以及之后的收尾都不是录制时间 ——
+    /// 现读会把它们算进**最后那一片**的时长里（索引里那个数就是证据）。
+    /// </remarks>
+    private TimeSpan? _captureReleasedAt;
+
     /// <summary>画面从哪来（本机设备或网络地址）。</summary>
     /// <remarks>
     /// ⚠️ 存的是整个 <see cref="CameraSource"/> 而不是一个名字：网络那一路
@@ -976,6 +985,10 @@ public sealed class RecordingSession : IAsyncDisposable
             return;
         }
 
+        // ⚠️ 停录时刻在**这里**读，不是收尾时现读：认领进程这一刻起，往后
+        // （优雅停机 + 收尾）都不是录制时间。谁认领谁记，所以只记一次。
+        _captureReleasedAt = Elapsed;
+
         var exitCode = await process.StopAsync(_options.StopGracePeriod, cancellationToken);
 
         // ⚠️ 降级也要**可见**（I3）：音频那一路没接上时这一场照录，但用户有权知道
@@ -1028,9 +1041,11 @@ public sealed class RecordingSession : IAsyncDisposable
             return;
         }
 
-        // ⚠️ 先读停录时刻、**再**停进程：停进程要走优雅停机（发 q、等它写完），
+        // ⚠️ 先取停录时刻、**再**停进程：停进程要走优雅停机（发 q、等它写完），
         // 那几百毫秒不是录制时间。这一条与 T17 之前逐字一致。
-        var endedAt = Elapsed;
+        // 采集**已经被放掉**时（换件与停止都提前放了设备）用它记下的那一刻 ——
+        // 现读会把停机与收尾那一段时间白算进最后那一片，见 `_captureReleasedAt`。
+        var endedAt = _captureReleasedAt ?? Elapsed;
         await ReleaseCaptureAsync(cancellationToken);
 
         // 水印字幕**用完就删**：它是这一场的临时素材，不是产物。

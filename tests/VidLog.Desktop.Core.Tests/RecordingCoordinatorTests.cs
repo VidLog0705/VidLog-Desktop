@@ -1097,6 +1097,69 @@ public class RecordingCoordinatorTests
         Assert.Equal(2, attempts);
     }
 
+    /// <summary>
+    /// 停一段时**先把待扫接回来，再收尾** —— 收尾那几秒不许把扫码空着。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// ⚠️ <b>为什么要这条</b>：收尾要 remux ＋ 解码校验，几秒起步。等它跑完才接待扫的话，
+    /// 那几秒里下一件包裹扫不进来 —— 用户看到的是「扫码枪/摄像头坏了」，
+    /// 而实际只是我们自己在收尾。顺序照 <c>SwitchSegmentAsync</c>（换件那条路）
+    /// 已验证过的那一套：**放设备 → 起待扫 → 收尾**。
+    /// </para>
+    /// <para>
+    /// ⚠️ <b>判据是「收尾还卡着的时候待扫已经起过一次」</b>，不是「先后两次都发生了」——
+    /// 后者在「先收尾、后起待扫」那种实现下**照样绿**。收尾卡住这个人造点由
+    /// <see cref="BlockingRunner"/> 提供（收尾里那两条 ffmpeg 命令都走它）。
+    /// 待扫有没有真去起，用 <c>Failed</c> 当计数器（同上一条的理由：
+    /// <c>PrerecordController</c> 是具体类，没有更省事的观察点）。
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task 停一段时先把待扫接回来_而不是等收尾跑完()
+    {
+        using var dir = new TempDir();
+        var gate = new BlockingRunner();
+
+        await using var coordinator = Build(
+            dir, WorkMode.StopOnSameWaybill, new FakePunchLog(), runner: gate);
+
+        var attempts = 0;
+        var prerecord = new PrerecordController(
+            "不存在的-ffmpeg.exe",
+            CameraSource.Network("rtsp://192.0.2.1:1/x"),
+            decoder: null,
+            NullLogger.Instance,
+            new SystemProcessRunner());
+
+        prerecord.Failed += _ => Interlocked.Increment(ref attempts);
+        coordinator.Prerecord = prerecord;
+
+        coordinator.StartWork();
+        await WaitUntilAsync(() => attempts == 1);   // 开始工作那一次
+
+        await coordinator.SubmitAsync(A, PunchSource.KeyboardScanner);
+        await WaitUntilAsync(() => coordinator.CurrentWaybill is not null);
+
+        // 复扫同码 ⇒ 停这一段。**不等它** —— 要看的正是「它还没跑完」的那一刻。
+        var stopping = coordinator.SubmitAsync(A, PunchSource.KeyboardScanner);
+
+        try
+        {
+            await WaitUntilAsync(() => attempts == 2);
+
+            Assert.False(
+                stopping.IsCompleted,
+                "等到收尾跑完才接的待扫 —— 那几秒正是要省掉的那几秒");
+        }
+        finally
+        {
+            gate.Release();
+        }
+
+        await stopping;
+    }
+
     private static RecordingCoordinator Build(
         TempDir dir,
         WorkMode mode,
@@ -1238,6 +1301,35 @@ public class RecordingCoordinatorTests
             }
 
             return Task.FromResult(new ProcessResult(0, string.Empty, string.Empty));
+        }
+    }
+
+    /// <summary>
+    /// 收尾那两条 ffmpeg 命令会走它，而它卡在闸上 ——
+    /// 「收尾还没跑完」因此变成一个**可以从外面断言**的状态（见上一条用例）。
+    /// </summary>
+    private sealed class BlockingRunner : IProcessRunner
+    {
+        private readonly TaskCompletionSource _gate =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public void Release() => _gate.TrySetResult();
+
+        public async Task<ProcessResult> RunAsync(
+            string executable, IReadOnlyList<string> arguments,
+            CancellationToken cancellationToken = default)
+        {
+            await _gate.Task.WaitAsync(cancellationToken);
+
+            var args = arguments.ToList();
+            var yIndex = args.IndexOf("-y");
+            if (yIndex >= 0 && yIndex + 1 < args.Count)
+            {
+                Directory.CreateDirectory(Path.GetDirectoryName(args[yIndex + 1])!);
+                File.WriteAllText(args[yIndex + 1], "published");
+            }
+
+            return new ProcessResult(0, string.Empty, string.Empty);
         }
     }
 

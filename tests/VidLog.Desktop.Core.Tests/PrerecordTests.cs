@@ -12,15 +12,17 @@ namespace VidLog.Desktop.Core.Tests;
 /// <remarks>
 /// <para>
 /// ⚠️ <b>为什么必须真跑一次</b>：这一批的架构是「一个进程、一路源、两路输出」
-/// （①滚动分片 ②灰度裸帧走 stdout），而 §54 只验过「1 fps 灰度 + 文件」那一档，
-/// §62 只验过「12 fps 彩色 + 文件」那一档。**「文件 + 灰度管」这个组合没验过**，
-/// 而它正是预录用的那一档 —— 两路输出的产出速率都不一样，不能外推。
+/// （①滚动分片 ②彩色裸帧走 stdout），而 §54 只验过「1 fps 灰度」那一档、
+/// §62 只验过「预览 + 文件」那一档。**预录这组 argv（文件 + 彩色帧管）没在真机验过**，
+/// 而它两路输出的产出速率都不一样，不能外推。
 /// </para>
 /// <para>
-/// ⚠️ <b>本机没有 dshow 摄像头</b>（§91.7），所以这一组走**网络源**：
-/// 「相机独占」那条限制对网络源不成立，因此这台机器上**只有它能验**。
-/// 独占下「停预录 → 起采集」能不能真的拿到相机、那 1.5~1.8 秒空档到底多长，
-/// 仍然只有真机知道 —— 见本文件末尾那段边界说明，**别把这里通过说成真机通过**。
+/// ⚠️ 这一组走**网络源**：要的是「同一个源同时喂两路输出」这件事，
+/// 而 `RequiresRtspFact` 那台测试源随时在跑、不占本机相机。
+/// （⚠️ 早先这里写着「本机没有 dshow 摄像头（§91.7）」—— 那条前提 **2026-10-09 作废**：
+/// 本机实测有摄像头与麦克风。但**独占下的空档有多长**仍只有拿真相机问：
+/// 网络源上「相机独占」根本不成立，所以这里量不出那个空档，
+/// **别把这里通过说成真机通过**。）
 /// </para>
 /// <para>
 /// ⚠️ 在 <see cref="NetworkCameraCollection"/> 里：它们要真连那台手机，
@@ -40,11 +42,11 @@ public class PrerecordTests
         RequiresRtspFactAttribute.EnvironmentVariable)!;
 
     // ─────────────────────────────────────────────
-    // 场景 ①：端到端 —— 起待扫、分片在滚、灰帧在流、取回的缓冲是一段能解码的开场
+    // 场景 ①：端到端 —— 起待扫、分片在滚、彩色帧在流、取回的缓冲是一段能解码的开场
     // ─────────────────────────────────────────────
 
     /// <summary>
-    /// 待扫那一路同时出**分片**与**灰帧**，扫到时取回的缓冲是一段**能解码的开场**。
+    /// 待扫那一路同时出**分片**与**彩色帧**，扫到时取回的缓冲是一段**能解码的开场**。
     /// </summary>
     /// <remarks>
     /// <para>
@@ -65,7 +67,7 @@ public class PrerecordTests
     /// </para>
     /// </remarks>
     [RequiresRtspFact]
-    public async Task 待扫那一路同时出分片与灰帧_取回的缓冲是一段能解码的开场()
+    public async Task 待扫那一路同时出分片与彩色帧_取回的缓冲是一段能解码的开场()
     {
         using var dir = new TempDir();
         var logger = new CapturingLogger();
@@ -100,8 +102,9 @@ public class PrerecordTests
 
         Assert.NotNull(chunk);
 
-        // ★ 灰度那一管也在流：预览落点收到的是 640×480 的帧（识别用的尺寸，
-        // 与批次 A 那个 640×360 彩色预览**不是同一档** —— 见控制器的说明）。
+        // ★ 彩色那一管也在流：预览落点收到的是 **640×480** 的帧（识别用的尺寸，
+        // 与那个 640×360 的预览**不是同一档** —— 见控制器的说明）。
+        // ⚠️ 它同时就是主窗那个取景框（2026-10-09 起是彩色的 12 fps，不再是灰的 3 fps）。
         PreviewFrame? frame = null;
         var frameDeadline = Stopwatch.StartNew();
 
@@ -113,7 +116,7 @@ public class PrerecordTests
 
         Assert.True(
             frame is not null,
-            $"两路里只有文件那一路在动 —— 灰度那一管没有帧。日志：{Text(logger)}");
+            $"两路里只有文件那一路在动 —— 彩色那一管没有帧。日志：{Text(logger)}");
 
         Assert.Equal(PrerecordProcess.Width, frame!.Width);
         Assert.Equal(PrerecordProcess.Height, frame.Height);
@@ -194,6 +197,21 @@ public class PrerecordTests
     /// 一起就在读）；所以照 <c>RecordingPreviewTests</c> 那个对照的做法，
     /// 用**生产那份 argv** 手起一个进程，只是不读它的 stdout。
     /// </para>
+    /// <para>
+    /// ⚠️ <b>守门人为什么挪到「解堵之后」（2026-10-09）</b>：从前它断言「8 秒内分片非空」，
+    /// 本意是「源真的起来了」。实测<b>它量的不是这件事，是「背压多快把分片那一路摁住」</b>：
+    /// stdout 一直不读时，分片在 8 秒里 <b>恒为 0 字节</b>（新链连测 3 次都是 0；
+    /// 只把帧率降回 3、像素格式仍是彩色，就恢复成 2.5 秒起有字节：262144 → 786432）。
+    /// 也就是说，基线那 4 次通过靠的是**「堵得慢」**，不是「源起得来」——
+    /// 这个守门人在 0.9 MB/s 那一档碰巧够用而已。
+    /// 现在改成：先送 q（证明它堵着办不了事），**再把 stdout 读开**，然后断言它当场收尾、
+    /// 且分片变成非空。这两条都是「它刚才真在跑、真堵在 stdout 上」的证据，
+    /// 而且不再和背压赛跑。
+    /// </para>
+    /// <para>
+    /// ⚠️ <b>待查</b>：ffmpeg 内部为什么是这个形状（看起来像「两路输出谁先写」的时序，
+    /// 但没量过，别当结论用）。量到的是现象，不是机制。
+    /// </para>
     /// </remarks>
     [RequiresRtspFact]
     public async Task 对照_不读那条管子时送q也停不下来()
@@ -202,7 +220,7 @@ public class PrerecordTests
         var encoder = await PickEncoderAsync(new SystemProcessRunner());
 
         using var process = StartPrerecord(
-            Path.Combine(dir.Path, "pre-%03d.mkv"), encoder, grayTap: true, durationSeconds: null);
+            Path.Combine(dir.Path, "pre-%03d.mkv"), encoder, frameTap: true, durationSeconds: null);
 
         var drained = Task.Run(async () =>
         {
@@ -219,17 +237,12 @@ public class PrerecordTests
 
         try
         {
-            // 灌满管道要多久：640×480 灰度 @3 fps ≈ 0.9 MB/s，管道缓冲只有几十到几百 KB
-            // —— 8 秒是它的一百倍以上，只有真想不出办法堵住才够不着。
+            // 灌满管道要多久：640×480 彩色 @12 fps ≈ 11 MB/s（2026-10-09 从灰度 3 fps
+            // 改过来的，比从前量的 0.9 MB/s 快一个数量级），而管道缓冲只有几十到几百 KB
+            // —— 8 秒远远够。
             await Task.Delay(TimeSpan.FromSeconds(8));
 
-            // ── 守门人：源真的起来了，这一条才有意义 ──
             Assert.False(process.HasExited, "源没起来它就退了 —— 这条对照证明不了任何事");
-
-            var chunks = Directory.EnumerateFiles(dir.Path, "pre-*.mkv").ToList();
-            Assert.True(
-                chunks.Any(path => new FileInfo(path).Length > 0),
-                "分片是空的 —— 源没起来，这条对照证明不了任何事");
 
             // ── 正题：送 q，看它理不理 ──
             await process.StandardInput.WriteLineAsync("q");
@@ -239,6 +252,22 @@ public class PrerecordTests
                 process.WaitForExit(8000),
                 "不读 stdout 它还停得下来 —— 那上面那条「两路都在动、取得到缓冲」"
                 + "就不是读端的功劳，这条对照也就没证明「堵」这件事。");
+
+            // ── 守门人：**放在解堵之后**（2026-10-09 挪的，理由见 remarks）──
+            //    把 stdout 读开 ⇒ 背压松开 ⇒ 它当场把那条 q 处理掉、正常收尾。
+            //    一个**从来没连上源**的进程不会因为这个动作而退出，也不会写出分片 ——
+            //    所以这两条断言同时证明「源刚才真的起来了」与「它刚才是堵在 stdout 上」。
+            var unblocked = process.StandardOutput.BaseStream.CopyToAsync(Stream.Null);
+            Assert.True(
+                process.WaitForExit(15000),
+                "把 stdout 读开它还是没收尾 —— 那它刚才是别处卡的，不是堵在 stdout 上。");
+            await Task.WhenAny(unblocked, Task.Delay(TimeSpan.FromSeconds(2)));
+
+            var chunks = Directory.EnumerateFiles(dir.Path, "pre-*.mkv").ToList();
+            Assert.True(
+                chunks.Any(path => new FileInfo(path).Length > 0),
+                $"解堵之后分片仍然是空的（退出码 {(process.HasExited ? process.ExitCode : -1)}）"
+                + " —— 源没起来，这条对照证明不了任何事");
         }
         finally
         {
@@ -252,7 +281,7 @@ public class PrerecordTests
     // ─────────────────────────────────────────────
 
     /// <summary>
-    /// 预录这个**新组合**（文件 + 灰度管）两路都带 <c>-t</c> 时，到点 ffmpeg **自己退出**。
+    /// 预录这个**新组合**（文件 + 彩色帧管）两路都带 <c>-t</c> 时，到点 ffmpeg **自己退出**。
     /// </summary>
     /// <remarks>
     /// <para>
@@ -277,14 +306,13 @@ public class PrerecordTests
 
         const int seconds = 5;
         using var process = StartPrerecord(
-            Path.Combine(dir.Path, "pre-%03d.mkv"), encoder, grayTap: true, durationSeconds: seconds);
+            Path.Combine(dir.Path, "pre-%03d.mkv"), encoder, frameTap: true, durationSeconds: seconds);
 
-        var sink = new SingleSlotFrameSink();
+        var sink = new SingleSlotPreviewSink();
 
         // 生产那一条读端，原样搬过来（`PrerecordProcess` 里用的就是它）。
-        var reading = Task.Run(() => new RawGrayFrameReader(
-            process.StandardOutput.BaseStream, sink, PrerecordProcess.Width, PrerecordProcess.Height)
-            .RunAsync());
+        var reading = Task.Run(() => PreviewProcess.ReadFramesAsync(
+            process.StandardOutput.BaseStream, sink, PrerecordProcess.Width, PrerecordProcess.Height));
 
         _ = Task.Run(async () =>
         {
@@ -316,11 +344,11 @@ public class PrerecordTests
             await Task.WhenAny(reading, Task.Delay(TimeSpan.FromSeconds(2)));
         }
 
-        // 顺带：限长那一段时间里灰度那一路确实流过 —— 说明它是**真在跑**的，
+        // 顺带：限长那一段时间里彩色那一路确实流过 —— 说明它是**真在跑**的，
         // 不是「被 -t 掐掉所以进程才退」。
         Assert.True(
             sink.DroppedCount > 0 || sink.TakeLatest() is not null,
-            "灰度那一路一帧都没出 —— 它可能压根就没起来，那这条用例证不出限长的事");
+            "彩色那一路一帧都没出 —— 它可能压根就没起来，那这条用例证不出限长的事");
 
         Assert.True(
             Directory.EnumerateFiles(dir.Path, "pre-*.mkv").Any(path => new FileInfo(path).Length > 0),
@@ -592,7 +620,7 @@ public class PrerecordTests
 
     /// <summary>按**生产那一条 argv** 起一个预录进程（不经过控制器）。</summary>
     private static Process StartPrerecord(
-        string pattern, string encoder, bool grayTap, int? durationSeconds)
+        string pattern, string encoder, bool frameTap, int? durationSeconds)
     {
         var startInfo = new ProcessStartInfo
         {
@@ -608,7 +636,7 @@ public class PrerecordTests
         foreach (var argument in FfmpegCameraCapture.BuildArguments(
             CameraSource.Network(Source), pattern, encoder, RecordingSpec.Default,
             watermarkAssPath: null, microphone: null, durationSeconds: durationSeconds,
-            preview: false, segmentSeconds: PrerecordController.ChunkSeconds, grayTap: grayTap))
+            preview: false, segmentSeconds: PrerecordController.ChunkSeconds, frameTap: frameTap))
         {
             startInfo.ArgumentList.Add(argument);
         }

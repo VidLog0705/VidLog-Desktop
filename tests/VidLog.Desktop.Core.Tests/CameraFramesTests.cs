@@ -3,10 +3,16 @@ using VidLog.Desktop.Core.Camera;
 namespace VidLog.Desktop.Core.Tests;
 
 /// <summary>
-/// 帧通路：读帧、静止判定、识码闸。
+/// 帧通路：静止判定、识码闸。
 /// </summary>
 /// <remarks>
-/// 这三块都不需要真摄像头 —— 合成帧就够，所以它们能进 CI。
+/// 两块都不需要真摄像头 —— 合成帧就够，所以它们能进 CI。
+/// <para>
+/// ⚠️ 「读帧」与「单槽缓冲」从前也在这里（<c>RawGrayFrameReader</c> /
+/// <c>SingleSlotFrameSink</c>），2026-10-09 那两个类随灰度那一路一起删了 ——
+/// 同一件事现在只有一处（<c>PreviewProcess.ReadFramesAsync</c> /
+/// <c>SingleSlotPreviewSink</c>），那几条用例跟着搬到了 <c>PreviewProcessTests</c>。
+/// </para>
 /// </remarks>
 public class CameraFramesTests
 {
@@ -15,68 +21,6 @@ public class CameraFramesTests
 
     private static CameraFrame Frame(byte fill, long at = 0) =>
         new([.. Enumerable.Repeat(fill, W * H)], W, H, at);
-
-    // ─────────────────────────────────────────────
-    // 单槽帧缓冲
-    // ─────────────────────────────────────────────
-
-    [Fact]
-    public void 单槽缓冲只留最新一帧_旧的丢掉()
-    {
-        var sink = new SingleSlotFrameSink();
-
-        sink.Publish(Frame(1));
-        sink.Publish(Frame(2));
-        sink.Publish(Frame(3));
-
-        var latest = sink.TakeLatest();
-        Assert.NotNull(latest);
-        Assert.Equal(3, latest!.Gray[0]);
-
-        // 这是**不回压**的关键：消费者慢的时候丢帧，而不是把管道顶住。
-        Assert.Equal(2, sink.DroppedCount);
-        Assert.Null(sink.TakeLatest());
-    }
-
-    // ─────────────────────────────────────────────
-    // 裸帧读取
-    // ─────────────────────────────────────────────
-
-    [Fact]
-    public async Task 从流里按帧切分_不满一帧的尾巴丢掉()
-    {
-        // 两帧半 —— 最后那半帧不该被当成一帧。
-        var bytes = new byte[W * H * 2 + 10];
-        var sink = new SingleSlotFrameSink();
-
-        var read = await new RawGrayFrameReader(new MemoryStream(bytes), sink, W, H).RunAsync();
-
-        Assert.Equal(2, read);
-    }
-
-    [Fact]
-    public async Task 分片到达也能拼成完整帧()
-    {
-        // 管道不保证一次给一整帧 —— 必须能跨多次 Read 拼起来。
-        var bytes = new byte[W * H * 3];
-        var sink = new SingleSlotFrameSink();
-        var reader = new RawGrayFrameReader(new ChunkedStream(bytes, chunk: 1000), sink, W, H);
-
-        var read = await reader.RunAsync();
-
-        Assert.Equal(3, read);
-        Assert.Equal(W * H * 3, reader.BytesRead);
-    }
-
-    [Fact]
-    public async Task 流断了就当正常结束_不抛()
-    {
-        // 采集进程被收掉时管道会断，那不是错误。
-        var sink = new SingleSlotFrameSink();
-        var read = await new RawGrayFrameReader(new ThrowingStream(), sink, W, H).RunAsync();
-
-        Assert.Equal(0, read);
-    }
 
     // ─────────────────────────────────────────────
     // 静止判定
@@ -218,51 +162,5 @@ public class CameraFramesTests
 
         Assert.Equal("SF1", gate.Observe("SF1", 0));
         Assert.Equal("SF2", gate.Observe("SF2", 100));
-    }
-
-    private sealed class ChunkedStream(byte[] data, int chunk) : Stream
-    {
-        private int _position;
-
-        public override bool CanRead => true;
-        public override bool CanSeek => false;
-        public override bool CanWrite => false;
-        public override long Length => data.Length;
-        public override long Position { get => _position; set => throw new NotSupportedException(); }
-
-        public override int Read(byte[] buffer, int offset, int count)
-        {
-            var take = Math.Min(Math.Min(chunk, count), data.Length - _position);
-            if (take <= 0)
-            {
-                return 0;
-            }
-
-            Array.Copy(data, _position, buffer, offset, take);
-            _position += take;
-            return take;
-        }
-
-        public override void Flush() { }
-        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
-        public override void SetLength(long value) => throw new NotSupportedException();
-        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
-    }
-
-    private sealed class ThrowingStream : Stream
-    {
-        public override bool CanRead => true;
-        public override bool CanSeek => false;
-        public override bool CanWrite => false;
-        public override long Length => 0;
-        public override long Position { get; set; }
-
-        public override int Read(byte[] buffer, int offset, int count) =>
-            throw new IOException("管道断了");
-
-        public override void Flush() { }
-        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
-        public override void SetLength(long value) => throw new NotSupportedException();
-        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
     }
 }

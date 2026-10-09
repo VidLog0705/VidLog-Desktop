@@ -113,11 +113,19 @@ public partial class MainWindow : Window
 
     /// <summary>上一次真的画上帧的时刻（<see cref="Environment.TickCount64"/>）。</summary>
     /// <remarks>
-    /// 判据是「一秒没帧就把说明放回来」而不是「进程还在不在」：
+    /// 判据是「<see cref="PreviewStaleAfter"/> 没帧就把说明放回来」而不是「进程还在不在」：
     /// 出画面的那两条路（识码、录制）**都在进程之间交接**，
     /// 而交接期的空档不该在屏幕上闪一下「没有画面」。
     /// </remarks>
     private long _lastFrameAtMs;
+
+    /// <summary>取景框「多久没有新帧，就把那句说明放回来」。</summary>
+    /// <remarks>
+    /// ⚠️ <b>10 秒是需求方 2026-10-09 拍的</b>（A3）。实测交接空档（停取景 → 起采集）
+    /// 是 **2.5–4.5 秒**，而从前写死 1 秒 ⇒ <b>每一次交接都会在屏上闪一句「没有画面」</b>。
+    /// 10 秒留了一倍余量；真断流照样会提示、照样记日志（就是下面那一条）。
+    /// </remarks>
+    private static readonly TimeSpan PreviewStaleAfter = TimeSpan.FromSeconds(10);
 
     public MainWindow(AppHost host)
     {
@@ -368,7 +376,7 @@ public partial class MainWindow : Window
     }
 
     /// <summary>
-    /// 把最新一帧画到取景框上；一秒没帧就退回那句说明。
+    /// 把最新一帧画到取景框上；超过 <see cref="PreviewStaleAfter"/> 没帧就退回那句说明。
     /// </summary>
     /// <remarks>
     /// ⚠️ 这是**拉**，不是推：帧由出画面的那个进程投进单槽，界面自己来取。
@@ -381,10 +389,10 @@ public partial class MainWindow : Window
 
         if (frame is null)
         {
-            // 判据是「一秒没有新帧」而不是「进程还在不在」：出画面的那两个
+            // 判据是「超过 PreviewStaleAfter 没有新帧」而不是「进程还在不在」：出画面的那两个
             // （识码、录制）在交接时本来就有空档，空档不该在屏幕上闪成一句话。
             if (PreviewImage.Visibility == Visibility.Visible
-                && Environment.TickCount64 - _lastFrameAtMs > 1000)
+                && Environment.TickCount64 - _lastFrameAtMs > PreviewStaleAfter.TotalMilliseconds)
             {
                 PreviewImage.Source = null;
                 PreviewImage.Visibility = Visibility.Collapsed;
@@ -409,7 +417,8 @@ public partial class MainWindow : Window
         }
 
         // ⚠️ 位图**不能只建一次**：两种画面的尺寸不一样
-        // （识码那一路是 640×480 的灰度帧，录制那一路是 640×360 的彩色帧）。
+        // （识码那一路是 640×480，录制那一路是 640×360）——
+        // 2026-10-09 起**两路都是彩色的**，只是框不一样大（从前识码那一路是灰度）。
         if (_frameBitmap is null
             || _frameBitmap.PixelWidth != frame.Width
             || _frameBitmap.PixelHeight != frame.Height)

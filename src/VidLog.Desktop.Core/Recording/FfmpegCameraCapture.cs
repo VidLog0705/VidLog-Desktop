@@ -479,8 +479,8 @@ public sealed class FfmpegCameraCapture : ICameraCapture
     /// 不加这个参数，开场那几秒会被**直接覆盖**，退出码 0、没有任何报错。
     /// </para>
     /// </param>
-    /// <param name="grayTap">
-    /// 要不要多出一路**灰度裸帧**（640×480，识码用）。
+    /// <param name="frameTap">
+    /// 要不要多出一路**彩色裸帧**（640×480，待扫的取景框与识码共用）。
     /// 与 <paramref name="preview"/> **不能同时为真**（都要 stdout），同时给会抛异常。
     /// </param>
     /// <remarks>
@@ -506,17 +506,17 @@ public sealed class FfmpegCameraCapture : ICameraCapture
     public static IReadOnlyList<string> BuildArguments(
         CameraSource source, string outputPath, string encoder, RecordingSpec? spec = null,
         string? watermarkAssPath = null, string? microphone = null, int? durationSeconds = null,
-        bool preview = false, int? segmentSeconds = null, bool grayTap = false,
+        bool preview = false, int? segmentSeconds = null, bool frameTap = false,
         int segmentStartNumber = 0)
     {
         // ⚠️ 两路都要 `pipe:1` —— 而**一个 Process 只有一条 stdout**
         // （2026-10-02 定下的架构）。放过去的话不是报错，是两条输出互相咬：
-        // 读端按预览的 640×360 rgb24 切，实际流里混着 640×480 的灰度帧
+        // 读端按预览的 640×360 rgb24 切，实际流里混着 640×480 的帧
         // ⇒ 两路都是花屏，而且不会有任何报错。所以宁可在这里炸掉。
-        if (preview && grayTap)
+        if (preview && frameTap)
         {
             throw new InvalidOperationException(
-                "预览与灰度那一路都要 stdout，一个进程只有一条 —— 这两种输出不能同时要。");
+                "预览与取景那两路都要 stdout，一个进程只有一条 —— 这两种输出不能同时要。");
         }
 
         var arguments = new List<string>
@@ -751,32 +751,32 @@ public sealed class FfmpegCameraCapture : ICameraCapture
             arguments.Add("pipe:1");
         }
 
-        // ── 第二路输出：灰度裸帧（识码用，§54） ────────────────────────
+        // ── 第二路输出：彩色裸帧（待扫的取景框与识码共用，§54） ──────────
         //
         // ⚠️ 与上面预览那一路**不能共存**（开头就拦住了）——两路都要 stdout。
-        // 预录那一路要的是「文件 ＋ 灰度」：文件给缓冲，灰度给识码。
-        if (grayTap)
+        // 预录那一路要的是「文件 ＋ 帧」：文件给缓冲，帧给待扫的取景框（并降频转灰度识码）。
+        if (frameTap)
         {
             arguments.AddRange(
             [
                 "-map", $"{videoInput}:v:0",
                 "-an",
-                // ⚠️ <b>一律 scale</b>：这一路的输入是按**用户的录制规格**开的
+                // ⚠️ <b>一律要过那两环几何</b>：这一路的输入是按**用户的录制规格**开的
                 // （可能是 1920×1080），而读端按 640×480 定长切裸帧 ——
-                // 不缩的话切出来是错位的花屏、识码永远认不出来，**且不报任何错**。
-                // 见 `PrerecordProcess.GrayFilters`。
-                "-vf", string.Join(',', PrerecordProcess.GrayFilters(
-                    spec?.Rotation ?? CameraRotation.None, scale: true)),
-                "-pix_fmt", "gray",
+                // 不处理的话切出来是错位的花屏、识码永远认不出来，**且不报任何错**。
+                // 见 `PrerecordProcess.FrameFilters`。
+                "-vf", string.Join(',', PrerecordProcess.FrameFilters(
+                    spec?.Rotation ?? CameraRotation.None)),
+                "-pix_fmt", "rgb24",
                 "-f", "rawvideo",
             ]);
 
             // ⚠️ 同上面预览那一路：**每一路输出都要各自限长**（§54.4）——
             // `-t` 是输出选项，不是全局的。
-            if (durationSeconds is { } grayLimit)
+            if (durationSeconds is { } frameLimit)
             {
                 arguments.Add("-t");
-                arguments.Add(grayLimit.ToString(System.Globalization.CultureInfo.InvariantCulture));
+                arguments.Add(frameLimit.ToString(System.Globalization.CultureInfo.InvariantCulture));
             }
 
             arguments.Add("pipe:1");

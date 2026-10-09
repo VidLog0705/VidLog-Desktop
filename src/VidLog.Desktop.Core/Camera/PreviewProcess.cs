@@ -8,7 +8,7 @@ namespace VidLog.Desktop.Core.Camera;
 
 /// <summary>一帧预览画面（**RGB24**，紧凑，stride == width × 3）。</summary>
 /// <remarks>
-/// 与识码那一档的 <see cref="CameraFrame"/> 分开是**刻意的**：那个是**灰度**
+/// 与 <see cref="CameraFrame"/> 分开是**刻意的**：那个是**灰度**
 /// （ZXing 的 <c>Gray8</c> 直接吃），这个是**彩色**（要给人看）。
 /// 硬合成一个类型的话，要么让字段名撒谎（叫 <c>Gray</c> 却装 RGB），
 /// 要么给它加一层泛型 —— 两者都比多一个 10 行的记录贵。
@@ -19,36 +19,34 @@ public sealed record PreviewFrame(byte[] Rgb, int Width, int Height, long Captur
     public int Stride => Width * 3;
 
     /// <summary>
-    /// 把一帧**灰度**画面当成预览帧用（每个亮度值抄三份）。
+    /// 把这一帧转成**灰度**（ZXing 的 <c>Gray8</c> 要的那一种）。
     /// </summary>
     /// <remarks>
     /// <para>
-    /// 给「取景识码那一档的画面也显示出来」用（<c>PrerecordController</c>）：
-    /// 它那条管子里本来就在流灰度帧，**顺手**投进预览槽 —— 不额外开一路输出、
-    /// 不动那条已经验过的 argv。代价是那一档的预览是灰的（它是识别用的帧，
-    /// 不是为了给人看而生的）。
+    /// 给「一路彩色帧、C# 侧降频喂 ZXing」那一档用：配置向导第 3 步
+    /// （摄像头识别测试）与待扫识码（<c>PrerecordController</c>）。
     /// </para>
     /// <para>
-    /// ⚠️ 之所以在这里转成 rgb24 而不是让界面认两种像素格式：
-    /// <b>界面只该有一条渲染路径</b>。多一条 Gray8 分支就多一处「尺寸/格式对不上」
-    /// 的静默错位，而那是花屏、不报错。转换代价在这一档可以忽略
-    /// （640×480 @3 fps ≈ 2.7 MB/s 的内存写）。
+    /// ⚠️ <b>ffmpeg 那边不再单独出一路灰度</b>（2026-10-09 改的）：一个进程只有一条
+    /// stdout，而彩色那一路已经把它占了 —— 从前待扫那一路为了省事直接让 ffmpeg 出
+    /// <c>gray</c>，代价是主窗取景框**整天是灰的、还只有 3 fps**
+    /// （那是识别用的帧，不是为了给人看而生的）。改成彩色之后灰度在这里按需转：
+    /// 只有真要喂 ZXing 的那一帧才付这份代价。
+    /// </para>
+    /// <para>
+    /// 系数是 ITU-R BT.601 的亮度权重（与 ffmpeg 的 <c>gray</c> 滤镜同一套）。
     /// </para>
     /// </remarks>
-    public static PreviewFrame FromGray(CameraFrame frame)
+    public CameraFrame ToGray()
     {
-        var gray = frame.Gray;
-        var rgb = new byte[frame.Width * frame.Height * 3];
+        var gray = new byte[Width * Height];
 
-        for (int p = 0, i = 0; p < gray.Length && i + 2 < rgb.Length; p++, i += 3)
+        for (int i = 0, p = 0; p < gray.Length; p++, i += 3)
         {
-            var value = gray[p];
-            rgb[i] = value;
-            rgb[i + 1] = value;
-            rgb[i + 2] = value;
+            gray[p] = (byte)((Rgb[i] * 299 + Rgb[i + 1] * 587 + Rgb[i + 2] * 114) / 1000);
         }
 
-        return new PreviewFrame(rgb, frame.Width, frame.Height, frame.CapturedAtMs);
+        return new CameraFrame(gray, Width, Height, CapturedAtMs);
     }
 }
 
@@ -56,10 +54,10 @@ public sealed record PreviewFrame(byte[] Rgb, int Width, int Height, long Captur
 /// 单槽预览缓冲：**只留最新一帧，旧的直接丢**。
 /// </summary>
 /// <remarks>
-/// ⚠️ 理由与 <see cref="SingleSlotFrameSink"/> **逐字相同**，别改成有界队列：
-/// 消费者（画到屏幕上）比生产者（管道读）慢时可接受的做法是丢帧，
-/// 而**堵住管道会一路顶到 ffmpeg** —— 它连 stdin 上的 <c>q</c> 都处理不了，
-/// 只能强杀。预览丢帧完全无所谓（人要的是「现在画面里是什么」）。
+/// ⚠️ <b>别改成有界队列</b>：消费者（画到屏幕上）比生产者（管道读）慢时，
+/// 可接受的做法是丢帧，而**堵住管道会一路顶到 ffmpeg** —— 它连 stdin 上的 <c>q</c>
+/// 都处理不了，只能强杀，MKV 尾部就丢了（§54.2）。预览丢帧完全无所谓
+/// （人要的是「现在画面里是什么」）。
 /// </remarks>
 public sealed class SingleSlotPreviewSink
 {
@@ -112,8 +110,9 @@ public sealed class SingleSlotPreviewSink
 /// **独占**的（§25 实测），另有进程开着同一台相机时（录制中、取景识码中）
 /// 它会拿到 <c>device already in use</c>。
 /// 那两种情形下的画面走的是**别人进程**的第二路输出或顺带的那一帧 ——
-/// <c>FfmpegCameraCapture</c>（第二路输出）与 <c>PrerecordController</c>（顺带灰度帧），
-/// 两者都投进同一只 <see cref="SingleSlotPreviewSink"/>。
+/// <c>FfmpegCameraCapture</c> 与 <c>PrerecordController</c> 都投进同一只
+/// <see cref="SingleSlotPreviewSink"/>，而两条管子出的**是同一个形状**
+/// （<see cref="PreviewFilters"/> 是两边唯一的产出处）。
 /// </para>
 /// <para>
 /// ⚠️ <b>一路彩色帧，不是两路</b>：第 3 步要「预览 + 同时识码」，
@@ -245,8 +244,8 @@ public sealed class PreviewProcess : IAsyncDisposable
     }
 
     /// <summary>
-    /// 预览那一路的滤镜链：**转完方向再缩放补黑边**，产出恒为
-    /// <see cref="Width"/>×<see cref="Height"/>。
+    /// 取景那一路的滤镜链：**转完方向再缩放补黑边**，产出恒为
+    /// <paramref name="width"/>×<paramref name="height"/>。
     /// </summary>
     /// <remarks>
     /// <para>
@@ -256,20 +255,27 @@ public sealed class PreviewProcess : IAsyncDisposable
     /// 先转再缩就没有这个问题，而且**任何方向都落在同一个尺寸上**。
     /// </para>
     /// <para>
-    /// ⚠️ 按比例缩放 + 补黑边，**不是**拉伸（`scale=640:360` 会把 4:3 的源拉变形，
-    /// 而用户正靠这个画面判断摄像头摆正了没有）。
+    /// ⚠️ 按比例缩放 + 补黑边，**不是**拉伸（<c>scale=640:360</c> 会把 4:3 的源拉变形，
+    /// 而用户正靠这个画面判断摄像头摆正了没有）。尺寸本来就对得上时这两条是直通
+    /// （同尺寸、偏移为 0）。
     /// </para>
     /// <para>
     /// ⚠️ 方向滤镜的产出**只有一处**（<see cref="CameraRotationFilters.For"/>）——
     /// 与录制、识码两处用的是同一个函数，所以各处朝向不可能不一致。
     /// </para>
     /// <para>
-    /// ⚠️ <b>抽成公开的纯函数是因为它有第二个调用方</b>：采集进程的第二路输出
-    /// （<c>FfmpegCameraCapture</c>，见 §62）必须产出**同一个形状**，
-    /// 否则同一个界面控件会在两种状态下收到两种尺寸的帧。
+    /// ⚠️ <b>抽成公开的纯函数是因为它有三个调用方</b>，而它们必须产出**同一个形状**，
+    /// 否则同一个界面控件会在两种状态下收到两种尺寸的帧：
+    /// 采集进程的第二路输出（<c>FfmpegCameraCapture</c>，§62）、待扫那一路的识码 tap
+    /// （<c>PrerecordProcess.FrameFilters</c>），以及本类自己。
+    /// ⚠️ 三个里只有待扫那一路要的是 <b>640×480</b>（它同时是识码用的帧，
+    /// 缩进 16:9 的框里会让条码线性缩到 75%）—— 所以尺寸是**参数**，不是常量。
     /// </para>
     /// </remarks>
-    public static IReadOnlyList<string> PreviewFilters(CameraRotation rotation)
+    /// <param name="width">产出的宽（<see cref="Width"/> = 给人看的预览那一档）。</param>
+    /// <param name="height">产出的高。</param>
+    public static IReadOnlyList<string> PreviewFilters(
+        CameraRotation rotation, int width = Width, int height = Height)
     {
         var filters = new List<string>();
 
@@ -278,8 +284,8 @@ public sealed class PreviewProcess : IAsyncDisposable
             filters.Add(rotate);
         }
 
-        filters.Add($"scale={Width}:{Height}:force_original_aspect_ratio=decrease");
-        filters.Add($"pad={Width}:{Height}:(ow-iw)/2:(oh-ih)/2");
+        filters.Add($"scale={width}:{height}:force_original_aspect_ratio=decrease");
+        filters.Add($"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2");
 
         return filters;
     }

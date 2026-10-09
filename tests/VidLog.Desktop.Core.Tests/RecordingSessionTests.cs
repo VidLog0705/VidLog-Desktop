@@ -632,6 +632,37 @@ public class RecordingSessionTests
         Assert.Equal(TimeSpan.FromSeconds(7), duration);
     }
 
+    [Fact]
+    public async Task 最后那一片的终点是放设备那一刻_不是收尾跑完那一刻()
+    {
+        // ⚠️ 放设备现在会被**提前**调用（`RecordingCoordinator.StopCurrentSegmentAsync`
+        // 先把相机放掉、把待扫接回来，再收尾），而收尾（remux ＋ 解码校验）排在它后面
+        // —— 收尾那几秒**不是录制时间**。收尾时现读 `Elapsed` 的话，最后那一片会把
+        // 它们一起吃进去，而那个时长是**索引里的证据**。
+        using var dir = new TempDir();
+        var capture = new FakeCapture();
+        var clock = new FakeClock();
+
+        await using var session = Build(dir, capture, clock: clock, index: new RecordingIndexSpy());
+
+        await session.StartAsync(WaybillNumber.Parse("SF1"), "libx264");
+
+        clock.Advance(TimeSpan.FromSeconds(7));
+
+        // 放设备 —— 录到这里为止。
+        await session.ReleaseCaptureAsync();
+
+        // 收尾跑了几秒。这一段不该算进录像时长。
+        clock.Advance(TimeSpan.FromSeconds(3));
+
+        var outcome = await session.StopAsync(StopReason.Manual);
+
+        var finalized = Assert.Single(outcome.Segments);
+        Assert.Equal(
+            TimeSpan.FromSeconds(7),
+            finalized.Source.EndedAt - finalized.Source.StartedAt);
+    }
+
     // ─────────────────────────────────────────────
     // 兜底
     // ─────────────────────────────────────────────

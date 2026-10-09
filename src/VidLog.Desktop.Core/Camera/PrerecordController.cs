@@ -12,7 +12,7 @@ namespace VidLog.Desktop.Core.Camera;
 /// </summary>
 /// <param name="Buffer">
 /// 缓冲时长（规格 §3.1.3「缓冲时长可配置」）。<see cref="TimeSpan.Zero"/> = 不预录
-/// —— 那时这个进程退化成纯识码进程（不写文件、不编码）。
+/// —— 那时这个进程退化成纯取景进程（不写文件、不编码）。
 /// </param>
 /// <param name="Encoder">开分片那一路用的编码器（与正式录制同一个，见 <c>FfmpegCameraCapture</c>）。</param>
 /// <param name="Spec">
@@ -44,7 +44,7 @@ public sealed record PrerecordSetup(
 /// <para>
 /// 规格 §3.2.1 的第二种识别入口（放到画面里就开录）＋ 规格 §3.1.3 的预录缓冲。
 /// <b>两者共用同一个进程</b>，因为相机是独占的（§25 真机实测）——
-/// 待扫期间它只能有一个占用者，所以「识码要的灰度帧」与「预录要的文件」
+/// 待扫期间它只能有一个占用者，所以「取景（兼识码）要的那一路帧」与「预录要的文件」
 /// 必须是同一个 ffmpeg 的两路输出（§54）。
 /// </para>
 /// <para>
@@ -87,7 +87,7 @@ public sealed class PrerecordController : IAsyncDisposable
     private readonly ITrustedClock? _trustedClock;
     private readonly SingleSlotPreviewSink? _preview;
     private readonly DecodeGate _gate = new();
-    private readonly SingleSlotFrameSink _sink = new();
+    private readonly SingleSlotPreviewSink _sink = new();
 
     private PrerecordProcess? _process;
     private CancellationTokenSource? _loop;
@@ -101,12 +101,15 @@ public sealed class PrerecordController : IAsyncDisposable
     /// 主窗那幅预览画面的落点；<see langword="null"/> = 不投（测试与不关心界面的装配）。
     /// </summary>
     /// <remarks>
-    /// ⚠️ <b>这一路是「顺手」，不是「另开一路输出」</b>：管子里的灰度帧本来就在流
-    /// （识码要用），多投一次不多花 ffmpeg 一分力气。代价是这一档的预览是**灰的、3 fps**
-    /// （它是识别用的帧，不是为了给人看而生的）。
     /// <para>
     /// ⚠️ 相机在「工作中」的绝大部分时间是被**这个**进程占着的（录制只在扫到单号
     /// 之后那一段）。不投这一路的话，主窗那个取景框在一天里绝大多数时候是空的。
+    /// </para>
+    /// <para>
+    /// ⚠️ <b>投的是管子里的原帧，不做任何转换</b>（2026-10-09 起）：从前这一档
+    /// 让 ffmpeg 直接出灰度、再由界面把它当彩色帧显示，代价是主窗取景框整天是灰的、
+    /// 还只有 3 fps。现在管子出的是**彩色**（<see cref="PrerecordProcess.Fps"/> = 12），
+    /// 识码要的灰度在 <see cref="DecodeLoopAsync"/> 里**按需**转、且只转要喂 ZXing 的那几帧。
     /// </para>
     /// <para>
     /// ⚠️ 投帧走的是**永不阻塞**的单槽（<see cref="SingleSlotPreviewSink.Publish"/>），
@@ -378,17 +381,17 @@ public sealed class PrerecordController : IAsyncDisposable
         }
     }
 
-    /// <summary>灰度那一路要不要读（识码或预览任一需要）。</summary>
+    /// <summary>那一路帧要不要读（识码或取景任一需要）。</summary>
     private bool NeedsFrames => _decoder is not null || _preview is not null;
 
     /// <summary>
     /// 拼这一次待扫的命令行。
     /// </summary>
     /// <remarks>
-    /// ⚠️ <b>两种形状都不是在这里拼的</b>：纯识码那一档是
-    /// <see cref="PrerecordProcess.ScannerArguments"/>（今天那一份，逐字不变），
+    /// ⚠️ <b>两种形状都不是在这里拼的</b>：纯取景那一档是
+    /// <see cref="PrerecordProcess.ScannerArguments"/>，
     /// 带预录那一档是<see cref="FfmpegCameraCapture.BuildArguments"/>（录制那一份
-    /// ＋ 滚动分片 ＋ 灰度那一路）—— 本仓的规矩是 argv **只有一个来源**
+    /// ＋ 滚动分片 ＋ 取景那一路）—— 本仓的规矩是 argv **只有一个来源**
     /// （见那个方法的说明：规格探测与真录制走岔过一次，代价是探测没在验它声称要验的东西）。
     /// </remarks>
     private IReadOnlyList<string> BuildArguments(PrerecordSetup? recording)
@@ -415,8 +418,23 @@ public sealed class PrerecordController : IAsyncDisposable
             durationSeconds: null,
             preview: false,
             segmentSeconds: ChunkSeconds,
-            grayTap: NeedsFrames);
+            frameTap: NeedsFrames);
     }
+
+    /// <summary>
+    /// 每几帧喂一次 ZXing。
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ <b>这一路现在出 12 fps（<see cref="PrerecordProcess.Fps"/>），而 ZXing 每次
+    /// 要 5~15 ms</b> —— 每帧都喂就是四倍于从前的解码负载，而识码并不需要那个节奏
+    /// （包裹在画面里不会一帧就消失）。每 3 帧一次 ⇒ 4 次/秒，与从前的 3 fps
+    /// 「每帧都喂」同一个量级。
+    /// <para>
+    /// 取值与配置向导第 3 步（<c>WizardWindow.DecodeEveryNthFrame</c>）**一致**：
+    /// 两处都是「一路 12 fps 的彩色预览，降频喂 ZXing」这同一件事。
+    /// </para>
+    /// </remarks>
+    public const int DecodeEveryNthFrame = 3;
 
     private const string WatermarkFileName = "pre.ass";
 
@@ -456,6 +474,12 @@ public sealed class PrerecordController : IAsyncDisposable
 
     private async Task DecodeLoopAsync(CancellationToken cancellationToken)
     {
+        var tick = 0;
+
+        // ⚠️ **局部变量，不是字段**：这个循环一轮待扫一个，而「已经报过了」是
+        // 这一轮的事。做成字段就多一处「新一轮开始时忘了重置」的错法。
+        var reported = false;
+
         while (!cancellationToken.IsCancellationRequested)
         {
             var frame = _sink.TakeLatest();
@@ -467,22 +491,31 @@ public sealed class PrerecordController : IAsyncDisposable
                 continue;
             }
 
-            // 顺手把这一帧投给主窗的取景框（见 `_preview` 的说明）。
+            // 这一帧**直接**就是主窗要的画面（管子出的本来就是彩色 640×480，
+            // 从前这里得先 FromGray 补三个通道）。见 `_preview` 的说明。
             // ⚠️ 放在识码**之前**：解不出来是常态，而画面该照常更新。
-            _preview?.Publish(PreviewFrame.FromGray(frame));
+            _preview?.Publish(frame);
 
-            if (_decoder is null)
+            // ⚠️ **报出去之后循环**不退**，只有识码停**（2026-10-09 改的）：
+            // ffmpeg 这时还在跑（它在写分片），而协调器拿到单号之后要先去停它、
+            // 取回缓冲、再起正式采集 —— 中间那一个多秒的空档里**画面还在出**。
+            // 从前这里直接 `return`，于是那一秒主窗**冻在最后一帧**上，
+            // 紧接着被判成「一秒没有新帧」折成占位符（`MainWindow.RefreshPreview`），
+            // 现场看到的就是「扫上的那一刻画面黑一下」。
+            if (_decoder is null || reported)
             {
-                // 识码关着、只要画面。⚠️ **仍然要转到**这里把帧取走 ——
-                // 不取的话单槽里永远是同一帧（它只会「留着」，不会堵管道，
-                // 但这个循环会白转）。识码关着时这就是个投帧循环。
+                continue;
+            }
+
+            if (++tick % DecodeEveryNthFrame != 0)
+            {
                 continue;
             }
 
             string? decoded;
             try
             {
-                decoded = _decoder.TryDecode(frame);
+                decoded = _decoder.TryDecode(frame.ToGray());
             }
             catch (Exception)
             {
@@ -506,10 +539,11 @@ public sealed class PrerecordController : IAsyncDisposable
             _logger.Log(LogLevel.Info, "识码", $"识别到 {waybill!.Value}",
                 new Dictionary<string, object?> { ["原始"] = text });
 
-            // ⚠️ **报出去之后这个循环就退了，但 ffmpeg 还在跑**（它在写分片）：
-            // 调用方（协调器）拿到单号之后要先停这个进程、取回缓冲，再起正式采集。
+            // ⚠️ 挡住重复上报的是**这个标志**，不能光靠闸：同一个**静止**的条码在
+            // 「离开 2 秒」之后会被闸当成一次新的识别，而循环现在不退，
+            // 那就等于每 2 秒报一次同一个单号。
+            reported = true;
             Scanned?.Invoke(waybill);
-            return;
         }
     }
 
