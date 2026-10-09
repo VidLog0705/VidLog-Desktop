@@ -59,7 +59,9 @@ public partial class MainWindow : Window
         _previewTimer.Start();
         UpdatePreviewClock();
 
-        if (_host.Coordinator.CurrentWaybill is not null)
+        // ⚠️ 判据是**在工作**而不是「有当前单号」（2026-10-09，B2）：待扫态
+        // （工作上、还没扫到面单）里那一行也在变，也得接上。
+        if (_host.Coordinator.IsWorking)
         {
             _ticker.Start();
             UpdateRecordingStatus();
@@ -103,8 +105,23 @@ public partial class MainWindow : Window
                 break;
 
             case CoordinatorNoticeKind.SegmentStopped
-                or CoordinatorNoticeKind.SegmentStarted
-                or CoordinatorNoticeKind.WorkStopped:
+                or CoordinatorNoticeKind.SegmentStarted:
+                HideDurationPrompt();
+                break;
+
+            // ⚠️ **计时那一行的一秒一跳跟着「在不在工作」走，不跟着「哪一颗按钮被点了」走**
+            // （B2，2026-10-09）。从前来工作只能点按钮 ⇒ `_ticker` 在点按钮那一刻起来；
+            // 而工作也可以由**扫码枪**起来（扫 VLREC 那张码进待扫、或直接扫一张面单），
+            // 那条路上它从前**一次都没起来过** —— 右栏那一行就停在 `00:00:00` 上不动。
+            case CoordinatorNoticeKind.WorkStarted:
+                _ticker.Start();
+                HideDurationPrompt();
+                break;
+
+            // 结束工作（点的、或时长兜底自动结束的）⇒ 停跳。不停的话那一行会带着
+            // 上一段的时刻一直跳下去，而那正是 B2 报上来的那个自相矛盾。
+            case CoordinatorNoticeKind.WorkStopped:
+                _ticker.Stop();
                 HideDurationPrompt();
                 break;
 
@@ -219,13 +236,13 @@ public partial class MainWindow : Window
     }
 
     /// <summary>
-    /// 顶栏那个按钮的两种形态。
+    /// 顶栏那个按钮此刻是哪一态（<see cref="StartButtonKind"/>）。
     /// </summary>
     /// <remarks>
     /// <para>
-    /// ⚠️ <b>一个按钮兼两态（开始 / 停止）是照图来的</b>：设计图上顶栏只有
-    /// 一个绿色「开始录制」，没有单独的停止按钮。空闲时绿底「开始录制」，
-    /// 录制中红底「停止录制」—— 「现在到底在录没在录」从颜色上一眼就看得出，
+    /// ⚠️ <b>一个按钮兼三态是照图来的</b>：设计图上顶栏只有一个绿色「开始录制」，
+    /// 没有单独的停止按钮。空闲时绿底【开始录制】，待扫时红底【结束工作】，
+    /// 录制中红底【停止录制】—— 「现在到底在录没在录」从颜色上一眼就看得出，
     /// 那是这一版比原来两个按钮更好的地方。
     /// </para>
     /// <para>
@@ -233,36 +250,71 @@ public partial class MainWindow : Window
     /// 拆窗之后主窗没有摄像头下拉了，它只能靠这一个属性回答「现在有没有摄像头」。
     /// </para>
     /// <para>
-    /// ⚠️ 「能不能点」那个判断在 <see cref="StartButton.Enabled"/>（T27② 第 4 批）：
-    /// 那一串的**运算次序**是有讲究的（录制中一律能点），而这里只剩
-    /// **把三个事实读出来** —— 字与底色是文案/资源名，两样都留在这边。
+    /// ⚠️ <b>是「哪一态」与「能不能点」都在 <see cref="StartButton"/> 里</b>
+    /// （T27② 第 4 批；B1 2026-10-09 加第三态）：那两条的次序都是有讲究的，
+    /// 而这里只剩**把三个事实读出来、把态换成字与底色**。
+    /// </para>
+    /// <para>
+    /// ⚠️ <b>「框里有没有单号」问的是 <see cref="WaybillNumber.Normalize"/>，不是
+    /// <c>TryParse</c></b>：两者对空框的判断一致（归一化后为空就是没有），
+    /// 而这个问法说得出「框里什么都没写」与「写了但认不出」的区别 —— 后者要
+    /// **当场报错**，前者是【开始工作】。
     /// </para>
     /// </remarks>
     private void RefreshStartButton()
     {
-        var recording = _host.Coordinator.CurrentWaybill is not null;
-        var hasCamera = !_host.Camera.IsEmpty;
-        var hasWaybill = WaybillNumber.TryParse(WaybillBox.Text, out _, out _);
+        var coordinator = _host.Coordinator;
 
-        StartWorkLabel.Text = recording ? "停止录制" : "开始录制";
+        var kind = StartButton.Kind(
+            recording: coordinator.CurrentWaybill is not null,
+            working: coordinator.IsWorking,
+            hasWaybill: WaybillNumber.Normalize(WaybillBox.Text) is not null);
+
+        StartWorkLabel.Text = kind switch
+        {
+            StartButtonKind.StopRecording => "停止录制",
+            StartButtonKind.EndWork => "结束工作",
+            _ => "开始录制",
+        };
 
         // ⚠️ 底色走**样式**，不走本地值 —— 设 `Background` 等于写下一个本地值，
         // 它会压过样式里 `IsEnabled=False` 的触发器，禁用时照样满绿（见
         // `Theme.xaml` 里 `SuccessButton` 那段）。换样式没这个问题。
-        StartWorkButton.Style = (Style)FindResource(recording ? "DangerButton" : "SuccessButton");
+        StartWorkButton.Style = (Style)FindResource(
+            kind is StartButtonKind.StopRecording or StartButtonKind.EndWork
+                ? "DangerButton"
+                : "SuccessButton");
 
-        StartWorkButton.IsEnabled = StartButton.Enabled(recording, hasCamera, hasWaybill);
+        StartWorkButton.IsEnabled = StartButton.Enabled(kind, hasCamera: !_host.Camera.IsEmpty);
     }
 
     private async void OnStartOrStopWork(object sender, RoutedEventArgs e)
     {
-        if (_host.Coordinator.CurrentWaybill is not null)
+        var coordinator = _host.Coordinator;
+
+        // ⚠️ **这里必须重新问一次 `StartButton.Kind`，不能另写一份条件**：
+        // 各写一份的话，迟早出现「按钮上写着【结束工作】、按下去在开录」——
+        // 而那一刻用户在等着它停。
+        var typed = WaybillNumber.Normalize(WaybillBox.Text);
+        var kind = StartButton.Kind(
+            recording: coordinator.CurrentWaybill is not null,
+            working: coordinator.IsWorking,
+            hasWaybill: typed is not null);
+
+        // 【停止录制】/【结束工作】—— 两颗都落到同一个结束工作（第三态是新加的：
+        // 待扫态从前没有出口，见 `StartButtonKind`）。
+        if (kind is StartButtonKind.StopRecording or StartButtonKind.EndWork)
         {
             await StopWorkAsync();
             return;
         }
 
-        if (!WaybillNumber.TryParse(WaybillBox.Text, out var waybill, out var error))
+        WaybillNumber.TryParse(typed, out var waybill, out var error);
+
+        // ⚠️ 框里**写了东西但认不出**要当场说（踩坑 #13：点了没反应最难受）。
+        // 而框里**什么都没写**不是错 —— 那是【开始工作】：只把工作开起来，
+        // 相机交给取景识码，等扫到面单再开录（扫 VLREC 那张码做的是同一件事）。
+        if (typed is not null && waybill is null)
         {
             RecordingStatus.Text = $"单号不能用：{error}";
             return;
@@ -272,10 +324,21 @@ public partial class MainWindow : Window
 
         try
         {
-            _host.Coordinator.StartWork();
-            await _host.Coordinator.SubmitAsync(waybill!, PunchSource.ManualEntry);
+            coordinator.StartWork();
 
-            _ticker.Start();
+            if (waybill is not null)
+            {
+                await coordinator.SubmitAsync(waybill, PunchSource.ManualEntry);
+            }
+            else if (!coordinator.IsWorking)
+            {
+                // 被校时 / 许可那两道闸拦下了（`StartWork` 里那两道）。
+                // 原因已经由 `FinalizeFailed` 通知写进「本机录制动态」并且播报过一次，
+                // 这里在**他眼睛正看着的那一行**再指一次路 —— 不然屏幕上只剩一个
+                // 「空闲」，看起来就像程序没反应。
+                RecordingStatus.Text = "没能开始工作 —— 原因见右边「本机录制动态」。";
+            }
+
             UpdateRecordingStatus();
         }
         catch (Exception ex)
@@ -292,8 +355,10 @@ public partial class MainWindow : Window
 
         try
         {
+            // ⚠️ `_ticker` 不在这里停：计时那一行的一秒一跳跟着 `WorkStopped` 那条通知走
+            // （见 `OnNotice`），而结束工作一定会发那一条 —— 两处各停一次，
+            // 下一个人就分不清哪一处说了算。
             var outcome = await _host.Coordinator.StopWorkAsync();
-            _ticker.Stop();
 
             RecordingStatus.Text = outcome is null
                 ? "已结束。"
@@ -314,26 +379,48 @@ public partial class MainWindow : Window
         }
     }
 
+    /// <summary>
+    /// 没在录的时候那半句状态词。
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ <b>右栏那块与底栏共用这一份</b>（B2，2026-10-09）：两处各写一份，
+    /// 迟早出现「上面说空闲、下面说待扫」—— 而那两个词在这里是同一件事的两个说法。
+    /// 判据是 <see cref="RecordingCoordinator.IsWorking"/>：工作上、还没扫到面单，
+    /// 那就是**待扫**，不是空闲（相机开着、取景框活着、扫码枪随时能扫）。
+    /// </remarks>
+    private string IdleWord() => _host.Coordinator.IsWorking ? "待扫" : "空闲";
+
     private void UpdateRecordingStatus()
     {
-        var waybill = _host.Coordinator.CurrentWaybill;
+        var coordinator = _host.Coordinator;
+        var waybill = coordinator.CurrentWaybill;
 
-        // ⚠️ 「开始 / 停止」那个按钮的形态也要跟着走 —— ticker 只在这时跑，
-        // 而录制的开始与结束都可能由**扫码枪**触发（那时没有点击事件可挂）。
+        // ⚠️ 「开始 / 结束」那个按钮的形态也要跟着走 —— 这一行每次重画都得重画它，
+        // 因为录制的开始与结束都可能由**扫码枪**触发（那时没有点击事件可挂）。
         RefreshStartButton();
 
-        NavRecordingText.Text = waybill is null ? "空闲" : $"录制中 · {waybill.Value}";
+        NavRecordingText.Text = waybill is null ? IdleWord() : $"录制中 · {waybill.Value}";
         NavRecordingText.SetResourceReference(
             TextBlock.ForegroundProperty, waybill is null ? "TextSecondary" : "Success");
 
-        if (waybill is null)
+        if (waybill is not null)
         {
+            RecordingStatus.Text = $"录制中 {Display.Timer(coordinator.Elapsed)} · {waybill.Value}";
             return;
         }
 
-        var elapsed = _host.Coordinator.Elapsed;
+        // ⚠️ <b>待扫态必须**改掉**这一行</b>（B2，2026-10-09 需求方实测到的自相矛盾）：
+        // 它从前在「没有单号」时**直接 return**，于是这一行**冻在上一段的
+        // 「录制中 00:00:32 · SF122…」上不动** —— 而左边那个大字同时写着「空闲」。
+        // 同一个框里摆着两句打架的话，比哪一句错都更让人不敢信这个界面。
+        if (coordinator.IsWorking)
+        {
+            RecordingStatus.Text = "待扫 · 扫到面单就开录。";
+        }
 
-        RecordingStatus.Text = $"录制中 {Display.Timer(elapsed)} · {waybill.Value}";
+        // ⚠️ **没在工作时一个字都不写**（有意不写）：这一行还是那句结果话的家 ——
+        // 「已入库 3 段。」「收尾失败：…」都写在这儿，擦成「空闲」等于把用户
+        // 刚做完那件事的回执吃掉。
     }
 
     /// <summary>
@@ -365,7 +452,7 @@ public partial class MainWindow : Window
         var elapsed = _host.Coordinator.Elapsed;
 
         StatusRecordingText.Text = waybill is null
-            ? "空闲"
+            ? IdleWord()
             : $"录制中 {Display.Timer(elapsed)}";
         StatusRecordingText.SetResourceReference(
             TextBlock.ForegroundProperty, waybill is null ? "TextSecondary" : "Success");

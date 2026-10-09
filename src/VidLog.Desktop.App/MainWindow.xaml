@@ -147,11 +147,17 @@
                     </Button>
                 </Grid>
 
-                <!-- ③ 开始/停止录制。
+                <!-- ③ 开始 / 结束。
                      ⚠️ 绿色是图上量出来的 emerald-500（`Success`）。
-                     ⚠️ **一个按钮兼两态**：图上顶栏只有一个绿色「开始录制」，
-                     没有单独的停止按钮 —— 录起来之后它自己变红底「停止录制」
-                     （`RefreshStartButton` 里切，颜色与文字一起换）。 -->
+                     ⚠️ **一个按钮兼三态**：图上顶栏只有一个绿色「开始录制」，
+                     没有单独的停止按钮 —— 它自己换字换底色（`RefreshStartButton`
+                     里切，字与颜色一起换）：
+                       没在工作 ⇒ 绿底【开始录制】（框里没单号时按下去是**开始工作**，
+                                  进待扫态等扫码枪 —— 从前那种情况这一颗是灰的，B1）
+                       待扫（工作上、还没扫到面单）⇒ 红底【结束工作】
+                       录制中 ⇒ 红底【停止录制】
+                     ⚠️ 待扫态要是**框里还留着上一段的单号**，它仍是【开始录制】——
+                       那一下是「用这个单号再录一段」，与第三态的分界见 `StartButton.Kind`。 -->
                 <Button x:Name="StartWorkButton" Grid.Column="2"
                         Style="{StaticResource SuccessButton}"
                         Padding="22,10" IsEnabled="False" Click="OnStartOrStopWork">
@@ -188,7 +194,9 @@
                     <Grid>
                         <!-- 取景画面（§62）。帧从**两个**源头来，但都投进同一只单槽：
                              录制中＝采集进程的第二路输出（彩色、12 fps），
-                             工作中待扫＝取景识码那一路顺带投的灰度帧（灰、3 fps）。
+                             工作中待扫＝取景识码那一路顺带投的帧。
+                             ⚠️ 两路**都是彩色**（2026-10-09 A1 之前待扫那一路是灰度 3 fps），
+                             只是框不一样大（待扫 640×480、录制 640×360）。
                              ⚠️ `Uniform` 而不是 `Fill`：`Fill` 会把画面**拉变形**
                              （与配置向导预览区同一条理由）。帧本身已经是 16:9
                              且四周补过黑边，所以等比缩放之后剩下的黑边与视频底同色。
@@ -487,9 +495,12 @@
                                    Foreground="{DynamicResource TextSecondary}"/>
 
                         <!-- ══ 扫码开始录像（图 `_35` 右栏最底下）══════════════
-                             ⚠️ 它等于按一下顶栏那颗【开始录制】（`StartWork()`），
+                             ⚠️ 它等于按一下顶栏那颗按钮（`StartWork()`），
                              **不是**直接开录 —— 开录仍然要扫到一张真面单。
-                             ⚠️ 载荷固定（`ScanCommand.StartWork`），不随档位变。 -->
+                             ⚠️ 载荷固定（`ScanCommand.StartWork`），不随档位变。
+                             ⚠️ 那句括注「（那一颗要求单号框里已经有单号。）」**已删**
+                             （B3，2026-10-09）：B1 之后顶栏那颗没单号也能点了，
+                             再留着就是一句假话 —— 而这句话正是在教用户怎么用那张码。 -->
                         <Border Style="{StaticResource Card}" Padding="12,10" Margin="0,16,0,0">
                             <StackPanel>
                                 <TextBlock Style="{StaticResource SectionTitle}"
@@ -497,7 +508,7 @@
                                 <TextBlock Style="{StaticResource Caption}" Margin="0,4,0,0"
                                            HorizontalAlignment="Center" TextAlignment="Center"
                                            TextWrapping="Wrap"
-                                           Text="等同于按一下上面的【开始录制】；之后扫面单才会开录。（那一颗要求单号框里已经有单号。）"/>
+                                           Text="等同于按一下上面的【开始录制】；之后扫面单才会开录。"/>
                                 <Border Background="White" Padding="8" Margin="0,8,0,0"
                                         CornerRadius="{StaticResource RadiusControl}" HorizontalAlignment="Center"
                                         BorderBrush="{DynamicResource CardBorder}"
