@@ -307,8 +307,11 @@ public sealed record RecordingSpec(
 
     /// <summary>这个编码该先试哪些编码器（顺序 = 偏好，真正决定用谁的是实测）。</summary>
     /// <remarks>
-    /// H.265 那一组是本机**实测编不出来的**（无 N 卡/A 卡，而 HD 630 上 qsv 编不了 HEVC）
-    /// —— 那正是「回落必须可见」存在的理由：列出来 ≠ 能用（规格 §3.1.7 原话）。
+    /// ⚠️ 列出来 ≠ 能用（规格 §3.1.7 原话）：本机**无 N 卡、无 A 卡**，两组的第一、
+    /// 第三个候选（`*_nvenc` / `*_amf`）必然失败，所以**每次录制都在回落**。
+    /// 但**落地那一档是能用的**：2026-10-09 实测这台的 HD 630 用 `hevc_qsv`
+    /// 编得出 3840×2160 30fps 的 HEVC（ffprobe `codec_name=hevc`，20 秒 27 MB）。
+    /// 也就是说「回落」不等于「降级失败」—— 它只是提示换了一个编码器。
     /// </remarks>
     public IReadOnlyList<string> EncoderCandidates => Codec switch
     {
