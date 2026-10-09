@@ -950,7 +950,7 @@ public partial class MultiViewWindow : Window
                 VerticalAlignment = VerticalAlignment.Bottom,
                 Margin = new Thickness(0, 0, 0, 6),
                 FontFamily = (FontFamily)((FrameworkElement)owner).FindResource("MonoFont"),
-                FontSize = 14,
+                FontSize = (double)((FrameworkElement)owner).FindResource("TextSizeSubhead"),
                 // ⚠️ 加了第二行（健康度）之后必须显式居中：不设的话整个块按**最宽那行**
                 //     居中，两行各自左对齐 —— 短的那行会偏到一边去。
                 TextAlignment = TextAlignment.Center,

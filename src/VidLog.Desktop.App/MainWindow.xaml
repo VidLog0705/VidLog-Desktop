@@ -99,7 +99,7 @@
                               VerticalAlignment="Center"/>
                         <TextBlock x:Name="BusinessLabel" Text="发货" Margin="8,0,0,0"
                                    VerticalAlignment="Center"
-                                   FontSize="15" FontWeight="SemiBold"/>
+                                   FontSize="{StaticResource TextSizeEmphasis}" FontWeight="SemiBold"/>
                     </StackPanel>
                 </Button>
 
@@ -109,13 +109,13 @@
                 <Grid Grid.Column="1" Margin="12,0">
                     <TextBox x:Name="WaybillBox" Background="{DynamicResource PageBackground}"
                              BorderBrush="{DynamicResource BorderStrong}" BorderThickness="1"
-                             Padding="14,9" FontSize="15" IsEnabled="False"
+                             Padding="14,9" FontSize="{StaticResource TextSizeEmphasis}" IsEnabled="False"
                              VerticalContentAlignment="Center"
                              TextChanged="OnWaybillChanged"/>
                     <TextBlock Text="支持后台扫码，也可手动输入"
                                Margin="16,0,0,0" IsHitTestVisible="False"
                                VerticalAlignment="Center"
-                               Foreground="{DynamicResource TextDisabled}" FontSize="15">
+                               Foreground="{DynamicResource TextDisabled}" FontSize="{StaticResource TextSizeEmphasis}">
                         <TextBlock.Style>
                             <Style TargetType="TextBlock">
                                 <Setter Property="Visibility" Value="Collapsed"/>
@@ -162,7 +162,7 @@
                         </Grid>
                         <TextBlock x:Name="StartWorkLabel" Text="开始录制" Margin="8,0,0,0"
                                    VerticalAlignment="Center"
-                                   FontSize="15" FontWeight="SemiBold"/>
+                                   FontSize="{StaticResource TextSizeEmphasis}" FontWeight="SemiBold"/>
                     </StackPanel>
                 </Button>
             </Grid>
@@ -203,7 +203,7 @@
                              「哪种状态是什么色」就有两个来源了。 -->
                         <TextBlock x:Name="PreviewClockText" Margin="0,12,16,0"
                                    HorizontalAlignment="Right" VerticalAlignment="Top"
-                                   FontFamily="{StaticResource MonoFont}" FontSize="13"
+                                   FontFamily="{StaticResource MonoFont}" FontSize="{StaticResource TextSizeBody}"
                                    Text=""/>
 
                         <StackPanel x:Name="PreviewPlaceholder"
@@ -217,7 +217,7 @@
                                  而它只在最后一种下成立）。改成中性的栏目名，
                                  为什么没有画面由下面那句说清楚。 -->
                             <TextBlock Text="实时预览" Margin="0,14,0,0"
-                                       HorizontalAlignment="Center" FontSize="15"
+                                       HorizontalAlignment="Center" FontSize="{StaticResource TextSizeEmphasis}"
                                        Foreground="White"/>
                             <TextBlock x:Name="PreviewHintText" Margin="0,6,0,0"
                                        MaxWidth="520" TextAlignment="Center" TextWrapping="Wrap"
@@ -338,7 +338,7 @@
                                 BorderBrush="{DynamicResource CardBorder}" BorderThickness="1"
                                 CornerRadius="{StaticResource RadiusControl}" Padding="12,10">
                             <StackPanel>
-                                <TextBlock x:Name="NavRecordingText" FontSize="13"
+                                <TextBlock x:Name="NavRecordingText" FontSize="{StaticResource TextSizeBody}"
                                            FontWeight="SemiBold"
                                            Foreground="{DynamicResource TextSecondary}"
                                            Text="空闲"/>
@@ -546,12 +546,12 @@
 
                 <StackPanel Grid.Column="0">
                     <StackPanel Orientation="Horizontal">
-                        <TextBlock x:Name="BackupMachineText" FontSize="22"
+                        <TextBlock x:Name="BackupMachineText" FontSize="{StaticResource TextSizeStat}"
                                    FontWeight="Bold"
                                    Foreground="{DynamicResource TextPrimary}" Text="电脑"/>
                         <!-- 图上是灰字、与机器名同一行的**下沿对齐** -->
                         <TextBlock x:Name="BackupAddressText" Margin="12,0,0,0"
-                                   VerticalAlignment="Bottom" FontSize="14"
+                                   VerticalAlignment="Bottom" FontSize="{StaticResource TextSizeSubhead}"
                                    Foreground="{DynamicResource TextSecondary}" Text=""/>
                     </StackPanel>
                     <TextBlock x:Name="BackupRoleText" Style="{StaticResource BodySecondary}"
@@ -604,11 +604,11 @@
                                             M 5.4,11.5 A 2.4,2.4 0 0 1 8.6,11.5
                                             M 6,14.5 A 1,1 0 1 0 8,14.5 A 1,1 0 1 0 6,14.5 Z"/>
                                 <TextBlock Text="手机/电脑备份" Margin="8,0,0,0"
-                                           FontSize="14" FontWeight="SemiBold"/>
+                                           FontSize="{StaticResource TextSizeEmphasis}" FontWeight="SemiBold"/>
                             </StackPanel>
                             <!-- 图上「已就绪」是绿的、右对齐 -->
                             <TextBlock x:Name="BackupDeviceTag" HorizontalAlignment="Right"
-                                       VerticalAlignment="Center" FontSize="12"
+                                       VerticalAlignment="Center" FontSize="{StaticResource TextSizeCaption}"
                                        Foreground="{DynamicResource Success}" Text="已就绪"/>
                         </Grid>
                         <TextBlock x:Name="BackupDeviceText" Style="{StaticResource BodySecondary}"
@@ -624,10 +624,10 @@
                                       VerticalAlignment="Center"
                                       Data="M 2,7 A 5,5 0 1 1 7,12 L 2,12 L 2,7 Z"/>
                                 <TextBlock Text="订单联动" Margin="8,0,0,0"
-                                           FontSize="14" FontWeight="SemiBold"/>
+                                           FontSize="{StaticResource TextSizeEmphasis}" FontWeight="SemiBold"/>
                             </StackPanel>
                             <TextBlock x:Name="BackupOrderTag" HorizontalAlignment="Right"
-                                       VerticalAlignment="Center" FontSize="12"
+                                       VerticalAlignment="Center" FontSize="{StaticResource TextSizeCaption}"
                                        Foreground="{DynamicResource Warning}" Text="暂无设备"/>
                         </Grid>
                         <TextBlock x:Name="BackupOrderText" Style="{StaticResource BodySecondary}"
@@ -727,23 +727,23 @@
                 Padding="20,12">
             <Grid>
                 <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
-                    <TextBlock Text="今日备份" FontSize="14"
+                    <TextBlock Text="今日备份" FontSize="{StaticResource TextSizeSubhead}"
                                Foreground="{DynamicResource TextSecondary}"
                                VerticalAlignment="Center"/>
                     <TextBlock x:Name="BackupTodayText" Text="0" Margin="8,0,0,0"
-                               FontSize="22" FontWeight="Bold"
+                               FontSize="{StaticResource TextSizeStat}" FontWeight="Bold"
                                Foreground="{DynamicResource Accent}"/>
-                    <TextBlock Text="个" FontSize="14" Margin="4,0,0,0"
+                    <TextBlock Text="个" FontSize="{StaticResource TextSizeSubhead}" Margin="4,0,0,0"
                                Foreground="{DynamicResource TextSecondary}"
                                VerticalAlignment="Center"/>
 
-                    <TextBlock Text="累计备份" FontSize="14" Margin="26,0,0,0"
+                    <TextBlock Text="累计备份" FontSize="{StaticResource TextSizeSubhead}" Margin="26,0,0,0"
                                Foreground="{DynamicResource TextSecondary}"
                                VerticalAlignment="Center"/>
                     <TextBlock x:Name="BackupTotalText" Text="0" Margin="8,0,0,0"
-                               FontSize="22" FontWeight="Bold"
+                               FontSize="{StaticResource TextSizeStat}" FontWeight="Bold"
                                Foreground="{DynamicResource Accent}"/>
-                    <TextBlock Text="个" FontSize="14" Margin="4,0,0,0"
+                    <TextBlock Text="个" FontSize="{StaticResource TextSizeSubhead}" Margin="4,0,0,0"
                                Foreground="{DynamicResource TextSecondary}"
                                VerticalAlignment="Center"/>
                 </StackPanel>

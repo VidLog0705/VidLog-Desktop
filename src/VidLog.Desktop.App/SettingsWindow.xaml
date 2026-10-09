@@ -88,7 +88,7 @@
                 </Grid.ColumnDefinitions>
 
                 <TextBlock Grid.Column="0" Text="{Binding Folder}"
-                           VerticalAlignment="Center" FontSize="13"
+                           VerticalAlignment="Center" FontSize="{StaticResource TextSizeBody}"
                            TextTrimming="CharacterEllipsis"
                            Foreground="{DynamicResource TextPrimary}"/>
 
@@ -102,7 +102,7 @@
                              ToolTip="{Binding ReserveHint}"
                              ToolTipService.ShowOnDisabled="True"
                              TextChanged="OnDiskEdited"/>
-                    <TextBlock Text="GB" Margin="8,0,0,0" FontSize="13"
+                    <TextBlock Text="GB" Margin="8,0,0,0" FontSize="{StaticResource TextSizeBody}"
                                FontWeight="SemiBold" VerticalAlignment="Center"
                                Foreground="{DynamicResource TextPrimary}"/>
                 </StackPanel>
@@ -992,7 +992,7 @@
                                          ScrollViewer.HorizontalScrollBarVisibility="Disabled">
                                     <ListBox.ItemTemplate>
                                         <DataTemplate>
-                                            <TextBlock Text="{Binding}" TextWrapping="Wrap" FontSize="13"
+                                            <TextBlock Text="{Binding}" TextWrapping="Wrap" FontSize="{StaticResource TextSizeBody}"
                                                        Foreground="{DynamicResource TextPrimary}"/>
                                         </DataTemplate>
                                     </ListBox.ItemTemplate>

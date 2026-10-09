@@ -1,5 +1,6 @@
 <ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
-                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+                    xmlns:sys="clr-namespace:System;assembly=mscorlib">
 
     <!--
         ════════════════════════════════════════════════════════════════
@@ -228,6 +229,37 @@
     <CornerRadius x:Key="RadiusTab">4,4,0,0</CornerRadius>
 
     <!-- ── 文字 ──────────────────────────────────────────────────── -->
+    <!--
+        ═══ 字号档位（2026-10-09）═══
+
+        下面那批 `Style` 说的是**整套文字外观**（字族 + 字号 + 字重 + 颜色 + 换行），
+        只能挂在 `TextBlock` 上。可是 App 里还有一批地方只要**一个字号**：
+        `TextBox`/`Button`/`ComboBox` 挂不上 TextBlock 样式，而 C# 里 new 出来的
+        `TextBlock` 也只想要那一档数。此前那 57 处是**手写数字**（26/22/15/14/13/12/11），
+        于是「大号统计数字」这个角色在两个窗口里是 26 和 22 两个值、「卡片小标题」
+        在 14 和 15 之间摇摆 —— 谁也没错，因为根本没有名字可以引。
+
+        这几支就是那些档位的名字。它们**只管字号**，所以把 57 处迁过来时
+        除了下面这两处**有意**的合并，**没有一处外观跟着变**：
+
+        - 「大号统计数字」统一成 **26**（原 `DataWindow` 26 ×4、`MainWindow` 22 ×3）
+        - 「卡片小标题」统一成 **15 半粗**（原 14 半粗 ×9、15 半粗 ×6）
+
+        ⚠️ 要用「整套外观」的地方请用上面/下面那批 `Style`，别用这几支 ——
+        这几支不会带字族和颜色。反过来同理：凡元素上已经有 `Style` 的，
+        就地改字号等于让定义和用处对不上（见 `BodySecondary` 上面那段）。
+
+        ⚠️ 名字里的角色是**量出来的**，不是拍的：每个值出现的处数写在后面。
+        ⚠️ 「卡片小标题」走的是 `TextSizeEmphasis` + 就地 `FontWeight="SemiBold"`，
+        **不在下面单独开一支** —— 单开一支就等于把「15」写两遍，下次改一处漏一处。
+    -->
+    <sys:Double x:Key="TextSizeStat">26</sys:Double>      <!-- 大号统计数字（7 处） -->
+    <sys:Double x:Key="TextSizeEmphasis">15</sys:Double>  <!-- 主操作区的大字 + 卡片小标题：扫码框、主按钮内容、选项标题（21 处） -->
+    <sys:Double x:Key="TextSizeSubhead">14</sys:Double>   <!-- 大一档的次要文字（6 处） -->
+    <sys:Double x:Key="TextSizeBody">13</sys:Double>      <!-- 正文（9 处） -->
+    <sys:Double x:Key="TextSizeCaption">12</sys:Double>   <!-- 说明（9 处） -->
+    <sys:Double x:Key="TextSizeNote">11</sys:Double>      <!-- 角标 / 脚注（5 处） -->
+
     <!--
         页面 / 窗口的大标题（28 加粗）。
 

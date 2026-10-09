@@ -188,7 +188,7 @@
         <!-- ══ 顶部标题 ═══════════════════════════════════════════════ -->
         <StackPanel Grid.Row="0" Margin="0,0,0,20">
             <TextBlock Text="电脑录像配置向导" Style="{StaticResource PageTitle}"/>
-            <TextBlock Margin="0,6,0,0" FontSize="13"
+            <TextBlock Margin="0,6,0,0" FontSize="{StaticResource TextSizeBody}"
                        Foreground="{DynamicResource TextSecondary}"
                        Text="按步骤配置摄像头、面单识别方式、麦克风和可选扫码枪"/>
         </StackPanel>
@@ -249,12 +249,12 @@
                                          GroupName="ModeChoice">
                                 <StackPanel>
                                     <StackPanel Orientation="Horizontal">
-                                        <TextBlock Text="连续打包模式" FontSize="14"
+                                        <TextBlock Text="连续打包模式" FontSize="{StaticResource TextSizeEmphasis}"
                                                    FontWeight="SemiBold"
                                                    Foreground="{DynamicResource TextPrimary}"/>
                                         <Border Style="{StaticResource TagPill}" Margin="8,0,0,0"
                                                 Background="{DynamicResource AccentSolid}">
-                                            <TextBlock Text="推荐" FontSize="11" Foreground="White"/>
+                                            <TextBlock Text="推荐" FontSize="{StaticResource TextSizeNote}" Foreground="White"/>
                                         </Border>
                                     </StackPanel>
                                     <TextBlock Style="{StaticResource Caption}" Margin="0,4,0,0"
@@ -266,7 +266,7 @@
                             <RadioButton x:Name="ModeSameWaybill" Style="{StaticResource ChoiceCard}"
                                          GroupName="ModeChoice">
                                 <StackPanel>
-                                    <TextBlock Text="同码停录模式" FontSize="14"
+                                    <TextBlock Text="同码停录模式" FontSize="{StaticResource TextSizeEmphasis}"
                                                FontWeight="SemiBold"
                                                Foreground="{DynamicResource TextPrimary}"/>
                                     <TextBlock Style="{StaticResource Caption}" Margin="0,4,0,0"
@@ -319,7 +319,7 @@
                                     <Image x:Name="PreviewImage" Stretch="Uniform"
                                            RenderOptions.BitmapScalingMode="HighQuality"/>
                                     <Border x:Name="PreviewHintBox" Style="{StaticResource OverlayPill}">
-                                        <TextBlock x:Name="PreviewHint" FontSize="12"
+                                        <TextBlock x:Name="PreviewHint" FontSize="{StaticResource TextSizeCaption}"
                                                    Foreground="White" TextWrapping="Wrap"
                                                    Text="未检测到可用摄像头"/>
                                     </Border>
@@ -356,12 +356,12 @@
                                              Checked="OnRecognitionChanged">
                                     <StackPanel>
                                         <StackPanel Orientation="Horizontal">
-                                            <TextBlock Text="使用摄像头识别" FontSize="14"
+                                            <TextBlock Text="使用摄像头识别" FontSize="{StaticResource TextSizeEmphasis}"
                                                        FontWeight="SemiBold"
                                                        Foreground="{DynamicResource TextPrimary}"/>
                                             <Border Style="{StaticResource TagPill}" Margin="8,0,0,0"
                                                     Background="{DynamicResource AccentSolid}">
-                                                <TextBlock Text="推荐" FontSize="11" Foreground="White"/>
+                                                <TextBlock Text="推荐" FontSize="{StaticResource TextSizeNote}" Foreground="White"/>
                                             </Border>
                                         </StackPanel>
                                         <TextBlock Style="{StaticResource Caption}" Margin="0,4,0,0"
@@ -374,7 +374,7 @@
                                              GroupName="RecognitionChoice" Margin="5,0,0,10"
                                              Checked="OnRecognitionChanged">
                                     <StackPanel>
-                                        <TextBlock Text="不使用摄像头识别" FontSize="14"
+                                        <TextBlock Text="不使用摄像头识别" FontSize="{StaticResource TextSizeEmphasis}"
                                                    FontWeight="SemiBold"
                                                    Foreground="{DynamicResource TextPrimary}"/>
                                         <TextBlock Style="{StaticResource Caption}" Margin="0,4,0,0"
@@ -399,7 +399,7 @@
                                             CornerRadius="{StaticResource RadiusTag}" IsHitTestVisible="False"/>
                                     <Border Style="{StaticResource OverlayPill}"
                                             VerticalAlignment="Top" Margin="0,10,0,0">
-                                        <TextBlock Text="将面单条形码放入框内" FontSize="12"
+                                        <TextBlock Text="将面单条形码放入框内" FontSize="{StaticResource TextSizeCaption}"
                                                    Foreground="White"/>
                                     </Border>
                                     <!-- 取不到画面时的说明。⚠️ 与步 2 那句**同源**
@@ -408,7 +408,7 @@
                                          而真实原因往往是「还没点测试连接」。 -->
                                     <Border x:Name="RecognitionHintBox"
                                             Style="{StaticResource OverlayPill}">
-                                        <TextBlock x:Name="RecognitionHint" FontSize="12"
+                                        <TextBlock x:Name="RecognitionHint" FontSize="{StaticResource TextSizeCaption}"
                                                    Foreground="White" TextWrapping="Wrap"
                                                    Text="未检测到可用摄像头"/>
                                     </Border>
@@ -417,14 +417,14 @@
                                          借它而不是为这一处单开一个键。 -->
                                     <TextBlock x:Name="RecognitionDeviceLabel"
                                                VerticalAlignment="Bottom" HorizontalAlignment="Left"
-                                               Margin="10,0,0,8" FontSize="11"
+                                               Margin="10,0,0,8" FontSize="{StaticResource TextSizeNote}"
                                                Foreground="{DynamicResource BorderStrong}"/>
                                     <Border x:Name="RecognitionResultBox"
                                             HorizontalAlignment="Right" VerticalAlignment="Bottom"
                                             Margin="0,0,10,8" Padding="8,4" CornerRadius="{StaticResource RadiusTag}"
                                             Background="{DynamicResource Success}"
                                             Visibility="Collapsed">
-                                        <TextBlock x:Name="RecognitionResultText" FontSize="11"
+                                        <TextBlock x:Name="RecognitionResultText" FontSize="{StaticResource TextSizeNote}"
                                                    Foreground="White"/>
                                     </Border>
                                 </Grid>
@@ -436,7 +436,7 @@
                                     BorderBrush="{DynamicResource CardBorder}" BorderThickness="1"
                                     CornerRadius="{StaticResource RadiusCard}">
                                 <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center">
-                                    <TextBlock Text="已选择不使用摄像头识别" FontSize="14"
+                                    <TextBlock Text="已选择不使用摄像头识别" FontSize="{StaticResource TextSizeEmphasis}"
                                                FontWeight="SemiBold" HorizontalAlignment="Center"
                                                Foreground="{DynamicResource TextPrimary}"/>
                                     <TextBlock Style="{StaticResource Caption}" Margin="0,6,0,0"
@@ -460,7 +460,7 @@
                                     BorderBrush="{DynamicResource CardBorder}" BorderThickness="1"
                                     CornerRadius="{StaticResource RadiusCard}" Padding="18,16">
                                 <StackPanel>
-                                    <TextBlock x:Name="PerfRunningText" FontSize="13"
+                                    <TextBlock x:Name="PerfRunningText" FontSize="{StaticResource TextSizeBody}"
                                                Foreground="{DynamicResource Accent}"
                                                TextWrapping="Wrap" Text="正在检测…"/>
                                     <ProgressBar x:Name="PerfBar" Style="{StaticResource WizardProgress}"
@@ -470,14 +470,14 @@
 
                             <!-- 结果（成功 / 未完成两种情形共用一张卡） -->
                             <StackPanel x:Name="PerfResultBox" Visibility="Collapsed">
-                                <TextBlock x:Name="PerfBanner" FontSize="13" TextWrapping="Wrap"
+                                <TextBlock x:Name="PerfBanner" FontSize="{StaticResource TextSizeBody}" TextWrapping="Wrap"
                                            Foreground="{DynamicResource TextPrimary}"/>
 
                                 <Border Background="{DynamicResource SurfaceMuted}"
                                         BorderBrush="{DynamicResource CardBorder}" BorderThickness="1"
                                         CornerRadius="{StaticResource RadiusCard}" Padding="18,16" Margin="0,14,0,0">
                                     <StackPanel>
-                                        <TextBlock x:Name="PerfResultTitle" FontSize="14"
+                                        <TextBlock x:Name="PerfResultTitle" FontSize="{StaticResource TextSizeEmphasis}"
                                                    FontWeight="SemiBold"
                                                    Foreground="{DynamicResource TextPrimary}"/>
                                         <TextBlock x:Name="PerfResultSpec" Style="{StaticResource Body}"
@@ -517,7 +517,7 @@
                                     <ProgressBar x:Name="MicLevelBar"
                                                  Style="{StaticResource LevelBar}" Height="8"/>
                                     <TextBlock x:Name="MicLevelText" Margin="0,10,0,0"
-                                               FontSize="12"
+                                               FontSize="{StaticResource TextSizeCaption}"
                                                Foreground="{DynamicResource TextSecondary}"
                                                Text="还没有听到声音 —— 对着麦克风说句话试试"/>
                                 </StackPanel>
@@ -595,7 +595,7 @@
                                     BorderBrush="{DynamicResource CardBorder}" BorderThickness="1"
                                     CornerRadius="{StaticResource RadiusCard}" Padding="18,16" Margin="0,12,0,0">
                                 <StackPanel>
-                                    <TextBlock Text="局域网查看视频" FontSize="14"
+                                    <TextBlock Text="局域网查看视频" FontSize="{StaticResource TextSizeEmphasis}"
                                                FontWeight="SemiBold"
                                                Foreground="{DynamicResource TextPrimary}"/>
                                     <TextBlock Style="{StaticResource Caption}" Margin="0,6,0,0"

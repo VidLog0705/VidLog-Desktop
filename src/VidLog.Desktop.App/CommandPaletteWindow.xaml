@@ -14,7 +14,7 @@
     -->
     <Border Margin="10" Padding="12" Style="{StaticResource Card}">
         <StackPanel>
-            <TextBox x:Name="QueryBox" FontSize="15" Padding="8,6"
+            <TextBox x:Name="QueryBox" FontSize="{StaticResource TextSizeEmphasis}" Padding="8,6"
                      BorderBrush="{DynamicResource BorderStrong}"/>
 
             <!-- 这句是**死的**（不随输入变），所以写在 XAML 里，不在每次敲字时重设 -->

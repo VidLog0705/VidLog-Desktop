@@ -146,7 +146,7 @@
             <Border Grid.Column="0" Style="{StaticResource Card}" Padding="18,14" Margin="0,0,12,0">
                 <StackPanel>
                     <TextBlock Style="{StaticResource Caption}" Text="打包总件数"/>
-                    <TextBlock x:Name="TotalCountText" FontSize="26" FontWeight="Bold"
+                    <TextBlock x:Name="TotalCountText" FontSize="{StaticResource TextSizeStat}" FontWeight="Bold"
                                Margin="0,4,0,0" Foreground="{DynamicResource TextPrimary}"
                                Text="0"/>
                     <!-- ⚠️ 两个口径都给出来：一个单号可以有好几段录像，
@@ -159,7 +159,7 @@
             <Border Grid.Column="1" Style="{StaticResource Card}" Padding="18,14" Margin="0,0,12,0">
                 <StackPanel>
                     <TextBlock Style="{StaticResource Caption}" Text="占用存储空间"/>
-                    <TextBlock x:Name="TotalBytesText" FontSize="26" FontWeight="Bold"
+                    <TextBlock x:Name="TotalBytesText" FontSize="{StaticResource TextSizeStat}" FontWeight="Bold"
                                Margin="0,4,0,0" Foreground="{DynamicResource Accent}"
                                Text="约 0 MB"/>
                 </StackPanel>
@@ -168,7 +168,7 @@
             <Border Grid.Column="2" Style="{StaticResource Card}" Padding="18,14" Margin="0,0,12,0">
                 <StackPanel>
                     <TextBlock Style="{StaticResource Caption}" Text="累计工作时长"/>
-                    <TextBlock x:Name="TotalDurationText" FontSize="26" FontWeight="Bold"
+                    <TextBlock x:Name="TotalDurationText" FontSize="{StaticResource TextSizeStat}" FontWeight="Bold"
                                Margin="0,4,0,0" Foreground="{DynamicResource Success}"
                                Text="0 秒"/>
                 </StackPanel>
@@ -177,7 +177,7 @@
             <Border Grid.Column="3" Style="{StaticResource Card}" Padding="18,14" Margin="0">
                 <StackPanel>
                     <TextBlock Style="{StaticResource Caption}" Text="平均单件用时"/>
-                    <TextBlock x:Name="AverageText" FontSize="26" FontWeight="Bold"
+                    <TextBlock x:Name="AverageText" FontSize="{StaticResource TextSizeStat}" FontWeight="Bold"
                                Margin="0,4,0,0" Foreground="{DynamicResource Warning}"
                                Text="0 秒"/>
                 </StackPanel>
@@ -224,7 +224,7 @@
                                     <TextBlock Grid.Column="0" Text="{Binding Label}"
                                                VerticalAlignment="Center"
                                                FontFamily="{StaticResource MonoFont}"
-                                               FontSize="12"
+                                               FontSize="{StaticResource TextSizeCaption}"
                                                Foreground="{DynamicResource TextSecondary}"/>
 
                                     <!-- 条：见文件头那段关于 ProgressBar 的说明 -->

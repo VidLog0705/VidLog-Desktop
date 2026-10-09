@@ -25,7 +25,7 @@
                         <Border x:Name="Bd" CornerRadius="9" BorderThickness="1"
                                 Background="Transparent"
                                 BorderBrush="{DynamicResource TextDisabled}">
-                            <TextBlock x:Name="Glyph" Text="?" FontSize="11"
+                            <TextBlock x:Name="Glyph" Text="?" FontSize="{StaticResource TextSizeNote}"
                                        FontWeight="SemiBold"
                                        HorizontalAlignment="Center"
                                        VerticalAlignment="Center"
@@ -78,7 +78,7 @@
                     <DropShadowEffect BlurRadius="10" ShadowDepth="2"
                                       Opacity="0.16" Color="{DynamicResource ShadowColor}"/>
                 </Border.Effect>
-                <TextBlock TextWrapping="Wrap" FontSize="12" LineHeight="19"
+                <TextBlock TextWrapping="Wrap" FontSize="{StaticResource TextSizeCaption}" LineHeight="19"
                            Foreground="{DynamicResource TextPrimary}"
                            Text="{Binding Text, ElementName=Root}"/>
             </Border>

@@ -109,7 +109,7 @@
         <DataTemplate x:Key="AbilityTemplate">
             <StackPanel Orientation="Horizontal" Margin="0,3,0,0">
                 <TextBlock Text="•" Foreground="{DynamicResource TextSecondary}"
-                           FontSize="13" Margin="2,0,7,0" VerticalAlignment="Center"/>
+                           FontSize="{StaticResource TextSizeBody}" Margin="2,0,7,0" VerticalAlignment="Center"/>
                 <TextBlock Text="{Binding}" Style="{StaticResource Body}"/>
             </StackPanel>
         </DataTemplate>
@@ -128,7 +128,7 @@
                        Text="回答两个简单问题，系统会自动组合出合适的用途"/>
 
             <!-- ══ 问题一 ════════════════════════════════════════════════ -->
-            <TextBlock Style="{StaticResource SectionTitle}" FontSize="15"
+            <TextBlock Style="{StaticResource SectionTitle}" FontSize="{StaticResource TextSizeEmphasis}"
                        Margin="0,22,0,10"
                        Text="1. 这台电脑要用来录像吗?"/>
             <Grid>
@@ -149,7 +149,7 @@
                               Data="M 12.5,1.5 L 4.5,10 L 0.5,6"/>
                         <StackPanel Grid.Column="1" Margin="9,0,0,0">
                             <TextBlock Text="要，使用这台电脑录像"
-                                       FontSize="15" FontWeight="SemiBold"/>
+                                       FontSize="{StaticResource TextSizeEmphasis}" FontWeight="SemiBold"/>
                             <TextBlock Style="{StaticResource Caption}" Margin="0,5,0,0"
                                        Text="启用摄像头、麦克风、面单识别、扫码枪、订单联动和语音提醒"/>
                         </StackPanel>
@@ -168,7 +168,7 @@
                               Data="M 0.5,0.5 L 13,13 M 13,0.5 L 0.5,13"/>
                         <StackPanel Grid.Column="1" Margin="9,0,0,0">
                             <TextBlock Text="不要，这台电脑不录像"
-                                       FontSize="15" FontWeight="SemiBold"/>
+                                       FontSize="{StaticResource TextSizeEmphasis}" FontWeight="SemiBold"/>
                             <TextBlock Style="{StaticResource Caption}" Margin="0,5,0,0"
                                        Text="不初始化本机录像设备，仍可保存其他设备录像或只连接主机查看"/>
                         </StackPanel>
@@ -177,7 +177,7 @@
             </Grid>
 
             <!-- ══ 问题二 ════════════════════════════════════════════════ -->
-            <TextBlock Style="{StaticResource SectionTitle}" FontSize="15"
+            <TextBlock Style="{StaticResource SectionTitle}" FontSize="{StaticResource TextSizeEmphasis}"
                        Margin="0,22,0,10"
                        Text="2. 这台电脑要负责长期保存录像吗?"/>
             <Grid>
@@ -198,7 +198,7 @@
                               Data="M 12.5,1.5 L 4.5,10 L 0.5,6"/>
                         <StackPanel Grid.Column="1" Margin="9,0,0,0">
                             <TextBlock Text="要，作为保存录像的电脑"
-                                       FontSize="15" FontWeight="SemiBold"/>
+                                       FontSize="{StaticResource TextSizeEmphasis}" FontWeight="SemiBold"/>
                             <TextBlock Style="{StaticResource Caption}" Margin="0,5,0,0"
                                        Text="长期保存录像，并可接收和备份手机或其他录制电脑上传的录像"/>
                         </StackPanel>
@@ -217,7 +217,7 @@
                               Data="M 0.5,0.5 L 13,13 M 13,0.5 L 0.5,13"/>
                         <StackPanel Grid.Column="1" Margin="9,0,0,0">
                             <TextBlock Text="不要，由其他电脑负责保存"
-                                       FontSize="15" FontWeight="SemiBold"/>
+                                       FontSize="{StaticResource TextSizeEmphasis}" FontWeight="SemiBold"/>
                             <TextBlock Style="{StaticResource Caption}" Margin="0,5,0,0"
                                        Text="本机录像先进入本地缓存，再上传到保存电脑；不录像时则只连接主机查看"/>
                         </StackPanel>
@@ -243,7 +243,7 @@
                     </Border>
 
                     <StackPanel Grid.Column="1" Margin="15,0,0,0">
-                        <TextBlock x:Name="ResultLabel" FontSize="12"
+                        <TextBlock x:Name="ResultLabel" FontSize="{StaticResource TextSizeCaption}"
                                    Foreground="{DynamicResource Accent}" Text="选择结果"/>
                         <TextBlock x:Name="ResultTitle" Style="{StaticResource CardTitle}"
                                    Margin="0,5,0,0"
