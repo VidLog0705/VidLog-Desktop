@@ -1046,7 +1046,19 @@ public sealed class AppHost : IAsyncDisposable
             {
                 ["用户选的"] = wanted.Label,
                 ["回落"] = selection.ChangedFromRequested,
-                ["编码器"] = Coordinator.Encoder,
+                // ⚠️ 这两个键**不是**一回事，别挤回一个（2026-10-09）：
+                // 「探到的」是**这一次**探测的结论，为 `null` 说明**一个组合都没探通**
+                // （见 `SpecSelection.EncoderName` 那段备注）—— 那时候「实际将用」
+                // 里是**沿用上一次**的编码器。原先这里只印一个 `Coordinator.Encoder`，
+                // 于是兜底那一刻会印出「规格 H.264 1080P + 编码器 hevc_qsv」这种
+                // 自己跟自己打架的行（2026-10-09 15:31:04 实测撞到）。
+                ["探到的编码器"] = selection.EncoderName,
+                ["实际将用"] = Coordinator.Encoder,
+                // ⚠️ **原因必须落进日志**（与上面那条启动日志同一个理由）：一个组合
+                // 都没探通时 `Spec` 可能正好等于用户选的那个（`GiveUp` 回默认档），
+                // 于是「回落: true」与「已改为 = 用户选的」会同时成立 —— 光看那两栏
+                // 就是一句假话，真相全在原因里。
+                ["原因"] = selection.Reason,
             });
 
         // 规格 §3.1.7：「**不得静默回落**」—— 改完设置探出来的组合与用户选的
