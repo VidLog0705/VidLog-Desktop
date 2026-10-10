@@ -970,10 +970,12 @@ public sealed class RecordingCoordinator : IAsyncDisposable
             _logger.Log(LogLevel.Info, "录制", $"重复单号：{waybill.Value} 近 {_options.DuplicateCheckDays} 天录过",
                 new Dictionary<string, object?> { ["次数"] = recent.Count });
 
+            // ⚠️ **短句**（需求方 2026-10-10：原来那句「在最近 7 天里录过 10 次
+            // （最近一次 …）。核对一下是不是重复录件或者单号扫错了。」太长，
+            // 而它要上的是**只占一行**的动态栏）。次数与最近一次时刻仍在**日志**里
+            // （上面那条「重复单号：… 近 N 天录过 N 次」），不算丢。
             Raise(CoordinatorNoticeKind.DuplicateWaybill, waybill,
-                $"{waybill.Value} 在最近 {_options.DuplicateCheckDays} 天里录过 {recent.Count} 次"
-                + $"（最近一次 {recent[0].StartedAt.ToLocalTime():MM-dd HH:mm}）。"
-                + "核对一下是不是重复录件或者单号扫错了。");
+                $"{waybill.Value} 重复录制，请检查。");
         }
         catch (Exception ex)
         {
@@ -1188,9 +1190,14 @@ public sealed class RecordingCoordinator : IAsyncDisposable
         switch (announce.Kind)
         {
             case AnnouncementKind.WrongWaybill:
-                // 规格 §3.3.2 的措辞。
+                // ⚠️ 需求方 2026-10-10 改的措辞：**带上实际扫到的那个单号**
+                //（原来那句只有「面单错误」，事后翻动态栏不知道错在哪一码上）。
+                // 单号在这条决策里**是可空的**（类型上没有更强的保证）——
+                // 拿不到就退回规格 §3.3.2 的原话，**不编一个**。
                 Raise(CoordinatorNoticeKind.WrongWaybill, announce.Waybill,
-                    "面单错误，请扫描正确面单");
+                    announce.Waybill is { } wrong
+                        ? $"{wrong.Value} 单号错误，请检查。"
+                        : "面单错误，请扫描正确面单");
 
                 // ⚠️ 写失败**不能把这一下带下去**：本表按规格「不是控制流的输入」，
                 // 而这一下正在**录着像**。诊断记录丢了是小事，

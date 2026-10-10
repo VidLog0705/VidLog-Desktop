@@ -879,6 +879,7 @@ public class RecordingCoordinatorTests
         using var dir = new TempDir();
         var notices = new List<CoordinatorNotice>();
         var queried = new List<string>();
+        var logger = new CapturingLogger();
 
         await using var coordinator = Build(
             dir, WorkMode.StopOnSameWaybill, new FakePunchLog(),
@@ -887,16 +888,24 @@ public class RecordingCoordinatorTests
                 queried.Add(waybill.Value);
                 return Task.FromResult<IReadOnlyList<RecordingEntry>>([OldEntryFor(waybill, 3)]);
             },
-            duplicateCheckDays: 7);
+            duplicateCheckDays: 7,
+            logger: logger);
         coordinator.Notice += notices.Add;
 
         await coordinator.SubmitAsync(A, PunchSource.KeyboardScanner);
         await WaitForNoticeAsync(notices, CoordinatorNoticeKind.DuplicateWaybill);
 
+        // ⚠️ 需求方 2026-10-10 把上屏那句**改短**了（原来那句带天数与次数，
+        // 长到在只占一行的动态栏上读不完）⇒ 天数与次数**搬到了下面那行日志里**。
+        // 所以这条用例的观察点从「通知里有没有这两个数」换成「日志里有没有」——
+        // 数本身照旧要算对，只是不再上屏。
         var notice = Assert.Single(notices, n => n.Kind == CoordinatorNoticeKind.DuplicateWaybill);
-        Assert.Contains(A.Value, notice.Message, StringComparison.Ordinal);
-        Assert.Contains("7 天", notice.Message, StringComparison.Ordinal);
-        Assert.Contains("1 次", notice.Message, StringComparison.Ordinal);
+        Assert.Equal($"{A.Value} 重复录制，请检查。", notice.Message);
+
+        var line = Assert.Single(
+            logger.Lines, m => m.StartsWith("重复单号：", StringComparison.Ordinal));
+        Assert.Contains("7 天", line, StringComparison.Ordinal);
+        Assert.Contains("次数=1", line, StringComparison.Ordinal);
 
         // ★ 而且**开录照常**：这条检测绝不挡路（规格原话「绝不阻塞开录」）。
         Assert.Equal(A, coordinator.CurrentWaybill);
@@ -939,6 +948,7 @@ public class RecordingCoordinatorTests
         // 反证：去掉 `.GroupBy(e => e.SessionId, …)` ⇒ 这条红（会说「4 次」）。
         using var dir = new TempDir();
         var notices = new List<CoordinatorNotice>();
+        var logger = new CapturingLogger();
 
         var first = OldEntryFor(A, 3);
         var second = first with { EvidenceId = "ev-old-2" };   // 同一次会话的第 2 段
@@ -949,7 +959,8 @@ public class RecordingCoordinatorTests
             dir, WorkMode.StopOnSameWaybill, new FakePunchLog(),
             duplicateProbe: (_, _) => Task.FromResult<IReadOnlyList<RecordingEntry>>(
                 [first, second, third, other]),
-            duplicateCheckDays: 7);
+            duplicateCheckDays: 7,
+            logger: logger);
         coordinator.Notice += notices.Add;
 
         await coordinator.SubmitAsync(A, PunchSource.KeyboardScanner);
@@ -957,8 +968,15 @@ public class RecordingCoordinatorTests
 
         var notice = Assert.Single(notices, n => n.Kind == CoordinatorNoticeKind.DuplicateWaybill);
 
+        // ⚠️ 次数**从 2026-10-10 起不上屏**（上屏那句按需求方要求改短了），
+        // 观察点跟着搬到日志那一行 —— 数照旧要算对。
+        Assert.Equal($"{A.Value} 重复录制，请检查。", notice.Message);
+
+        var line = Assert.Single(
+            logger.Lines, m => m.StartsWith("重复单号：", StringComparison.Ordinal));
+
         // 三段归一次会话 + 另一次会话 —— **两次**，不是四次。
-        Assert.Contains("2 次", notice.Message, StringComparison.Ordinal);
+        Assert.Contains("次数=2", line, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -1338,7 +1356,8 @@ public class RecordingCoordinatorTests
         Func<WaybillNumber, CancellationToken, Task<IReadOnlyList<RecordingEntry>>>? duplicateProbe = null,
         int duplicateCheckDays = 0,
         ICameraCapture? capture = null,
-        ILabelStore? labels = null)
+        ILabelStore? labels = null,
+        IAppLogger? logger = null)
     {
         var ffmpeg = FfmpegLocator.TryFind() ?? "ffmpeg";
         var effectiveRunner = runner ?? new SucceedingRunner();
@@ -1356,7 +1375,7 @@ public class RecordingCoordinatorTests
                 labels: labels),
             new DiskSpaceGuard(new PlentyOfSpaceProbe()),
             punches,
-            NullLogger.Instance,
+            logger ?? NullLogger.Instance,
             policy ?? new WorkModePolicy(mode, IdleReminderOption.Off),
             new CoordinatorOptions(
                 CameraSource.Local("Lenovo EasyCamera"), "device-1", "libx264", duplicateCheckDays),
@@ -1369,6 +1388,27 @@ public class RecordingCoordinatorTests
         {
             SessionOptions = session ?? RecordingSessionOptions.Default,
         };
+    }
+
+    /// <summary>
+    /// 把日志收起来，好在测试里断言（本仓既有写法，见 `LiveDirectoryTests.CapturingLogger`）。
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ <b>数据那一栏也折进同一行</b>（`键=值`）：重复单号**录过几次**只在
+    /// `data["次数"]` 里 —— 消息本身按需求方 2026-10-10 改短之后只剩单号。
+    /// 不折进来的话，「同一次会话分成多段也只算一次」这条用例就**没有观察点**了。
+    /// </remarks>
+    private sealed class CapturingLogger : IAppLogger
+    {
+        public List<string> Lines { get; } = [];
+
+        public void Log(LogLevel level, string category, string message) => Lines.Add(message);
+
+        public void Log(
+            LogLevel level, string category, string message,
+            IReadOnlyDictionary<string, object?> data) =>
+            Lines.Add(message + " " + string.Join(
+                " ", data.Select(kv => $"{kv.Key}={kv.Value}")));
     }
 
     private sealed class FakeCapture : ICameraCapture

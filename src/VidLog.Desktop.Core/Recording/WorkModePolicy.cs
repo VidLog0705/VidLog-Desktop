@@ -31,7 +31,12 @@ public abstract record WorkDecision
 /// <summary>要告诉用户的事。</summary>
 public enum AnnouncementKind
 {
-    /// <summary>规格 §3.3.2：扫到不同单号时不停止录制，仅声音提示「面单错误，请扫描正确面单」。</summary>
+    /// <summary>
+    /// 规格 §3.3.2：扫到不同单号时**不停止录制**，仅声音提示。
+    /// ⚠️ 提示的措辞由需求方 2026-10-10 改过（动态栏那句带上了扫到的单号、念的
+    /// 只剩「单号错误」四个字），**别照抄本题里那份旧文案**，以
+    /// <c>RecordingCoordinator.HandleAnnounceAsync</c> 与 <c>App.OnNotice</c> 为准。
+    /// </summary>
     WrongWaybill,
 
     /// <summary>换件（连续扫）。这是**正常路径**，不播报错。</summary>

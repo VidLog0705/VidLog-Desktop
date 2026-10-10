@@ -398,8 +398,18 @@ public partial class App : System.Windows.Application
                 Platform.Speech.Speak(notice.Message);
                 break;
 
-            case CoordinatorNoticeKind.FinalizeFailed or CoordinatorNoticeKind.WrongWaybill:
+            case CoordinatorNoticeKind.FinalizeFailed:
                 _host?.Tray?.Notify("VidLog", notice.Message);
+                break;
+
+            // ── 错码保护（规格 §3.3.2）──────────────────────────────────
+            //
+            // ⚠️ 需求方 2026-10-10：**动态栏那句与念出来那句从此不一样长**。
+            // 动态栏要带单号（事后翻得到是哪一码错了），而**念的时候不带单号**
+            // —— 原来连播报都没有，错码只有个托盘气泡。
+            case CoordinatorNoticeKind.WrongWaybill:
+                _host?.Tray?.Notify("VidLog", notice.Message);
+                Platform.Speech.Speak("单号错误");
                 break;
 
             // ── 重复单号检测（规格 §3.2.5）──────────────────────────────
@@ -410,9 +420,13 @@ public partial class App : System.Windows.Application
             //
             // ⚠️ 它**不挡开录**（规格：那三项「全部异步执行，绝不阻塞开录」）
             // —— 这一句只是事后提醒，录制已经开始了。
+            //
+            // ⚠️ 需求方 2026-10-10：**念的只有四个字**（原来念的是整句
+            // 「<单号> 在最近 7 天里录过 10 次（最近一次 …）。核对一下…」，
+            // 操作员得站着听完）。动态栏那一行仍然带单号与「请检查」。
             case CoordinatorNoticeKind.DuplicateWaybill:
                 _host?.Tray?.Notify("VidLog", notice.Message);
-                Platform.Speech.Speak(notice.Message);
+                Platform.Speech.Speak("单号重复");
                 break;
 
             default:
