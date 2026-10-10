@@ -159,7 +159,7 @@
          ——「大号统计数字」统一成 **26**（原 26×4 / 22×3）、「卡片小标题」统一成
          **15 半粗**（原 14×9 / 15×6）。除这两处合并，**其余一处外观都没动**。
     -->
-    <Version>0.7.1</Version>
+    <Version>0.8.0</Version>
     <OutputType>WinExe</OutputType>
     <TargetFramework>net9.0-windows</TargetFramework>
     <Nullable>enable</Nullable>
