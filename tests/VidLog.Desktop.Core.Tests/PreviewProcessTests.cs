@@ -189,6 +189,26 @@ public class PreviewProcessTests
         Assert.Null(sink.TakeLatest());
     }
 
+    [Fact]
+    public async Task 顺带看一眼的那位也拿得到每一帧()
+    {
+        // 录制期识码走的就是这一条（`FfmpegCameraCapture.FrameObserver`）：
+        // 帧先照常投进画面那只槽，**之后再**交给观察者 —— 少叫一次的话，
+        // 现场表现是「录制中永远扫不出东西」，而画面一切正常。
+        var bytes = new byte[W * H * 3 * 2];
+        var sink = new SingleSlotPreviewSink();
+        var observed = new List<(int W, int H)>();
+
+        await PreviewProcess.ReadFramesAsync(
+            new MemoryStream(bytes), sink, W, H, onFrame: f => observed.Add((f.Width, f.Height)));
+
+        Assert.Equal(2, observed.Count);
+        Assert.All(observed, size => Assert.Equal((W, H), size));
+
+        // 而且画面那一路**一点都不受影响**。
+        Assert.NotNull(sink.TakeLatest());
+    }
+
     // ─────────────────────────────────────────────
     // ★ 像素级：那条滤镜链真的「按比例 + 补黑边」吗
     // ─────────────────────────────────────────────

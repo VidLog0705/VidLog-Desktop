@@ -1,6 +1,7 @@
 using System.ComponentModel;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
+using VidLog.Desktop.Core.Diagnostics;
 using VidLog.Desktop.Core.Scanning;
 
 namespace VidLog.Desktop.App.Platform;
@@ -10,9 +11,15 @@ namespace VidLog.Desktop.App.Platform;
 /// </summary>
 /// <remarks>
 /// <para>
-/// <b>只旁听，绝不吞键</b>：回调里一律 <c>CallNextHookEx</c> 把事件放行。
-/// 规格 §3.2.1 要求「不能与用户正常打字冲突」，这就是那条要求的结构性保证 ——
-/// 不靠判定逻辑写对，而是**根本没有拦的代码路径**。
+/// <b>默认一律放行；唯一会吞的是「消费方点头的那一个键」</b>。回调的返回值决定
+/// 放行还是吞掉：消费方（<c>KeyboardScanBridge</c>）返回 <see langword="true"/> 时才吞。
+/// 规格 §3.2.1 要求「不能与用户正常打字冲突」，那条保证现在落在**消费方的判定**上 ——
+/// 判定是保守的（连击 + 合法形状 + 结束符三条同时成立才认），人打字达不到。
+/// </para>
+/// <para>
+/// ⚠️ <b>为什么非吞不可</b>：被吞的那一键是扫码枪的结束符（Enter）。放行的话它会落到
+/// 当时有焦点的控件上，实测（2026-10-10）重点在「关掉的窗口自己弹回来」
+/// 「一次扫码开两个会话」。详见 <c>KeyboardScanBridge</c> 的类注释。
 /// </para>
 /// <para>
 /// <b>跑在自己的线程上</b>。低级钩子的回调由**安装它的那个线程**执行，
@@ -49,13 +56,30 @@ public sealed class WindowsKeyboardHook : IDisposable
     /// </remarks>
     private readonly ManualResetEventSlim _installSettled = new(false);
 
-    public WindowsKeyboardHook()
+    /// <summary>
+    /// 消费方抛异常时留个痕的地方（可空：测试与向导那几处不关心日志）。
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ 这条日志**只在出异常时才写**，而它出异常就意味着扫码枪那个结束符会漏出去
+    /// （见 <see cref="KeyboardScanBridge"/>）—— 不留痕的话，现场表现是
+    /// 「有时候点一下就弹回老窗口」，没有任何东西能查（§6.1）。
+    /// </remarks>
+    private readonly IAppLogger? _logger;
+
+    public WindowsKeyboardHook(IAppLogger? logger = null)
     {
+        _logger = logger;
         _callback = HookCallback;
     }
 
-    /// <summary>按键事件。在**钩子线程**上触发，消费方自己负责派回 UI 线程。</summary>
-    public event Action<RawKeyEvent, long>? KeyEvent;
+    /// <summary>
+    /// 按键事件。在**钩子线程**上触发。返回 <see langword="true"/> 表示**吞掉**这个键。
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ 返回值的语义就是「不要把这个键转发给前台窗口」。默认（没有订阅者、或返回
+    /// <see langword="false"/>）一律放行 —— 见类注释里 §3.2.1 那条保证。
+    /// </remarks>
+    public event Func<RawKeyEvent, long, bool>? KeyEvent;
 
     public bool IsInstalled { get; private set; }
 
@@ -132,7 +156,7 @@ public sealed class WindowsKeyboardHook : IDisposable
 
     private IntPtr HookCallback(int code, IntPtr wParam, IntPtr lParam)
     {
-        // 一律放行 —— 这是「不吞键」的落点，不是为了性能。
+        // 默认放行。吞键只发生在下面那个 `swallow` 为真时 —— 见类注释。
         if (code < 0 || !_running)
         {
             return CallNextHookEx(_hookId, code, wParam, lParam);
@@ -141,6 +165,7 @@ public sealed class WindowsKeyboardHook : IDisposable
         var message = wParam.ToInt32();
         var isKeyDown = message is WM_KEYDOWN or WM_SYSKEYDOWN;
         var isKeyUp = message is WM_KEYUP or WM_SYSKEYUP;
+        var swallow = false;
 
         if (isKeyDown || isKeyUp)
         {
@@ -148,17 +173,26 @@ public sealed class WindowsKeyboardHook : IDisposable
 
             try
             {
-                KeyEvent?.Invoke(
+                // 只有一个订阅者（AppHost）；多播下 `Invoke` 只会拿到最后一个返回值，
+                // 所以这里按「单个订阅者」理解。真要多订阅者，改成遍历调用列表。
+                swallow = KeyEvent?.Invoke(
                     new RawKeyEvent((int)data.VirtualKeyCode, isKeyDown),
-                    Stopwatch.GetTimestamp() / (Stopwatch.Frequency / 1000));
+                    Stopwatch.GetTimestamp() / (Stopwatch.Frequency / 1000)) == true;
             }
-            catch (Exception)
+            catch (Exception ex)
             {
                 // 消费方抛异常绝不能把钩子线程带下去 —— 那会让**全系统的键盘**都没反应。
+                // 出异常时**放行**（`swallow` 留在 false），宁可不吞也不要卡住键盘。
+                //
+                // ⚠️ 但**必须留痕**：这一次放行意味着扫码枪的结束符会被漏给前台窗口
+                // （表现就是「点一下弹回老窗口」那类怪事）。这条日志是那件事唯一的痕迹。
+                _logger?.Log(
+                    LogLevel.Warn, "扫码", $"按键事件处理出错，已放行：{ex.GetType().Name}：{ex.Message}");
             }
         }
 
-        return CallNextHookEx(_hookId, code, wParam, lParam);
+        // 吞 = 返回非零、**不调** CallNextHookEx（正规写法是返回 1）。放行照旧。
+        return swallow ? new IntPtr(1) : CallNextHookEx(_hookId, code, wParam, lParam);
     }
 
     public void Dispose()

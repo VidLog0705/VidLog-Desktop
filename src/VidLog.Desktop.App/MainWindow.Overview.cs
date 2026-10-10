@@ -380,6 +380,9 @@ public partial class MainWindow : Window
                 already.WindowState = WindowState.Normal;
             }
 
+            // §6.1：这条也是「开窗」，不能因为窗口已经开着就一声不吭 ——
+            // 用户点了一下、屏幕上多了一面墙，日志里就该有对应的一笔。
+            _host.Logger.Log(LogLevel.Info, "多画面", "实时多画面已开着，切到前面");
             already.Activate();
             return;
         }
@@ -413,6 +416,9 @@ public partial class MainWindow : Window
             Owner = this,
         };
 
+        // ⚠️ 「窗口开了 / 关了」两条日志**在 `MultiViewWindow` 自己那里**
+        // （`Loaded` 与 `Closed`，带格数与在线机位数）—— 这里不重复记，
+        // 否则同一件事一次开窗会留下两句。
         _multiView.Closed += (_, _) => _multiView = null;
         _multiView.Show();
     }

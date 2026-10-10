@@ -114,7 +114,10 @@ public partial class MainWindow : Window
             // **有两种**：真的收工（`StopWorkAsync`，那时已经不在工作），和
             // **自己收起一段、还在工作**（时长兜底那几条，`IsWorking` 仍是 true）——
             // 后一种会把下一段的计时冻住。
+            // ⚠️ `SwitchedWaybill`（换件）也在这张单子上：换件 = 旧段结束 + 新段开始，
+            // 旧段那个询问面板答的是一次已经作废的询问（2026-10-10 补）。
             case CoordinatorNoticeKind.SegmentStopped
+                or CoordinatorNoticeKind.SwitchedWaybill
                 or CoordinatorNoticeKind.SegmentStarted
                 or CoordinatorNoticeKind.WorkStarted
                 or CoordinatorNoticeKind.WorkStopped:
@@ -535,7 +538,11 @@ public partial class MainWindow : Window
     /// </remarks>
     private void OnOpenSettings(object sender, RoutedEventArgs e)
     {
+        // §6.1：开窗也要留痕。原来只在装不上 ffmpeg 那条失败路上记过一笔 ——
+        // 用户事后问「我什么时候动过设置」，日志里一片空白（2026-10-10 实测出来的）。
+        _host.Logger.Log(LogLevel.Info, "窗口", "打开设置窗");
         new SettingsWindow(_host) { Owner = this }.ShowDialog();
+        _host.Logger.Log(LogLevel.Info, "窗口", "关闭设置窗");
 
         // 设置里可能改了许可状态那一类东西（激活），回来刷新一下。
         ShowStatusSummaries();
@@ -550,8 +557,13 @@ public partial class MainWindow : Window
     /// 两个窗口同时播同一个文件会各占一个句柄，而这个文件可能正处在
     /// 保留期清理的当口。一次一个，简单且够用。
     /// </remarks>
-    private void OnOpenSearch(object sender, RoutedEventArgs e) =>
+    private void OnOpenSearch(object sender, RoutedEventArgs e)
+    {
+        // §6.1：开窗留痕（与设置窗同一条）。
+        _host.Logger.Log(LogLevel.Info, "窗口", "打开回放窗");
         new SearchWindow(_host) { Owner = this }.ShowDialog();
+        _host.Logger.Log(LogLevel.Info, "窗口", "关闭回放窗");
+    }
 
     /// <summary>
     /// 【安装订单联动】—— **还没做，如实说一句**（需求方 2026-10-01 裁决）。

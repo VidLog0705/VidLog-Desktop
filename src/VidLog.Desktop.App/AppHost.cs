@@ -124,6 +124,17 @@ public sealed class AppHost : IAsyncDisposable
     public RecordingCoordinator Coordinator { get; }
 
     /// <summary>
+    /// **录制期识码**：录制那一路预览帧顺带再解一次码（见 <see cref="RecordingRecognition"/>）。
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ 它**不跟着采集对象换**：规格重探（<see cref="ProbeOnceAsync"/>）只换
+    /// <see cref="RecordingCoordinator.Capture"/>，而本对象没有相机状态
+    /// （帧由 <c>FrameObserver</c> 送进来）—— 换采集对象时要**重新挂一次**
+    /// <c>FrameObserver</c>，忘了挂的表现是「换了规格之后就再也扫不出来了」。
+    /// </remarks>
+    public RecordingRecognition? Recognition { get; set; }
+
+    /// <summary>
     /// 本程序的版本号（给「关于」与更新提示用）。
     /// </summary>
     /// <remarks>
@@ -159,8 +170,8 @@ public sealed class AppHost : IAsyncDisposable
     /// </summary>
     /// <remarks>
     /// <para>
-    /// ⚠️ 配置向导第 6 步有一个测试扫码枪的输入框，而扫码枪的按键**不被拦截**
-    /// （<see cref="KeyboardScanBridge"/> 明写「不做任何按键抑制」）——
+    /// ⚠️ 配置向导第 6 步有一个测试扫码枪的输入框，而扫码枪的按键**基本不被拦截**
+    /// （<see cref="KeyboardScanBridge"/> 只吞「结束符」那一个键，字符照落）——
     /// 用户在那儿扫一下，字既落进测试框、又走全局钩子到这里。
     /// 而 <c>WorkModePolicy.OnScan</c> 在没开录时返回 <c>StartSegment</c>：
     /// 于是「测一下扫码枪」会**当场开录并抢走相机**，正好撞上向导自己在跑的那路预览。
@@ -563,11 +574,20 @@ public sealed class AppHost : IAsyncDisposable
         // **采集对象与识码对象在它之后才建**，两者都要拿着它。
         var preview = new SingleSlotPreviewSink();
 
+        // 录制期识码（2026-10-10）。**必须建在采集对象之前** —— 采集对象要挂它的
+        // `OnFrame`。开不开解码器跟着设置里那个「摄像头识别」走（一个开关管两处：
+        // 待扫识码与录制期识码，用户心里它们本来就是同一件事）。
+        var recognition = new RecordingRecognition(
+            settings.CameraRecognition ? new ZXingFrameScanner() : null, logger);
+
         var coordinator = new RecordingCoordinator(
             services.Workspace,
             services.FfmpegPath is null
                 ? throw new InvalidOperationException("没有可用的 FFmpeg，无法采集。")
-                : new FfmpegCameraCapture(services.FfmpegPath, selection.Spec, preview),
+                : new FfmpegCameraCapture(services.FfmpegPath, selection.Spec, preview, logger)
+                {
+                    FrameObserver = recognition.OnFrame,
+                },
             services.Finalizer,
             new DiskSpaceGuard(new DriveSpaceProbe()),
             services.Punches,
@@ -641,7 +661,7 @@ public sealed class AppHost : IAsyncDisposable
         };
 
         var bridge = new KeyboardScanBridge(settings.Scanner);
-        var hook = new WindowsKeyboardHook();
+        var hook = new WindowsKeyboardHook(logger);
 
         var host = new AppHost(services, startup, settings, logger, hook, bridge, coordinator, preview)
         {
@@ -701,21 +721,7 @@ public sealed class AppHost : IAsyncDisposable
                 Rotation = settings.Rotation,
             };
 
-            prerecord.Scanned += waybill =>
-            {
-                // ⚠️ 取景识码**不认命令码**。它看的是包裹上的面单，而屏幕上那两张码
-                // 一旦被它认出来（相机正对着屏幕），表现就是「没人碰它，
-                // 业务类型自己变了、或者自己开始录像了」—— 这种错在界面上没有原因可查。
-                // 命令只认扫码枪那一路（`Bridge.Scanned`）。
-                if (ScanCommand.KindOf(waybill.Value) != ScanCommandKind.None)
-                {
-                    logger.Log(LogLevel.Info, "识码", $"忽略命令码 {waybill.Value}（只认扫码枪）");
-                    return;
-                }
-
-                logger.Log(LogLevel.Info, "识码", $"取景识别到 {waybill.Value}");
-                _ = coordinator.SubmitAsync(waybill, PunchSource.CameraDecoder);
-            };
+            prerecord.Scanned += waybill => OnCameraScanned(waybill, "待扫");
 
             // I3：起不来要说出来，否则用户只会觉得「摄像头怎么不好使」。
             prerecord.Failed += message => host.RaiseNotice(
@@ -724,6 +730,40 @@ public sealed class AppHost : IAsyncDisposable
             coordinator.Prerecord = prerecord;
             coordinator.PrerecordBuffer = TimeSpan.FromSeconds(settings.PrerecordSeconds);
         }
+
+        // 摄像头认到的东西**两条路共用一个出口**（待扫 / 录制中）：判定与落点必须
+        // 一模一样 —— 各写一份的话，漏掉那道命令码闸的那一份会让相机对着屏幕时
+        // 「没人碰它、业务类型自己变了」。
+        //
+        // ⚠️ 阶段要**写进日志**：查「录制中到底有没有在识码」时，
+        // 只有一句「取景识别到 X」是分不出来的。
+        void OnCameraScanned(Core.WaybillNumber waybill, string phase)
+        {
+            // ⚠️ 取景识码**不认命令码**（屏幕上那两张码）。命令只认扫码枪那一路
+            // （`Bridge.Scanned`）。
+            if (ScanCommand.KindOf(waybill.Value) != ScanCommandKind.None)
+            {
+                logger.Log(LogLevel.Info, "识码", $"忽略命令码 {waybill.Value}（只认扫码枪）");
+                return;
+            }
+
+            logger.Log(LogLevel.Info, "识码", $"取景识别到 {waybill.Value}（{phase}）");
+            _ = coordinator.SubmitAsync(waybill, PunchSource.CameraDecoder);
+        }
+
+        // ── 录制期识码 ──────────────────────────────────────────────
+        //
+        // 帧从采集进程那一路预览里顺带取（`FrameObserver`），所以它**只在录制中才有帧**；
+        // 待扫那一段是 `prerecord` 在投帧，两条路在时间上互不重叠。
+        // 没有它的话，开录之后**没人读得了码** —— 同码复扫停录、连扫换件都会整个失灵。
+        recognition.Scanned += waybill => OnCameraScanned(waybill, "录制中");
+        recognition.Start();
+        host.Recognition = recognition;
+
+        // ⚠️ 交给协调器（不是在这里订通知）：**开段那一刻要把这一码先喂进闸**，
+        // 而那件事必须与 `Raise(SegmentStarted)` 挨在一起才有人盖得住
+        // —— 见 `RecordingCoordinator.Recognition`。
+        coordinator.Recognition = recognition;
 
         host.Wire();
         logger.Log(LogLevel.Info, "启动", "应用已启动",
@@ -747,37 +787,42 @@ public sealed class AppHost : IAsyncDisposable
     {
         Coordinator.Notice += n => Notice?.Invoke(n);
 
-        // 钩子在自己的线程上回调，而消费方（界面）是 UI 线程 —— 派回去。
-        Hook.KeyEvent += (raw, timestamp) =>
-            System.Windows.Application.Current?.Dispatcher.BeginInvoke(
-                () => Bridge.Accept(raw, timestamp));
+        // 判定要在**钩子线程上同步做** —— `Accept` 的返回值决定这个键要不要吞
+        // （见 WindowsKeyboardHook.KeyEvent 与 AppHost 的说明）。吞完/判完把结果派回 UI：
+        // `Bridge.Scanned` 现在是从**钩子线程**触发的，所以消费方自己负责派回 UI 线程。
+        Hook.KeyEvent += (raw, timestamp) => Bridge.Accept(raw, timestamp);
 
         Bridge.Scanned += outcome =>
+            System.Windows.Application.Current?.Dispatcher.BeginInvoke(
+                () => OnBridgeScanned(outcome));
+    }
+
+    /// <summary>扫码枪那一路识别出一次输入之后要做的事（**在 UI 线程上**）。</summary>
+    private void OnBridgeScanned(ScanOutcome outcome)
+    {
+        if (SuspendScans)
         {
-            if (SuspendScans)
-            {
-                // 向导在做扫码枪测试 —— 那一下不是工作事件，不能开录（见 SuspendScans）。
-                _logger.Log(LogLevel.Info, "扫码",
-                    $"（配置向导测试中，不当工作事件）识别到 {outcome.Waybill.Value}");
-                return;
-            }
+            // 向导在做扫码枪测试 —— 那一下不是工作事件，不能开录（见 SuspendScans）。
+            _logger.Log(LogLevel.Info, "扫码",
+                $"（配置向导测试中，不当工作事件）识别到 {outcome.Waybill.Value}");
+            return;
+        }
 
-            _logger.Log(LogLevel.Info, "扫码", $"识别到 {outcome.Waybill.Value}",
-                new Dictionary<string, object?> { ["原始"] = outcome.Raw });
+        _logger.Log(LogLevel.Info, "扫码", $"识别到 {outcome.Waybill.Value}",
+            new Dictionary<string, object?> { ["原始"] = outcome.Raw });
 
-            // 屏幕上那两张命令条码（设计图 `_35`：扫码切换退货 / 扫码开始录像）
-            // 扫进来是同一个形状 —— 但它**不是单号**：
-            // 不能填进单号框（用户会看见框里写着「VLRET」），也不该按单号播报。
-            // 处理它的地方只有一个（协调器的 `SubmitAsync`），这里只是绕开界面那一路。
-            if (ScanCommand.KindOf(outcome.Waybill.Value) != ScanCommandKind.None)
-            {
-                _ = SubmitScanAsync(outcome);
-                return;
-            }
-
-            Scanned?.Invoke(outcome);
+        // 屏幕上那两张命令条码（设计图 `_35`：扫码切换退货 / 扫码开始录像）
+        // 扫进来是同一个形状 —— 但它**不是单号**：
+        // 不能填进单号框（用户会看见框里写着「VLRET」），也不该按单号播报。
+        // 处理它的地方只有一个（协调器的 `SubmitAsync`），这里只是绕开界面那一路。
+        if (ScanCommand.KindOf(outcome.Waybill.Value) != ScanCommandKind.None)
+        {
             _ = SubmitScanAsync(outcome);
-        };
+            return;
+        }
+
+        Scanned?.Invoke(outcome);
+        _ = SubmitScanAsync(outcome);
     }
 
     private async Task SubmitScanAsync(ScanOutcome outcome)
@@ -1085,7 +1130,14 @@ public sealed class AppHost : IAsyncDisposable
         // 下次开段会重来一遍 —— 而「记下了却没换上去」会让用户永远停在旧规格上。
         ProbedSpec = wanted;
 
-        Coordinator.Capture = new FfmpegCameraCapture(ffmpegPath, selection.Spec, Preview);
+        Coordinator.Capture = new FfmpegCameraCapture(ffmpegPath, selection.Spec, Preview, _logger)
+        {
+            // ⚠️ **换采集对象时要重新挂一次** —— 挂了才认得出「换了规格之后还扫得出来」，
+            // 忘挂的表现是「重探过规格之后录制中就再也认不到码了」，而且不报任何错。
+            // 写成 λ 而不是 `Recognition?.OnFrame`：**换对象的那一刻**才解析已经足够，
+            // 而方法组配 `?.` 编不过。
+            FrameObserver = frame => Recognition?.OnFrame(frame),
+        };
         Coordinator.Encoder = selection.EncoderName ?? EncoderName;
 
         // ⚠️ 方向取**此刻**的设置，不取探测开始时读的那一份：这个方法跑在后台线程上，
@@ -1261,6 +1313,14 @@ public sealed class AppHost : IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
+        // ⚠️ 录制期识码那个循环也得停（§6.1：有生命周期的组件起停各一条）——
+        // 它是个后台 `Task`，不停就只剩「进程退出时被一起带走」这一条路，
+        // 而那样日志里那句「录制期识码已停」**永远不会出现**。
+        if (Recognition is { } recognition)
+        {
+            await recognition.StopAsync();
+        }
+
         Hook.Dispose();
         await Coordinator.DisposeAsync();
         await Services.DisposeAsync();

@@ -2,6 +2,7 @@ using System.ComponentModel;
 using System.IO;
 using System.Windows;
 using System.Windows.Input;
+using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using System.Windows.Threading;
 
@@ -27,8 +28,12 @@ using KeyEventArgs = System.Windows.Input.KeyEventArgs;
 // 不钉的话 `Brushes.White` 会解析成**画图那个** —— 它根本不是 `Brush`，
 // 报错只说「参数不对」，而真正的问题是类型选错了（与上面 `Image` 同一个坑）。
 using Brushes = System.Windows.Media.Brushes;
+// ⚠️ 同理：WinForms 那侧也有一个 `Point`（`System.Drawing.Point`）。
+// 识别框那几段折线用的是 WPF 的几何类型。
+using Point = System.Windows.Point;
 using VidLog.Desktop.App.Platform;
 using VidLog.Desktop.Core;
+using VidLog.Desktop.Core.Camera;
 using VidLog.Desktop.Core.Commands;
 using VidLog.Desktop.Core.Configuration;
 using VidLog.Desktop.Core.Diagnostics;
@@ -127,6 +132,14 @@ public partial class MainWindow : Window
     /// </remarks>
     private static readonly TimeSpan PreviewStaleAfter = TimeSpan.FromSeconds(10);
 
+    /// <summary>识别框每个角的臂长（像素）。</summary>
+    /// <remarks>
+    /// ⚠️ 它是**四条直角边的长度**，不是框的粗细 —— 需求方要的是「四角实线直角、
+    /// 互不相连」，所以每条臂短了看着像四颗点、长了四条边就快连成一圈了。
+    /// 小框上由 <see cref="RecognitionBox.Corners"/> 按短边夹住，不会穿插。
+    /// </remarks>
+    private const double RecognitionBoxArmLength = 28;
+
     public MainWindow(AppHost host)
     {
         _host = host;
@@ -160,6 +173,11 @@ public partial class MainWindow : Window
         };
 
         _previewTimer.Tick += (_, _) => RefreshPreview();
+
+        // 预览区一改尺寸，识别框就得跟着挪（画面是等比缩进这个格子的，
+        // 黑边宽度会变）。⚠️ 尺寸变化**不经过** `RefreshPreview`（那一跳才 30ms 一次），
+        // 拖窗口的时候跟不上就会看到框在画面外飘着。
+        PreviewArea.SizeChanged += (_, _) => UpdateRecognitionBox();
 
         // 待批准的改名请求（规格 §3.4.5 ③）。
         //
@@ -399,6 +417,10 @@ public partial class MainWindow : Window
                 PreviewPlaceholder.Visibility = Visibility.Visible;
                 UpdatePreviewHint();
 
+                // 画面没了，框也跟着走 —— 没有画面时**没有任何东西在解码**，
+                // 那条框此时说的话是假的（它标的是「只认这一片」）。
+                RecognitionBoxPath.Visibility = Visibility.Collapsed;
+
                 // ⚠️ 这一条是**必须**的（§6.1）：上面那句提示写着「原因会记在通知里」，
                 // 不留痕的话那句话就是假的 —— 而这正是 §6.1 点名的那个坑：
                 // 「有个用户可见通道」看起来像缺口被满足了，其实没有。
@@ -438,6 +460,63 @@ public partial class MainWindow : Window
             PreviewImage.Visibility = Visibility.Visible;
             PreviewPlaceholder.Visibility = Visibility.Collapsed;
         }
+
+        // ⚠️ 帧尺寸两种（待扫 640×480、录制 640×360），黑边不一样宽 ——
+        // 位图换了尺寸的那一跳上面已经重建过，这里每次都重算是**把尺寸这条
+        // 依赖整个消掉**（一次几条线段的算术，30ms 一跳可以忽略）。
+        UpdateRecognitionBox();
+    }
+
+    /// <summary>
+    /// 把识别框画到画面上（四角直角，互不相连）。
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ 位置与那四段折线都算在 <see cref="RecognitionBox"/> 里（有测试盖着）——
+    /// 这里只负责「摆上去」。几何一旦搬进代码后置，本仓就没有任何测试工程能盖住它了。
+    /// <para>
+    /// ⚠️ 画的是**正在显示的这幅画面的同一比例**，而不是容器的比例：画面等比缩放后
+    /// 两侧（或上下）有黑边，拿容器尺寸乘比例会整体偏。
+    /// </para>
+    /// </remarks>
+    private void UpdateRecognitionBox()
+    {
+        if (PreviewImage.Visibility != Visibility.Visible
+            || PreviewImage.Source is not BitmapSource source
+            || PreviewArea.ActualWidth <= 0
+            || PreviewArea.ActualHeight <= 0
+            // ⚠️ 「摄像头识别」关着时**根本没有解码器**（两路的解码器都跟着它），
+            // 那时画一条「只认这一片」的框就是一句假话 —— 与上面画面没了那条同理。
+            || !_host.Settings.CameraRecognition)
+        {
+            RecognitionBoxPath.Visibility = Visibility.Collapsed;
+            return;
+        }
+
+        var box = RecognitionBox.Fit(
+            PreviewArea.ActualWidth, PreviewArea.ActualHeight,
+            source.PixelWidth, source.PixelHeight);
+
+        var geometry = new PathGeometry();
+
+        // 一个 Path 里的**四个 figure** —— 每个 figure 自己一条折线、不闭合，
+        // 所以四条边之间没有任何连接（连起来就是普通矩形框了）。
+        foreach (var (x1, y1, x2, y2, x3, y3) in box.Corners(RecognitionBoxArmLength))
+        {
+            var figure = new PathFigure
+            {
+                StartPoint = new Point(x1, y1),
+                IsClosed = false,
+                IsFilled = false,
+            };
+
+            figure.Segments.Add(new LineSegment(new Point(x2, y2), isStroked: true));
+            figure.Segments.Add(new LineSegment(new Point(x3, y3), isStroked: true));
+
+            geometry.Figures.Add(figure);
+        }
+
+        RecognitionBoxPath.Data = geometry;
+        RecognitionBoxPath.Visibility = Visibility.Visible;
     }
 
     /// <summary>

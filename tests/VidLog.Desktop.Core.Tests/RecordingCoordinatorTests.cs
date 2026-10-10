@@ -79,6 +79,114 @@ public class RecordingCoordinatorTests
     }
 
     // ─────────────────────────────────────────────
+    // 单号形状核查（需求方 2026-10-10：防止扫到假码）
+    // ─────────────────────────────────────────────
+
+    [Fact]
+    public async Task 不像单号的东西开不了录()
+    {
+        // 面单上除了单号还有分拣码那一类条码 —— 摄像头会认到它们。
+        using var dir = new TempDir();
+        var punches = new FakePunchLog();
+        await using var coordinator = Build(dir, WorkMode.StopOnSameWaybill, punches);
+
+        coordinator.StartWork();
+
+        // ⚠️ 先钉住「工作确实开始了」—— 不然这一条在「工作压根没开」时
+        // 也会绿（`CurrentSessionId` 本来就是 null），那是条**空集绿灯**。
+        Assert.True(coordinator.IsWorking);
+
+        await coordinator.SubmitAsync(
+            WaybillNumber.Parse("320D-D140BBB"), PunchSource.CameraDecoder);
+
+        Assert.Null(coordinator.CurrentSessionId);
+        Assert.Empty(punches.Written);
+    }
+
+    [Fact]
+    public async Task 手打不过形状核查()
+    {
+        // 手打是用户明确要做的事（§3.2.2 的兜底）—— 拦下它比放过假码更糟。
+        using var dir = new TempDir();
+        var punches = new FakePunchLog();
+        await using var coordinator = Build(dir, WorkMode.StopOnSameWaybill, punches);
+
+        coordinator.StartWork();
+        Assert.True(coordinator.IsWorking);
+
+        await coordinator.SubmitAsync(WaybillNumber.Parse("A1"), PunchSource.ManualEntry);
+
+        Assert.NotNull(coordinator.CurrentSessionId);
+    }
+
+    [Fact]
+    public async Task 开段那一刻先把单号喂进录制期识码的闸()
+    {
+        // ⚠️ 这条盖住的是 `StartSegmentAsync` 里**两句代码的先后**：
+        // `Raise(SegmentStarted)` 紧邻着的那句 `Recognition?.PrimeWith(...)`。
+        // 删掉它，同码停模式会在开录后的第一帧把**还摆在框里**的那张面单
+        // 当成「又扫了一次」—— **刚开录就停**。
+        using var dir = new TempDir();
+        var recognition = new RecordingRecognition(
+            new AlwaysScanner(A), NullLogger.Instance);
+        recognition.Start();
+
+        try
+        {
+            await using var coordinator = Build(
+                dir, WorkMode.StopOnSameWaybill, new FakePunchLog());
+            coordinator.Recognition = recognition;
+
+            var seen = new List<WaybillNumber>();
+            recognition.Scanned += seen.Add;
+
+            coordinator.StartWork();
+            await coordinator.SubmitAsync(A, PunchSource.KeyboardScanner);
+            Assert.NotNull(coordinator.CurrentSessionId);
+
+            // 面单还在框里：持续投帧一秒，它**不该**再报一次。
+            var deadline = Environment.TickCount64 + 1000;
+            while (Environment.TickCount64 < deadline)
+            {
+                recognition.OnFrame(new PreviewFrame(
+                    new byte[640 * 360 * 3], 640, 360, Environment.TickCount64));
+                await Task.Delay(10);
+            }
+
+            Assert.Empty(seen);
+        }
+        finally
+        {
+            await recognition.StopAsync();
+        }
+    }
+
+    /// <summary>一直读得到同一个码的假解码器（录制期识码那几条用）。</summary>
+    private sealed class AlwaysScanner(WaybillNumber waybill) : IFrameScanner
+    {
+        public string? TryDecode(CameraFrame frame) => waybill.Value;
+    }
+
+    [Fact]
+    public async Task 命令码不被形状核查挡住()
+    {
+        // ⚠️ 绊线：`VLREC` 一个数字都没有 —— 形状核查单独看**必然**把它判成假码
+        // （见 `WaybillPlausibilityTests`）。它还能走通，全靠 `SubmitAsync` 里
+        // 两道闸的**先后**。有人把核查挪到命令码前面，这条就红。
+        using var dir = new TempDir();
+        await using var coordinator = Build(
+            dir, WorkMode.StopOnSameWaybill, new FakePunchLog(),
+            trustedClock: new FakeTrustedClock(calibrated: true));
+
+        // 扫这一下**本身就是**「按开始录制」（见 `HandleScanCommand`）。
+        await coordinator.SubmitAsync(
+            WaybillNumber.Parse(ScanCommand.StartWork), PunchSource.KeyboardScanner);
+
+        Assert.True(coordinator.IsWorking);
+        Assert.Null(coordinator.CurrentWaybill);
+    }
+
+    // ─────────────────────────────────────────────
     // 开录与打点
     // ─────────────────────────────────────────────
 
@@ -188,6 +296,30 @@ public class RecordingCoordinatorTests
         // 旧段入库了。停因（WaybillChanged）体现在收尾结果上，索引里不带停因字段。
         Assert.Single(index.Entries);
         Assert.Equal(2, punches.Written.Count);
+    }
+
+    [Fact]
+    public async Task 换件时开始录制只报一条_旧段也报一条结束()
+    {
+        // 需求方 2026-10-10：「动态栏开始录制只显示一条，结束录制也要显示一条」。
+        // 换件这条路原来报两句「开始录制 B。」（`StartSegmentAsync` 一句 + 换件那句
+        // 也是「开始录制 next。」），而旧单号一句收尾都没有。
+        using var dir = new TempDir();
+        var punches = new FakePunchLog();
+        await using var coordinator = Build(dir, WorkMode.Continuous, punches, new RecordingIndexSpy());
+
+        var notices = new List<CoordinatorNotice>();
+        coordinator.Notice += notices.Add;
+
+        await coordinator.SubmitAsync(A, PunchSource.KeyboardScanner);
+        await coordinator.SubmitAsync(B, PunchSource.KeyboardScanner);
+        await coordinator.PendingFinalization;
+
+        Assert.Single(notices, n => n.Message.Contains($"开始录制 {B.Value}", StringComparison.Ordinal));
+
+        // 收尾那条带的是**旧单号**（换件那条如果说的是新单号，等于又报了一遍开始）。
+        Assert.Contains(notices, n => n.Message.Contains("结束录制", StringComparison.Ordinal)
+            && n.Message.Contains(A.Value, StringComparison.Ordinal));
     }
 
     // ─────────────────────────────────────────────

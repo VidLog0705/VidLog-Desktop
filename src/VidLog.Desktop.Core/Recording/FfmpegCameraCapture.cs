@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Text;
 using VidLog.Desktop.Core.Camera;
+using VidLog.Desktop.Core.Diagnostics;
 using VidLog.Desktop.Core.Media;
 
 namespace VidLog.Desktop.Core.Recording;
@@ -88,13 +89,40 @@ public sealed class FfmpegCameraCapture : ICameraCapture
     /// </remarks>
     private readonly SingleSlotPreviewSink? _preview;
 
+    /// <param name="logger">
+    /// 只交给**预览那条读帧循环**用：它退出时记一条（正常关管 / 中途中断）。
+    /// ⚠️ 不传就等于「预览黑掉时日志里不会有任何东西」—— 而录制中黑屏正是
+    /// 2026-10-10 报上来的那条现象，所以**生产装配处必须传**
+    /// （`AppHost` 两处都传了；测试与探测用不到就不传）。
+    /// </param>
     public FfmpegCameraCapture(
-        string ffmpegPath, RecordingSpec? spec = null, SingleSlotPreviewSink? preview = null)
+        string ffmpegPath, RecordingSpec? spec = null, SingleSlotPreviewSink? preview = null,
+        IAppLogger? logger = null)
     {
         _ffmpegPath = ffmpegPath;
         _spec = spec;
         _preview = preview;
+        _logger = logger;
     }
+
+    /// <summary>
+    /// 预览帧的**第二个去处**（录制期识码用，见 <see cref="Camera.RecordingRecognition"/>）。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// ⚠️ <b>它只是「顺带看一眼」，不是第二个消费者</b>：帧先照原样投进
+    /// <see cref="SingleSlotPreviewSink"/>，这条回调在**之后**才被叫 ——
+    /// 所以设不设它，主窗那幅画面的通路**一个字节都不变**。
+    /// </para>
+    /// <para>
+    /// ⚠️ <b>它跑在管道读端那条线程上</b>，实现里只许做永不阻塞的事：
+    /// 拖慢读端等于堵住管道，那是这台机器上唯一会丢录像的事故（§54.2）。
+    /// </para>
+    /// </remarks>
+    public Action<PreviewFrame>? FrameObserver { get; set; }
+
+    /// <summary>预览读帧循环的日志（可空，见构造函数那个参数）。</summary>
+    private readonly IAppLogger? _logger;
 
     public async Task<ICaptureProcess> StartAsync(
         CameraSource source,
@@ -217,7 +245,7 @@ public sealed class FfmpegCameraCapture : ICameraCapture
         {
             _ = Task.Run(() => PreviewProcess.ReadFramesAsync(
                 process.StandardOutput.BaseStream, preview,
-                PreviewProcess.Width, PreviewProcess.Height));
+                PreviewProcess.Width, PreviewProcess.Height, _logger, onFrame: FrameObserver));
         }
         else
         {

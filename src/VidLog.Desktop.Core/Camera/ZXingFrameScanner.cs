@@ -30,8 +30,19 @@ public interface IFrameScanner
 /// 所以 .NET 5+ 下的核心包不需要任何图像库绑定。
 /// </para>
 /// <para>
-/// <b>关掉 TryHarder 与旋转</b>：这两项会显著抬高单帧成本，而工位场景里
-/// 面单基本是正对镜头的。真机标定时如果识别率不够，先开 <c>TryHarder</c>。
+/// <b><c>TryHarder</c> 开着、<c>TryInverted</c> 关着</b>：
+/// <c>TryHarder</c> 会抬高单帧成本，但它正是「倾斜、稍远、稍糊也能认出来」的那一档 ——
+/// 2026-10-10 真机实测：关着它时，面单倾斜 15–20° 或离镜头稍远就**45 秒零识别**，
+/// 正对贴近才认得出；工位场景里没人精确定位，所以这一档必须开。
+/// </para>
+/// <para>
+/// ⚠️ 它抬高的成本由上游的**取景框裁剪 + 降频**抵掉（见 <c>PrerecordController</c>：
+/// 只解中央那一片、每 N 帧才解一次）—— 不是无脑对整幅 640×480 做重活。
+/// </para>
+/// <para>
+/// <c>TryInverted</c> 仍关着：它管的是**浅底深条**的反色码，面单上的码都是深底浅条，
+/// 开了只会多付一份成本。<b>本库这个版本没有旋转相关的选项</b>（反射确认过属性表），
+/// 所以「无论什么角度」靠的是 <c>TryHarder</c> 的多路扫描，不是旋转搜索。
 /// </para>
 /// </remarks>
 public sealed class ZXingFrameScanner : IFrameScanner
@@ -44,9 +55,10 @@ public sealed class ZXingFrameScanner : IFrameScanner
         {
             Options = new DecodingOptions
             {
-                // 关掉贵的那两项。识别率不够时第一个该动的是 TryHarder。
+                // ⚠️ TryHarder **开着**（2026-10-10 真机实测后改的）：关着时倾斜/稍远
+                // 一律认不出。成本由上游裁剪 + 降频抵掉，见类注释。
                 // （这个版本没有旋转相关的选项 —— 反射确认过属性表。）
-                TryHarder = false,
+                TryHarder = true,
                 TryInverted = false,
 
                 // 面单上常见的一维码型。QR 也带上 —— 有些面单用它。

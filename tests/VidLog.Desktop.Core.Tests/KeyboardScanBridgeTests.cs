@@ -171,5 +171,53 @@ public class KeyboardScanBridgeTests
         Assert.Equal(12, got.Raw.Length);
     }
 
+    // ─────────────────────────────────────────────
+    // 吞键（只吞结束符）
+    // ─────────────────────────────────────────────
+
+    [Fact]
+    public void 扫码枪的结束符要吞掉_前面的字符不吞()
+    {
+        // 根因：结束符放行的话会落到焦点控件上，实测会「又点一次那颗按钮」。
+        var bridge = new KeyboardScanBridge();
+
+        var t = 0L;
+        foreach (var ch in "SF1234567890")
+        {
+            var swallowed = bridge.Accept(new RawKeyEvent(Vk(ch), IsKeyDown: true), t);
+            Assert.False(swallowed);   // 字符一律放行
+            t += 5;
+        }
+
+        Assert.True(bridge.Accept(new RawKeyEvent(VirtualKeys.Return, IsKeyDown: true), t));
+    }
+
+    [Fact]
+    public void 人类打字的回车不吞()
+    {
+        // 打字串凑不成一次扫码 ⇒ 那一下回车不该被吞 ——
+        // 否则正常按回车（比如点确定）会失效。这是「不吞键」那条保证的落点。
+        var bridge = new KeyboardScanBridge();
+
+        var t = 0L;
+        foreach (var ch in "SF1234567890")
+        {
+            bridge.Accept(new RawKeyEvent(Vk(ch), IsKeyDown: true), t);
+            t += 120;   // 人类打字间隔
+        }
+
+        Assert.False(bridge.Accept(new RawKeyEvent(VirtualKeys.Return, IsKeyDown: true), t));
+    }
+
+    [Fact]
+    public void 抬起事件与修饰键从不吞()
+    {
+        var bridge = new KeyboardScanBridge();
+
+        Assert.False(bridge.Accept(new RawKeyEvent(VirtualKeys.Shift, IsKeyDown: true), 0));
+        Assert.False(bridge.Accept(new RawKeyEvent(Vk('S'), IsKeyDown: false), 1));
+        Assert.False(bridge.Accept(new RawKeyEvent(0x11, IsKeyDown: true), 2));   // Ctrl
+    }
+
     private static int Vk(char c) => char.ToUpperInvariant(c);
 }

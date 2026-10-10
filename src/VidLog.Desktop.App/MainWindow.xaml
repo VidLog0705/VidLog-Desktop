@@ -191,7 +191,7 @@
 
                 <Border Grid.Row="0" Background="{DynamicResource VideoBackground}"
                         CornerRadius="{StaticResource RadiusCard}">
-                    <Grid>
+                    <Grid x:Name="PreviewArea">
                         <!-- 取景画面（§62）。帧从**两个**源头来，但都投进同一只单槽：
                              录制中＝采集进程的第二路输出（彩色、12 fps），
                              工作中待扫＝取景识码那一路顺带投的帧。
@@ -203,6 +203,20 @@
                              ⚠️ 一开始藏着 —— 没帧的时候该露出来的，是下面那句说明。 -->
                         <Image x:Name="PreviewImage" Stretch="Uniform" Visibility="Collapsed"
                                RenderOptions.BitmapScalingMode="HighQuality"/>
+
+                        <!-- 识别框（需求方 2026-10-10）：**四个角各一段实线直角、互不相连**。
+                             它标的正是喂解码器的那一片（`RecognitionRoi.Default`）——
+                             所以它不是一个「大概齐」的提示，画在哪儿就意味着只认哪儿。
+                             ⚠️ 位置**算出来**（`RecognitionBox.Fit`）而不是钉在 XAML 上：
+                             画面是等比缩放进这个格子的，两种帧尺寸（640×480 / 640×360）
+                             留下的黑边不一样宽。
+                             ⚠️ 颜色**不新增调色板条目**：这里用的白与上面那个时间戳同一个口径
+                             （画面上的白色覆盖物在本项目的既有做法）。 -->
+                        <Path x:Name="RecognitionBoxPath" Visibility="Collapsed"
+                              IsHitTestVisible="False"
+                              Stroke="White" StrokeThickness="3"
+                              StrokeLineJoin="Miter" StrokeStartLineCap="Square"
+                              StrokeEndLineCap="Square"/>
 
                         <!-- 实时时间。⚠️ 这是**可信时钟**的时间，不是系统时钟 ——
                              改系统时间也改不动它，与录像里烧的那个是同一个来源。

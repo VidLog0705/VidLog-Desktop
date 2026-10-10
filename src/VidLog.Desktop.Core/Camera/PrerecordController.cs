@@ -199,7 +199,7 @@ public sealed class PrerecordController : IAsyncDisposable
             }
 
             _process = await PrerecordProcess.StartAsync(
-                _ffmpegPath, BuildArguments(recording), _sink, cancellationToken);
+                _ffmpegPath, BuildArguments(recording), _sink, cancellationToken, _logger);
 
             _recording = recording;
             _bufferStartedAt = recording is null ? null : startedAt;
@@ -235,9 +235,16 @@ public sealed class PrerecordController : IAsyncDisposable
                     period: TimeSpan.FromSeconds(ChunkSeconds));
             }
 
+            // §6.1：识别框是 2026-10-10 新加的过滤 —— 用户来问「为什么框里也不认」
+            // 时，日志里得先答得上来「当时框有多大、在哪」。
+            var roi = RecognitionRoi.Default;
+            var roiText = _decoder is null
+                ? ""
+                : $"识别框 中央 {roi.Width:P0}×{roi.Height:P0}（左 {roi.Left:P0} 上 {roi.Top:P0}）";
+
             _logger.Log(LogLevel.Info, "识码", recording is null
-                ? "开始取景识码"
-                : $"开始取景识码（预录缓冲 {recording.Buffer.TotalSeconds:0.#} 秒）");
+                ? $"开始取景识码{roiText}"
+                : $"开始取景识码（预录缓冲 {recording.Buffer.TotalSeconds:0.#} 秒）{roiText}");
         }
         catch (Exception ex)
         {
@@ -480,6 +487,9 @@ public sealed class PrerecordController : IAsyncDisposable
         // 这一轮的事。做成字段就多一处「新一轮开始时忘了重置」的错法。
         var reported = false;
 
+        // 解码器报过几次错也同理：一轮待扫记一次就够，每帧记一次只会把日志刷满。
+        var complained = false;
+
         while (!cancellationToken.IsCancellationRequested)
         {
             var frame = _sink.TakeLatest();
@@ -515,11 +525,23 @@ public sealed class PrerecordController : IAsyncDisposable
             string? decoded;
             try
             {
-                decoded = _decoder.TryDecode(frame.ToGray());
+                // ⚠️ 喂的是**识别框那一片**，不是整幅 —— 框外的码连 ZXing 都到不了
+                // （需求方 2026-10-10：框内才识别，防误扫）。
+                decoded = _decoder.TryDecode(frame.ToGray(RecognitionRoi.Default));
             }
-            catch (Exception)
+            catch (Exception ex)
             {
                 // 解不出来是常态。一帧失败绝不能把循环带下去。
+                //
+                // ⚠️ 但**不能一声不吭**（§6.1）：这个 `catch` 从前是空的，于是
+                // 「解码器一直在抛」和「画面里根本没有码」在日志里长得一模一样 ——
+                // 而这两件事的查法完全不同。一轮待扫记一次，不刷屏。
+                if (!complained)
+                {
+                    complained = true;
+                    _logger.Log(LogLevel.Warn, "识码", $"取景识码这一帧出错：{ex.GetType().Name}：{ex.Message}");
+                }
+
                 decoded = null;
             }
 

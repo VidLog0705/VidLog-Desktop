@@ -276,6 +276,23 @@ public sealed class RecordingCoordinator : IAsyncDisposable
     /// </remarks>
     public TimeSpan PrerecordBuffer { get; set; } = TimeSpan.Zero;
 
+    /// <summary>
+    /// **录制期识码**（开录之后谁在读码：见 <see cref="Camera.RecordingRecognition"/>）。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// ⚠️ <b>它归协调器管只为一件事：开段那一刻要把这一码先喂进识码闸</b>
+    /// （见 <see cref="StartSegmentAsync"/> 里那一句）。放在装配层订通知也做得到，
+    /// 但那样这条「顺序」就没有任何用例盖得住了 —— 而它错的表现是
+    /// <b>同码停模式刚开录就停</b>。
+    /// </para>
+    /// <para>
+    /// 帧**不从这里来**：帧由采集对象投（装配层挂在 <c>FfmpegCameraCapture.FrameObserver</c> 上），
+    /// 所以它**不跟着采集对象替换**（规格重探换采集对象时要重新挂 observer，那边有说明）。
+    /// </para>
+    /// </remarks>
+    public Camera.RecordingRecognition? Recognition { get; set; }
+
     /// <summary>采集那一层。**可替换** —— 见 <see cref="PrepareCaptureAsync"/>。</summary>
     /// <remarks>
     /// ⚠️ 做成可写属性而不是构造参数是因为**录制规格能在运行中改**（规格 §3.1.7
@@ -697,6 +714,26 @@ public sealed class RecordingCoordinator : IAsyncDisposable
             return;
         }
 
+        // 单号**形状核查**：面单上除了单号还有分拣码那一类条码，摄像头会认到它们
+        // （见 `WaybillPlausibility`）。挡在这里是因为**这是唯一一个「扫到了」的入口**
+        // —— 写在调用方就要在扫码枪 / 摄像头两条路上各写一遍。
+        //
+        // ⚠️ **必须排在命令码那道闸之后**：`VLOUT` / `VLRET` / `VLREC` 一个数字都没有，
+        // 放前面会把三条命令全判成假码（扫屏幕上那两张码就整个失灵）。
+        //
+        // ⚠️ **手打不过这道闸**：手打是用户明确要做的事（§3.2.2 的兜底），
+        // 用户自己要录一个短码不该被程序拦下。
+        if (source is not PunchSource.ManualEntry && !WaybillPlausibility.IsPlausible(waybill.Value))
+        {
+            _logger.Log(
+                LogLevel.Warn,
+                "扫码",
+                $"忽略不像单号的内容：{waybill.Value}（来源 {source}；"
+                + $"判定规则：数字至少 {WaybillPlausibility.MinDigits} 个、"
+                + $"长度不超过 {WaybillPlausibility.MaxLength}、只许数字字母与连字符）");
+            return;
+        }
+
         var state = Snapshot();
         var decision = _policy.OnScan(state, waybill);
 
@@ -867,6 +904,12 @@ public sealed class RecordingCoordinator : IAsyncDisposable
 
         Raise(CoordinatorNoticeKind.SegmentStarted, waybill, $"开始录制 {waybill.Value}。");
 
+        // ⚠️ **紧接着**把这一码喂进录制期识码的闸（见 `Recognition` 的说明）：
+        // 开段这一瞬间面单还在识别框里，不先喂一下的话，下一帧就会被当成
+        // 「又扫了一次」—— 同码停模式**刚开录就停**。
+        // 排在 `Raise` 之后是承重的：界面在收到 `SegmentStarted` 时就该能看到这一段了。
+        Recognition?.PrimeWith(waybill.Value);
+
         // 重复单号检测（规格 §3.2.5）—— ⚠️ **异步、绝不阻塞开录**（规格原话）。
         // 所以它排在 `Raise(SegmentStarted)` **之后**，而且**没人 await**。
         _ = CheckDuplicateWaybillAsync(waybill, session.SessionId);
@@ -965,6 +1008,20 @@ public sealed class RecordingCoordinator : IAsyncDisposable
         await previous.ReleaseCaptureAsync(cancellationToken);
         _current = null;
 
+        // 旧段也要有一条收尾的话 —— 换件就是「一段结束了、下一段开始了」两件事。
+        //
+        // ⚠️ 这一条**只说结束**：`StartSegmentAsync` 下面会报「开始录制 next。」，
+        // 原来这里再报一句「换件，开始录制 next。」，于是动态栏一次换件出现
+        // **两条「开始录制」**，而旧单号一句收尾都没有
+        // （需求方 2026-10-10：开始录制只显示一条、结束录制也要显示一条）。
+        //
+        // ⚠️ 排在 `StartSegmentAsync` **之前**：动态栏是「最新在上」，
+        // 后报的那条会盖在前一条上面，顺序反了就念成「先开始、后结束」。
+        if (previous.Waybill is { } finished)
+        {
+            Raise(CoordinatorNoticeKind.SwitchedWaybill, finished, $"换件：结束录制 {finished.Value}。");
+        }
+
         await StartSegmentAsync(next, source, cancellationToken);
 
         // 旧段在后台收尾 —— 它的结论只影响提示，不影响新段的开始。
@@ -985,8 +1042,6 @@ public sealed class RecordingCoordinator : IAsyncDisposable
                 await finishing.DisposeAsync();
             }
         });
-
-        Raise(CoordinatorNoticeKind.SwitchedWaybill, next, $"换件，开始录制 {next.Value}。");
     }
 
     private async Task<FinalizeOutcome?> StopCurrentSegmentAsync(
@@ -1019,6 +1074,18 @@ public sealed class RecordingCoordinator : IAsyncDisposable
 
         var outcome = await session.StopAsync(reason, cancellationToken);
         ReportFinalize(session, outcome);
+
+        // 动态栏要有始有终：开录那条是 `StartSegmentAsync` 里的 "开始录制 X。"，
+        // 这里补对称的一条。放在**收尾之后** ——「结束录制」应当是收尾有结论才说，
+        // 而不是一按就报（2026-10-10 需求方要求）。
+        //
+        // ⚠️ 这里是所有「停一段」的唯一落点（手动 / 同码复扫 / 换件以外的自动停），
+        // 见 `SubmitAsync` 的 `WorkDecision.StopSegment` 与 `StopWorkAsync`。
+        if (session.Waybill is { } stopped)
+        {
+            Raise(CoordinatorNoticeKind.SegmentStopped, stopped, $"结束录制 {stopped.Value}。");
+        }
+
         await session.DisposeAsync();
 
         return outcome;

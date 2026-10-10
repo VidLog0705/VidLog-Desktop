@@ -48,6 +48,39 @@ public sealed record PreviewFrame(byte[] Rgb, int Width, int Height, long Captur
 
         return new CameraFrame(gray, Width, Height, CapturedAtMs);
     }
+
+    /// <summary>
+    /// 把这幅画面**中央那块识别框**裁出来并转灰度 —— 框外一律不进 ZXing。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// 需求方 2026-10-10 的识别框：面单在框里才认、框外不认（防误扫）。
+    /// 裁在**喂 ZXing 之前**做，所以框外的码连解码器都到不了 ——
+    /// 不是「解出来再丢」，那种做法照样会认到框外的分拣码。
+    /// </para>
+    /// <para>
+    /// 顺带把单帧成本降下来：只解中央 60%×50% 那一片，像素数是整幅的 30%，
+    /// <c>TryHarder</c>（本类那一路开着）才跑得起。
+    /// </para>
+    /// </remarks>
+    public CameraFrame ToGray(RecognitionRoi roi)
+    {
+        var (x0, y0, w, h) = roi.ToPixels(Width, Height);
+        var gray = new byte[w * h];
+
+        for (var y = 0; y < h; y++)
+        {
+            var srcRow = (y0 + y) * Stride;
+            var dstRow = y * w;
+            for (var x = 0; x < w; x++)
+            {
+                var i = srcRow + (x0 + x) * 3;
+                gray[dstRow + x] = (byte)((Rgb[i] * 299 + Rgb[i + 1] * 587 + Rgb[i + 2] * 114) / 1000);
+            }
+        }
+
+        return new CameraFrame(gray, w, h, CapturedAtMs);
+    }
 }
 
 /// <summary>
@@ -204,7 +237,7 @@ public sealed class PreviewProcess : IAsyncDisposable
         var errors = new BoundedTextTail();
         _ = Task.Run(() => DrainAsync(process.StandardError, errors));
 
-        var readLoop = Task.Run(() => ReadAsync(process.StandardOutput.BaseStream, sink));
+        var readLoop = Task.Run(() => ReadAsync(process.StandardOutput.BaseStream, sink, logger));
 
         cancellationToken.ThrowIfCancellationRequested();
 
@@ -375,8 +408,8 @@ public sealed class PreviewProcess : IAsyncDisposable
     /// 读端一停管道就满，ffmpeg 被顶住，连 <c>q</c> 都处理不了。
     /// 停机靠**进程退出**（管道自然断），不是靠取消这个循环。
     /// </remarks>
-    private static Task ReadAsync(Stream stream, SingleSlotPreviewSink sink)
-        => ReadCoreAsync(stream, sink, Width, Height);
+    private static Task ReadAsync(Stream stream, SingleSlotPreviewSink sink, IAppLogger? logger)
+        => ReadCoreAsync(stream, sink, Width, Height, logger, onFrame: null);
 
     /// <summary>
     /// 从**别人进程**的管道上读预览帧，投进单槽。
@@ -397,15 +430,31 @@ public sealed class PreviewProcess : IAsyncDisposable
     /// </para>
     /// </remarks>
     public static Task ReadFramesAsync(
-        Stream stream, SingleSlotPreviewSink sink, int width, int height)
-        => ReadCoreAsync(stream, sink, width, height);
+        Stream stream, SingleSlotPreviewSink sink, int width, int height, IAppLogger? logger = null,
+        Action<PreviewFrame>? onFrame = null)
+        => ReadCoreAsync(stream, sink, width, height, logger, onFrame);
 
+    /// <summary>
+    /// 读帧循环的公共实现。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// ⚠️ <b>退出时一定要留痕</b>（2026-10-10 补的）。原来那个 <c>catch</c> 是**空的**，
+    /// 于是「读循环悄悄退出、进程还活着」这种坏法在日志里**一个字都没有** ——
+    /// 现场表现就是「实时预览黑着」，而三层排查（相机 / ffmpeg 命令 / 读端）
+    /// 里唯独读端查不出东西。现在退出分三种，各记一条，还带上**读到了几帧**：
+    /// 帧数是判据的关键 —— 读到 0 帧说明这一路**从来没通过**，读到几百帧才断
+    /// 说明是**中途**坏的，两件事的查法完全不同。
+    /// </para>
+    /// </remarks>
     private static async Task ReadCoreAsync(
-        Stream stream, SingleSlotPreviewSink sink, int width, int height)
+        Stream stream, SingleSlotPreviewSink sink, int width, int height, IAppLogger? logger,
+        Action<PreviewFrame>? onFrame)
     {
         var frameSize = width * height * 3;
         var buffer = new byte[frameSize];
         var filled = 0;
+        var frames = 0L;
 
         try
         {
@@ -416,22 +465,34 @@ public sealed class PreviewProcess : IAsyncDisposable
 
                 if (read <= 0)
                 {
-                    break;
+                    // 管道关闭 —— 进程正常退了（停机时走的就是这条）。
+                    logger?.Log(LogLevel.Info, "预览", $"读帧结束（共读到 {frames} 帧）");
+                    return;
                 }
 
                 filled += read;
 
                 if (filled == frameSize)
                 {
-                    sink.Publish(new PreviewFrame(
-                        (byte[])buffer.Clone(), width, height, Environment.TickCount64));
+                    var frame = new PreviewFrame(
+                        (byte[])buffer.Clone(), width, height, Environment.TickCount64);
 
+                    // ⚠️ 顺序是**承重**的：先投给画面，再给顺带看一眼的那位。
+                    // 反过来的话，一个慢的观察者会把画面也一起拖住（§54.2）。
+                    sink.Publish(frame);
+                    onFrame?.Invoke(frame);
+
+                    frames++;
                     filled = 0;
                 }
             }
         }
         catch (Exception ex) when (ex is IOException or ObjectDisposedException or InvalidOperationException)
         {
+            // ⚠️ 这条原来被**静默吞掉**了 —— 读循环退出而进程还在写，界面就黑着，
+            // 日志里却什么都没有。现在它是一条 WARN，并且带上读到的帧数。
+            logger?.Log(LogLevel.Warn, "预览",
+                $"读帧中断（已读到 {frames} 帧）：{ex.GetType().Name}：{ex.Message}");
         }
     }
 

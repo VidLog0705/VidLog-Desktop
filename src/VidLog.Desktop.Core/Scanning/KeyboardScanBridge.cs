@@ -10,9 +10,23 @@ namespace VidLog.Desktop.Core.Scanning;
 /// <see cref="ScannerKeystrokeDetector"/> —— 判定逻辑一行都不用改。
 /// </para>
 /// <para>
-/// <b>不做任何按键抑制</b>。规格 §3.2.1 要求「不能与用户正常打字冲突」，
-/// 最可靠的做法是**根本不拦**：钩子照常把键转发给前台窗口，
-/// 我们只是旁听。用户打字照旧进他的输入框，扫码枪的串被我们识别出来。
+/// <b>只吞一个键：一次已被判定为扫码枪输入的「结束符」。</b>
+/// 规格 §3.2.1 要求「不能与用户正常打字冲突」，而判定是**保守**的
+/// （<see cref="ScannerKeystrokeDetector"/> 要「短时间连击 + 合法形状 + 结束符」
+/// 三条同时成立才认），所以这个吞的落点**不可能**命中正常人打字 ——
+/// 人敲不出 50ms 以内的连击串。
+/// </para>
+/// <para>
+/// <b>为什么非吞不可</b>：扫码枪那一枪的最后是 Enter，钩子把它转发给前台窗口后，
+/// 它会落到**当时有焦点的控件**上。实测（2026-10-10）：关掉多画面窗口后 WPF 会把焦点
+/// 还给打开它的那颗按钮，于是这一下 Enter 等于**又点了一次那颗按钮** ——
+/// 表现是「关掉的页面自己弹回来」「一次扫码开两个会话」「同码停不停止」。
+/// 根因在钩子这一层，所以也修在这一层：一个落点，所有窗口都受益。
+/// </para>
+/// <para>
+/// <b>为什么只吞结束符、不吞前面那些字符</b>：前面那些字符要留着 ——
+/// 配置向导第 6 步的测试框正是靠它们落进框里来验扫码枪（见 <c>WizardWindow</c>）；
+/// 而字符本身点不动按钮，留着无害。
 /// </para>
 /// </remarks>
 public sealed class KeyboardScanBridge
@@ -29,18 +43,23 @@ public sealed class KeyboardScanBridge
     public event Action<ScanOutcome>? Scanned;
 
     /// <summary>喂一个按键事件。修饰键只更新状态，不进判定。</summary>
-    public void Accept(RawKeyEvent key, long timestampMs)
+    /// <returns>
+    /// 要不要把这个键**吞掉**（不转发给前台窗口）。
+    /// 只有当这个键是**一次已被判定为扫码枪输入的结束符**时才是 <see langword="true"/> ——
+    /// 为什么只吞这一个，见类注释。
+    /// </returns>
+    public bool Accept(RawKeyEvent key, long timestampMs)
     {
         if (key.VirtualKey is VirtualKeys.Shift or VirtualKeys.LeftShift or VirtualKeys.RightShift)
         {
             _shift = key.IsKeyDown;
-            return;
+            return false;
         }
 
         if (!key.IsKeyDown)
         {
             // 只处理按下。扫码枪的字符是按下事件，抬起事件重复喂会让判定串翻倍。
-            return;
+            return false;
         }
 
         var character = Translate(key.VirtualKey, _shift);
@@ -49,14 +68,20 @@ public sealed class KeyboardScanBridge
             // 认不出的键（功能键、Ctrl 组合等）当作「不是扫码枪」——
             // 重置而不是忽略，否则一个 Ctrl 打断不了正在攒的串。
             _detector.Reset();
-            return;
+            return false;
         }
 
         var outcome = _detector.Accept(new KeyStroke(character.Value, timestampMs));
         if (outcome is not null)
         {
             Scanned?.Invoke(outcome);
+
+            // 判定器**只在结束符那一条分支**上才会返回非空（`Complete()` 只在那里被调），
+            // 所以「认出一次扫码」等价于「这一下是结束符」—— 吞它。
+            return true;
         }
+
+        return false;
     }
 
     public void Reset()

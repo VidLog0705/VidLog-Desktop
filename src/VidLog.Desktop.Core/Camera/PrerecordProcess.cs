@@ -86,17 +86,28 @@ public sealed class PrerecordProcess
     /// 本类只管「起、读、停」，不猜自己要跑什么。
     /// </param>
     /// <param name="sink">帧的落点（主窗取景与识码共用一帧，见 <see cref="PrerecordController"/>）。</param>
+    /// <param name="logger">
+    /// 只交给**读帧循环**用：它退出时（正常关闭 / 中途中断）记一条带帧数的日志。
+    /// <b>不是</b>本类自己记日志 —— 进程死没死那件事仍由
+    /// <see cref="PrerecordController"/> 在停它的时候记（见下面那条注意事项）。
+    /// </param>
     /// <remarks>
-    /// ⚠️ <b>这里不收 logger</b>：它说过的那句话留在 <see cref="ErrorTail"/> 上，
+    /// ⚠️ <b>本类不持有 logger</b>：它说过的那句话留在 <see cref="ErrorTail"/> 上，
     /// 由持有它的 <see cref="PrerecordController"/> 在停它的时候记。
     /// 原来两边各记一条**同样的话**（`AGENTS.md` §6.1 收尾审计查出来的）——
     /// 同一次死亡在日志里出现两遍，只会让人以为死了两次。
+    /// <para>
+    /// <paramref name="logger"/> 那条与上面那条**不是同一件事**：它说的是
+    /// 「读帧循环什么时候停的、读到过几帧」，而进程死没死是另一句 ——
+    /// 2026-10-10 的预览黑屏正是「进程活着、读循环却停了」，那条只能由读循环自己说。
+    /// </para>
     /// </remarks>
     public static Task<PrerecordProcess> StartAsync(
         string ffmpegPath,
         IReadOnlyList<string> arguments,
         SingleSlotPreviewSink sink,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        IAppLogger? logger = null)
     {
         var startInfo = new ProcessStartInfo
         {
@@ -138,7 +149,7 @@ public sealed class PrerecordProcess
         // 定长切裸帧这件事多写一遍就多一处「尺寸对不上」的静默花屏。
         var readLoop = Task.Run(
             () => PreviewProcess.ReadFramesAsync(
-                process.StandardOutput.BaseStream, sink, Width, Height));
+                process.StandardOutput.BaseStream, sink, Width, Height, logger));
 
         cancellationToken.ThrowIfCancellationRequested();
 
