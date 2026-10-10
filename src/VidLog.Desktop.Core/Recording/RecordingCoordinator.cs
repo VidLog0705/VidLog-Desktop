@@ -970,12 +970,14 @@ public sealed class RecordingCoordinator : IAsyncDisposable
             _logger.Log(LogLevel.Info, "录制", $"重复单号：{waybill.Value} 近 {_options.DuplicateCheckDays} 天录过",
                 new Dictionary<string, object?> { ["次数"] = recent.Count });
 
-            // ⚠️ **短句**（需求方 2026-10-10：原来那句「在最近 7 天里录过 10 次
-            // （最近一次 …）。核对一下是不是重复录件或者单号扫错了。」太长，
-            // 而它要上的是**只占一行**的动态栏）。次数与最近一次时刻仍在**日志**里
-            // （上面那条「重复单号：… 近 N 天录过 N 次」），不算丢。
+            // ⚠️ **次数留在界面上**（需求方 2026-10-10 裁定）：「录过 N 次（最近一次 …）」
+            // 是用户拿来判断是不是重复录件的那个数，不能拿掉。
+            // 改短的只是**念的那一句** —— 见 `App.OnNotice`，那里只念「单号重复」四个字。
+            // 「上屏」与「播报」是两件事，各改各的。
             Raise(CoordinatorNoticeKind.DuplicateWaybill, waybill,
-                $"{waybill.Value} 重复录制，请检查。");
+                $"{waybill.Value} 在最近 {_options.DuplicateCheckDays} 天里录过 {recent.Count} 次"
+                + $"（最近一次 {recent[0].StartedAt.ToLocalTime():MM-dd HH:mm}）。"
+                + "核对一下是不是重复录件或者单号扫错了。");
         }
         catch (Exception ex)
         {
@@ -1198,6 +1200,18 @@ public sealed class RecordingCoordinator : IAsyncDisposable
                     announce.Waybill is { } wrong
                         ? $"{wrong.Value} 单号错误，请检查。"
                         : "面单错误，请扫描正确面单");
+
+                // ⚠️ **这条通知自己要有一条日志**（`AGENTS.md` §6.1「用户看得见的状态变化
+                // 要留痕」）。2026-10-10 需求方裁定补上 —— 漏的原因很具体：
+                // 下面那条 `ScanErrorEvent` **有落库**，但它是**有条件的**
+                // （要有扫描记录器、要两个单号都拿得到），条件不成立时这一下
+                // 在日志里**一个字都没有**；而错码保护正是「事后要能查出操作员
+                // 那一刻扫到了什么」的那件事，恰恰最不能靠运气。
+                // ⚠️ 上面那句是**给界面看的措辞**，会随需求方改；这条日志只陈述事实。
+                _logger.Log(LogLevel.Warn, "识码",
+                    announce.Waybill is { } mismatched
+                        ? $"错码保护：{_current?.Waybill?.Value ?? "当前段"} 录着的时候扫到 {mismatched.Value}"
+                        : "错码保护：扫到一张认不出单号的面单");
 
                 // ⚠️ 写失败**不能把这一下带下去**：本表按规格「不是控制流的输入」，
                 // 而这一下正在**录着像**。诊断记录丢了是小事，

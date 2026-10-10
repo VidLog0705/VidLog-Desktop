@@ -550,14 +550,23 @@ public class RecordingCoordinatorTests
     }
 
     [Fact]
-    public async Task 不装错误扫描日志时_错码保护照样提示()
+    public async Task 不装错误扫描日志时_错码保护照样提示_而且日志里留下了()
     {
         // ⚠️ 这一条守的是「诊断记录写不下去不能把录制带下去」：
         // 不装（或者盘写不进去）时，提示这条路径必须一个字都不少。
+        //
+        // ⚠️ 2026-10-10 需求方裁定：**错码这条通知自己要有一条日志**。
+        // 从前它的留痕全押在 `ScanErrorLog` 那本账上，而那本账**是有条件的**
+        // —— 这个用例正是「条件不成立」的那一档（`scanErrors` 一个都没装）：
+        // 那一刻在日志里**一个字都没有**，而错码保护恰恰是「事后要能查出操作员
+        // 那一刻扫到了什么」的那件事。所以这里同时盯两件事：提示还在，
+        // 而且日志里**查得到扫到的那个码**（只记「发生过错码」不够用）。
         using var dir = new TempDir();
         var notices = new List<CoordinatorNotice>();
+        var logger = new CapturingLogger();
 
-        await using var coordinator = Build(dir, WorkMode.StopOnSameWaybill, new FakePunchLog());
+        await using var coordinator = Build(
+            dir, WorkMode.StopOnSameWaybill, new FakePunchLog(), logger: logger);
         coordinator.Notice += notices.Add;
 
         await coordinator.SubmitAsync(A, PunchSource.KeyboardScanner);
@@ -565,6 +574,10 @@ public class RecordingCoordinatorTests
 
         Assert.Contains(notices, n => n.Kind == CoordinatorNoticeKind.WrongWaybill);
         Assert.Equal(A, coordinator.CurrentWaybill);
+
+        var line = Assert.Single(
+            logger.Lines, m => m.StartsWith("错码保护：", StringComparison.Ordinal));
+        Assert.Contains(B.Value, line, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -895,12 +908,13 @@ public class RecordingCoordinatorTests
         await coordinator.SubmitAsync(A, PunchSource.KeyboardScanner);
         await WaitForNoticeAsync(notices, CoordinatorNoticeKind.DuplicateWaybill);
 
-        // ⚠️ 需求方 2026-10-10 把上屏那句**改短**了（原来那句带天数与次数，
-        // 长到在只占一行的动态栏上读不完）⇒ 天数与次数**搬到了下面那行日志里**。
-        // 所以这条用例的观察点从「通知里有没有这两个数」换成「日志里有没有」——
-        // 数本身照旧要算对，只是不再上屏。
+        // ⚠️ 需求方 2026-10-10 定形：**上屏照旧带天数与次数** ——「录过 N 次」正是
+        // 用户拿来判断是不是重复录件的那个数。改短的只是**念的那一句**
+        // （`App.OnNotice` 里只念「单号重复」四个字），两件事分开。
+        // 两头都盯：通知里要有这两个数，日志里也要有（界面之外的那条退路）。
         var notice = Assert.Single(notices, n => n.Kind == CoordinatorNoticeKind.DuplicateWaybill);
-        Assert.Equal($"{A.Value} 重复录制，请检查。", notice.Message);
+        Assert.Contains($"{A.Value} 在最近 7 天里录过 1 次", notice.Message, StringComparison.Ordinal);
+        Assert.Contains("核对一下是不是重复录件或者单号扫错了。", notice.Message, StringComparison.Ordinal);
 
         var line = Assert.Single(
             logger.Lines, m => m.StartsWith("重复单号：", StringComparison.Ordinal));
@@ -968,9 +982,9 @@ public class RecordingCoordinatorTests
 
         var notice = Assert.Single(notices, n => n.Kind == CoordinatorNoticeKind.DuplicateWaybill);
 
-        // ⚠️ 次数**从 2026-10-10 起不上屏**（上屏那句按需求方要求改短了），
-        // 观察点跟着搬到日志那一行 —— 数照旧要算对。
-        Assert.Equal($"{A.Value} 重复录制，请检查。", notice.Message);
+        // ⚠️ 次数**上屏**（需求方 2026-10-10 裁定），而且这里专盯它算得对：
+        // 三段归一次会话 ⇒ **2**，不是 4。日志那一行照旧也盯（见下）。
+        Assert.Contains($"{A.Value} 在最近 7 天里录过 2 次", notice.Message, StringComparison.Ordinal);
 
         var line = Assert.Single(
             logger.Lines, m => m.StartsWith("重复单号：", StringComparison.Ordinal));
