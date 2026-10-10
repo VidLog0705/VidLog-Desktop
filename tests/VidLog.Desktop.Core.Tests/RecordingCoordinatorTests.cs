@@ -799,6 +799,37 @@ public class RecordingCoordinatorTests
     }
 
     [Fact]
+    public async Task 同一次会话分成多段也只算一次()
+    {
+        // ⚠️ 一次会话会被分成多段（时长兜底、磁盘将满都会分段），每段在索引里
+        // 各占一行 —— 不去重的话「这个单号录过 1 次」会被说成「3 次」，
+        // 而界面那句话正是用户拿来判断是不是重复录件的（D2，2026-10-10）。
+        // 反证：去掉 `.GroupBy(e => e.SessionId, …)` ⇒ 这条红（会说「4 次」）。
+        using var dir = new TempDir();
+        var notices = new List<CoordinatorNotice>();
+
+        var first = OldEntryFor(A, 3);
+        var second = first with { EvidenceId = "ev-old-2" };   // 同一次会话的第 2 段
+        var third = first with { EvidenceId = "ev-old-3" };    // 第 3 段
+        var other = first with { SessionId = "sess-other", EvidenceId = "ev-old-4" }; // 另一次会话
+
+        await using var coordinator = Build(
+            dir, WorkMode.StopOnSameWaybill, new FakePunchLog(),
+            duplicateProbe: (_, _) => Task.FromResult<IReadOnlyList<RecordingEntry>>(
+                [first, second, third, other]),
+            duplicateCheckDays: 7);
+        coordinator.Notice += notices.Add;
+
+        await coordinator.SubmitAsync(A, PunchSource.KeyboardScanner);
+        await WaitForNoticeAsync(notices, CoordinatorNoticeKind.DuplicateWaybill);
+
+        var notice = Assert.Single(notices, n => n.Kind == CoordinatorNoticeKind.DuplicateWaybill);
+
+        // 三段归一次会话 + 另一次会话 —— **两次**，不是四次。
+        Assert.Contains("2 次", notice.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task 重复单号检测绝不阻塞开录_哪怕探测永远不返回()
     {
         // 规格 §3.2.5 的硬约束：「这三项**全部异步执行，绝不阻塞开录**」。

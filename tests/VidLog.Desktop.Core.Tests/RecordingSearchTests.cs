@@ -250,6 +250,56 @@ public class RecordingSearchTests
     }
 
     // ─────────────────────────────────────────────
+    // 作废（D1/D2，2026-10-10）
+    // ─────────────────────────────────────────────
+
+    [Fact]
+    public async Task 作废的段默认照常显示_只是带上了标记()
+    {
+        // ⚠️ **默认不隐藏**：用户作废过什么，他自己要能回头看见
+        // （文件还留在盘上，检索里却查不到，那是最难解释的一种状态）。
+        // 反证：把 `RecordingQuery.ExcludeVoided` 的默认值改成 `true` ⇒ 这条红。
+        using var dir = new TempDir();
+        var (index, labels) = await SeedAsync(dir);
+
+        await labels.SetAsync("e1", LabelKeys.Voided, "true");
+
+        var hits = await Build(index, labels).SearchAsync(new RecordingQuery { WaybillText = "SF1000000001" });
+
+        var hit = Assert.Single(hits);
+        Assert.True(hit.IsVoided);
+    }
+
+    [Fact]
+    public async Task 要求排除作废时它就查不到了_这是重复探针走的路径()
+    {
+        // ⚠️ 重复单号探针传 `ExcludeVoided = true`（用户在 `AppHost` 那侧）：
+        // 作废的理由就是「要重录」，那时提醒「你录过了」正好帮倒忙（D2）。
+        using var dir = new TempDir();
+        var (index, labels) = await SeedAsync(dir);
+
+        await labels.SetAsync("e1", LabelKeys.Voided, "true");
+
+        var hits = await Build(index, labels).SearchAsync(new RecordingQuery
+        {
+            WaybillText = "SF1000000001",
+            ExcludeVoided = true,
+        });
+
+        Assert.Empty(hits);
+
+        // ★ 反向：**同一份索引**里没作废的那条照常查得到 ——
+        // 排除的是「这一条」，不是「这一查询整个不返回」。
+        var other = await Build(index, labels).SearchAsync(new RecordingQuery
+        {
+            WaybillText = "SF1000000002",
+            ExcludeVoided = true,
+        });
+
+        Assert.Single(other);
+    }
+
+    // ─────────────────────────────────────────────
     // 标签的「可修正」（I5）
     // ─────────────────────────────────────────────
 

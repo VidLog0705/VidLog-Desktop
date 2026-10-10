@@ -757,10 +757,15 @@ public class DesktopServicesTests
         //    唯一一处**会静默失败**的地方（全白的日历，而检索照常）。
         Assert.Contains("\"日历\"", window, StringComparison.Ordinal);
 
-        // 数一数：锁定成功、锁定失败、回放失败、日历读不出日子 —— **恰好四条**。
+        // ⑤ 作废那一步也留痕（2026-10-10 补，D1）：它改变「这个单号算不算录过」——
+        //    直接影响下次扫码时那条重复提醒响不响，事后得能回答「谁改的」。
+        Assert.Contains("\"作废\"", window, StringComparison.Ordinal);
+
+        // 数一数：锁定成功、锁定失败、回放失败、日历读不出日子、作废成功、作废失败
+        // —— **恰好六条**。
         // ⚠️ 这是个精确计数（原为 2）：少一条说明「成功/失败各一条」被删了，
         // 多一条说明有人新加了一个出口却没在这里登记。
-        Assert.Equal(4, System.Text.RegularExpressions.Regex.Matches(window, @"_host\.Log\(").Count);
+        Assert.Equal(6, System.Text.RegularExpressions.Regex.Matches(window, @"_host\.Log\(").Count);
     }
 
     /// <summary>

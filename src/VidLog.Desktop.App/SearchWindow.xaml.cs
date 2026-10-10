@@ -43,6 +43,7 @@ internal sealed record SearchResultRow(
     string Note,
     Visibility NoteVisibility,
     string LockLabel,
+    string VoidLabel,
     string EvidenceId,
     RecordingHit Hit);
 
@@ -208,6 +209,8 @@ public partial class SearchWindow : Window
                 // —— 与清理判定**同一个函数**，在界面里另写一份会漏掉
                 // 「认不出来的值当锁着」那一条。
                 EvidenceLock.IsLocked(h.Labels) ? "已锁定" : "锁定",
+                // 作废（D1）。判据与检索过滤共用 `EvidenceVoid` 那一处。
+                h.IsVoided ? "已作废" : "作废",
                 h.Entry.EvidenceId,
                 h);
         }).ToList();
@@ -639,6 +642,60 @@ public partial class SearchWindow : Window
 
             // ⚠️ 失败也要留痕：这句话只留在界面上，而用户多半已经把它划走了。
             _host.Log(LogLevel.Warn, "锁定", $"锁定没能保存（{evidenceId}）：{ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// 把这一条标成作废 / 取消作废（D1，2026-10-10 需求方点的）。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// ⚠️ <b>作废不是删除</b>：文件**原封不动留在盘上**（需求方写死的那一条），
+    /// 也不豁免清理 —— 作废只做两件事：检索界面里标出来、**不再算作重复单号**
+    /// （用户作废就是为了重录同一个单号，那时提醒「你录过了」是帮倒忙）。
+    /// </para>
+    /// <para>
+    /// ⚠️ 与 <see cref="OnToggleLock"/> 同形（追加一条标签、后者胜出），
+    /// 但**不说「保留期」那种话**：作废管不着清理，说岔了会让用户以为
+    /// 作废掉的就安全了 —— 那正好反了（作废的照样按保留期清理）。
+    /// </para>
+    /// </remarks>
+    private async void OnToggleVoid(object sender, RoutedEventArgs e)
+    {
+        if (sender is not System.Windows.Controls.Button { Tag: string evidenceId }
+            || string.IsNullOrEmpty(evidenceId))
+        {
+            return;
+        }
+
+        try
+        {
+            // 当前作废没作废 —— **从标签读**（判据同一处），不从按钮文字猜。
+            var labels = await _host.Services.Labels.GetForEvidenceAsync(evidenceId);
+            var voided = EvidenceVoid.IsVoided(labels);
+
+            await _host.Services.Labels.SetAsync(
+                evidenceId, LabelKeys.Voided, voided ? "false" : "true");
+
+            // ⚠️ 留痕（`AGENTS.md` §6「状态变更」）：作废会改变「这个单号算不算录过」
+            // —— 直接影响下次扫码时那条重复提醒响不响，事后得能回答「谁改的」。
+            _host.Log(
+                LogLevel.Info, "作废",
+                $"{(voided ? "取消作废" : "作废")} {evidenceId}");
+
+            // 重检索一遍，那一格（以及「已作废 / 作废」）才会跟着变。
+            await SearchAsync();
+
+            CountText.Text = voided
+                ? "这条已取消作废：重新算作这个单号录过。"
+                : "这条已作废：文件还留着，只是不再算作重复单号。";
+        }
+        catch (Exception ex)
+        {
+            // I3：写不进去要说出来 —— 用户以为作废了而其实没作废。
+            CountText.Text = $"作废没能保存：{ex.Message}";
+
+            _host.Log(LogLevel.Warn, "作废", $"作废没能保存（{evidenceId}）：{ex.Message}");
         }
     }
 

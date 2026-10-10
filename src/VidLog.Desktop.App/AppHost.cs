@@ -255,6 +255,23 @@ public sealed class AppHost : IAsyncDisposable
     /// <summary>上一次自动重探的时刻（限流用，见 <see cref="MaybeReprobeAsync"/>）。</summary>
     private DateTimeOffset _lastReprobeAt = DateTimeOffset.MinValue;
 
+    /// <summary>
+    /// 规格探测的闸：一次只许一个在飞（见 <see cref="ProbeAsync"/>）。
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ <b>探测必须互斥，不是为了省事，是因为相机是独占的</b>（2026-10-10）：
+    /// 两个探测同时真开同一台相机 ⇒ 两边都开不起来 ⇒ 把**本来能用的组合误判成
+    /// 跑不通**（回落 + 对用户说一句假的「你选的那档跑不通」），而且两边都会写
+    /// 共享的 <see cref="Coordinator"/> 的 `Encoder` / `Capture`（后写的赢）。
+    /// 入口有两条、都在这里（<see cref="PrepareCaptureAsync"/> 每次开段一条、
+    /// <see cref="MaybeReprobeAsync"/> 每次心跳一条），没有别的路。
+    /// <para>
+    /// ⚠️ 闸本身在 Core（<see cref="SpecProbeGate"/>）—— 那个工程有测试工程，
+    /// 而「并发进来是不是真的串住了」正是最不能靠读代码确认的那类东西。
+    /// </para>
+    /// </remarks>
+    private readonly SpecProbeGate _probeGate = new();
+
     public TrayIcon? Tray { get; private set; }
 
     /// <summary>关窗口时问一句的钩子 —— 由窗口提供（它知道怎么弹对话框）。</summary>
@@ -590,10 +607,25 @@ public sealed class AppHost : IAsyncDisposable
                             MatchMode = Core.Search.WaybillMatchMode.Exact,
                             // 只需要「有没有 / 几次」，50 条足够说明问题。
                             Limit = 50,
+                            // ⚠️ 作废的不算（D1/D2）：用户作废就是为了重录同一个单号，
+                            // 那时提醒「你录过了」正好帮倒忙。
+                            ExcludeVoided = true,
                         },
                         token);
 
-                    return hits.Select(h => h.Entry).ToList();
+                    // ⚠️ **成品已经不在盘上的行也数不上一「次」**（D2，2026-10-10）：
+                    // 索引**只追加**（`IRecordingIndex` 只有 `AddAsync`/`LoadAllAsync`），
+                    // 而清理只删文件、从不改索引 ⇒ 被清掉的那些行永远留在索引里。
+                    // 不过滤的话，「这个单号近 7 天录过」会一直数着早就清理掉的录像。
+                    // ⚠️ 这一条留在**这里**而不是 Core：`RecordingSearch` 是纯检索、
+                    // 不碰文件系统（那是它的设计前提，注释里写着）。
+                    IReadOnlyList<Core.Index.RecordingEntry> rows = hits
+                        .Where(h => System.IO.File.Exists(
+                            services.Storage.ResolveOrActive(h.Entry.Location.Value)))
+                        .Select(h => h.Entry)
+                        .ToList();
+
+                    return rows;
                 })
         {
             // 分段时长与时长兜底（规格 §3.1.1 / §3.3.4）。
@@ -1013,6 +1045,38 @@ public sealed class AppHost : IAsyncDisposable
             return;
         }
 
+        // ⚠️ **闸**：一次只许一个探测真开相机（2026-10-10，见 `SpecProbeGate`）。
+        // 那两个入口本来就可能撞在一起 —— 两次扫码挨得太近、或者扫码撞上心跳。
+        // 2026-10-09 15:31:04 实测撞到过：19 毫秒内两条「录制规格已改为 …」，
+        // 而同一刻两条探测进程是**被杀**（-5）退出的。
+        var probed = await _probeGate.RunAsync(
+            alreadyDone: () => wanted.ProbeMatches(ProbedSpec),
+            probe: () => ProbeOnceAsync(wanted, ffmpegPath, cancellationToken),
+            cancellationToken);
+
+        // 等门那段时间里，另一个探测可能已经把**这一档**探完了 ——
+        // 那时结论（`ProbedSpec` / `SpecFellBack` / 采集对象 / 编码器）都已经落定，
+        // 再探一次只是白开一次相机、白等几秒。
+        //
+        // ⚠️ 这一条**必须记**（`AGENTS.md` §6.1）：它是这个方法的**唯一**一条
+        // 「什么都不做」的出口 —— 不记的话，事后看到的就是「这次开段没探测」，
+        // 而分不出「没必要探」和「探测被吞了」。
+        if (!probed)
+        {
+            _logger.Log(LogLevel.Info, "录制", "同一档刚探过，不再重复探一次");
+        }
+    }
+
+    /// <summary>
+    /// 真探一次 —— 闸里那一段（见 <see cref="ProbeAsync"/>）。
+    /// </summary>
+    /// <remarks>
+    /// 分成两层只为把闸写成一处：判「该不该探」在两个入口各自的头上（两边的判据
+    /// 完全不同），而「一次只许一个」是两者共用的那一件事。
+    /// </remarks>
+    private async Task ProbeOnceAsync(
+        RecordingSpec wanted, string ffmpegPath, CancellationToken cancellationToken)
+    {
         var selection = await SpecSelectionPolicy.SelectAsync(
             wanted, Camera, new FfmpegSpecProbe(ffmpegPath, new SystemProcessRunner(_logger)),
             cancellationToken);

@@ -64,6 +64,24 @@ public sealed record RecordingQuery
     /// </remarks>
     public string? SourceDevice { get; init; }
 
+    /// <summary>
+    /// 把**已作废**的段排除掉（D1/D2）。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// ⚠️ 默认 <see langword="false"/> = **照常返回**（检索界面要看得见它们，
+    /// 只是行上带个「已作废」标记）。置真的是**重复单号探针**
+    /// （<c>AppHost</c> 那个委托）：作废就是因为要重录，重录时当然不能拿
+    /// 自己刚作废的那一段来提醒「你录过了」。
+    /// </para>
+    /// <para>
+    /// ⚠️ 做成查询条件而不是在探针那一头过滤：探针走的就是这个方法
+    /// （`AppHost` 的注释写着「接检索那一层，再写一份就会与它走岔」），
+    /// 在调用方过滤等于把那句话反着做。
+    /// </para>
+    /// </remarks>
+    public bool ExcludeVoided { get; init; }
+
     /// <summary>最多返回多少条。</summary>
     public int Limit { get; init; } = 200;
 }
@@ -79,6 +97,9 @@ public sealed record RecordingHit(
         BusinessTypes.TryParse(raw, out var parsed)
             ? parsed
             : null;
+
+    /// <summary>这一段作废了没有（D1）。判据只此一处，见 <see cref="EvidenceVoid"/>。</summary>
+    public bool IsVoided => EvidenceVoid.IsVoided(Labels);
 }
 
 /// <summary>
@@ -160,6 +181,14 @@ public sealed class RecordingSearch
                 {
                     continue;
                 }
+            }
+
+            // ⚠️ 作废的段在**检索界面照常显示**（行上带「已作废」标记，
+            // 用户要能看见自己作废过什么），只有 `ExcludeVoided` 的调用方
+            // —— 重复单号探针 —— 才看不见它们。见 `RecordingQuery.ExcludeVoided`。
+            if (query.ExcludeVoided && EvidenceVoid.IsVoided(labels))
+            {
+                continue;
             }
 
             hits.Add(new RecordingHit(entry, labels));

@@ -40,6 +40,22 @@ public static class LabelKeys
     /// </para>
     /// </remarks>
     public const string Locked = "locked";
+
+    /// <summary>
+    /// 作废标记：这一段**录错了**，用户要重录（D1，2026-10-10 需求方点的）。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// 与 <see cref="Locked"/> 一样复用标签存储：追加写、后者胜出，
+    /// 「取消作废 = 再追加一条 false」不必另造一套存储。
+    /// </para>
+    /// <para>
+    /// ⚠️ 但它比 <see cref="Locked"/> 弱：作废**不动文件**（需求方写死「文件留着」），
+    /// 也不豁免清理 —— 真不想让它被清掉，那是 <see cref="Locked"/> 的事。
+    /// 它只影响两处：**检索里默认不显示**、**不再算作重复单号**。
+    /// </para>
+    /// </remarks>
+    public const string Voided = "voided";
 }
 
 /// <summary>
@@ -81,6 +97,29 @@ public static class EvidenceLock
         }
 
         return !bool.TryParse(raw, out var locked) || locked;
+    }
+}
+
+/// <summary>
+/// 某一条证据作废没有（D1）。
+/// </summary>
+/// <remarks>
+/// ⚠️ <b>认不出的值朝反方向落</b>，与 <see cref="EvidenceLock"/> 是**反的**：
+/// 锁认不出当「锁着」（宁可少删一条，也不能删掉用户锁上的），
+/// 作废认不出当「没作废」（宁可多显示一条，也不能把用户该看见的录像藏起来）。
+/// 两边的代价不对称，所以落法也不对称。
+/// </remarks>
+public static class EvidenceVoid
+{
+    public static bool IsVoided(IReadOnlyDictionary<string, string>? labelsForEvidence)
+    {
+        if (labelsForEvidence is null
+            || !labelsForEvidence.TryGetValue(LabelKeys.Voided, out var raw))
+        {
+            return false;
+        }
+
+        return bool.TryParse(raw, out var voided) && voided;
     }
 }
 

@@ -909,6 +909,14 @@ public sealed class RecordingCoordinator : IAsyncDisposable
                 .Where(e => !string.Equals(e.SessionId, sessionId, StringComparison.Ordinal))
                 .Where(e => e.StartedAt >= since)
                 .OrderByDescending(e => e.StartedAt)
+                // ⚠️ **按会话去重**（2026-10-10，D2）：一次会话会被分成多段
+                // （时长兜底、磁盘将满都会分段），每段在索引里各占一行 ——
+                // 不去重的话「这个单号录过 1 次」会被说成「录过 3 次」，
+                // 而界面那句「录过 N 次」正是用户拿来判断是不是重复录件的。
+                // 每组保的是**最近的那条**：上面已按 StartedAt 降序，取首条即可，
+                // 而 `recent[0]`（也是最近一条）的那个用法不受影响。
+                .GroupBy(e => e.SessionId, StringComparer.Ordinal)
+                .Select(g => g.First())
                 .ToList();
 
             if (recent.Count == 0)

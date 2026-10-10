@@ -344,15 +344,27 @@
                                                    FontWeight="SemiBold"
                                                    Foreground="{DynamicResource TextPrimary}"/>
 
-                                        <!-- 争议锁定（规格 §3.6.5）。⚠️ 它是**硬豁免**（§3.5.3②）：
-                                             锁上之后保留期到了也不会自动清理这一条。 -->
-                                        <Button Grid.Row="0" Grid.Column="1"
-                                                Content="{Binding LockLabel}"
-                                                Padding="8,2" Margin="6,0,0,0"
-                                                VerticalAlignment="Top"
-                                                Style="{StaticResource SecondaryButton}"
-                                                Click="OnToggleLock"
-                                                Tag="{Binding EvidenceId}"/>
+                                        <!-- ⚠️ 两颗按钮**竖着**排，不是并排：左边这一栏本来就窄
+                                             （锁定那颗当年把下面那几行说明压折过一次，
+                                             见上面关于第 0/1 行的注释），并排会再压掉约 50px。 -->
+                                        <StackPanel Grid.Row="0" Grid.Column="1"
+                                                    Margin="6,0,0,0" VerticalAlignment="Top">
+                                            <!-- 争议锁定（规格 §3.6.5）。⚠️ 它是**硬豁免**（§3.5.3②）：
+                                                 锁上之后保留期到了也不会自动清理这一条。 -->
+                                            <Button Content="{Binding LockLabel}"
+                                                    Padding="8,2"
+                                                    Style="{StaticResource SecondaryButton}"
+                                                    Click="OnToggleLock"
+                                                    Tag="{Binding EvidenceId}"/>
+                                            <!-- 作废／重录（D1，2026-10-10）。⚠️ 与锁定**不同**：
+                                                 作废不动文件、也不豁免清理 —— 它只管
+                                                 「检索里标出来」和「不再算作重复单号」。 -->
+                                            <Button Content="{Binding VoidLabel}"
+                                                    Padding="8,2" Margin="0,4,0,0"
+                                                    Style="{StaticResource SecondaryButton}"
+                                                    Click="OnToggleVoid"
+                                                    Tag="{Binding EvidenceId}"/>
+                                        </StackPanel>
 
                                         <StackPanel Grid.Row="1" Grid.Column="0" Grid.ColumnSpan="2">
                                             <TextBlock Text="{Binding Subtitle}"
