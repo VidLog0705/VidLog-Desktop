@@ -211,6 +211,20 @@ public sealed record RecordingSpec(
     public string? PinnedFfmpegSize => NativeCaptureSize ? null : FfmpegSize;
 
     /// <summary>
+    /// 输入侧**真实**尺寸（宽×高）；<see langword="null"/> = 不可预知。
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ 只有**本机设备**用它才有意义：网络源的尺寸在输出侧才定（见
+    /// <see cref="PinnedFfmpegSize"/>），取景 / 识码那两路看到的仍是它对端的原始尺寸，
+    /// 所以调用方遇到网络源要传 <see langword="null"/>。
+    /// <para>
+    /// 钉住档就是 <see cref="CaptureSize"/>；原生档是实测出来的 <see cref="ObservedSize"/>
+    /// （还没测过就是 <see langword="null"/> ⇒ 调用方退回「画面＝整幅」的旧行为）。
+    /// </para>
+    /// </remarks>
+    public (int Width, int Height)? InputSize => NativeCaptureSize ? ObservedSize : CaptureSize;
+
+    /// <summary>
     /// **实测出来的**采集尺寸（宽 × 高）；没测过就是 <see langword="null"/>。
     /// </summary>
     /// <remarks>

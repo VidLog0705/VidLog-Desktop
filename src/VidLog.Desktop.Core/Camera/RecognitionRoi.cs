@@ -72,6 +72,13 @@ public readonly record struct RecognitionBox(double X, double Y, double Width, d
     /// <param name="frameWidth">这一帧的像素宽。</param>
     /// <param name="frameHeight">这一帧的像素高。</param>
     /// <param name="roi">比例框；不传就是默认框。</param>
+    /// <remarks>
+    /// ⚠️ <b>传进来的宽高必须是「真实画面」那一块的，不是带补边的整幅帧。</b>
+    /// 滤镜链会补黑边（<c>PreviewProcess.PreviewFilters</c>），而比例框是相对**画面**
+    /// 算的 —— 拿整幅帧乘比例的话框会连黑边一起算进去，与真正喂解码器的那一片对不上。
+    /// 界面上那幅画面是**先按 <c>PreviewFrame.Picture</c> 裁掉补边才上屏的**，
+    /// 所以调用方把上屏那一幅的尺寸传进来就对了（见 <c>MainWindow.DrawRecognitionBox</c>）。
+    /// </remarks>
     public static RecognitionBox Fit(
         double containerWidth,
         double containerHeight,
@@ -86,6 +93,7 @@ public readonly record struct RecognitionBox(double X, double Y, double Width, d
 
         // 与 `Image.Stretch="Uniform"` 同一套算法：等比放进容器，短的那一边留黑边。
         var scale = Math.Min(containerWidth / frameWidth, containerHeight / frameHeight);
+
         var shownWidth = frameWidth * scale;
         var shownHeight = frameHeight * scale;
         var left = (containerWidth - shownWidth) / 2;

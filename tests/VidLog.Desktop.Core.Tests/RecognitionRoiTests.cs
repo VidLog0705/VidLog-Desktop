@@ -126,4 +126,67 @@ public class RecognitionRoiTests
         Assert.Equal(10, corners[0].Y1);
         Assert.Equal(10, corners[0].X3);
     }
+
+    // ─────────────────────────────────────────────
+    // 真实画面那一块（需求方 2026-10-10：两路必须圈到同一片现实区域）
+    // ─────────────────────────────────────────────
+
+    [Fact]
+    public void 按源尺寸算出画面那一块_补黑边的那一边才对得上()
+    {
+        // 1920×1080 缩进 640×480 ⇒ 640×360，上下各 60 黑边。
+        Assert.Equal((0, 60, 640, 360), PreviewFrame.FitPicture(1920, 1080, 640, 480));
+
+        // 1920×1080 缩进 640×360 ⇒ 正好铺满，没有黑边。
+        Assert.Equal((0, 0, 640, 360), PreviewFrame.FitPicture(1920, 1080, 640, 360));
+
+        // 4:3 的源缩进 16:9 的框 ⇒ 左右补黑边。
+        Assert.Equal((80, 0, 480, 360), PreviewFrame.FitPicture(640, 480, 640, 360));
+
+        // 源尺寸不知道时不猜（退回整幅）。
+        Assert.Equal((0, 0, 640, 480), PreviewFrame.FitPicture(0, 0, 640, 480));
+    }
+
+    [Fact]
+    public void 待扫那一路的黑边不算进画面_裁出来的那一片与录制那一路逐像素相同()
+    {
+        // 同一幅 640×360 的现场：录制帧铺满；待扫帧上下各垫 60 的黑边装进 640×480。
+        var shot = new byte[640 * 360 * 3];
+        for (var i = 0; i < shot.Length; i++)
+        {
+            shot[i] = (byte)(i % 251);
+        }
+
+        var tapRgb = new byte[640 * 480 * 3];
+        Array.Copy(shot, 0, tapRgb, 60 * 640 * 3, shot.Length);   // 黑边那两段留 0
+
+        var tap = new PreviewFrame(tapRgb, 640, 480, 1)
+        {
+            Picture = PreviewFrame.FitPicture(1920, 1080, 640, 480),   // = (0,60,640,360)
+        };
+        var preview = new PreviewFrame((byte[])shot.Clone(), 640, 360, 1);
+
+        // ⚠️ 这条就是「框外不识别」那条规矩的地基：两路喂进解码器的必须是**同一片**。
+        // 从前拿整幅乘比例，待扫那一路会连黑边一起算 ⇒ 圈到 16.7%..83.3%、录制那一路
+        // 25%..75%，于是「框里明明有码」在一种状态下认得出、另一种状态下认不出。
+        Assert.Equal(
+            preview.ToGray(RecognitionRoi.Default).Gray,
+            tap.ToGray(RecognitionRoi.Default).Gray);
+    }
+
+    [Fact]
+    public void 框要按真实画面的尺寸算_不是按带补边的整幅帧()
+    {
+        // ⚠️ 界面上那幅画面是**先按 `PreviewFrame.Picture` 裁掉补边才上屏的**
+        // （待扫那一路的帧是 640×480，画面只占 y 60..420 ⇒ 上屏的是 640×360），
+        // 所以 `Fit` 拿到的是画面那一块的尺寸。
+        var onPicture = RecognitionBox.Fit(640, 480, 640, 360);
+
+        // 640×360 放进 640×480 的容器 ⇒ 上下各留 60 的黑边，框落在 (128,150,384,180)。
+        Assert.Equal(new RecognitionBox(128, 150, 384, 180), onPicture);
+
+        // ⚠️ 传整幅帧的尺寸 = 旧行为（框连补边一起算）：整体偏上、还高 60。
+        // 那正是要修的错位 —— 这条断言就是「调用方别忘了传画面尺寸」的绊线。
+        Assert.Equal(new RecognitionBox(128, 120, 384, 240), RecognitionBox.Fit(640, 480, 640, 480));
+    }
 }

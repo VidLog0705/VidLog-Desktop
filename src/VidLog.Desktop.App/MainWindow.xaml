@@ -189,7 +189,12 @@
                     <RowDefinition Height="Auto"/>
                 </Grid.RowDefinitions>
 
-                <Border Grid.Row="0" Background="{DynamicResource VideoBackground}"
+                <!-- ⚠️ 这张卡片的**高度由代码按画面的比例定**（`FitPreviewCard`）——
+                     不定的话它会被拉得比画面宽/窄，等比缩放的画面四周就留出与视频底
+                     同色的边，看着就是「黑边」（需求方 2026-10-10 要求一条都不留）。
+                     高度只封上限（`MaxHeight`），窗口矮下去时不会把画面顶出可视区。 -->
+                <Border x:Name="PreviewCard" Grid.Row="0"
+                        Background="{DynamicResource VideoBackground}"
                         CornerRadius="{StaticResource RadiusCard}">
                     <Grid x:Name="PreviewArea">
                         <!-- 取景画面（§62）。帧从**两个**源头来，但都投进同一只单槽：
@@ -209,14 +214,28 @@
                              所以它不是一个「大概齐」的提示，画在哪儿就意味着只认哪儿。
                              ⚠️ 位置**算出来**（`RecognitionBox.Fit`）而不是钉在 XAML 上：
                              画面是等比缩放进这个格子的，两种帧尺寸（640×480 / 640×360）
-                             留下的黑边不一样宽。
-                             ⚠️ 颜色**不新增调色板条目**：这里用的白与上面那个时间戳同一个口径
-                             （画面上的白色覆盖物在本项目的既有做法）。 -->
+                             留下的黑边不一样宽（真实画面那一块由 `PreviewFrame.Picture`
+                             告诉它，见 `_framePicture`）。
+                             ⚠️ 颜色走令牌 `RecognitionBoxStroke`（亮绿 `#22C55E`，
+                             Tailwind green-500，需求方 2026-10-10 定），亮暗同值 ——
+                             它压在 `VideoBackground` 上，那块**两种主题下都是近黑**，
+                             跟着主题走反而会有一边看不见。见 `Theme.xaml` 那条。 -->
                         <Path x:Name="RecognitionBoxPath" Visibility="Collapsed"
                               IsHitTestVisible="False"
-                              Stroke="White" StrokeThickness="3"
+                              Stroke="{DynamicResource RecognitionBoxStroke}" StrokeThickness="3"
                               StrokeLineJoin="Miter" StrokeStartLineCap="Square"
                               StrokeEndLineCap="Square"/>
+
+                        <!-- 全屏（需求方 2026-10-10）：点它把画面铺满整个显示器。
+                             ⚠️ 没画面时收起（`RefreshPreview` 管）——
+                                 踩坑 #13：不渲染一个点下去什么都不会发生的入口。 -->
+                        <Button x:Name="PreviewFullscreenButton" Content="全屏"
+                                HorizontalAlignment="Left" VerticalAlignment="Top"
+                                Margin="16,12,0,0" Padding="10,4"
+                                Style="{StaticResource SecondaryButton}"
+                                Visibility="Collapsed"
+                                Click="OnEnterPreviewFullscreen"
+                                ToolTip="铺满整个屏幕看实时画面（按 Esc 或【退出全屏】回来）"/>
 
                         <!-- 实时时间。⚠️ 这是**可信时钟**的时间，不是系统时钟 ——
                              改系统时间也改不动它，与录像里烧的那个是同一个来源。
@@ -817,5 +836,33 @@
                        Text="端口 —"/>
         </Grid>
     </Border>
+
+    <!-- ══ 实时预览全屏（需求方 2026-10-10）══════════════════════════
+         「全屏 = 画面铺满但不拉伸变形，点【退出全屏】/ 按 Esc 回原窗口」。
+         ⚠️ 它是**窗口内的一层**（`Grid.RowSpan="2"` 盖住录制台与状态栏），
+            真正的「无边框 + 铺满显示器（连任务栏）」由 `EnterPreviewFullscreen`
+            改窗口本身的形状去做 —— 一层遮罩摆平不了任务栏。
+         ⚠️ 画面 `Stretch="Uniform"`：等比铺满，短边留黑（底色与预览区同色），
+            所以「铺满但不变形」。
+         ⚠️ 识别框与窗口里那一份是**同一处几何**（`UpdateRecognitionBox` 两处都画）——
+            全屏时 `_framePicture` 照旧，框不会跑偏。 -->
+    <Grid x:Name="PreviewFullscreenLayer" Grid.RowSpan="2" Visibility="Collapsed"
+          Background="{DynamicResource VideoBackground}">
+        <Grid x:Name="PreviewFullscreenArea">
+            <Image x:Name="FullscreenImage" Stretch="Uniform" Visibility="Collapsed"
+                   RenderOptions.BitmapScalingMode="HighQuality"/>
+            <Path x:Name="FullscreenBoxPath" Visibility="Collapsed"
+                  IsHitTestVisible="False"
+                  Stroke="{DynamicResource RecognitionBoxStroke}" StrokeThickness="3"
+                  StrokeLineJoin="Miter" StrokeStartLineCap="Square"
+                  StrokeEndLineCap="Square"/>
+        </Grid>
+
+        <Button x:Name="FullscreenExitButton" Content="退出全屏（Esc）"
+                HorizontalAlignment="Right" VerticalAlignment="Top" Margin="0,18,22,0"
+                Padding="14,6"
+                Style="{StaticResource SecondaryButton}"
+                Click="OnExitPreviewFullscreen"/>
+    </Grid>
     </Grid>
 </Window>

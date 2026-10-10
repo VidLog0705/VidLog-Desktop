@@ -102,12 +102,18 @@ public sealed class PrerecordProcess
     /// 2026-10-10 的预览黑屏正是「进程活着、读循环却停了」，那条只能由读循环自己说。
     /// </para>
     /// </remarks>
+    /// <param name="sourceSize">
+    /// 输入侧的真实尺寸；**未知就留 null**。给了就在每一帧上标出画面那一块
+    /// （见 <see cref="PreviewFrame.Picture"/>）—— 这一路同时是识码用的帧，
+    /// 识别框的比例靠它才算得对。
+    /// </param>
     public static Task<PrerecordProcess> StartAsync(
         string ffmpegPath,
         IReadOnlyList<string> arguments,
         SingleSlotPreviewSink sink,
         CancellationToken cancellationToken = default,
-        IAppLogger? logger = null)
+        IAppLogger? logger = null,
+        (int Width, int Height)? sourceSize = null)
     {
         var startInfo = new ProcessStartInfo
         {
@@ -149,7 +155,8 @@ public sealed class PrerecordProcess
         // 定长切裸帧这件事多写一遍就多一处「尺寸对不上」的静默花屏。
         var readLoop = Task.Run(
             () => PreviewProcess.ReadFramesAsync(
-                process.StandardOutput.BaseStream, sink, Width, Height, logger));
+                process.StandardOutput.BaseStream, sink, Width, Height, logger,
+                sourceSize: sourceSize));
 
         cancellationToken.ThrowIfCancellationRequested();
 

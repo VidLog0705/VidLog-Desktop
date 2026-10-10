@@ -147,6 +147,10 @@ public static class ThemePalette
             // 不变：它本来就压在深底上，两套主题都一样。
             ["OverlayPillBackground"] = "#CC1E293B",
 
+            // 不变：识别框的亮绿只压在 `VideoBackground` 上（两种主题下都是近黑），
+            // 两套给同一个值 —— 见 Theme.xaml 那条注释。
+            ["RecognitionBoxStroke"] = "#22C55E",
+
             // 不变：投影不参与主题（暗色下投影仍是黑的）—— 见 Theme.xaml 那条注释。
             ["ShadowColor"] = "#000000",
 

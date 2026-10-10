@@ -19,6 +19,42 @@ public sealed record PreviewFrame(byte[] Rgb, int Width, int Height, long Captur
     public int Stride => Width * 3;
 
     /// <summary>
+    /// 这一帧里**真实画面**占的那一块（像素）；<see langword="null"/> = 整幅就是画面。
+    /// </summary>
+    /// <remarks>
+    /// 滤镜链是「按比例缩进框里 ＋ 四周补黑边」（<see cref="PreviewProcess.PreviewFilters"/>）——
+    /// 源宽高比与目标框对不上时（例如 16:9 的源录进 640×480 的取景框），
+    /// 画面只占中间一条、上下是黑边。识别框的比例必须相对**这一块**算：
+    /// 拿整幅乘比例，会把黑边也算进「画面」，于是待扫那一路（640×480）与录制那一路
+    /// （640×360）圈到的**现实区域对不上** —— 表现是「框里明明有码却认不出」或反过来
+    /// 「框外的分拣码被认了」。
+    /// </remarks>
+    public (int X, int Y, int Width, int Height)? Picture { get; init; }
+
+    /// <summary>真实画面矩形；没标过就当作整幅。</summary>
+    public (int X, int Y, int Width, int Height) PictureRect => Picture ?? (0, 0, Width, Height);
+
+    /// <summary>
+    /// 源按比例缩进 <paramref name="frameWidth"/>×<paramref name="frameHeight"/> 并**居中**之后，
+    /// 画面占的那一块 —— 与 <c>scale=…:force_original_aspect_ratio=decrease</c> 加
+    /// <c>pad</c> 同一套算法（与 <c>RecognitionBox.Fit</c> 也是同一套）。
+    /// </summary>
+    public static (int X, int Y, int Width, int Height) FitPicture(
+        int sourceWidth, int sourceHeight, int frameWidth, int frameHeight)
+    {
+        if (sourceWidth <= 0 || sourceHeight <= 0 || frameWidth <= 0 || frameHeight <= 0)
+        {
+            return (0, 0, frameWidth, frameHeight);
+        }
+
+        var scale = Math.Min((double)frameWidth / sourceWidth, (double)frameHeight / sourceHeight);
+        var width = Math.Max(1, (int)Math.Round(sourceWidth * scale));
+        var height = Math.Max(1, (int)Math.Round(sourceHeight * scale));
+
+        return ((frameWidth - width) / 2, (frameHeight - height) / 2, width, height);
+    }
+
+    /// <summary>
     /// 把这一帧转成**灰度**（ZXing 的 <c>Gray8</c> 要的那一种）。
     /// </summary>
     /// <remarks>
@@ -65,7 +101,13 @@ public sealed record PreviewFrame(byte[] Rgb, int Width, int Height, long Captur
     /// </remarks>
     public CameraFrame ToGray(RecognitionRoi roi)
     {
-        var (x0, y0, w, h) = roi.ToPixels(Width, Height);
+        // ⚠️ 比例相对**真实画面**（`PictureRect`）算，不是相对整幅帧 —— 补过黑边的那一路
+        // 拿整幅乘比例会把黑边也算进画面，于是与预览那一路圈到的现实区域对不上。
+        // 没标过黑边时 `PictureRect` 就是整幅，与从前逐像素一致。
+        var (px, py, pw, ph) = PictureRect;
+        var (rx, ry, w, h) = roi.ToPixels(pw, ph);
+        var x0 = px + rx;
+        var y0 = py + ry;
         var gray = new byte[w * h];
 
         for (var y = 0; y < h; y++)
@@ -429,10 +471,16 @@ public sealed class PreviewProcess : IAsyncDisposable
     /// 而滤镜链那边是「转完再缩」—— 两边算出来的必须是一回事。
     /// </para>
     /// </remarks>
+    /// <param name="sourceSize">
+    /// 输入侧的真实尺寸（宽×高）；**未知就留 null**（网络源、原生档还没测过）。
+    /// 给了就在每一帧上标出「等比缩进框里之后画面占的那一块」
+    /// （<see cref="PreviewFrame.Picture"/>）—— 识别框的比例靠它才算得对，
+    /// 见 <see cref="PreviewFrame.Picture"/> 的说明。留 null 时画面＝整幅，与从前一致。
+    /// </param>
     public static Task ReadFramesAsync(
         Stream stream, SingleSlotPreviewSink sink, int width, int height, IAppLogger? logger = null,
-        Action<PreviewFrame>? onFrame = null)
-        => ReadCoreAsync(stream, sink, width, height, logger, onFrame);
+        Action<PreviewFrame>? onFrame = null, (int Width, int Height)? sourceSize = null)
+        => ReadCoreAsync(stream, sink, width, height, logger, onFrame, sourceSize);
 
     /// <summary>
     /// 读帧循环的公共实现。
@@ -449,12 +497,18 @@ public sealed class PreviewProcess : IAsyncDisposable
     /// </remarks>
     private static async Task ReadCoreAsync(
         Stream stream, SingleSlotPreviewSink sink, int width, int height, IAppLogger? logger,
-        Action<PreviewFrame>? onFrame)
+        Action<PreviewFrame>? onFrame, (int Width, int Height)? sourceSize = null)
     {
         var frameSize = width * height * 3;
         var buffer = new byte[frameSize];
         var filled = 0;
         var frames = 0L;
+
+        // 源尺寸已知就先算好画面矩形（每帧都一样，不放进循环重算）。
+        // 未知（网络源 / 原生档没测过）时是 null ⇒ 画面＝整幅，回到旧行为。
+        var picture = sourceSize is { } src
+            ? PreviewFrame.FitPicture(src.Width, src.Height, width, height)
+            : ((int X, int Y, int Width, int Height)?)null;
 
         try
         {
@@ -475,7 +529,10 @@ public sealed class PreviewProcess : IAsyncDisposable
                 if (filled == frameSize)
                 {
                     var frame = new PreviewFrame(
-                        (byte[])buffer.Clone(), width, height, Environment.TickCount64);
+                        (byte[])buffer.Clone(), width, height, Environment.TickCount64)
+                    {
+                        Picture = picture,
+                    };
 
                     // ⚠️ 顺序是**承重**的：先投给画面，再给顺带看一眼的那位。
                     // 反过来的话，一个慢的观察者会把画面也一起拖住（§54.2）。

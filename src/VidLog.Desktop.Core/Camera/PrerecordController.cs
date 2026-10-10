@@ -199,7 +199,8 @@ public sealed class PrerecordController : IAsyncDisposable
             }
 
             _process = await PrerecordProcess.StartAsync(
-                _ffmpegPath, BuildArguments(recording), _sink, cancellationToken, _logger);
+                _ffmpegPath, BuildArguments(recording), _sink, cancellationToken, _logger,
+                sourceSize: SourceSize(recording));
 
             _recording = recording;
             _bufferStartedAt = recording is null ? null : startedAt;
@@ -426,6 +427,35 @@ public sealed class PrerecordController : IAsyncDisposable
             preview: false,
             segmentSeconds: ChunkSeconds,
             frameTap: NeedsFrames);
+    }
+
+    /// <summary>
+    /// 这一路取景的**输入**尺寸（宽×高）；未知就是 <see langword="null"/>。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// ① 纯识码那一档：本机设备按 <c>-video_size 640×480</c> 打开
+    /// （<see cref="PrerecordProcess.ScannerArguments"/>），所以输入就是 640×480；
+    /// ② 带预录那一档：输入按**录制规格**打开（<c>PinnedFfmpegSize</c> / 原生档实测值）。
+    /// </para>
+    /// <para>
+    /// ⚠️ 网络源两条都不可预知（RTSP 不能按尺寸开流）⇒ 传 null。
+    /// 它是给 <see cref="PreviewFrame.Picture"/> 用的：识别框的比例要相对**真实画面**算
+    /// —— 这一路（640×480）与录制那一路（640×360）框不一样大，不标画面就会圈到不同的区域。
+    /// </para>
+    /// </remarks>
+    private (int Width, int Height)? SourceSize(PrerecordSetup? recording)
+    {
+        if (_source.IsNetwork)
+        {
+            return null;
+        }
+
+        // 带预录那一档：输入按录制规格打开。原生档还没测过（null）时**不猜** ——
+        // 猜成 640×480 会让画面矩形算错，宁可退回「画面＝整幅」。
+        return recording?.Spec is { } spec
+            ? spec.InputSize
+            : (PrerecordProcess.Width, PrerecordProcess.Height);
     }
 
     /// <summary>

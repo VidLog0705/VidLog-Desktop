@@ -245,7 +245,10 @@ public sealed class FfmpegCameraCapture : ICameraCapture
         {
             _ = Task.Run(() => PreviewProcess.ReadFramesAsync(
                 process.StandardOutput.BaseStream, preview,
-                PreviewProcess.Width, PreviewProcess.Height, _logger, onFrame: FrameObserver));
+                PreviewProcess.Width, PreviewProcess.Height, _logger, onFrame: FrameObserver,
+                // 画面被等比缩进 640×360 —— 标上真实画面那一块，识别框才画得准。
+                // ⚠️ 网络源尺寸不可预知 ⇒ 传 null（回到「画面＝整幅」）。
+                sourceSize: source.IsNetwork ? null : _spec?.InputSize));
         }
         else
         {

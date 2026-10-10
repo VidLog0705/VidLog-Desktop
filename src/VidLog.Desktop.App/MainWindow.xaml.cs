@@ -96,50 +96,6 @@ public partial class MainWindow : Window
     /// </remarks>
     private readonly DispatcherTimer _clockTicker;
 
-    /// <summary>
-    /// 取景画面的刷新。
-    /// </summary>
-    /// <remarks>
-    /// <para>
-    /// ⚠️ <b>它是个「拉」的定时器，不是「推」的</b>：帧由 ffmpeg 那两条路投进
-    /// <see cref="AppHost.Preview"/> 的单槽，界面在这里取最新一帧。
-    /// 反过来的话（拿到帧就 <c>Dispatcher.Invoke</c>）等于**在管道的读线程上
-    /// 做界面工作** —— 而那条线程一慢，管道就满，堵住的后果是录制进程被强杀、
-    /// MKV 尾部丢掉（§54.2 真机复现过）。
-    /// </para>
-    /// <para>
-    /// 30 fps 的间隔与配置向导预览区用的是同一个数（33ms）。
-    /// </para>
-    /// </remarks>
-    private readonly DispatcherTimer _previewTimer = new() { Interval = TimeSpan.FromMilliseconds(33) };
-
-    /// <summary>画面那块位图；尺寸变了就重建（灰度帧与彩色帧的尺寸不一样）。</summary>
-    private WriteableBitmap? _frameBitmap;
-
-    /// <summary>上一次真的画上帧的时刻（<see cref="Environment.TickCount64"/>）。</summary>
-    /// <remarks>
-    /// 判据是「<see cref="PreviewStaleAfter"/> 没帧就把说明放回来」而不是「进程还在不在」：
-    /// 出画面的那两条路（识码、录制）**都在进程之间交接**，
-    /// 而交接期的空档不该在屏幕上闪一下「没有画面」。
-    /// </remarks>
-    private long _lastFrameAtMs;
-
-    /// <summary>取景框「多久没有新帧，就把那句说明放回来」。</summary>
-    /// <remarks>
-    /// ⚠️ <b>10 秒是需求方 2026-10-09 拍的</b>（A3）。实测交接空档（停取景 → 起采集）
-    /// 是 **2.5–4.5 秒**，而从前写死 1 秒 ⇒ <b>每一次交接都会在屏上闪一句「没有画面」</b>。
-    /// 10 秒留了一倍余量；真断流照样会提示、照样记日志（就是下面那一条）。
-    /// </remarks>
-    private static readonly TimeSpan PreviewStaleAfter = TimeSpan.FromSeconds(10);
-
-    /// <summary>识别框每个角的臂长（像素）。</summary>
-    /// <remarks>
-    /// ⚠️ 它是**四条直角边的长度**，不是框的粗细 —— 需求方要的是「四角实线直角、
-    /// 互不相连」，所以每条臂短了看着像四颗点、长了四条边就快连成一圈了。
-    /// 小框上由 <see cref="RecognitionBox.Corners"/> 按短边夹住，不会穿插。
-    /// </remarks>
-    private const double RecognitionBoxArmLength = 28;
-
     public MainWindow(AppHost host)
     {
         _host = host;
@@ -179,6 +135,9 @@ public partial class MainWindow : Window
         // 拖窗口的时候跟不上就会看到框在画面外飘着。
         PreviewArea.SizeChanged += (_, _) => UpdateRecognitionBox();
 
+        // 卡片的高矮也跟着行宽走 —— 画面要正好铺满它，见 `FitPreviewCard`。
+        PreviewCard.SizeChanged += (_, _) => FitPreviewCard();
+
         // 待批准的改名请求（规格 §3.4.5 ③）。
         //
         // ⚠️ 它**不能挂在 `EnrollWindow` 上**：那个窗的轮询是以「屏幕上那张二维码」
@@ -197,6 +156,9 @@ public partial class MainWindow : Window
 
         // 命令面板（T12）—— 焦点在哪个控件上都要收得到，所以挂窗这一层。
         PreviewKeyDown += OnPaletteShortcut;
+
+        // 全屏取景时按 Esc 退出（需求方：全屏后能取消回原窗口）。
+        PreviewKeyDown += OnPreviewFullscreenKey;
 
         Closed += (_, _) =>
         {
@@ -344,197 +306,6 @@ public partial class MainWindow : Window
         //    于是「备份主机」形态下**看不到试用剩余 / 已到期**。
         BackupLicenseText.Text = StatusSummaries.License(_host);
     }
-
-    /// <summary>
-    /// 预览区右上角那个时间水印。
-    /// </summary>
-    /// <remarks>
-    /// <para>
-    /// ⚠️ 它读的是 <b>可信时钟</b>（<c>TrustedClock</c>），不是系统墙钟 ——
-    /// 与录像里烧进去的那个时间同源。用户拿它核对快递单上的手写时间，
-    /// 所以两者**必须是一个时间**。
-    /// </para>
-    /// <para>
-    /// ⚠️ 那句话本身在 <see cref="PreviewTexts.Watermark"/>（T27② 第 4 批），
-    /// 连同「未校准时不许显示一个时间」那条规矩；这里只剩**取哪一个时钟**、
-    /// 以及未校准时换一支警示色。
-    /// </para>
-    /// </remarks>
-    private void UpdatePreviewClock()
-    {
-        var clock = _host.Services.TrustedClock;
-
-        PreviewClockText.Text = PreviewTexts.Watermark(clock.IsCalibrated, clock.Now);
-
-        // ⚠️ **两种状态都要给颜色**，一个三元了事。
-        //
-        // 原先只给未校准那一支（另一支一个字都不动、靠 XAML 里那颗写死的
-        // `Foreground="White"`），于是**校准成功之后它会一直挂着警示色** ——
-        // 那次会话里水印已经写着可信时间了，颜色还在喊「不可信」，而用户学会
-        // 忽略这个颜色之后，下一次真未校准就没人看了。
-        // 而且当时那个警示色是琥珀（`#FFF59E0B`，比白字还亮），压在明亮的车间
-        // 画面上**比白色更难读**。
-        // ⚠️ 那句**只对旧值成立**：亮色 `Warning` 2026-10-07 已改成 orange-700
-        // `#C2410C`（相对亮度 0.153，白是 1.00）—— 它现在比白字**清楚得多**，
-        // 所以「可读性」这条论据**收回**。留下的是语义那条：两个状态都得给颜色。
-        // 据此这条只钉「两个状态各有各的颜色」。（2026-10-07 需求方拍板：改。）
-        //
-        // ⚠️ 颜色**只在这里给**（XAML 那颗字上不再写 `Foreground`）：
-        // 两处各写一份的话，「哪种状态是什么色」就有了两个来源。
-        // ⚠️ 走 `SetResourceReference`：`Warning` 那支要是用 `FindResource` 取，
-        // 取到的是一支**冻结的**笔刷，用户开着程序改系统主题时它不跟着换。
-        if (clock.IsCalibrated)
-        {
-            PreviewClockText.Foreground = Brushes.White;
-        }
-        else
-        {
-            PreviewClockText.SetResourceReference(TextBlock.ForegroundProperty, "Warning");
-        }
-    }
-
-    /// <summary>
-    /// 把最新一帧画到取景框上；超过 <see cref="PreviewStaleAfter"/> 没帧就退回那句说明。
-    /// </summary>
-    /// <remarks>
-    /// ⚠️ 这是**拉**，不是推：帧由出画面的那个进程投进单槽，界面自己来取。
-    /// 反过来（读线程上直接 <c>Dispatcher.Invoke</c>）等于在管道的读线程上做界面工作，
-    /// 而那条线程一慢，管道就满 —— 录制进程会被强杀、MKV 尾部丢掉（§54.2）。
-    /// </remarks>
-    private void RefreshPreview()
-    {
-        var frame = _host.Preview.TakeLatest();
-
-        if (frame is null)
-        {
-            // 判据是「超过 PreviewStaleAfter 没有新帧」而不是「进程还在不在」：出画面的那两个
-            // （识码、录制）在交接时本来就有空档，空档不该在屏幕上闪成一句话。
-            if (PreviewImage.Visibility == Visibility.Visible
-                && Environment.TickCount64 - _lastFrameAtMs > PreviewStaleAfter.TotalMilliseconds)
-            {
-                PreviewImage.Source = null;
-                PreviewImage.Visibility = Visibility.Collapsed;
-                PreviewPlaceholder.Visibility = Visibility.Visible;
-                UpdatePreviewHint();
-
-                // 画面没了，框也跟着走 —— 没有画面时**没有任何东西在解码**，
-                // 那条框此时说的话是假的（它标的是「只认这一片」）。
-                RecognitionBoxPath.Visibility = Visibility.Collapsed;
-
-                // ⚠️ 这一条是**必须**的（§6.1）：上面那句提示写着「原因会记在通知里」，
-                // 不留痕的话那句话就是假的 —— 而这正是 §6.1 点名的那个坑：
-                // 「有个用户可见通道」看起来像缺口被满足了，其实没有。
-                //
-                // ⚠️ 只在**由有到无的那一次**记：判据与提示文字是同一处，
-                // 而画面空着的时候这个分支不会再进来（`PreviewImage` 已经不是 Visible），
-                // 所以长期没画面不会把日志刷满（§6.1「重复的问题只在变了的时候记」）。
-                _host.Logger.Log(
-                    VidLog.Desktop.Core.Diagnostics.LogLevel.Warn, "预览",
-                    _host.Coordinator.IsWorking
-                        ? "工作期间取景画面断了（录制本身不受影响）"
-                        : "取景画面断了");
-            }
-
-            return;
-        }
-
-        // ⚠️ 位图**不能只建一次**：两种画面的尺寸不一样
-        // （识码那一路是 640×480，录制那一路是 640×360）——
-        // 2026-10-09 起**两路都是彩色的**，只是框不一样大（从前识码那一路是灰度）。
-        if (_frameBitmap is null
-            || _frameBitmap.PixelWidth != frame.Width
-            || _frameBitmap.PixelHeight != frame.Height)
-        {
-            _frameBitmap = new WriteableBitmap(
-                frame.Width, frame.Height, 96, 96, PixelFormats.Rgb24, null);
-            PreviewImage.Source = _frameBitmap;
-        }
-
-        _frameBitmap.WritePixels(
-            new Int32Rect(0, 0, frame.Width, frame.Height), frame.Rgb, frame.Stride, 0);
-
-        _lastFrameAtMs = Environment.TickCount64;
-
-        if (PreviewImage.Visibility != Visibility.Visible)
-        {
-            PreviewImage.Visibility = Visibility.Visible;
-            PreviewPlaceholder.Visibility = Visibility.Collapsed;
-        }
-
-        // ⚠️ 帧尺寸两种（待扫 640×480、录制 640×360），黑边不一样宽 ——
-        // 位图换了尺寸的那一跳上面已经重建过，这里每次都重算是**把尺寸这条
-        // 依赖整个消掉**（一次几条线段的算术，30ms 一跳可以忽略）。
-        UpdateRecognitionBox();
-    }
-
-    /// <summary>
-    /// 把识别框画到画面上（四角直角，互不相连）。
-    /// </summary>
-    /// <remarks>
-    /// ⚠️ 位置与那四段折线都算在 <see cref="RecognitionBox"/> 里（有测试盖着）——
-    /// 这里只负责「摆上去」。几何一旦搬进代码后置，本仓就没有任何测试工程能盖住它了。
-    /// <para>
-    /// ⚠️ 画的是**正在显示的这幅画面的同一比例**，而不是容器的比例：画面等比缩放后
-    /// 两侧（或上下）有黑边，拿容器尺寸乘比例会整体偏。
-    /// </para>
-    /// </remarks>
-    private void UpdateRecognitionBox()
-    {
-        if (PreviewImage.Visibility != Visibility.Visible
-            || PreviewImage.Source is not BitmapSource source
-            || PreviewArea.ActualWidth <= 0
-            || PreviewArea.ActualHeight <= 0
-            // ⚠️ 「摄像头识别」关着时**根本没有解码器**（两路的解码器都跟着它），
-            // 那时画一条「只认这一片」的框就是一句假话 —— 与上面画面没了那条同理。
-            || !_host.Settings.CameraRecognition)
-        {
-            RecognitionBoxPath.Visibility = Visibility.Collapsed;
-            return;
-        }
-
-        var box = RecognitionBox.Fit(
-            PreviewArea.ActualWidth, PreviewArea.ActualHeight,
-            source.PixelWidth, source.PixelHeight);
-
-        var geometry = new PathGeometry();
-
-        // 一个 Path 里的**四个 figure** —— 每个 figure 自己一条折线、不闭合，
-        // 所以四条边之间没有任何连接（连起来就是普通矩形框了）。
-        foreach (var (x1, y1, x2, y2, x3, y3) in box.Corners(RecognitionBoxArmLength))
-        {
-            var figure = new PathFigure
-            {
-                StartPoint = new Point(x1, y1),
-                IsClosed = false,
-                IsFilled = false,
-            };
-
-            figure.Segments.Add(new LineSegment(new Point(x2, y2), isStroked: true));
-            figure.Segments.Add(new LineSegment(new Point(x3, y3), isStroked: true));
-
-            geometry.Figures.Add(figure);
-        }
-
-        RecognitionBoxPath.Data = geometry;
-        RecognitionBoxPath.Visibility = Visibility.Visible;
-    }
-
-    /// <summary>
-    /// 预览区中央那行说明。
-    /// </summary>
-    /// <remarks>
-    /// ⚠️ ⚠️ 三句话与它们的**先后次序**在 <see cref="PreviewTexts.Hint"/>
-    /// （T27② 第 4 批）；这里只剩**把三个事实读出来**：
-    /// 有没有 FFmpeg、有没有摄像头、在不在工作。
-    /// 「已装 FFmpeg 但找不着设备」那条与「工作中却没有画面」那条在界面上
-    /// 意思完全不同，次序排错了会把一台配置齐全、只是还没开工的机器
-    /// 显示成像是坏了。
-    /// </remarks>
-    private void UpdatePreviewHint() =>
-        PreviewHintText.Text = PreviewTexts.Hint(
-            hasFfmpeg: _host.Services.FfmpegPath is not null,
-            hasCamera: _host.DeviceName.Length != 0,
-            isWorking: _host.Coordinator.IsWorking);
 
     /// <summary>
     /// 启动时算一次清理计划，**给用户看过才动手**（规格 §3.5.5）。

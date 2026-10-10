@@ -164,6 +164,15 @@
     <SolidColorBrush x:Key="VideoBackground" Color="#FF0F172A"/>
 
     <!--
+        取景画面上那个**识别框**的亮绿（需求方 2026-10-10 定：`#22C55E`，Tailwind green-500 同源）。
+
+        ⚠️ **亮暗同值**（`ThemePalette.Dark` 里也写一遍，值一样）：它只压在 `VideoBackground`
+        上，而那一块两种主题下都是**近黑**（亮 `#0F172A` / 暗 `#020617`）——
+        跟着主题走反而会在其中一边掉对比度。
+    -->
+    <SolidColorBrush x:Key="RecognitionBoxStroke" Color="#FF22C55E"/>
+
+    <!--
         预览区上浮着的那块半透明提示方块。slate-800 兑到 80% 不透明 ——
         图上量到的就是一个**带透明的**色，不是不透明色的另一种写法。
         ⚠️ 它压在 `VideoBackground` 上，两者相差只有一档；换底色时这块要跟着复核。
