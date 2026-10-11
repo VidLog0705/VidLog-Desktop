@@ -798,6 +798,117 @@ public class RecordingSpecTests
         // 这一条钉住的是「判据就是那两个字段」，不是「差不多」。
         Assert.True(baseline.ProbeMatches(baseline with { NativeCaptureSize = true }));
     }
+
+    // ─────────────────────────────────────────────
+    // ★ 相机自报的档位表驱动的自适应（2026-10-11）
+    // ─────────────────────────────────────────────
+
+    /// <summary>一台相机自报的档位表（假的）。</summary>
+    private sealed class FakeCapabilities(params CameraMode[] modes) : ICameraCapabilities
+    {
+        public List<CameraSource> Asked { get; } = [];
+
+        public Task<IReadOnlyList<CameraMode>> ListAsync(
+            CameraSource source, CancellationToken cancellationToken = default)
+        {
+            Asked.Add(source);
+
+            return Task.FromResult<IReadOnlyList<CameraMode>>(modes);
+        }
+    }
+
+    /// <summary>一个离散档（<c>-list_options</c> 的常态：min 与 max 相等）。</summary>
+    private static CameraMode Mode(int width, int height, double frameRate = 30) =>
+        new(width, height, frameRate, width, height, frameRate);
+
+    [Fact]
+    public async Task 相机表里没有的档_连开都不去开()
+    {
+        // 用户选的 1080P 这台相机压根没有。从前的做法是**真开一次相机**、
+        // 等它失败，再试下一档 —— 而那是必败的一次，还占着设备。
+        var capabilities = new FakeCapabilities(Mode(640, 480), Mode(1600, 1200));
+        var probe = new FakeSpecProbe();
+
+        await SpecSelectionPolicy.SelectAsync(
+            new RecordingSpec(VideoCodec.H264, VideoResolution.P1080),
+            CameraSource.Local("Camera"), probe, capabilities);
+
+        // 表里没有的那两档，一次都不该出现在「开过相机」的名单里。
+        Assert.DoesNotContain(probe.Tried, spec => spec.PinnedFfmpegSize is "1920x1080" or "1280x720");
+    }
+
+    [Fact]
+    public async Task 用户那一档相机没有时_按它自报的最近档录()
+    {
+        var capabilities = new FakeCapabilities(Mode(640, 480), Mode(1600, 1200));
+        var wanted = new RecordingSpec(VideoCodec.H264, VideoResolution.P1080);
+        var pinned = wanted with { CapabilitySize = (1600, 1200) };
+
+        var selection = await SpecSelectionPolicy.SelectAsync(
+            wanted, CameraSource.Local("Camera"), new FakeSpecProbe(pinned), capabilities);
+
+        Assert.Equal(pinned, selection.Spec);
+        Assert.True(selection.CapabilityFallback);
+
+        // ⚠️ 三个都要盯住：走了新那一档（`CapabilityFallback`）、
+        // **没走**原生档（那是「相机自己出什么就是什么」，可能只给 640×480）、
+        // 而且钉下去的确实是**相机自报的那个数**，不是标称的 1080P。
+        Assert.False(selection.NativeFallback);
+        Assert.Equal("1600x1200", selection.Spec.PinnedFfmpegSize);
+        Assert.Equal((1600, 1200), selection.Spec.Size);
+    }
+
+    [Fact]
+    public async Task 相机支持用户那一档时_照旧选它_不钉自报的档()
+    {
+        // 原来的路一个字不改：表里有 1080P ⇒ 照旧按 1080P 跑，
+        // 不因为「表里还有个更大的」就去自作主张。
+        var capabilities = new FakeCapabilities(Mode(640, 480), Mode(1920, 1080), Mode(3840, 2160));
+        var wanted = new RecordingSpec(VideoCodec.H264, VideoResolution.P1080);
+
+        var selection = await SpecSelectionPolicy.SelectAsync(
+            wanted, CameraSource.Local("Camera"), new FakeSpecProbe(wanted), capabilities);
+
+        Assert.Equal(wanted, selection.Spec);
+        Assert.False(selection.CapabilityFallback);
+        Assert.Null(selection.Spec.CapabilitySize);
+    }
+
+    [Fact]
+    public async Task 拿不到档位表时_与从前一字不差()
+    {
+        // 空表 = 「不知道」（ffmpeg 起不来、设备被别的进程占着）⇒ 不裁、不钉。
+        // 这一条守的是**这个新功能没有一条路径能变成新的故障**。
+        var wanted = new RecordingSpec(VideoCodec.H265, VideoResolution.Uhd4K);
+
+        var withoutTable = await SpecSelectionPolicy.SelectAsync(
+            wanted, CameraSource.Local("Camera"), new FakeSpecProbe(), new FakeCapabilities());
+
+        var withoutCapabilityAtAll = await SpecSelectionPolicy.SelectAsync(
+            wanted, CameraSource.Local("Camera"), new FakeSpecProbe());
+
+        Assert.Equal(withoutCapabilityAtAll.Spec, withoutTable.Spec);
+        Assert.False(withoutTable.CapabilityFallback);
+        Assert.False(withoutTable.NativeFallback);
+    }
+
+    [Fact]
+    public async Task 落点是相机自报那一档时_那句话说得出来()
+    {
+        var capabilities = new FakeCapabilities(Mode(640, 480), Mode(1600, 1200));
+        var wanted = new RecordingSpec(VideoCodec.H264, VideoResolution.P1080);
+        var pinned = wanted with { CapabilitySize = (1600, 1200) };
+
+        var selection = await SpecSelectionPolicy.SelectAsync(
+            wanted, CameraSource.Local("Camera"), new FakeSpecProbe(pinned), capabilities);
+
+        var text = SpecSelectionPolicy.Describe(selection, wanted);
+
+        // §3.1.7「不得静默回落」：得说清**从哪落到哪**。
+        Assert.Contains("1600×1200", text, StringComparison.Ordinal);
+        Assert.Contains(wanted.Label, text, StringComparison.Ordinal);
+        Assert.False(string.IsNullOrWhiteSpace(selection.Reason));
+    }
 }
 
 /// <summary>
@@ -892,4 +1003,5 @@ public class EffectiveSpecNoticeTests
         Assert.DoesNotContain("老原因", text, StringComparison.Ordinal);
         Assert.False(warning);
     }
+
 }

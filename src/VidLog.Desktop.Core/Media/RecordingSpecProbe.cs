@@ -1,3 +1,4 @@
+using System.Globalization;
 using VidLog.Desktop.Core.Recording;
 
 namespace VidLog.Desktop.Core.Media;
@@ -408,6 +409,7 @@ public sealed record SpecSelection(
     bool ChangedFromRequested,
     string? Reason,
     bool NativeFallback = false,
+    bool CapabilityFallback = false,
     string? EncoderName = null);
 
 /// <summary>选规格：按回落顺序试，取第一个真跑得通的。</summary>
@@ -422,12 +424,33 @@ public static class SpecSelectionPolicy
         RecordingSpec wanted,
         CameraSource source,
         IRecordingSpecProbe probe,
+        ICameraCapabilities? capabilities = null,
         CancellationToken cancellationToken = default)
     {
         string? firstReason = null;
 
+        // ── 先问相机「你能出哪些档」────────────────────────────────────────
+        //
+        // ⚠️ **拿不到表（空表）就完全走老路** —— 这一层是「只改进、不挡路」的：
+        // ffmpeg 起不来、设备被别的进程占着、输出格式变了，都会落到空表，
+        // 而空表在下面每一处的判断都是「不知道，那就不裁」。
+        // 所以这个新功能**没有一条路径能变成新的故障**。
+        var modes = capabilities is null
+            ? []
+            : await capabilities.ListAsync(source, cancellationToken);
+
         foreach (var candidate in RecordingSpec.FallbacksFrom(wanted))
         {
+            // ⚠️ 表里**明确没有**这一档 ⇒ 连开都不开：那一次开相机是必败的，
+            // 还要把设备独占一次（冷启动那几十秒大半就花在这种必败的尝试上）。
+            if (modes.Count > 0 && !Capable(modes, candidate))
+            {
+                firstReason ??= $"这台相机不支持 {candidate.ResolutionLabel}"
+                    + $"（{candidate.CaptureSize.Width}×{candidate.CaptureSize.Height}）；"
+                    + $"它自报的档位是 {DescribeModes(modes)}。";
+                continue;
+            }
+
             var result = await probe.ProbeAsync(candidate, source, cancellationToken);
             if (result.Usable)
             {
@@ -447,6 +470,40 @@ public static class SpecSelectionPolicy
             // 2026-10-02 实测：一路连不上的网络地址，4 档 × 4 编码器 + 2 个原生档 × 4
             // 里的每一次都要等满 10 秒超时 —— 冷启动因此在**窗口还没画出来之前**
             // 耗掉 134 秒。收工之后只剩「一次超时」那么多。
+            if (result.SourceUnavailable)
+            {
+                return GiveUp(firstReason);
+            }
+        }
+
+        // ── ★ 从相机的档位表里挑一个**真实存在**的档（先于「不钉尺寸的原生档」）──
+        //
+        // 走到这里 = 三档一个都没通过。从前下一步只有「原生档」，而它是
+        // 「相机自己出什么就是什么」—— 相机自报有 1600×1200，却可能只给 640×480。
+        // 现在先按它自报的表挑一个离用户意图最近的档**钉住**；
+        // 挑不出来（表是空的）或钉不住（真开一次失败）再落到原生档。
+        //
+        // ⚠️ 只要**离散档**（`IsExact`）：区间型那一行给的是两端，
+        // 钉一个中间的尺寸等于钉一个**相机没自报过**的数 —— 那就不是「照它说的录」了。
+        if (modes.Count > 0
+            && DshowCapabilities.Nearest(
+                modes, wanted.CaptureSize.Width, wanted.CaptureSize.Height, RecordingSpec.FrameRate)
+                is { IsExact: true } picked)
+        {
+            var pinned = wanted with { CapabilitySize = (picked.MaxWidth, picked.MaxHeight) };
+            var result = await probe.ProbeAsync(pinned, source, cancellationToken);
+            if (result.Usable)
+            {
+                return new SpecSelection(
+                    WithMeasured(pinned, result),
+                    ChangedFromRequested: true,
+                    Reason: firstReason,
+                    CapabilityFallback: true,
+                    EncoderName: result.EncoderName);
+            }
+
+            firstReason ??= result.FailureReason;
+
             if (result.SourceUnavailable)
             {
                 return GiveUp(firstReason);
@@ -536,6 +593,17 @@ public static class SpecSelectionPolicy
     /// </remarks>
     public static string Describe(SpecSelection selection, RecordingSpec wanted)
     {
+        // ⚠️ 这一档排在原生档**前面**：两者必不会同时为真（同一处只设一个），
+        // 但读的人要先看到更具体的那个说法 —— 「按相机自报的档位录」比
+        // 「按相机原生档录」多说了**一个尺寸**，信息更多。
+        if (selection.CapabilityFallback)
+        {
+            var (width, height) = selection.Spec.CaptureSize;
+            return $"你选的 {wanted.Label} 这台相机不支持（它自报的档位里没有这一档）—— "
+                + $"已按它自报的 {width}×{height} 录。"
+                + $"原因：{selection.Reason}";
+        }
+
         if (selection.NativeFallback)
         {
             // 落点就是设计图步 4 那句未完成态：「已采用可用的原生配置（640×480 @ 30 FPS）」
@@ -573,4 +641,30 @@ public static class SpecSelectionPolicy
         result.ObservedSize is { } size
             ? spec.WithObservedSize(size.Width, size.Height, result.ObservedFrameRate)
             : spec;
+
+    /// <summary>相机自报的表里有没有这一档（尺寸 + <see cref="RecordingSpec.FrameRate"/>）。</summary>
+    private static bool Capable(IReadOnlyList<CameraMode> modes, RecordingSpec spec) =>
+        DshowCapabilities.Supports(
+            modes, spec.CaptureSize.Width, spec.CaptureSize.Height, RecordingSpec.FrameRate);
+
+    /// <summary>
+    /// 把相机自报的档位说成一句人话（去重、最多列 6 个、帧率按不变文化印）。
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ 帧率**不能省**：这台相机之所以被判「不支持 1080P」，往往正是因为
+    /// 它那个尺寸只有 15 fps —— 只说尺寸的话，用户会拿着一份
+    /// 「1920×1080」的表来问「那为什么不用」。
+    /// </remarks>
+    private static string DescribeModes(IReadOnlyList<CameraMode> modes)
+    {
+        var all = modes
+            .Select(mode => $"{mode.MaxWidth}×{mode.MaxHeight}@"
+                + mode.MaxFrameRate.ToString("0.##", CultureInfo.InvariantCulture))
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
+
+        var listed = string.Join('、', all.Take(6));
+
+        return all.Count > 6 ? $"{listed}…（共 {all.Count} 档）" : listed;
+    }
 }

@@ -920,6 +920,7 @@ public partial class WizardWindow : Window
                 wanted,
                 source,
                 new FfmpegSpecProbe(ffmpegPath, new SystemProcessRunner(_logger)),
+                new DshowCameraCapabilities(ffmpegPath, _logger),
                 _work.Token);
 
             ShowPerformanceResult(wanted, selection);

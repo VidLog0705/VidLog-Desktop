@@ -128,19 +128,55 @@ public sealed record RecordingSpec(
     public const int FrameRate = 30;
 
     /// <summary>
+    /// 相机**档位表**里挑出来的那个尺寸；<see langword="null"/> = 按 <see cref="Resolution"/> 枚举钉。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>它存在的理由。</b> <see cref="VideoResolution"/> 只有三档（4K / 1080P / 720P），
+    /// 而一台相机**能出的尺寸是它自己的事** —— 用户的相机可能一档都不支持
+    /// （老设备只有 640×480），也可能支持一些更好的、不在这三档里的尺寸
+    /// （1600×1200、2592×1944…）。后者从前只有一条路：**落到「原生档」**，
+    /// 而原生档是「相机自己出什么就是什么」，**可能远低于它能给的上限** ——
+    /// 那是个**静默的画质损失**。
+    /// </para>
+    /// <para>
+    /// ⚠️ 与 <see cref="ObservedSize"/> 是**两件事**：那个是**真开了一次相机量到的**，
+    /// 这个是**相机自报的**（<c>-list_options</c> 的表），我们据此**钉住**它。
+    /// 相机说了却打不开时，真开那一次会失败，于是仍会往下落到原生档 ——
+    /// 也就是说「信不过表」这件事有它自己的出口，不必在这里再防一遍。
+    /// </para>
+    /// <para>
+    /// ⚠️ 填了它之后 <see cref="NativeCaptureSize"/> **仍然是 <see langword="false"/>** ——
+    /// 我们是**钉住一个尺寸**，不是「不钉」。两者的表现在
+    /// <see cref="PinnedFfmpegSize"/>（一个给字符串、一个给 <see langword="null"/>）。
+    /// </para>
+    /// </remarks>
+    public (int Width, int Height)? CapabilitySize { get; init; }
+
+    /// <summary>
     /// **采集**尺寸 —— 相机要按这个模式打开 / 缩放的目标。恒为横屏 16:9。
     /// </summary>
     /// <remarks>
+    /// <para>
     /// ⚠️ 三档分辨率都是按**横着**定义的（1080P = 1920×1080），
     /// 因为摄像头本身只会按它自己的模式出图 —— 方向是**采集之后**才做的事。
     /// 所以这个值**与方向无关**。
+    /// </para>
+    /// <para>
+    /// ⚠️ <b>档位表挑了尺寸时以它为准</b>（<see cref="CapabilitySize"/>）——
+    /// 收在这一处，是为了让下面每一个「按什么尺寸开相机」的派生属性
+    /// （<see cref="FfmpegSize"/>、<see cref="InputSize"/>、<see cref="Size"/>）
+    /// **自动跟上**。各派生属性各判一次的话，漏掉的那一处会**钉着一个相机没有的尺寸**
+    /// 去开设备，而那是要等真开失败才看得见的。
+    /// </para>
     /// </remarks>
-    public (int Width, int Height) CaptureSize => Resolution switch
-    {
-        VideoResolution.Uhd4K => (3840, 2160),
-        VideoResolution.P720 => (1280, 720),
-        _ => (1920, 1080),
-    };
+    public (int Width, int Height) CaptureSize =>
+        CapabilitySize ?? Resolution switch
+        {
+            VideoResolution.Uhd4K => (3840, 2160),
+            VideoResolution.P720 => (1280, 720),
+            _ => (1920, 1080),
+        };
 
     /// <summary>
     /// **成片**尺寸 —— 播放器看到的那一个。转 90° / 270° 时**交换宽高**。
@@ -359,11 +395,18 @@ public sealed record RecordingSpec(
     {
         get
         {
-            var size = NativeCaptureSize
-                ? ObservedDescription is { } measured
-                    ? $"{measured}（相机原生档）"
-                    : "相机原生档"
-                : ResolutionLabel;
+            // ⚠️ 档位表挑中的那一档**必须自己报自己的尺寸**（<see cref="CapabilitySize"/>）：
+            // 它落在了 <see cref="NativeCaptureSize"/> 之外，不走原生那一支，
+            // 而按下面那一支印 <see cref="ResolutionLabel"/> 的话 ——
+            // 明明在录 1600×1200，界面上与日志里却写着「1080P」，
+            // 那是**往证据元数据里写假话**。
+            var size = CapabilitySize is { } capable
+                ? $"{capable.Width}×{capable.Height}（相机实际支持的档位）"
+                : NativeCaptureSize
+                    ? ObservedDescription is { } measured
+                        ? $"{measured}（相机原生档）"
+                        : "相机原生档"
+                    : ResolutionLabel;
 
             return Rotation == CameraRotation.None
                 ? $"{CodecLabel} {size}"

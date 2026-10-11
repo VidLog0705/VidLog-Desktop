@@ -536,6 +536,7 @@ public sealed class AppHost : IAsyncDisposable
             ? new SpecSelection(wantedSpec, false, null)
             : await SpecSelectionPolicy.SelectAsync(
                 wantedSpec, camera, new FfmpegSpecProbe(services.FfmpegPath, new SystemProcessRunner(logger)),
+                new DshowCameraCapabilities(services.FfmpegPath, logger),
                 cancellationToken);
 
         if (selection.ChangedFromRequested)
@@ -1124,6 +1125,7 @@ public sealed class AppHost : IAsyncDisposable
     {
         var selection = await SpecSelectionPolicy.SelectAsync(
             wanted, Camera, new FfmpegSpecProbe(ffmpegPath, new SystemProcessRunner(_logger)),
+            new DshowCameraCapabilities(ffmpegPath, _logger),
             cancellationToken);
 
         // ⚠️ 探完了才记基准：探的过程抛异常（取消、进程起不来）时基准不动，
