@@ -213,7 +213,7 @@
          放回界面（`c064697`）、错码那条通知补上自己的日志（`325d244`）、
          相机档位改成「先问你能出哪些档再决定钉哪一档」（`bcec19b`）。
     -->
-    <Version>0.10.1</Version>
+    <Version>0.10.2</Version>
     <OutputType>WinExe</OutputType>
     <TargetFramework>net9.0-windows</TargetFramework>
     <Nullable>enable</Nullable>
