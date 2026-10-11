@@ -212,8 +212,20 @@
       ⚠️ 本版还含 0.10.0 之后、升版之前就已提交的三条：提示两句话改短并把重复次数
          放回界面（`c064697`）、错码那条通知补上自己的日志（`325d244`）、
          相机档位改成「先问你能出哪些档再决定钉哪一档」（`bcec19b`）。
+
+      0.10.4（2026-10-11）：只删死代码、没有新功能、**界面与行为零变化** ⇒ 0.10.4
+      （不是 0.11.0）。① 与 0.10.3 同一条线：那版立起来的 §6.1 闸（日志器可选的构造点
+         漏传就红）顺带查出一处死方法 —— `DesktopServices.CreateRecordingSession`
+         在 `src/` 与 `tests/` 里零调用（生产上采集器由 `AppHost:588`/`:1135` 建、
+         会话由 `RecordingCoordinator:931` 建，这条路已经没人走）。
+         删前核过没有影响：跨仓（母仓 / 手机仓）零引用、类 `sealed` 且不实现接口、
+         Core 不打包 NuGet ⇒ 没有外部消费者；它声称保的 I9「会话拿到的是同一套收尾器」
+         在**活路径**上由 `AppHost:592` 把 `services.Finalizer` 交给协调器保证，
+         与这个方法无关。连只为它活的那支私有 `Logger` 属性与装配行一并撤
+         （`effectiveLogger` 保留，`CleanupExecutor` 还在用）。
+         ⚠️ 已知一处会过期、**没改**：`docs/实现决策.md:3210` 点了这个方法的名字。
     -->
-    <Version>0.10.3</Version>
+    <Version>0.10.4</Version>
     <OutputType>WinExe</OutputType>
     <TargetFramework>net9.0-windows</TargetFramework>
     <Nullable>enable</Nullable>
