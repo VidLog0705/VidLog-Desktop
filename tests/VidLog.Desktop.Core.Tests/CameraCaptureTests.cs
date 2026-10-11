@@ -1,4 +1,5 @@
 using VidLog.Desktop.Core.Camera;
+using VidLog.Desktop.Core.Diagnostics;
 using VidLog.Desktop.Core.Media;
 using VidLog.Desktop.Core.Recording;
 
@@ -803,6 +804,93 @@ public class CameraCaptureTests
 [Collection(DshowDeviceCollection.Name)]
 public class FfmpegCameraCaptureIntegrationTests
 {
+    // ─────────────────────────────────────────────
+    // 降级重开的那一发也要判（2026-10-11）
+    // ─────────────────────────────────────────────
+
+    /// <summary>
+    /// 设备名**故意不存在** ⇒ ffmpeg 两发都起不来，不用真相机就能走通这条路径。
+    /// </summary>
+    /// <remarks>
+    /// 2026-10-11 实测：同一单号开了两场，孤儿那一场的两次 Launch 都以 0 帧告终，
+    /// 而日志里一个字都没有 —— 因为降级重开的那一发从前**根本不判**
+    /// （<c>microphone is null</c> 直接 <c>return null</c>，永远算「起来了」）。
+    /// 这条钉住：两发都失败时，用户看到的话必须说「两发都试过了」，
+    /// 而不是那句会让人以为还会再试一次的「改成没有音轨重录了」。
+    /// </remarks>
+    [RequiresFfmpegFact]
+    public async Task 带麦克风与不带麦克风都起不来时_说的是两发都试过了()
+    {
+        using var dir = new TempDir();
+        var capture = new FfmpegCameraCapture(Ffmpeg);
+
+        var process = await capture.StartAsync(
+            CameraSource.Local("不存在的摄像头设备"),
+            dir.File("segment-000.mkv"),
+            "libx264",
+            microphone: "不存在的麦克风设备");
+
+        Assert.NotNull(process.StartupWarning);
+        Assert.Contains("都试过了", process.StartupWarning!);
+
+        await process.StopAsync(TimeSpan.FromSeconds(10));
+    }
+
+    /// <summary>
+    /// ffmpeg 的原话必须落进日志。
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ 2026-10-11：从前 stderr 只进环形缓冲、**一个字都不进日志**，
+    /// 能查到的只有「采集进程以退出码 -5 结束」—— 那句话什么都没说：
+    /// 是设备被占？是参数不认？还是编码器起不来？
+    /// 查「同一单号开两场」那一轮，正因为拿不到原话，只能靠进程轨迹 + 读帧计数反推。
+    /// </remarks>
+    [RequiresFfmpegFact]
+    public async Task ffmpeg的原话会落进日志()
+    {
+        using var dir = new TempDir();
+        var logger = new CapturingLogger();
+        var capture = new FfmpegCameraCapture(Ffmpeg, logger: logger);
+
+        var process = await capture.StartAsync(
+            CameraSource.Local("不存在的摄像头设备"), dir.File("a.mkv"), "libx264");
+
+        await process.StopAsync(TimeSpan.FromSeconds(10));
+
+        // 排空 stderr 的那条任务在管道断掉之后才记 —— 等它一下，别让它变成偶发红。
+        var deadline = DateTime.UtcNow.AddSeconds(10);
+        while (DateTime.UtcNow < deadline
+            && !logger.Lines.Any(line => line.Contains("ffmpeg 输出尾部")))
+        {
+            await Task.Delay(50);
+        }
+
+        Assert.Contains(logger.Lines, line => line.Contains("ffmpeg 输出尾部"));
+    }
+
+    /// <summary>把日志收起来断言用（本仓既有写法，见 `LiveDirectoryTests.CapturingLogger`）。</summary>
+    private sealed class CapturingLogger : IAppLogger
+    {
+        private readonly List<string> _lines = [];
+
+        public List<string> Lines
+        {
+            get { lock (_lines) { return [.. _lines]; } }
+        }
+
+        public void Log(LogLevel level, string category, string message)
+        {
+            lock (_lines) { _lines.Add(message); }
+        }
+
+        public void Log(
+            LogLevel level, string category, string message,
+            IReadOnlyDictionary<string, object?> data)
+        {
+            lock (_lines) { _lines.Add(message); }
+        }
+    }
+
     private static string Ffmpeg => FfmpegLocator.TryFind()!;
 
     [RequiresCameraFact]

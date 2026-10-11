@@ -132,6 +132,34 @@ public sealed class RecordingCoordinator : IAsyncDisposable
 
     private RecordingSession? _current;
 
+    /// <summary>
+    /// 扫码的**判定与动作**串行用的一道闸（2026-10-11）。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// ⚠️ 摄像头识码那一路是 <c>_ = coordinator.SubmitAsync(...)</c> 起的
+    /// （<c>AppHost.OnCameraScanned</c>）—— **点火即忘**，而且两条识码路
+    /// （待扫 / 录制中）各发一次：同一张面单因此会进来两次。
+    /// </para>
+    /// <para>
+    /// 而 <see cref="StartSegmentAsync"/> 要开一次相机（实测 1~2 秒），这期间
+    /// <see cref="Snapshot"/> 里 <c>_current</c> **还是 null**（它在 <c>StartAsync</c>
+    /// 返回**之后**才赋值）⇒ 第二次扫码看到「没在录」⇒ 同一单号开了两场。
+    /// </para>
+    /// <para>
+    /// 2026-10-11 真机实测：抢到相机的那一场正常录，另一场是**孤儿**（工作区只剩
+    /// 一份没有分片的 <c>session.json</c>，日志里一个字都没有）；另一种先后是
+    /// <c>_current</c> 落在**没抢到相机**的那一场上 —— 换件时放掉的是它（它根本没有
+    /// 相机），抢到的那一场**没人管**、一直占着摄像头 ⇒ 之后每一场都
+    /// <c>device already in use</c> / 退出码 <c>-5</c>。
+    /// </para>
+    /// <para>
+    /// ⚠️ <b>排队而不是丢弃</b>：窗口期内扫到的**别的**单号是真换件，
+    /// 丢掉它比等 1~2 秒更糟。
+    /// </para>
+    /// </remarks>
+    private readonly SemaphoreSlim _scanGate = new(1, 1);
+
     /// <summary>闲置提醒的轮询间隔。1 秒：它只是「到点了没有」，密一点没有意义。</summary>
     private static readonly TimeSpan IdlePollInterval = TimeSpan.FromSeconds(1);
 
@@ -734,29 +762,42 @@ public sealed class RecordingCoordinator : IAsyncDisposable
             return;
         }
 
-        var state = Snapshot();
-        var decision = _policy.OnScan(state, waybill);
-
-        switch (decision)
+        // ⚠️ **从判定到动作这一段必须串行**（2026-10-11，见 `_scanGate` 的说明）：
+        // 同步进来的两次扫码会在「开相机」那 1~2 秒的窗口里各判一次，
+        // 而那一刻 `_current` 还是 null —— 于是同一单号开了两场。
+        await _scanGate.WaitAsync(cancellationToken);
+        try
         {
-            case WorkDecision.StartSegment start:
-                await StartSegmentAsync(start.Waybill, source, cancellationToken);
-                break;
+            // ⚠️ 判定必须在**拿到闸之后**重做，不能先判后等：
+            // 排队这一会儿世界已经变了（前一次扫码可能刚把这一场开起来）。
+            var state = Snapshot();
+            var decision = _policy.OnScan(state, waybill);
 
-            case WorkDecision.SwitchTo next:
-                await SwitchSegmentAsync(next.Next, source, cancellationToken);
-                break;
+            switch (decision)
+            {
+                case WorkDecision.StartSegment start:
+                    await StartSegmentAsync(start.Waybill, source, cancellationToken);
+                    break;
 
-            case WorkDecision.StopSegment stop:
-                await StopCurrentSegmentAsync(stop.Reason, cancellationToken);
-                break;
+                case WorkDecision.SwitchTo next:
+                    await SwitchSegmentAsync(next.Next, source, cancellationToken);
+                    break;
 
-            case WorkDecision.Announce announce:
-                await HandleAnnounceAsync(announce, cancellationToken);
-                break;
+                case WorkDecision.StopSegment stop:
+                    await StopCurrentSegmentAsync(stop.Reason, cancellationToken);
+                    break;
 
-            case WorkDecision.Nothing:
-                break;
+                case WorkDecision.Announce announce:
+                    await HandleAnnounceAsync(announce, cancellationToken);
+                    break;
+
+                case WorkDecision.Nothing:
+                    break;
+            }
+        }
+        finally
+        {
+            _scanGate.Release();
         }
     }
 
@@ -825,6 +866,35 @@ public sealed class RecordingCoordinator : IAsyncDisposable
             Raise(CoordinatorNoticeKind.FinalizeFailed, waybill, licenseReason);
             return;
         }
+
+        // ⚠️ **兜底**（2026-10-11）：已经在录了就不该走「开新场」这条路。
+        //
+        // 下面那句 `_current = session` 是**无条件赋值** —— 悄悄顶掉旧会话的引用，
+        // 那一场就再也没人收尾，工作区里剩一份没有分片的 `session.json`，
+        // 而日志里一个字都没有（2026-10-11 实测）。语义上这是「换件」。
+        //
+        // ⚠️ 真正挡住并发的是 `SubmitAsync` 里的 `_scanGate`；这一道是**兜底** ——
+        // 万一还有别的路径能走到这儿（今天没有），至少不会静默丢一场。
+        if (_current is not null)
+        {
+            await SwitchSegmentAsync(waybill, source, cancellationToken);
+            return;
+        }
+
+        // ⚠️ **开段这一刻就把这一码喂进录制期识码的闸**，不能等到 `StartAsync` 之后
+        // （2026-10-11 从下面挪到这里）。
+        //
+        // `StartAsync` 要开一次相机（实测 1~2 秒），采集进程一投帧、录制期的解码循环
+        // 就开始看识别框了。这 1~2 秒里面单**还摆在框里**，而那个闸**第一次见这一码**
+        // ⇒ 当成「又扫了一次」上报 ⇒ 同一单号再开一场。2026-10-11 真机实测的双开
+        // 就是这么来的：待扫路 02.894 认出它，录制期路 05.021 又报了一次。
+        //
+        // 提前喂进去，闸的语义就正是要的那个：同一个码一直摆在框里**不再上报**，
+        // 拿开够久再放回来才算「又扫了一次」（见 `RecordingRecognition.PrimeWith`）。
+        //
+        // 下面 `Raise(SegmentStarted)` 之后那一次**保留**：它是幂等的，而且开段这条路上
+        // 任何一处提前返回都不该让识别闸空着。
+        Recognition?.PrimeWith(waybill.Value);
 
         // 扫码枪打进来时用户未必先点过【开始工作】（规格 §4.1 的状态机就是从
         // 「识别到单号」起算的）。这时也要把工作置为进行中 ——
@@ -1370,5 +1440,7 @@ public sealed class RecordingCoordinator : IAsyncDisposable
             // 否则会留一个占着分片文件的孤儿 ffmpeg（破坏 I9）。
             await session.DisposeAsync();
         }
+
+        _scanGate.Dispose();
     }
 }

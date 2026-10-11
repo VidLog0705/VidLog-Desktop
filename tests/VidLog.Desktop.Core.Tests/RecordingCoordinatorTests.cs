@@ -1355,6 +1355,101 @@ public class RecordingCoordinatorTests
         await stopping;
     }
 
+    // ─────────────────────────────────────────────
+    // 同一张面单被两条识码路各发一次 ⇒ 不许开第二场（2026-10-11）
+    // ─────────────────────────────────────────────
+
+    [Fact]
+    public async Task 开相机那一两秒里再扫同一张面单_不会开第二场()
+    {
+        // 摄像头识码是**点火即忘**的（`AppHost.OnCameraScanned` 里那句
+        // `_ = coordinator.SubmitAsync(...)`），而且两条识码路（待扫 / 录制中）
+        // 各发一次 —— 同一张面单会同步进来两次。而开一次相机实测 1~2 秒，
+        // 这期间 `Snapshot()` 里 `_current` **还是 null**（它在 `StartAsync`
+        // 返回之后才赋值）⇒ 第二发看到「没在录」⇒ 同一单号开了两场。
+        //
+        // 2026-10-11 真机实测：那 107~362 毫秒里开了两场，抢到相机的那一场正常录，
+        // 另一场在日志里一个字都没有。
+        using var dir = new TempDir();
+        var capture = new BlockingCapture();
+        await using var coordinator = Build(
+            dir, WorkMode.StopOnSameWaybill, new FakePunchLog(), capture: capture);
+
+        coordinator.StartWork();
+
+        var first = coordinator.SubmitAsync(A, PunchSource.CameraDecoder);
+        await capture.Entered.WaitAsync(TimeSpan.FromSeconds(5));
+
+        // 第二发 —— 从前它看到的是一个还空着的 `_current`。
+        var second = coordinator.SubmitAsync(A, PunchSource.CameraDecoder);
+
+        capture.Release();
+        await first;
+        await second;
+
+        // 判据：**只开过一场**。改之前这里是 2。
+        Assert.Equal(1, capture.Starts);
+    }
+
+    [Fact]
+    public async Task 开相机那一两秒里_框里那一码不再被上报一次()
+    {
+        // 与上一条是**两件事**：上一条钉「同一码报两次也只开一场」，
+        // 这一条钉「那一码**根本不该被报第二次**」—— 少了它的话，上一条那个
+        // 「只开一场」会以「刚开录就停」的样子收场（同码复扫 = 同码停模式的结束方式）。
+        //
+        // 为什么会报第二次：开段那一刻面单正摆在识别框里，而录制期的解码循环
+        // 在 `StartAsync` 一开始就在看帧了 —— 闸**第一次**见这一码就上报。
+        // 修法是把 `PrimeWith` 提前到 `StartAsync` **之前**。
+        using var dir = new TempDir();
+        var capture = new BlockingCapture();
+
+        var scanner = new FixedScanner(A.Value);
+        var recognition = new RecordingRecognition(scanner, NullLogger.Instance);
+        var reported = new List<string>();
+        recognition.Scanned += waybill =>
+        {
+            lock (reported) { reported.Add(waybill.Value); }
+        };
+        recognition.Start();
+
+        await using var coordinator = Build(
+            dir, WorkMode.StopOnSameWaybill, new FakePunchLog(), capture: capture);
+        coordinator.Recognition = recognition;
+
+        coordinator.StartWork();
+
+        var task = coordinator.SubmitAsync(A, PunchSource.CameraDecoder);
+        await capture.Entered.WaitAsync(TimeSpan.FromSeconds(5));
+
+        // 相机还卡着 ⇒ 面单正摆在框里。喂够帧数（解码循环每 3 帧看一次）。
+        for (var i = 0; i < 24; i++)
+        {
+            recognition.OnFrame(Frame(i));
+            await Task.Delay(20);
+        }
+
+        Assert.DoesNotContain(A.Value, reported);
+
+        // ⚠️ **阴性对照**：换成闸没见过的 B，它**必须**报出来。
+        // 没有这一段的话，上面那句在解码循环压根没跑起来时也会绿 —— 空集绿灯。
+        scanner.Code = B.Value;
+        for (var i = 0; i < 24; i++)
+        {
+            recognition.OnFrame(Frame(i));
+            await Task.Delay(20);
+        }
+
+        Assert.Contains(B.Value, reported);
+
+        capture.Release();
+        await task;
+        await recognition.StopAsync();
+    }
+
+    private static PreviewFrame Frame(int index) =>
+        new(new byte[64 * 36 * 3], 64, 36, index);
+
     private static RecordingCoordinator Build(
         TempDir dir,
         WorkMode mode,
@@ -1461,6 +1556,49 @@ public class RecordingCoordinatorTests
             OnStart?.Invoke();
             return Task.FromResult<ICaptureProcess>(new FakeProcess(outputPath, segmentStartNumber));
         }
+    }
+
+    /// <summary>
+    /// 开录时**卡住**，直到测试放行 —— 「相机还没开完」因此变成一个能从外面观察的状态。
+    /// </summary>
+    /// <remarks>
+    /// 真机上「开一次相机」实测 1~2 秒，就是那个窗口里出的双开
+    /// （见 <c>开相机那一两秒里再扫同一张面单_不会开第二场</c>）。
+    /// </remarks>
+    private sealed class BlockingCapture : ICameraCapture
+    {
+        private readonly TaskCompletionSource _gate =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        private readonly TaskCompletionSource _entered =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        /// <summary>开录被叫了几次 —— 双开时是 2。</summary>
+        public int Starts { get; private set; }
+
+        /// <summary>第一次开录已经进来了。</summary>
+        public Task Entered => _entered.Task;
+
+        public void Release() => _gate.TrySetResult();
+
+        public async Task<ICaptureProcess> StartAsync(
+            CameraSource source, string outputPath, string encoder, string? microphone = null,
+            CancellationToken cancellationToken = default,
+            int? segmentSeconds = null, int segmentStartNumber = 0)
+        {
+            Starts++;
+            _entered.TrySetResult();
+            await _gate.Task.WaitAsync(cancellationToken);
+            return new FakeProcess(outputPath, segmentStartNumber);
+        }
+    }
+
+    /// <summary>恒返回同一个码的假解码器（真的那个要 ZXing ＋ 一张真图）。</summary>
+    private sealed class FixedScanner(string code) : IFrameScanner
+    {
+        public string Code { get; set; } = code;
+
+        public string? TryDecode(CameraFrame frame) => Code;
     }
 
     /// <param name="startNumber">

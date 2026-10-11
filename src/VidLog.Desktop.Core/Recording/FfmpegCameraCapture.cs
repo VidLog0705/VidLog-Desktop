@@ -90,7 +90,8 @@ public sealed class FfmpegCameraCapture : ICameraCapture
     private readonly SingleSlotPreviewSink? _preview;
 
     /// <param name="logger">
-    /// 只交给**预览那条读帧循环**用：它退出时记一条（正常关管 / 中途中断）。
+    /// 两处用：**预览那条读帧循环**退出时记一条（正常关管 / 中途中断），
+    /// 以及**采集进程的 stderr 尾部**（`DrainAsync`，2026-10-11 补）。
     /// ⚠️ 不传就等于「预览黑掉时日志里不会有任何东西」—— 而录制中黑屏正是
     /// 2026-10-10 报上来的那条现象，所以**生产装配处必须传**
     /// （`AppHost` 两处都传了；测试与探测用不到就不传）。
@@ -152,10 +153,10 @@ public sealed class FfmpegCameraCapture : ICameraCapture
         var wanted = string.IsNullOrWhiteSpace(microphone) ? null : microphone;
         var process = Launch(source, outputPath, encoder, wanted, assPath, segmentSeconds, segmentStartNumber);
 
-        var warning = await ConfirmStartedAsync(
-            process, ProducedPath(outputPath, segmentSeconds, segmentStartNumber), wanted, cancellationToken);
+        var produced = ProducedPath(outputPath, segmentSeconds, segmentStartNumber);
+        var warning = await ConfirmStartedAsync(process, produced, wanted, cancellationToken);
 
-        if (warning is not null)
+        if (warning is not null && wanted is not null)
         {
             // ⚠️ 规格 §3.1.8 的降级：**照常录视频，只是这一段没有音轨**。
             // 重开、而不是把这一段的失败交给上层 —— I4 明令「绝不允许音频把
@@ -171,6 +172,24 @@ public sealed class FfmpegCameraCapture : ICameraCapture
             // 几乎是空的。
             Kill(process);
             process = Launch(source, outputPath, encoder, microphone: null, assPath, segmentSeconds, segmentStartNumber);
+
+            // ⚠️ **降级重开的这一发也要判**（2026-10-11）。
+            //
+            // 从前它根本不判（<c>microphone is null</c> 直接 <c>return null</c>）——
+            // 那一发失败是**完全静默**的：不判、不记日志、不重试，永远算「起来了」。
+            // 2026-10-11 实测：同一单号开的那两场里，孤儿那一场的两次 Launch
+            // 都以 0 帧告终，而日志里一个字都没有 —— 查配对时只能靠进程轨迹反推。
+            //
+            // ⚠️ 判出来**只为了留痕，不再重开**：音频已经降到底了，再重开就是死循环。
+            // 判到失败就把那句话**换成**「两发都没起来」——`Describe` 给的是
+            // 「没有音轨重录了」，而这时已经没有下一发可降了，那是一句假话。
+            if (await ConfirmStartedAsync(
+                    process, produced, microphone: null, cancellationToken,
+                    judgeWithoutMicrophone: true) is not null)
+            {
+                warning = "采集没能起来，这一场可能没有画面"
+                    + "（带麦克风与不带麦克风都试过了）。";
+            }
         }
 
         cancellationToken.ThrowIfCancellationRequested();
@@ -258,7 +277,9 @@ public sealed class FfmpegCameraCapture : ICameraCapture
         // stderr 同样没人读的话，长时间录制里一次异常刷屏就能把它灌满，后果同上。
         // 但它有内容价值（`device already in use` 这类判定文本、诊断包素材），
         // 所以排进一个有上限的环形缓冲，而不是丢掉。
-        _ = Task.Run(() => DrainAsync(process.StandardError, _errorTail));
+        _ = Task.Run(() => DrainAsync(
+            process.StandardError, _errorTail, _logger,
+            $"{Path.GetFileName(outputPath)}·{(microphone is null ? "无麦克风" : "带麦克风")}"));
 
         return process;
     }
@@ -285,10 +306,20 @@ public sealed class FfmpegCameraCapture : ICameraCapture
     /// </remarks>
     /// <returns>起来了返回 <see langword="null"/>；否则返回一句给用户看的话。</returns>
     private async Task<string?> ConfirmStartedAsync(
-        Process process, string outputPath, string? microphone, CancellationToken cancellationToken)
+        Process process, string outputPath, string? microphone, CancellationToken cancellationToken,
+        bool judgeWithoutMicrophone = false)
     {
         // 没要音频 ⇒ 行为与本次改动**逐字一致**：不等、不判、不重开。
-        if (microphone is null)
+        //
+        // ⚠️ 例外是**降级重开的那一发**（`judgeWithoutMicrophone`，2026-10-11）：
+        // 它本来就是因为带麦克风那一发没起来才开的，**必须判** ——
+        // 不判的话它失败得无声无息，日志里连「这一场到底录起来没有」都看不到。
+        //
+        // ⚠️ 只给那一发开这个口子，不给「设置里压根没开音频」那一发：
+        // 判一次要等到产物出现（相机开起来，1~1.5 秒），而这一段是**同步**
+        // 跑在开段路径上的 —— 打点（`PunchAsync`）在它之后才落，
+        // 白白把每一件的打点时刻整体往后推 1.5 秒。没有理由付这个代价。
+        if (microphone is null && !judgeWithoutMicrophone)
         {
             return null;
         }
@@ -316,7 +347,10 @@ public sealed class FfmpegCameraCapture : ICameraCapture
             if (clock.Elapsed >= StartupProbeTimeout)
             {
                 // 措辞与 Describe 同一条口径：没有证据就不指认麦克风。
-                return "采集迟迟没有开始（麦克风可能没能就绪），这一段改成没有音轨重录了。";
+                return microphone is not null
+                    ? "采集迟迟没有开始（麦克风可能没能就绪），这一段改成没有音轨重录了。"
+                    // 降级那一发本来就没要麦克风 —— 没什么可指认的。
+                    : "采集迟迟没有开始，这一场可能没有画面。";
             }
 
             try
@@ -397,12 +431,16 @@ public sealed class FfmpegCameraCapture : ICameraCapture
     /// </code>
     /// </para>
     /// </remarks>
-    private string Describe(string microphone) =>
-        PickUsefulLine(_errorTail.ToString(), microphone) is not null
+    private string Describe(string? microphone) =>
+        microphone is not null && PickUsefulLine(_errorTail.ToString(), microphone) is not null
             ? "麦克风没能接上，这一段没有音轨。"
-            // 没提到麦克风 ⇒ 这一路没起来的原因**不是它**（多半是摄像头），
-            // 所以只说「没起来」。真正的原因会由重开那一次的退出码报出来。
-            : "采集没能起来，这一段改成没有音轨重录了。";
+            : microphone is not null
+                // 没提到麦克风 ⇒ 这一路没起来的原因**不是它**（多半是摄像头），
+                // 所以只说「没起来」。真正的原因会由重开那一次的退出码报出来。
+                ? "采集没能起来，这一段改成没有音轨重录了。"
+                // 降级那一发（本来就没要麦克风）：**没有下一发可降了** ——
+                // 再说「改成没有音轨重录」是句假话，会让人以为还会再试一次。
+                : "采集没能起来，这一场可能没有画面。";
 
     /// <summary>
     /// ffmpeg 的输出里有没有**提到这个设备**的那一行。
@@ -446,7 +484,9 @@ public sealed class FfmpegCameraCapture : ICameraCapture
     ];
 
     /// <summary>把管道读干。读到流结束为止，异常吞掉（进程退了就是结束，不是错误）。</summary>
-    private static async Task DrainAsync(StreamReader reader, BoundedTextTail? sink)
+    private static async Task DrainAsync(
+        StreamReader reader, BoundedTextTail? sink,
+        IAppLogger? logger = null, string? label = null)
     {
         try
         {
@@ -460,6 +500,23 @@ public sealed class FfmpegCameraCapture : ICameraCapture
         catch (Exception ex) when (ex is IOException or ObjectDisposedException or InvalidOperationException)
         {
             // 进程被收掉时管道会断。这不是错误，只是没有更多输出了。
+        }
+
+        // ⚠️ **ffmpeg 的原话必须落日志**（2026-10-11）。
+        //
+        // 从前 stderr 只进环形缓冲、**一个字都不进日志**，能看到的只有
+        // 「采集进程以退出码 -5 结束」—— 而那句话什么都没说：是设备被占？
+        // 是参数不认？还是编码器起不来？2026-10-11 查「同一单号开两场」那一轮，
+        // 正是因为拿不到原话，只能靠进程轨迹 + 读帧计数反推哪一发成了、哪一发没成。
+        //
+        // ⚠️ 记在**管道结束**这一刻（不是每读到一行就记）：一次 Launch 只记一条，
+        // 内容是环形缓冲里的尾部（有上限，见 `BoundedTextTail`）。
+        // ⚠️ 它同时覆盖**孤儿进程** —— 那一场永远走不到收尾，退出码报不出来，
+        // 这条是它在日志里**唯一**的痕迹。
+        if (logger is not null && sink is { } tail && tail.ToString() is { Length: > 0 } text)
+        {
+            logger.Log(
+                LogLevel.Info, "采集", $"{label}：ffmpeg 输出尾部（{text.Length} 字符）：{text}");
         }
     }
 
