@@ -798,6 +798,10 @@ public sealed class FfmpegCameraCapture : ICameraCapture
                 // 见 `PrerecordProcess.FrameFilters`。
                 "-vf", string.Join(',', PrerecordProcess.FrameFilters(
                     spec?.Rotation ?? CameraRotation.None)),
+                // ⚠️ 帧率**必须**在这里补：FrameFilters 现在只出几何与像素格式。
+                // 它以前自带一个 `fps=` 滤镜，而那个滤镜遇到「网络源 ＋ 两路输出」
+                // 在 ffmpeg 9.0.2 上会把整个进程锁死（见 `PrerecordProcess.FrameFilters` 的说明）。
+                "-r", PrerecordProcess.Fps.ToString(System.Globalization.CultureInfo.InvariantCulture),
                 "-pix_fmt", "rgb24",
                 "-f", "rawvideo",
             ]);

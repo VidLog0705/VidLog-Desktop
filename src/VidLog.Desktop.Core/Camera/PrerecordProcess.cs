@@ -197,6 +197,8 @@ public sealed class PrerecordProcess
         arguments.AddRange(
         [
             "-vf", string.Join(',', FrameFilters(rotation)),
+            // ⚠️ 帧率走**输出选项**，不在滤镜链里 —— 理由见 FrameFilters 的说明。
+            "-r", Fps.ToString(System.Globalization.CultureInfo.InvariantCulture),
             "-pix_fmt", "rgb24",
             "-f", "rawvideo",
             "pipe:1",
@@ -226,14 +228,29 @@ public sealed class PrerecordProcess
     /// <para>
     /// ⚠️ 方向滤镜的产出**只有一处**（<see cref="CameraRotationFilters.For"/>）——
     /// 与录制那一档用的是同一个函数，所以两边朝向不可能不一致。
-    /// <c>fps</c>/<c>format</c> 排在它之后：那两步不改变几何。
+    /// <c>format</c> 排在它之后：那一步不改变几何。
+    /// </para>
+    /// <para>
+    /// ⚠️ <b>帧率不在这条滤镜链里，它是**输出选项**</b>（2026-10-11 改）。
+    /// 从前来的是 <c>fps={Fps}</c> 滤镜。实测（ffmpeg <b>9.0.2</b> —— CI 装的那一份，
+    /// 本机同一份 argv 跑 14 次、<b>9 次锁死</b>）：<c>fps</c> 滤镜遇到
+    /// **网络源（<c>-use_wallclock_as_timestamps 1</c>）＋ 两路输出**会把整个进程**锁死** ——
+    /// stderr 一个字不吐、零帧落盘、分片停在 1 MiB 的整数倍上，<c>libx264</c> 与
+    /// <c>h264_qsv</c> 都一样（<c>libx264</c> 那档 3/3 全锁）。把这个输入参数去掉、
+    /// 其余 argv 一字不动 ⇒ <b>3/3 全过</b> ⇒ 触发它的是那个输入参数与滤镜的组合。
+    /// 而预录正是「文件 ＋ 取景」两路（§54），源又必然是网络的 ⇒ 这条路必现，
+    /// CI 那条 <c>预录那两路各自限长</c> 就是被它拖红的。
+    /// 换成输出侧 <c>-r</c> 之后帧数照旧（实测 12 fps，与滤镜那版持平）、
+    /// 同样的条件下 <b>7/7 全过</b>。
+    /// ⚠️ 调用方**必须**自己补那个 <c>-r</c>：<see cref="ScannerArguments"/>
+    /// 与 <c>FfmpegCameraCapture.BuildArguments</c> 的 <c>frameTap</c> 那一支。
     /// </para>
     /// </remarks>
     public static IReadOnlyList<string> FrameFilters(CameraRotation rotation)
     {
         var filters = new List<string>(PreviewProcess.PreviewFilters(rotation, Width, Height));
 
-        filters.Add($"fps={Fps},format=rgb24");
+        filters.Add("format=rgb24");
 
         return filters;
     }

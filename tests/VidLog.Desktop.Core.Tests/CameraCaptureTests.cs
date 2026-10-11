@@ -592,8 +592,16 @@ public class CameraCaptureTests
         {
             Assert.Equal("rgb24", args[args.IndexOf("-pix_fmt") + 1]);
 
+            // ⚠️ 12 帧是**输出选项** `-r`，不在滤镜链里（2026-10-11 改）——
+            // 从前来的是 `fps=` 滤镜。理由见 `PrerecordProcess.FrameFilters`：
+            // `fps` 滤镜遇到「网络源 ＋ 两路输出」在 ffmpeg 9.0.2 上会把整个进程锁死。
+            // 这条判的是「帧率还得有人钉住」这件事，不是钉法。
+            Assert.Equal(
+                PrerecordProcess.Fps.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                args[args.LastIndexOf("-r") + 1]);
+
             var filters = args[args.IndexOf("-vf") + 1];
-            Assert.Contains($"fps={PrerecordProcess.Fps}", filters, StringComparison.Ordinal);
+            Assert.DoesNotContain("fps=", filters, StringComparison.Ordinal);
             Assert.Contains("format=rgb24", filters, StringComparison.Ordinal);
             Assert.DoesNotContain("gray", filters, StringComparison.Ordinal);
         }
@@ -704,6 +712,14 @@ public class CameraCaptureTests
             string.Join(',', PrerecordProcess.FrameFilters(CameraRotation.None)),
             filters);
         Assert.Contains("pad=640:480", filters, StringComparison.Ordinal);
+
+        // ⚠️ 帧率必须与纯取景那一档**同一个值**，而且走的是输出侧 `-r`
+        // （2026-10-11 改，理由见 `PrerecordProcess.FrameFilters` 那段说明）。
+        // 滤镜链里已经不再有 `fps=`，所以「取景那一路到底几帧」只剩这一处守着 ——
+        // 两边不一致就是同一档取景在「预录开着」与「关着」时快慢不同。
+        Assert.Equal(
+            PrerecordProcess.Fps.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            args[args.LastIndexOf("-r") + 1]);
     }
 
     [Fact]
