@@ -145,7 +145,9 @@ public partial class SettingsWindow : Window
         // 队列文件是共享的（服务在往里写），所以这里只读、只建一个。
         if (_host.Services.CloudUploads is { } uploads)
         {
-            _cloudQueueReader = new UploadQueue(uploads.QueuePath);
+            // ⚠️ 传 `_host.Logger`：它是可选的，不传就**静默不落盘**（`AGENTS.md` §6.1.1）——
+            // 这一页当初是漏掉的那一处。
+            _cloudQueueReader = new UploadQueue(uploads.QueuePath, _host.Logger);
         }
 
         _cloudTimer.Tick += (_, _) => _ = RefreshCloudPageAsync();

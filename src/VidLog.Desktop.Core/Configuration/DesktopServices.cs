@@ -42,6 +42,24 @@ public sealed class DesktopServices : IAsyncDisposable
     /// <summary>T23-B 那一趟补发的停机信号（见 <see cref="DisposeAsync"/>）。</summary>
     private readonly CancellationTokenSource _archiveRetryStop = new();
 
+    /// <summary>
+    /// 装配时那一份日志器（`Create` 的 `logger` 参数，null 时已换成 <see cref="NullLogger"/>）。
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ 存一份是为了 <see cref="CreateRecordingSession"/>：它**晚于装配**才跑，
+    /// 而它 new 出来的采集器必须拿到日志器 —— 不拿的话，采集进程的 stderr
+    /// （`device already in use` 那类判定文本）**一个字都不落盘**（`AGENTS.md` §6.1）。
+    /// 由 <c>LoggingWiringTests</c> 钉住。
+    /// <para>
+    /// ⚠️ <b>2026-10-11 实测：<see cref="CreateRecordingSession"/> 在 `src/` 与 `tests/` 里
+    /// 零调用</b> —— 生产上采集器是 `AppHost` 建的（`:588` / `:1135`）、会话是
+    /// `RecordingCoordinator` 建的（`:931`），这个方法已经没人走了。
+    /// 留它一条生路（而不是删掉）是因为它「只在这里装配收尾器」那个理由（I9 / §4.1）
+    /// 是**需求侧的裁定**，删不删该由需求方拍板 —— 已报，等回话。
+    /// </para>
+    /// </remarks>
+    private IAppLogger Logger { get; init; } = NullLogger.Instance;
+
     private DesktopServices(
         DataLayout layout,
         IRecordingIndex index,
@@ -624,6 +642,7 @@ public sealed class DesktopServices : IAsyncDisposable
             devices,
             resolvedDeviceName)
         {
+            Logger = effectiveLogger,
             ArchiveTarget = target,
             ArchiveBackend = archiveBackend,
             CloudUploads = cloudUploads,
@@ -806,7 +825,9 @@ public sealed class DesktopServices : IAsyncDisposable
         var capture = FfmpegPath is null
             ? throw new InvalidOperationException(
                 "没有可用的 FFmpeg，无法采集。请按提示放置 tools/ffmpeg.exe 或设置环境变量。")
-            : new FfmpegCameraCapture(FfmpegPath);
+            // ⚠️ 传 logger：不传的话采集进程的 stderr 只进那个环形缓冲、**不落盘** ——
+            // 「device already in use」这种判定文本只有它说得清，而事后无从查起。
+            : new FfmpegCameraCapture(FfmpegPath, logger: Logger);
 
         return new RecordingSession(
             Workspace,
