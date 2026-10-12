@@ -12,9 +12,15 @@
 // 回查也说「已备份」⇒ 清理把第二场唯一的好副本删掉。
 //
 // 真的部分：SessionFinalizer 全程、ArchiveLayout 相对路径、`_2` 去重、File.Move 原子占位、
-//          DirectoryArchiveBackend 的 PublishAsync / VerifyAsync、真 U 盘（K:）当归档层。
+//          DirectoryArchiveBackend 的 PublishAsync / VerifyAsync、两个**真的落盘根**。
 // 假的部分：ffmpeg 是桩进程（中间片与成品的字节是写死的占位内容）。
 //          bug 长在**名字那一层**，与片子内容无关，所以桩进程藏不住它。
+//
+// ⚠️ **别把落盘根钉回真 U 盘**（2026-10-12 的教训）。这三条一开始是拿 `K:\vidlog-repro`
+//    写的 —— 那条路只在这台机器上、且只在 U 盘插着的时候存在。CI 机器没有 `K:` ⇒
+//    `Directory.CreateDirectory` 当场抛 `DirectoryNotFoundException` ⇒ **整类三条一起红**
+//    （run 38234011955 实测）。而这三条要的只是「**两个不同的落盘根**」，
+//    跟那块盘是不是可移动盘**没有任何关系** ⇒ 一律走临时目录。
 using System.Text;
 using VidLog.Desktop.Core.Cleanup;
 using VidLog.Desktop.Core.Configuration;
@@ -25,9 +31,14 @@ using VidLog.Desktop.Core.Recording;
 
 namespace VidLog.Desktop.Core.Tests;
 
-public class ArchiveNameCollisionTests
+public class ArchiveNameCollisionTests : IDisposable
 {
-    private const string UsbRoot = @"K:\vidlog-repro";
+    /// <summary>三条用例共用的临时根。⚠️ 见文件头那条「别钉回真 U 盘」。</summary>
+    private static readonly string TempRoot = System.IO.Path.Combine(
+        System.IO.Path.GetTempPath(), "vidlog-namecollision");
+
+    /// <summary>这条用例造出来的那些根，收尾时删掉。</summary>
+    private readonly List<string> _created = [];
 
     private static readonly DateTimeOffset Day1 =
         new(2026, 10, 12, 10, 0, 0, TimeSpan.FromHours(8));
@@ -236,11 +247,30 @@ public class ArchiveNameCollisionTests
 
     // ─────────────────────────────────────────────
 
-    private static string NewRoot(string tag)
+    private string NewRoot(string tag)
     {
-        var dir = System.IO.Path.Combine(UsbRoot, $"{tag}-{Guid.NewGuid():N}"[..16]);
+        var dir = System.IO.Path.Combine(TempRoot, $"{tag}-{Guid.NewGuid():N}"[..16]);
         Directory.CreateDirectory(dir);
+        _created.Add(dir);
         return dir;
+    }
+
+    public void Dispose()
+    {
+        foreach (var dir in _created)
+        {
+            try
+            {
+                if (Directory.Exists(dir))
+                {
+                    Directory.Delete(dir, recursive: true);
+                }
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                // 删不掉就留着 —— 与仓里其他临时目录同一条规矩。
+            }
+        }
     }
 
     private static ArchiveFailureLog NewFailureLog(string root) =>
@@ -249,7 +279,7 @@ public class ArchiveNameCollisionTests
     private static ArchiveRelay NewRelay(
         DirectoryArchiveBackend backend, ArchiveFailureLog failures, string root) => new(
         backend,
-        "NAS（K: 真 U 盘）",
+        "NAS（测试用目录）",
         new PublishedStore(System.IO.Path.Combine(root, "published.jsonl")),
         failures);
 
