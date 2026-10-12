@@ -1,3 +1,5 @@
+using System.Globalization;
+using System.Text.RegularExpressions;
 using VidLog.Desktop.Core.Diagnostics;
 using VidLog.Desktop.Core.Index;
 using VidLog.Desktop.Core.Media;
@@ -668,10 +670,42 @@ public class OrphanRecoveryTests
         var outcome = Assert.Single(await recovery.RecoverAsync());
 
         Assert.True(outcome.Succeeded, outcome.FailureReason);
+
+        // ⚠️ 两片**源分段**都在结果里（每一片都指向同一个成品）——
+        // 捞回来的 segment-001 是真的进了合并，不是被丢在一边。
         Assert.Equal(new[] { 0, 1 }, outcome.Segments.Select(s => s.Source.Sequence));
 
+        // ★ 但索引里只有**一条**：2026-10-12 起一场录制收尾成一条视频
+        // （需求方裁定「一个单号一个文件」）。
         var entries = await index.LoadAllAsync();
-        Assert.Equal(new[] { "session-real-000", "session-real-001" },
-            entries.Select(e => e.EvidenceId));
+        var entry = Assert.Single(entries);
+        Assert.Equal("session-real-000", entry.EvidenceId);
+
+        // ★ **两片真的都被合进去了。** 光看「成品能解码」是不够的 ——
+        // 只用 segment-000 合出来也照样能解码，那样这条用例会静静地绿。
+        // 两片各 1 秒，合起来该是 2 秒上下。
+        var publishedPath = outcome.Segments[0].PublishedPath!;
+        var probe = await runner.RunAsync(ffmpeg, [
+            "-hide_banner", "-i", publishedPath, "-f", "null", "-",
+        ]);
+
+        var seconds = DurationSeconds(probe.StandardError);
+        Assert.True(
+            seconds >= 1.5,
+            $"合并后的成品只有 {seconds} 秒 —— 看起来只合进去了一片。{probe.StandardError}");
+    }
+
+    /// <summary>从 ffmpeg 那句 <c>Duration: 00:00:02.00</c> 里读出秒数；读不出来给 -1。</summary>
+    private static double DurationSeconds(string stderr)
+    {
+        var match = Regex.Match(stderr, @"Duration: (\d+):(\d\d):(\d\d(?:\.\d+)?)");
+        if (!match.Success)
+        {
+            return -1;
+        }
+
+        return int.Parse(match.Groups[1].Value, CultureInfo.InvariantCulture) * 3600
+            + int.Parse(match.Groups[2].Value, CultureInfo.InvariantCulture) * 60
+            + double.Parse(match.Groups[3].Value, CultureInfo.InvariantCulture);
     }
 }

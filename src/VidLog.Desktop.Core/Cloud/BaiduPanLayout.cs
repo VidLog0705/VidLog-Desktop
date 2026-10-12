@@ -14,23 +14,28 @@ namespace VidLog.Desktop.Core.Cloud;
 /// </para>
 /// <para>
 /// 形状照设计图 `_46` 那句原话「录像上传到百度网盘"我的应用数据/[应用名]/
-/// (日期)/发货或退货/单号.mp4"，按开录日期与发货退货分类」：
+/// (日期)/发货或退货/单号.mp4"，按开录日期与发货退货分类」。
+/// **2026-10-12 起**，两端统一成（需求方裁定）：
 /// </para>
 /// <code>
-/// /apps/&lt;应用名&gt;/2026/09/30/发货/SF1000000001_ab12_000.mp4
+/// /apps/&lt;应用名&gt;/2026-09-30/发货/SF1000000001.mp4
 /// </code>
 /// <para>
-/// ⚠️ <b>与归档相对路径不是逐段一致</b>（本机 / NAS 那一档才是）：
-/// 设计图把「单号」放在**文件名**上并多插了一层「发货或退货」，
-/// 所以云端这一份由单号 + 会话 + 序号合成文件名，而不再套一层单号目录。
-/// 云端是**第二份**，它的目录形状不需要与第一份相同。
+/// 它与归档相对路径的关系是「去掉 <c>VidLog-Video</c> 那一段」——
+/// 本地 <c>VidLog-Video/2026-09-30/发货/SF1000000001.mp4</c>，
+/// 远端 <c>/apps/&lt;应用名&gt;/2026-09-30/发货/SF1000000001.mp4</c>。
 /// </para>
 /// <para>
-/// ⚠️ <b>「发货 / 退货」那一层取自标签，而标签是可以改的</b>（I5）。
-/// 所以<b>永远不能只在一个分类目录里找</b> —— 用户把一条录像从发货改成退货之后，
-/// 云端那一份仍在旧的目录下，而「回查归档层」是清理的前置闸（I8）：
-/// 只找新目录的话它会一路说「不存在」，于是那条录像**永远清不掉**，
-/// 而用户完全不知道为什么。两个目录都找就是这条不变量在这里的落法
+/// ⚠️ <b>老形状的路径必须继续认得</b>（见 <see cref="RemotePath"/> 第二支）：
+/// 盘上/网盘上已经有按 <c>&lt;年&gt;/&lt;月&gt;/&lt;日&gt;/&lt;单号&gt;/&lt;会话&gt;_&lt;序号&gt;.mp4</c>
+/// 传上去的录像，算不出它们的远端路径 = 回查一律说「网盘上没有」= 那些录像
+/// **永远清不掉**（I8 是清理的前置闸）。
+/// </para>
+/// <para>
+/// ⚠️ <b>回查永远两个分类目录都找</b>：分类取自可改的标签（I5）与老数据，
+/// 只在当前分类下找的话，用户改过一次分类、或者那一条是老形状的，
+/// 它在清理的前置闸（I8）眼里就永远是「归档层上没有」——
+/// 于是它永远清不掉，而没人知道为什么
 /// （见 <see cref="CloudArchiveBackend.VerifyAsync"/>）。
 /// </para>
 /// </remarks>
@@ -68,12 +73,34 @@ public sealed class BaiduPanLayout
     {
         var parts = Segments(location);
 
-        if (parts is not [var year, var month, var day, var waybill, var leaf])
+        // ── 新形状（2026-10-12 起）──────────────────────────────────
+        // `VidLog-Video/<yyyy-MM-dd>/<发货|退货>/<单号>.mp4`
+        // ⇒ 远端就是**去掉第一段**：`/apps/<应用名>/<yyyy-MM-dd>/<发货|退货>/<单号>.mp4`。
+        //
+        // ⚠️ 分类那一层取的是**路径里自己带的那一个**，不是传进来的 `type`
+        // （那个来自标签，而标签按 I5 是可以改的）。理由与归档那边同一条：
+        // 本地那份躺在 `发货/` 而远端把它挂到 `退货/` 的话，两边就各说各话；
+        // 而 <c>UploadQueue</c> 里存的是**入队那一刻算出来的**远端路径，
+        // 用标签算会让「同一份录像，改一次标签就换一个远端路径」——
+        // 于是它会被当成没传过，重传一遍。路径就该由路径自己决定。
+        if (parts is [var root, var date, var classification, var leaf]
+            && root == ArchiveLayout.RootFolder)
+        {
+            return $"{Root}{date}/{classification}/{leaf}";
+        }
+
+        // ── 老形状（保留）────────────────────────────────────────────
+        // `<年>/<月>/<日>/<单号>/<会话>_<序号>.mp4`
+        //
+        // ⚠️ **这一支不许删**：盘上/网盘上已经有按老形状传上去的录像。
+        // 删了它，那些录像的远端路径会算成另一个值 ⇒ 回查一路说「网盘上没有」
+        // ⇒ 它们**永远清不掉**（I8 是清理的前置闸），而用户完全不知道为什么。
+        if (parts is not [var year, var month, var day, var waybill, var oldLeaf])
         {
             return $"{Root}{TypeSegment(type)}/{location.Value.Replace('\\', '/').Trim('/')}";
         }
 
-        return $"{Root}{year}/{month}/{day}/{TypeSegment(type)}/{waybill}_{leaf}";
+        return $"{Root}{year}/{month}/{day}/{TypeSegment(type)}/{waybill}_{oldLeaf}";
     }
 
     /// <summary>
@@ -111,10 +138,14 @@ public sealed class BaiduPanLayout
     /// 就永远是「归档层上没有」—— 于是它永远清不掉，而没人知道为什么。
     /// </remarks>
     public IReadOnlyList<string> DirectoriesFor(RelativePath location) =>
-    [
-        DirectoryOf(location, BusinessType.Outbound),
-        DirectoryOf(location, BusinessType.Return),
-    ];
+        // ⚠️ 去重：新形状下这一支**根本不看 `type`**（分类就在路径里），
+        // 两个候选算出来是同一个目录。不去重的话每次回查都白问一遍网盘，
+        // 而它有限流（见 `CloudUploadService` 里那段「能把账号问进风控」）。
+        [.. new[]
+        {
+            DirectoryOf(location, BusinessType.Outbound),
+            DirectoryOf(location, BusinessType.Return),
+        }.Distinct(StringComparer.Ordinal)];
 
     private static string[] Segments(RelativePath location) =>
         location.Value.Replace('\\', '/').Split('/', StringSplitOptions.RemoveEmptyEntries);

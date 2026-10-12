@@ -60,10 +60,9 @@ public class CloudUploadTests
 
         Assert.True(result.Published, result.FailureReason);
 
-        // 远端路径照设计图 `_46` 的形状（默认标签是「发货」）。
+        // 远端路径照需求方 2026-10-12 定的形状：/apps/<应用名>/<年-月-日>/<发货|退货>/<单号>.mp4
         var created = Assert.Single(harness.Api.Created);
-        Assert.Matches(@"^/apps/VidLog/2026/09/30/发货/SF1000000001_", created);
-        Assert.EndsWith("_000.mp4", created);
+        Assert.Equal("/apps/VidLog/2026-09-30/发货/SF1000000001.mp4", created);
 
         var item = await harness.Queue.FindAsync("e1");
         Assert.NotNull(item);
@@ -607,8 +606,13 @@ public class CloudUploadTests
             string id, DateTimeOffset? startedAt = null, bool createFile = true)
         {
             var at = startedAt ?? Now;
-            var location = ArchiveLayout.BuildLocation(
-                WaybillNumber.Parse("SF1000000001"), "ab12", _sequence++, at);
+
+            // ⚠️ 一条录像一个落点：新形状（2026-10-12）里文件名**没有会话号与序号**，
+            // 同一个单号 + 同一个时刻会拼出同一个名字。这里靠 `_sequence` 加 `_2`/`_3`
+            // 把它们分开 —— 与生产代码 `SessionFinalizer` 定名那一段是同一个手法。
+            var location = ArchiveLayout.Deduplicated(
+                ArchiveLayout.BuildLocation(WaybillNumber.Parse("SF1000000001"), BusinessType.Outbound, at),
+                _sequence++);
 
             if (createFile)
             {

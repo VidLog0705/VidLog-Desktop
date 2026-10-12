@@ -143,6 +143,29 @@ public class BoundaryLoggingTests
         }
     }
 
+    /// <summary>合成得出产物、但解码校验报错的假 FFmpeg（模拟产出损坏的成品）。</summary>
+    private sealed class BrokenProductRunner : IProcessRunner
+    {
+        public Task<ProcessResult> RunAsync(
+            string executable,
+            IReadOnlyList<string> arguments,
+            CancellationToken cancellationToken = default)
+        {
+            var args = arguments.ToList();
+            var y = args.IndexOf("-y");
+
+            if (y >= 0 && y + 1 < args.Count)
+            {
+                var output = args[y + 1];
+                Directory.CreateDirectory(System.IO.Path.GetDirectoryName(output)!);
+                File.WriteAllText(output, "broken");
+                return Task.FromResult(new ProcessResult(0, string.Empty, string.Empty));
+            }
+
+            return Task.FromResult(new ProcessResult(0, string.Empty, "Invalid data found when processing input"));
+        }
+    }
+
     [Fact]
     public async Task 收尾失败时记下原因与会话()
     {
@@ -175,7 +198,53 @@ public class BoundaryLoggingTests
         var data = entry.GetProperty("data");
         Assert.Equal("session-1", data.GetProperty("会话").GetString());
         Assert.Equal(1, data.GetProperty("分段数").GetInt32());
-        Assert.Equal(0, data.GetProperty("成功段数").GetInt32());
+
+        // 2026-10-12 起一整场只产出一个成品（需求方裁定「一个单号一个文件」），
+        // 原先那个 `成功段数` 就只剩 0 / 1 两种取值、与「成没成」同义 ⇒ 已删。
+        // 替它钉两件真的有用的事：
+        // ① **原因真的进了日志正文** —— 三类失败（remux / 校验 / 写索引）要修的东西
+        //    完全不同，而界面上它们一律显示成「收尾失败」；
+        // ② 没落成时**不给路径**。给一个不存在的路径比不给更坏：照着找会扑空，
+        //    而且会让人以为文件在、只是找不着。
+        Assert.Contains("分段文件不存在", TextOf(entry, "msg"), StringComparison.Ordinal);
+        Assert.Equal(JsonValueKind.Null, data.GetProperty("成品").ValueKind);
+    }
+
+    [Fact]
+    public async Task 收尾失败时记下的路径必须是盘上真有那一份()
+    {
+        // ⚠️ 这一条钉的是「日志不许指着不存在的地方」：校验没过时，程序**打算**落的
+        // 那个正式名字（`VidLog-Video/…/SF….mp4`）下面根本没有文件 —— 那一份还叫
+        // `.<会话>.partial.mp4`。事后照日志去找，会一路找到「没有这个文件」，
+        // 然后怀疑是不是被清理掉了。
+        using var dir = new TempDir();
+        using var logDir = new TempDir();
+        var logger = new FileLogger(new FileLogOptions(logDir.Path, "vidlog"));
+
+        var finalizer = new SessionFinalizer(
+            new RemuxPipeline("ffmpeg", new BrokenProductRunner()),
+            new DecodeVerifier("ffmpeg", new BrokenProductRunner()),
+            new JsonLinesRecordingIndex(dir.File("index.jsonl")),
+            dir.File("archive"),
+            logger);
+
+        var segment = dir.File("segment-000.mkv");
+        await File.WriteAllTextAsync(segment, "x");
+
+        var outcome = await finalizer.FinalizeAsync(
+            "session-1",
+            WaybillNumber.Parse("SF1000000001"),
+            "device-1",
+            [new SegmentProduct(0, segment, DateTimeOffset.UtcNow, DateTimeOffset.UtcNow)],
+            StopReason.Manual);
+
+        Assert.False(outcome.Succeeded);
+
+        var entry = Assert.Single(await ReadLinesAsync(logger));
+        var recorded = entry.GetProperty("data").GetProperty("成品").GetString();
+
+        Assert.NotNull(recorded);
+        Assert.True(File.Exists(recorded), $"日志里记的成品必须真的在盘上：{recorded}");
     }
 
     [Fact]

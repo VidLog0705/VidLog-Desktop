@@ -170,14 +170,35 @@ public class UploadReceiverTests
     }
 
     /// <summary>把分片按序喂给接收方，模拟手机端的一次正常上传。</summary>
-    private static async Task UploadChunksAsync(Harness h, Payload payload)
+    private static async Task UploadChunksAsync(Harness h, Payload payload, string? evidenceId = null)
     {
+        var owner = evidenceId ?? EvidenceId;
+
         for (var i = 0; i < payload.Chunks.Count; i++)
         {
             using var body = new MemoryStream(payload.Chunks[i]);
-            await h.Receiver.StoreChunkAsync(EvidenceId, i, body);
+            await h.Receiver.StoreChunkAsync(owner, i, body);
         }
     }
+
+    /// <summary>
+    /// 把同一份分片**换个会话 id** 再走一遍 —— 模拟「同一个单号另录了一场」。
+    /// </summary>
+    /// <remarks>
+    /// 会话 id 是归档文件名里**唯一**用来区分两场的东西（2026-10-12 之前），
+    /// 而它在报文里有三处：请求本身、打点、标签。改一处漏两处的话，
+    /// 收下来的东西内部对不上 —— 而那种错不会当场报，会留到回放里。
+    /// </remarks>
+    private static Payload Rebadge(Payload payload, string sessionId, string evidenceId) => payload with
+    {
+        Request = payload.Request with
+        {
+            SessionId = sessionId,
+            EvidenceId = evidenceId,
+            Punches = [.. payload.Request.Punches.Select(p => p with { SessionId = sessionId })],
+            Labels = [.. payload.Request.Labels.Select(l => l with { EvidenceId = evidenceId })],
+        },
+    };
 
     // ─────────────────────────────────────────────
     // 原子发布
@@ -214,9 +235,70 @@ public class UploadReceiverTests
 
         // ArchiveLayout 是本地录制与远端上传**共用**的那一份规则。
         // 两处各写一遍的话，它们会在某次改动里悄悄走岔，而走岔之后不会报错。
-        Assert.Equal("2026/09/23/SF1000000001/sess-1_000.mp4", response.Receipt.Location);
+        //
+        // 2026-10-12 起形状是 VidLog-Video/<年-月-日>/<发货|退货>/<单号>.mp4，
+        // 而「发货 / 退货」这一层对上传这条路来说**只能从报文自带的标签里取**
+        // （报文里没有专门的字段，标签是手机端本来就发的，见 `BuildPayload` 里那条
+        // `LabelKeys.BusinessType`）。
+        Assert.Equal("VidLog-Video/2026-09-23/发货/SF1000000001.mp4", response.Receipt.Location);
         Assert.True(System.IO.File.Exists(
             System.IO.Path.Combine(h.Layout.ArchiveRoot, response.Receipt.Location)));
+    }
+
+    [Fact]
+    public async Task 同一个单号的另一场落成_2_而不是被拒收()
+    {
+        // ★ 2026-10-12 换形状带出来的新岔路：归档文件名里不再有会话号，
+        // 于是「同一个单号 + 同一个录制时刻」的另一场会**拼出同一个名字**。
+        // 从前那会撞上「归档层已存在同名文件且内容不同」而被**直接拒收** ——
+        // 可对新形状来说那压根不是同一条录像，拒掉它等于手机端永远传不上来。
+        using var h = Build();
+
+        var first = BuildPayload(1024);
+        await UploadChunksAsync(h, first);
+        var one = await h.Receiver.CommitAsync(first.Request, DeviceId, NewCredential());
+        Assert.Equal("VidLog-Video/2026-09-23/发货/SF1000000001.mp4", one.Receipt.Location);
+
+        // 同一个单号、同一个录制时刻，但是**另一场**（另一个会话、内容也不同）。
+        var second = Rebadge(BuildPayload(2048), "sess-2", "sess-2-000");
+        await UploadChunksAsync(h, second, "sess-2-000");
+
+        var two = await h.Receiver.CommitAsync(second.Request, DeviceId, NewCredential());
+
+        // ⚠️ 后缀插在**扩展名之前**：`SF1000000001_2.mp4` 是 mp4，
+        // `SF1000000001.mp4_2` 双击打不开。
+        Assert.Equal("VidLog-Video/2026-09-23/发货/SF1000000001_2.mp4", two.Receipt.Location);
+
+        // 两份都在盘上 —— 谁都没被覆盖（覆盖掉的那一份在两边账里都看不出来）。
+        Assert.True(System.IO.File.Exists(
+            System.IO.Path.Combine(h.Layout.ArchiveRoot, one.Receipt.Location)));
+        Assert.True(System.IO.File.Exists(
+            System.IO.Path.Combine(h.Layout.ArchiveRoot, two.Receipt.Location)));
+        Assert.Equal(2, (await h.Index.LoadAllAsync()).Count);
+    }
+
+    [Fact]
+    public async Task 同一条录像重发_认下盘上那一份_不再多落一个_2()
+    {
+        // 回执丢了、发送方重发（§「回执丢了、发送方重发」那一段）：
+        // 走到落盘那一步时名字上已经有东西了，而内容**一模一样** ⇒ 复用，
+        // 不是再落一个 `_2`。这条与上面那条是一对：判据是内容，不是名字。
+        using var h = Build();
+
+        var payload = BuildPayload(1024);
+        await UploadChunksAsync(h, payload);
+
+        var credential = NewCredential();
+        var first = await h.Receiver.CommitAsync(payload.Request, DeviceId, credential);
+        var again = await h.Receiver.CommitAsync(payload.Request, DeviceId, credential);
+
+        Assert.Equal(first.Receipt.Location, again.Receipt.Location);
+        Assert.Equal(first.Receipt.TimeAnchor, again.Receipt.TimeAnchor);   // 时间锚不重签
+
+        // 归档目录里就那一份，没有 `_2`。
+        var files = Directory.GetFiles(h.Layout.ArchiveRoot, "*", SearchOption.AllDirectories);
+        Assert.Single(files);
+        Assert.Equal("SF1000000001.mp4", System.IO.Path.GetFileName(files[0]));
     }
 
     [Fact]

@@ -206,16 +206,21 @@ public class NetworkCameraIntegrationTests
         // ⚠️ 量的是**成品 MP4**而不是 `work/` 里那个源 MKV：收尾成功后源 MKV 会被
         // **按设计丢掉**（`RecordingSession.StopAsync` 里那句 `DiscardSessionDirectory`，
         // 前提是归档层收下了）。remux 是无损换容器 ⇒ 两者时长同源，只是前者还在。
+        //
+        // ⚠️ **按成品去重**（2026-10-12 起一场录制只出一个 MP4）：`outcome.Segments`
+        // 里几条源分段指向**同一个** `PublishedPath`（见 `FinalizedSegment` 的说明）——
+        // 逐条去量会把同一个文件量好几遍、总时长翻几倍，判据四当场假红。
         var rows = new List<string>();
-        var measured = new List<(int Sequence, double Duration)>();
         var total = 0.0;
 
-        foreach (var segment in outcome.Segments.OrderBy(s => s.Source.Sequence))
+        foreach (var product in outcome.Segments
+                     .GroupBy(s => s.PublishedPath ?? s.Source.SourcePath)
+                     .Select(g => g.First()))
         {
-            var path = segment.PublishedPath ?? segment.Source.SourcePath;
+            var path = product.PublishedPath ?? product.Source.SourcePath;
             if (!File.Exists(path))
             {
-                rows.Add($"{segment.Source.Sequence:000}\t文件不在：{path}（{segment.FailureReason}）");
+                rows.Add($"文件不在：{path}（{product.FailureReason}）");
                 continue;
             }
 
@@ -227,17 +232,14 @@ public class NetworkCameraIntegrationTests
 
             if (!probe.Succeeded)
             {
-                rows.Add($"{segment.Source.Sequence:000}\tffprobe 失败：{probe.StandardError.Trim()}");
+                rows.Add($"ffprobe 失败：{probe.StandardError.Trim()}");
                 continue;
             }
 
             var duration = double.Parse(probe.StandardOutput.Trim(), CultureInfo.InvariantCulture);
             total += duration;
-            measured.Add((segment.Source.Sequence, duration));
             rows.Add(
-                $"{segment.Source.Sequence:000}\t{duration:0.000}s\t"
-                + $"{segment.Source.StartedAt:O} ~ {segment.Source.EndedAt:O}\t"
-                + $"{new FileInfo(path).Length / 1024 / 1024.0:0.0} MB");
+                $"{duration:0.000}s\t{new FileInfo(path).Length / 1024 / 1024.0:0.0} MB\t{path}");
         }
 
         var stopwatchSeconds = wall.Elapsed.TotalSeconds;
@@ -263,14 +265,15 @@ public class NetworkCameraIntegrationTests
             会话自己记的录制窗口（首段起 → 末段止）：{sessionSeconds:0.000}s
             源的媒体/墙钟比：{rate:0.000}（标定值；1.000 = 源的时间戳与墙钟一致）
             分段数：{outcome.Segments.Count}
-            媒体总时长：{total:0.000}s
+            成品数：{outcome.Segments.Select(s => s.PublishedPath).Distinct().Count()}
+            媒体总时长（各成品之和）：{total:0.000}s
             差（媒体 − 请求时长）：{total - seconds:+0.000;-0.000}s
             差（媒体 − 会话窗口）：{total - sessionSeconds:+0.000;-0.000}s
             差（媒体 − 秒表，含收尾）：{total - stopwatchSeconds:+0.000;-0.000}s
             全部段都入库：{outcome.Segments.All(s => s.IsPublished)}
             会话状态：{outcome.State}
 
-            段号	时长	起止（收尾登记）	大小
+            成品时长	大小	路径
             {string.Join(Environment.NewLine, rows)}
             """;
 
@@ -287,12 +290,18 @@ public class NetworkCameraIntegrationTests
             outcome.Segments.Count >= 2,
             $"只录到 {outcome.Segments.Count} 段 —— 没滚过段，这条恒等式等于没验。{report}");
 
-        // 判据三：除最后一段（还在写的时候被停掉）外，每段都该是整整 60 秒。
-        foreach (var (sequence, duration) in measured.SkipLast(1))
+        // 判据三：除最后一段（还在写的时候被停掉）外，每段的**会话窗口**都该是整整 60 秒。
+        //
+        // ⚠️ 2026-10-12 起成品只有一个文件（不再是每段一个 MP4），所以这里量的是**会话
+        // 登记的起止窗口**（`Source.StartedAt/EndedAt`），不是某个文件的时长 ——
+        // 它验的是「滚段按 60 秒切」这件事本身，与「一个单号一个文件」并不冲突。
+        foreach (var segment in outcome.Segments.OrderBy(s => s.Source.Sequence).SkipLast(1))
         {
+            var window = (segment.Source.EndedAt - segment.Source.StartedAt).TotalSeconds;
+
             Assert.True(
-                duration is >= 59.0 and <= 61.0,
-                $"第 {sequence} 段长 {duration:0.000} 秒，不是整整 60 秒。{report}");
+                window is >= 59.0 and <= 61.0,
+                $"第 {segment.Source.Sequence} 段的会话窗口是 {window:0.000} 秒，不是整整 60 秒。{report}");
         }
 
         // 判据四（**这条才是 T17 的核心**）：媒体总时长要与**录了多久**对得上。

@@ -389,7 +389,11 @@ public partial class MainWindow : Window
             RecordingStatus.Text = outcome is null
                 ? "已结束。"
                 : outcome.Succeeded
-                    ? $"已入库 {outcome.Segments.Count} 段。"
+                    // ⚠️ 2026-10-12 起一场录制**只产出一个成品**（需求方裁定「一个单号
+                    // 一个文件」，收尾时把预录段与滚动出来的各段合在一起）。所以这里
+                    // 不能再说「N 段」—— 那会让用户以为盘上有 N 个文件。
+                    // `Segments.Count` 现在是**源分段数**，只留在日志里（可观测性），不上界面。
+                    ? "已入库。"
                     : $"收尾失败：{outcome.FailureReason} 录像仍在工作区，下次启动会自动重试。";
         }
         catch (Exception ex)
@@ -475,7 +479,7 @@ public partial class MainWindow : Window
         }
 
         // ⚠️ **没在工作时一个字都不写**（有意不写）：这一行还是那句结果话的家 ——
-        // 「已入库 3 段。」「收尾失败：…」都写在这儿，擦成「空闲」等于把用户
+        // 「已入库。」「收尾失败：…」都写在这儿，擦成「空闲」等于把用户
         // 刚做完那件事的回执吃掉。
     }
 

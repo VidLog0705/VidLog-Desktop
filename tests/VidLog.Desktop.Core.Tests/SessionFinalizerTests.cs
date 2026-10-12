@@ -45,6 +45,16 @@ public class SessionFinalizerTests
         public List<IReadOnlyList<string>> Invocations { get; } = [];
         public string Payload { get; set; } = DefaultPayload;
 
+        /// <summary>
+        /// 最后一次 concat 清单里的那些行。
+        /// </summary>
+        /// <remarks>
+        /// ⚠️ **必须在调用当场读**：清单是临时文件，收尾结束前就被删了。
+        /// 而这是「到底拿哪几片去合的」唯一能看得见的地方 —— 只断言「调用了 concat」
+        /// 的话，传一片进去也一样绿（产物内容是本假进程写死的）。
+        /// </remarks>
+        public List<string>? LastConcatList { get; private set; }
+
         public Task<ProcessResult> RunAsync(
             string executable,
             IReadOnlyList<string> arguments,
@@ -53,6 +63,16 @@ public class SessionFinalizerTests
             Invocations.Add(arguments.ToList());
 
             var args = arguments.ToList();
+
+            if (args.Contains("concat"))
+            {
+                var i = args.IndexOf("-i");
+                if (i >= 0)
+                {
+                    LastConcatList = [.. File.ReadAllLines(args[i + 1])];
+                }
+            }
+
             var yIndex = args.IndexOf("-y");
             if (yIndex >= 0 && yIndex + 1 < args.Count)
             {
@@ -421,5 +441,118 @@ public class SessionFinalizerTests
             [good, missing], StopReason.Manual);
 
         Assert.Equal(RecordingSessionState.FinalizeFailed, outcome.State);
+
+        // 「整体」不只是状态位：坏了一片就**一个成品都不该落下**。
+        // 落下的那个会是「少了中间一截」的片子，而它看起来完全正常。
+        // ⚠️ 目录可能压根没建（缺片那一步在落盘之前）—— 那也是「没落下」。
+        var archive = dir.Dir("archive");
+        Assert.True(
+            !Directory.Exists(archive) || Directory.GetFiles(archive, "*", SearchOption.AllDirectories).Length == 0,
+            "坏了一片就不该在归档目录里留下任何成品");
+    }
+
+    // ─────────────────────────────────────────────
+    // 一场一个成品（需求方 2026-10-12）
+    // ─────────────────────────────────────────────
+
+    [Fact]
+    public async Task 多段合成一条_索引里只有一条成品()
+    {
+        using var dir = new TempDir();
+        var index = new RecordingIndexSpy();
+        var runner = new SucceedingRunner();
+        var finalizer = BuildFinalizer(dir, runner, index);
+
+        var outcome = await finalizer.FinalizeAsync(
+            "session-1", WaybillNumber.Parse("SF1234567890"), "device-1",
+            [CreateSegment(dir, 0), CreateSegment(dir, 1), CreateSegment(dir, 2)], StopReason.Manual);
+
+        Assert.True(outcome.Succeeded, outcome.FailureReason);
+
+        // 索引里只有一条 —— 一个单号一个文件。
+        var entry = Assert.Single(index.Entries);
+        Assert.Equal("VidLog-Video/2026-09-16/发货/SF1234567890.mp4", entry.Location.Value);
+        Assert.True(File.Exists(System.IO.Path.Combine(dir.Dir("archive"), entry.Location.Value)));
+
+        // 三片都指向**同一个**成品：这是「哪几片拼成了它」的可观测性，
+        // 不是重复记账（少一片就是成品里少一截画面，而这件事不会报错）。
+        Assert.Equal(3, outcome.Segments.Count);
+        Assert.All(outcome.Segments, s => Assert.Equal(entry.Location, s.Location));
+        Assert.Equal([0, 1, 2], outcome.Segments.Select(s => s.Source.Sequence));
+
+        // 走的是 concat 那一路，不是「把第一片当整场 remux」；
+        // 而且**三片都进了清单**（传一片进去也会是「调用了 concat」）。
+        // ⚠️ 不能拿 `Assert.Single` 数调用次数 —— 校验那一步也调 ffmpeg。
+        Assert.Contains(runner.Invocations, args => args.Contains("concat"));
+        Assert.Equal(3, runner.LastConcatList?.Count);
+        Assert.Contains(runner.LastConcatList!, line => line.Contains("segment-002.mkv", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task 同一单号的第二场落到_2_而不是盖掉第一场()
+    {
+        // ⚠️ 新文件名里**没有会话号** ⇒ 同一个单号的第二场必然撞名。撞上就加 `_2`，
+        // **绝不覆盖**（I2：少一份证据）。第一场那一份必须原样还在。
+        using var dir = new TempDir();
+        var index = new RecordingIndexSpy();
+        var finalizer = BuildFinalizer(dir, new SucceedingRunner { Payload = "first" }, index);
+
+        await finalizer.FinalizeAsync(
+            "session-1", WaybillNumber.Parse("SF1234567890"), "device-1",
+            [CreateSegment(dir)], StopReason.Manual);
+
+        var second = BuildFinalizer(dir, new SucceedingRunner { Payload = "second" }, index);
+        var outcome = await second.FinalizeAsync(
+            "session-2", WaybillNumber.Parse("SF1234567890"), "device-1",
+            [CreateSegment(dir, 1)], StopReason.Manual);
+
+        Assert.True(outcome.Succeeded, outcome.FailureReason);
+        Assert.Equal(2, index.Entries.Count);
+
+        var archive = dir.Dir("archive");
+        Assert.Equal(
+            ["VidLog-Video/2026-09-16/发货/SF1234567890.mp4", "VidLog-Video/2026-09-16/发货/SF1234567890_2.mp4"],
+            index.Entries.Select(e => e.Location.Value));
+
+        // 两份内容各是各的 —— 第二场没有把第一场写成自己那一份。
+        Assert.Equal("first", await File.ReadAllTextAsync(System.IO.Path.Combine(archive, index.Entries[0].Location.Value)));
+        Assert.Equal("second", await File.ReadAllTextAsync(System.IO.Path.Combine(archive, index.Entries[1].Location.Value)));
+    }
+
+    [Fact]
+    public async Task 落盘撞上非撞名的IO故障时给出失败原因而不是抛出去()
+    {
+        // ⚠️ 这条钉的是「定名落盘」那一步的**出口形状**：`File.Move` 抛 IOException 时
+        // 只有「目标已存在」才是撞名（换 `_2` 重试），其余（盘满 / 目标目录被删 /
+        // 路径过长 / 文件被占）都必须**变成一个失败原因返回**。
+        // 一旦漏成异常逃出去，后果有两层：`RecordingSession.StopAsync` 里
+        // `State`/`Outcome` 不再落定，而 `OrphanRecovery.RecoverAsync` 的循环
+        // **当场中断后面所有孤儿**（那里没有 catch）。
+        //
+        // 造法：在成品该落的位置预先摆一个**目录**（同名）。
+        // `File.Move` 占不动它 ⇒ IOException；而 `File.Exists` 对目录恒 false
+        // ⇒ 判断「是不是撞名」的那条 `when` 不成立，正好走到兜底那一支。
+        using var dir = new TempDir();
+        var index = new RecordingIndexSpy();
+        var finalizer = BuildFinalizer(dir, new SucceedingRunner(), index);
+
+        var occupied = System.IO.Path.Combine(
+            dir.Dir("archive"), "VidLog-Video", "2026-09-16", "发货", "SF1234567890.mp4");
+        var parent = System.IO.Path.GetDirectoryName(occupied)!;
+        System.IO.Directory.CreateDirectory(parent);
+        System.IO.Directory.CreateDirectory(occupied);
+
+        var outcome = await finalizer.FinalizeAsync(
+            "session-1", WaybillNumber.Parse("SF1234567890"), "device-1",
+            [CreateSegment(dir)], StopReason.Manual);
+
+        Assert.False(outcome.Succeeded);
+        Assert.Contains("落盘失败", outcome.FailureReason, StringComparison.Ordinal);
+
+        // 失败就是失败：**不许**留下一条指向那个占位的索引条目。
+        Assert.Empty(index.Entries);
+
+        // I2：源 MKV 还在（下次启动按孤儿重试）。
+        Assert.True(File.Exists(dir.File("segment-000.mkv")));
     }
 }

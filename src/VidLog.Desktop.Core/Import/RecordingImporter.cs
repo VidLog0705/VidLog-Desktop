@@ -192,24 +192,47 @@ public sealed class RecordingImporter
 
         // ── 4. 落点 ──────────────────────────────────────────────────
         //
-        // 会话号**由内容哈希推出来**：同一个文件重复导入拿到同一个 id
-        // （所以「导到一半断电了、再导一次」不会在旁边多出一份），
-        // 而两条内容不同的文件永远不会撞。定长、纯 ASCII，进得了文件名。
+        // ⚠️ 文件名里**不再有会话号**（2026-10-12 换了归档形状）：一个单号一个名字。
+        // 于是「同一个单号 + 同一个录制时刻」现在**真的会撞名**，而撞上的那个可能是：
+        // <list type="number">
+        // <item>同一个文件重复导入（内容一样）⇒ **认下盘上那一份**，一个字节都不用写
+        // —— 这是「导到一半断电了、再导一次不会在旁边多出一份」的**唯一**依靠；</item>
+        // <item>内容不同的另一个文件 ⇒ 换 <c>_2</c>。不能沿用旧名字，否则索引里记的是
+        // 新哈希、盘上躺着的是旧内容，两边对不上而**谁都不会报错**。</item>
+        // </list>
+        // 所以判据只能是**内容**，不能只看「名字对不对」。
         var sessionId = $"import-{contentHash.Value[..12]}";
         var duration = streams.Duration ?? TimeSpan.Zero;
-        var location = ArchiveLayout.BuildLocation(request.Waybill, sessionId, 0, request.StartedAt);
+        var baseLocation = ArchiveLayout.BuildLocation(
+            request.Waybill, request.BusinessType, request.StartedAt);
 
-        // ⚠️ 先用 `Resolve` 在**每一个**落盘位置上找一遍（设计图 `_43` 的多磁盘）：
-        // 上一次导到一半（文件落了盘、索引没写成）会正好留下这一个路径。
-        // 只看活动根的话，另一块盘上那份会被当成不存在而重写一遍。
-        var destination = _storage.Resolve(location.Value)
-            ?? Path.Combine(_storage.ActiveRoot, location.Value);
+        var location = baseLocation;
+        string? destination = null;
 
-        if (!File.Exists(destination))
+        for (var ordinal = 0; ordinal <= ArchiveLayout.MaxDuplicates; ordinal++)
         {
+            location = ArchiveLayout.Deduplicated(baseLocation, ordinal);
+
+            // ⚠️ 先用 `Resolve` 在**每一个**落盘位置上找一遍（设计图 `_43` 的多磁盘）：
+            // 上一次导到一半（文件落了盘、索引没写成）会正好留下这一个路径。
+            // 只看活动根的话，另一块盘上那份会被当成不存在而重写一遍。
+            var candidate = _storage.Resolve(location.Value)
+                ?? Path.Combine(_storage.ActiveRoot, location.Value);
+
+            if (File.Exists(candidate))
+            {
+                if (await IsSameContentAsync(candidate, contentHash, cancellationToken))
+                {
+                    destination = candidate;
+                    break;
+                }
+
+                continue;   // 撞名且内容不同 ⇒ 换 `_2`
+            }
+
             try
             {
-                var parent = Path.GetDirectoryName(destination);
+                var parent = Path.GetDirectoryName(candidate);
                 if (!string.IsNullOrEmpty(parent))
                 {
                     Directory.CreateDirectory(parent);
@@ -218,7 +241,7 @@ public sealed class RecordingImporter
                 // 先写 `.tmp` 再改名（与 `UploadReceiver` 同一手法）：拷到一半断电时
                 // 不会留下一个「文件名对、内容半截」的 mp4 —— 那个东西看起来
                 // 与成品一模一样，而它会挡住下一次导入（`File.Exists` 为真）。
-                var temporary = destination + ".tmp";
+                var temporary = candidate + ".tmp";
                 await using (var input = new FileStream(
                     request.SourcePath, FileMode.Open, FileAccess.Read, FileShare.Read, 81920, useAsync: true))
                 await using (var output = new FileStream(
@@ -228,12 +251,20 @@ public sealed class RecordingImporter
                     await output.FlushAsync(cancellationToken);
                 }
 
-                File.Move(temporary, destination, overwrite: false);
+                File.Move(temporary, candidate, overwrite: false);
+                destination = candidate;
+                break;
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
             {
                 return Fail($"复制不进录像目录：{ex.Message}");
             }
+        }
+
+        if (destination is null)
+        {
+            return Fail(
+                $"同一个单号下已经堆了 {ArchiveLayout.MaxDuplicates + 1} 份内容不同的录像，先清理再导。");
         }
 
         // ── 5. 写索引（可见性就是从这一行开始的）──────────────────────
@@ -356,6 +387,37 @@ public sealed class RecordingImporter
             // 在 ImportAsync 里，说的是与他的处境有关的那件事。
             _logger.Log(LogLevel.Warn, "导入", $"量不了 {path}：{ex.Message}");
             return null;
+        }
+    }
+
+    /// <summary>盘上那一份与我们手里这份是不是**同一份内容**（算哈希比对）。</summary>
+    /// <remarks>
+    /// 只有「目标名字上已经有东西」时才调它，所以代价落在**重复导入**那条路上 ——
+    /// 而那条路本来就要读一遍文件（`DecodeVerifier`），多算一次哈希不是新的量级。
+    /// <para>
+    /// ⚠️ 读不动（权限、盘掉了）时**返回 false**：那时应当换 <c>_2</c> 另起一份，
+    /// 而不是把它当成「就是它」跳过一次复制 —— 后者会在索引里留下一条指向
+    /// 另一份内容的记录，而且报警都不会报。
+    /// </para>
+    /// </remarks>
+    private async Task<bool> IsSameContentAsync(
+        string path, ContentHash expected, CancellationToken cancellationToken)
+    {
+        try
+        {
+            var actual = await ContentHasher.ComputeFileHashAsync(path, cancellationToken);
+
+            return string.Equals(actual.Value, expected.Value, StringComparison.Ordinal);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            // ⚠️ **不静默吞**（§6.1 判据表「catch 块」那一行）：这一句是「单号下面
+            // 为什么会冒出一个 `_2`」唯一的解释 —— 不说的话用户只看得见多了个名字。
+            _logger.Log(
+                LogLevel.Warn,
+                "导入",
+                $"盘上那份 {path} 读不动（{ex.Message}），当成另一份内容另起一个名字");
+            return false;
         }
     }
 

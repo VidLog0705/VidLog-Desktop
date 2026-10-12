@@ -16,7 +16,17 @@ public sealed record SegmentProduct(
     DateTimeOffset StartedAt,
     DateTimeOffset EndedAt);
 
-/// <summary>单个分段的收尾结果。</summary>
+/// <summary>
+/// 一片源分段最终变成了什么 —— <see cref="Source"/> 是**真的那一片**，
+/// 后面几个字段描述它落进的那个成品。
+/// </summary>
+/// <remarks>
+/// ⚠️ <b>2026-10-12 起一场录制只有一个成品</b>（需求方裁定「一个单号一个文件」），
+/// 所以 <see cref="FinalizeOutcome.Segments"/> 里会有**好几条指向同一个</b>
+/// <see cref="PublishedPath"/> / <see cref="Location"/> / <see cref="ContentHash"/>。
+/// 那不是重复记账，是「这几片拼成了它」—— 它保住了「哪几片、各自的起止时刻」
+/// 这件事的可观测性，而少一片就是成品里少一截画面、**且不会报错**。
+/// </remarks>
 public sealed record FinalizedSegment(
     SegmentProduct Source,
     string? PublishedPath,
@@ -25,7 +35,7 @@ public sealed record FinalizedSegment(
     string? FailureReason)
 {
     /// <summary>
-    /// 这个分段是否**完整走完了收尾**：产出可播成品 + 算过哈希 + 已写入索引。
+    /// 这一片是否**完整走完了收尾**：产出可播成品 + 算过哈希 + 已写入索引。
     /// </summary>
     /// <remarks>
     /// 三个条件缺一不可，<see cref="FailureReason"/> 必须为空。
@@ -182,31 +192,40 @@ public sealed class SessionFinalizer
                 "会话没有任何分段可收尾");
         }
 
-        var finalized = new List<FinalizedSegment>(segments.Count);
-        string? firstFailure = null;
+        cancellationToken.ThrowIfCancellationRequested();
 
-        foreach (var segment in segments.OrderBy(s => s.Sequence))
-        {
-            cancellationToken.ThrowIfCancellationRequested();
+        var ordered = segments.OrderBy(s => s.Sequence).ToList();
 
-            var result = await FinalizeSegmentAsync(
-                sessionId, waybill, sourceDeviceId, segment, spec, businessType, cancellationToken);
+        // ★ 2026-10-12：**一场录制收尾成一条视频**（需求方裁定「一个单号一个文件」）。
+        // 原来是逐段各出一个 MP4（`_000` 预录开场段 + `_001` 正式段 + 滚出来的 `_002`…），
+        // 用户拿到的是「一个包裹好几个文件」。
+        var product = await FinalizeProductAsync(
+            sessionId,
+            waybill,
+            sourceDeviceId,
+            ordered,
+            // 整场的时间轴取**包络**：最早那片的起点 → 最晚那片的终点。
+            startedAt: ordered.Min(s => s.StartedAt),
+            endedAt: ordered.Max(s => s.EndedAt),
+            spec,
+            businessType,
+            cancellationToken);
 
-            if (!result.IsPublished && firstFailure is null)
-            {
-                // 兜底：理论上不会走到 ??，但「标记为失败却给不出原因」
-                // 会让诊断包变得没用，宁可给一句笼统的。
-                firstFailure = result.FailureReason ?? "收尾失败（未给出原因）";
-            }
-
-            finalized.Add(result);
-        }
+        // 结果按**源分段一对多展开**：每一片都指向同一个成品（见 `FinalizedSegment`）。
+        var finalized = ordered.Select(s => product with { Source = s }).ToList();
 
         // 只要有一个分段没通过校验，整个会话就**不得**标记为正常入库（规格 §4.1）。
-        var allPublished = finalized.All(s => s.IsPublished);
+        // 合并之后这件事的形态更硬：整场就是一次 remux，它不成就是全都不成。
+        var allPublished = product.IsPublished;
         var state = allPublished
             ? RecordingSessionState.Indexed
             : RecordingSessionState.FinalizeFailed;
+
+        // 兜底：理论上不会走到 ??，但「标记为失败却给不出原因」
+        // 会让诊断包变得没用，宁可给一句笼统的。
+        var firstFailure = allPublished
+            ? null
+            : product.FailureReason ?? "收尾失败（未给出原因）";
 
         // 收尾是「一次录制到底有没有变成可检索的证据」的那条线，
         // 而它是这个应用**唯一会丢证据**的地方 —— 成败都留痕。
@@ -216,96 +235,209 @@ public sealed class SessionFinalizer
             allPublished ? LogLevel.Info : LogLevel.Error,
             "收尾",
             allPublished
-                ? $"{waybill.Value} 收尾完成（{finalized.Count} 段，停因 {reason}）"
+                ? $"{waybill.Value} 收尾完成（由 {finalized.Count} 段合成一条，停因 {reason}）"
                 : $"{waybill.Value} 收尾失败：{firstFailure}",
             new Dictionary<string, object?>
             {
                 ["会话"] = sessionId,
                 ["停因"] = reason.ToString(),
                 ["分段数"] = finalized.Count,
-                ["成功段数"] = finalized.Count(s => s.IsPublished),
+                // ⚠️ 记的是**盘上真实存在的那份**（`PublishedPath`），不是 `Location`：
+                // 失败分支里有几处 `Location` 是「本来打算落的名字」（校验没过 / 算哈希
+                // 失败 / 撞名堆满），那个名字下面根本没有文件 —— 事后照它去找会扑空。
+                // 而 `PublishedPath` 在每个分支里都指向真实存在的那一份（没通过校验的
+                // 那个临时名、已落盘但没进索引的成品），落不成时才是 null。
+                ["成品"] = product.PublishedPath,
             });
 
-        return new FinalizeOutcome(state, reason, finalized, allPublished ? null : firstFailure);
+        return new FinalizeOutcome(state, reason, finalized, firstFailure);
     }
 
-    private async Task<FinalizedSegment> FinalizeSegmentAsync(
+    /// <summary>
+    /// 把**一整场**的分段合成一个成品，再走收尾的后半段（校验 → 哈希 → 落盘 → 索引 → 标签 → 发布）。
+    /// </summary>
+    /// <param name="segments">**已按 <see cref="SegmentProduct.Sequence"/> 排好序**的源分段。</param>
+    private async Task<FinalizedSegment> FinalizeProductAsync(
         string sessionId,
         WaybillNumber waybill,
         string sourceDeviceId,
-        SegmentProduct segment,
+        IReadOnlyList<SegmentProduct> segments,
+        DateTimeOffset startedAt,
+        DateTimeOffset endedAt,
         RecordingSpec? spec,
         BusinessType? businessType,
         CancellationToken cancellationToken)
     {
-        if (!File.Exists(segment.SourcePath))
+        // 先看每一片在不在 —— **排在最前面**，因为合并是从盘上读，少一片时
+        // ffmpeg 只会对着列表文件报一句「No such file」，还得倒推是哪一片。
+        //
+        // ⚠️ **一片不齐就整场失败**，这不只是 §4.1 的口径（有一个分段没通过校验，
+        // 整场就不得标记为正常入库），更是合并的物理事实：少一片 = 成品里**少一截
+        // 画面**，而这件事**不会报错** —— 事后谁也看不出来中间缺了一块。
+        // 宁可整场失败让它下次重试（源 MKV 全在）。
+        foreach (var segment in segments)
         {
-            return new FinalizedSegment(segment, null, null, null, $"分段文件不存在：{segment.SourcePath}");
+            if (!File.Exists(segment.SourcePath))
+            {
+                return new FinalizedSegment(
+                    segments[0], null, null, null, $"分段文件不存在：{segment.SourcePath}");
+            }
         }
 
         // §6.2：进索引的只有相对路径。
-        var location = BuildLocation(waybill, sessionId, segment);
+        //
+        // ⚠️ 「发货 / 退货」那一层取的是**开始工作时选的那一档**：`businessType`
+        // 是会话建好那一刻冻结下来的（见 `RecordingSession.BusinessType`），不是
+        // 此刻的档位 —— 换件之后旧的那场还在后台收尾，用当前档会把它标错。
+        // 没给（老调用点 / 测试）时回落到「发货」，与 `CloudUploadService` 的回退一致。
+        var relative = ArchiveLayout.BuildLocation(
+            waybill, businessType ?? BusinessType.Outbound, startedAt);
 
-        // ⚠️ **每一段收尾时现挑一次盘**，不是装配时定死一个（设计图 `_43` 的原话
-        // 「每个磁盘只剩下预留空间时，会自动换到下一个」）。一次打包可能横跨
-        // 好几段、跨好几个小时，定死一个的话第一块盘满了之后**所有**后续录像
-        // 都会写失败 —— 而那时用户什么都没改过。
-        var destination = Path.Combine(_storage.ActiveRoot, location.Value);
+        // ⚠️ **一场收尾时现挑一次盘**，不是装配时定死一个（设计图 `_43` 的原话
+        // 「每个磁盘只剩下预留空间时，会自动换到下一个」）。合并之后一场只落一次盘，
+        // 所以这个选择从「每段一次」变成「一场一次」—— 语义不变，只是次数少了。
+        var root = _storage.ActiveRoot;
+        var parent = Path.GetDirectoryName(Path.Combine(root, relative.Value)) ?? root;
+
+        try
+        {
+            Directory.CreateDirectory(parent);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            // ⚠️ 与下面 `File.Move` 那处同一条：这一层原本就裸着，但「盘拔了 /
+            // 归档盘变成只读 / 那块盘临时掉线」在这里是**真实会发生的**（多磁盘那档
+            // 正是可移动盘），而它抛出去同样会穿透 `OrphanRecovery` 的循环。
+            // 源 MKV 一片没动 ⇒ 下次启动照旧按孤儿重试。
+            return new FinalizedSegment(
+                segments[0], null, null, null, $"归档目录建不出来（{parent}）：{ex.Message}");
+        }
 
         // 留痕（`AGENTS.md` §6）：**写到哪块盘上了**是这一批新增的事实，
         // 而它恰恰是事后唯一能解释「这条录像在 D 盘、那条在 C 盘」的东西。
-        // ⚠️ 只在多磁盘时才记 —— 单根是绝大多数机器，每段都记一条纯属噪音。
+        // ⚠️ 只在多磁盘时才记 —— 单根是绝大多数机器，每场都记一条纯属噪音。
         if (_storage.Slots.Count > 0)
         {
-            _logger.Log(LogLevel.Info, "落盘", $"{waybill.Value} 这一段写在 {_storage.ActiveRoot}",
+            _logger.Log(LogLevel.Info, "落盘", $"{waybill.Value} 这一场写在 {root}",
                 new Dictionary<string, object?>
                 {
                     ["会话"] = sessionId,
-                    ["段号"] = segment.Sequence,
+                    ["分段数"] = segments.Count,
                     ["原因"] = _storage.ActiveNote,
                 });
         }
 
-        var parent = Path.GetDirectoryName(destination);
-        if (!string.IsNullOrEmpty(parent))
-        {
-            Directory.CreateDirectory(parent);
-        }
+        // ⚠️ **先合到同目录下一个临时名，再原子改名**，而不是「先探一下撞不撞、
+        // 再直接往最终名字写」。理由（2026-10-12 换形状时新出现的）：
+        //
+        // 新文件名里**没有会话号** ⇒ 同一个单号的第二场**必然**撞名；而收尾
+        // 确实可能有两份同时在跑 —— 换件那条路是在后台收尾的
+        // （`RecordingCoordinator.PendingFinalization`），用户随手重扫同一个单号
+        // 就会让两场同号录像几乎同时收尾。探一下再写的话两边都会看到「不撞」，
+        // 后一个把前一个**整份覆盖掉**：那是 I2 说的「少一份证据」，而且事后
+        // 在两边的账里都完全看不出来（索引各记各的，盘上只剩一个文件）。
+        //
+        // `File.Move(overwrite: false)` 是原子的：谁抢到算谁的，输的那个换 `_2`。
+        // 临时名带会话号 ⇒ 两份并发收尾各写各的临时文件，不会互相踩。
+        var staging = Path.Combine(parent, $".{sessionId}.partial.mp4");
 
-        // 1. 无损 remux：MKV 中间容器 → MP4 成品
-        var remux = await _remux.RemuxAsync(segment.SourcePath, destination, cancellationToken);
-        if (!remux.Succeeded)
+        // 1. 无损合并：多片 MKV 中间容器 → 一个 MP4 成品（只有一片时等价于原来的 remux）
+        var merge = await _remux.MergeAsync(
+            [.. segments.Select(s => s.SourcePath)], staging, cancellationToken);
+        if (!merge.Succeeded)
         {
             // 源 MKV 一律保留 —— 它是此刻唯一的副本（I2）。
-            return new FinalizedSegment(segment, null, null, null, remux.FailureReason);
+            return new FinalizedSegment(segments[0], null, null, null, merge.FailureReason);
         }
 
         // 2. 实际解码校验 —— 校验失败不得入库为「正常」（§3.1.4）
-        var verification = await _verifier.VerifyAsync(destination, cancellationToken);
+        // ⚠️ 校验与哈希都在**临时名**上做，内容一样，省一次改名后再读。
+        var verification = await _verifier.VerifyAsync(staging, cancellationToken);
         if (!verification.IsPlayable)
         {
-            return new FinalizedSegment(segment, destination, location, null, verification.FailureReason);
+            // 没通过校验的这一份**不搬去正式名字**（搬过去就成了一个能骗过
+            // 「回查」的坏成品）。它留在临时名下，不产生索引条目。
+            return new FinalizedSegment(segments[0], staging, relative, null, verification.FailureReason);
         }
 
         // 3. 内容哈希（§3.6.1：指纹 = 内容哈希 + 单号 + 录制时间）
         ContentHash contentHash;
         try
         {
-            contentHash = await ContentHasher.ComputeFileHashAsync(destination, cancellationToken);
+            contentHash = await ContentHasher.ComputeFileHashAsync(staging, cancellationToken);
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
-            return new FinalizedSegment(segment, destination, location, null, $"算哈希失败：{ex.Message}");
+            return new FinalizedSegment(segments[0], staging, relative, null, $"算哈希失败：{ex.Message}");
+        }
+
+        // 3.5 定名落盘：从 `<单号>.mp4` 起试，撞名就 `_2`、`_3`…（需求方 2026-10-12 裁定）。
+        // 原子性来自 `File.Move(overwrite: false)` —— 判「撞没撞」与「占住」是同一步，
+        // 中间没有缝（见上面为什么不能先探再写）。
+        var location = relative;
+        string? destination = null;
+        for (var ordinal = 0; ordinal <= ArchiveLayout.MaxDuplicates; ordinal++)
+        {
+            // ⚠️ 后缀只进**文件名**，不进索引里的 EvidenceId（那个仍是 `{会话}-000`）：
+            // 同单号的两场因此是两条**互相独立**的证据，各自可回查、各自可清理。
+            location = ArchiveLayout.Deduplicated(relative, ordinal);
+            var candidate = Path.Combine(root, location.Value);
+
+            try
+            {
+                File.Move(staging, candidate, overwrite: false);
+                destination = candidate;
+                break;
+            }
+            catch (IOException) when (File.Exists(candidate))
+            {
+                // 撞名 —— 换下一个后缀重试（不是错误）。
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                // ⚠️ **非撞名**的落盘故障（盘满 / 目标目录被删 / 路径过长 / 文件被占）
+                // 不许穿出去变成异常：契约是「返回失败原因 + 源 MKV 留着 + 下次启动
+                // 按孤儿重试」（I2）。异常会跳过 `State`/`Outcome` 的落定，而孤儿回收
+                // 那条循环会**当场中断后面所有孤儿**（`RecoverAsync` 里没有 catch）。
+                // 临时名那一份还在盘上，所以 `PublishedPath` 照实指它。
+                return new FinalizedSegment(
+                    segments[0], staging, relative, contentHash, $"落盘失败：{ex.Message}");
+            }
+        }
+
+        if (destination is null)
+        {
+            // 兜底：同一个单号堆了这么多份还不清，那是用户该处理的事。
+            // **绝不覆盖已有的那一个** —— 宁可这一场收尾失败让它下次重试。
+            return new FinalizedSegment(
+                segments[0], staging, relative, contentHash,
+                $"同一单号的成品已经堆到 {ArchiveLayout.MaxDuplicates + 1} 份，先清理再录（不肯覆盖已有的证据）。");
+        }
+
+        if (location != relative)
+        {
+            // 落到了 `_2` 之类的名字上 —— 这是「同一个单号录了不止一场」的**唯一**痕迹，
+            // 事后想搞清楚「这个 _2 是哪来的」只能看这条日志。
+            _logger.Log(LogLevel.Info, "落盘", $"{waybill.Value} 撞名，这一场落到 {location.Value}",
+                new Dictionary<string, object?>
+                {
+                    ["会话"] = sessionId,
+                    ["单号"] = waybill.Value,
+                });
         }
 
         // 4. 写索引
+        //
+        // ⚠️ **证据 ID 的形状一个字节都没变**（仍是 `{会话}-000`）：一场恒一个成品，
+        // 序号那一格不再有第二个值。标签、清理流水、上传队列、索引的所有消费者
+        // 因此全都不用改 —— 这一批改动刻意没有波及它们。
         var entry = new RecordingEntry(
-            EvidenceId: $"{sessionId}-{segment.Sequence:000}",
+            EvidenceId: $"{sessionId}-000",
             SessionId: sessionId,
             Waybill: waybill,
-            StartedAt: segment.StartedAt,
-            EndedAt: segment.EndedAt,
-            Duration: segment.EndedAt - segment.StartedAt,
+            StartedAt: startedAt,
+            EndedAt: endedAt,
+            Duration: endedAt - startedAt,
             Location: location,
             ContentHash: contentHash,
             SourceDeviceId: sourceDeviceId,
@@ -332,7 +464,7 @@ public sealed class SessionFinalizer
         {
             // 成品已经落盘且可播，但没进索引 —— 不能算收尾成功，
             // 否则用户检索不到这条，等于「看起来存在其实找不到」。
-            return new FinalizedSegment(segment, destination, location, contentHash, $"写索引失败：{ex.Message}");
+            return new FinalizedSegment(segments[0], destination, location, contentHash, $"写索引失败：{ex.Message}");
         }
 
         // 4.5 打「发货 / 退货」标签（设计图 `_35` 的那个切换）。
@@ -360,7 +492,7 @@ public sealed class SessionFinalizer
                 _logger.Log(
                     LogLevel.Warn,
                     "标签",
-                    $"{waybill.Value} 第 {segment.Sequence} 段的业务类型标签没写上：{ex.Message}",
+                    $"{waybill.Value} 的业务类型标签没写上：{ex.Message}",
                     new Dictionary<string, object?>
                     {
                         ["会话"] = sessionId,
@@ -386,20 +518,9 @@ public sealed class SessionFinalizer
             archived = published.Published;
         }
 
-        return new FinalizedSegment(segment, destination, location, contentHash, null)
+        return new FinalizedSegment(segments[0], destination, location, contentHash, null)
         {
             ArchivePublished = archived,
         };
     }
-
-    /// <summary>
-    /// 归档层里的相对路径。规格 §6.2：**绝对路径在应用重装、容器变更后必然失效**，
-    /// 所以进索引的只有这一段。
-    /// </summary>
-    /// <remarks>
-    /// 规则本身搬去了 <see cref="ArchiveLayout"/> —— 远端上传（M5）要把手机传上来的
-    /// 录像落在同一个布局上，两处各写一遍必然走岔，而走岔了不会报错。
-    /// </remarks>
-    private static RelativePath BuildLocation(WaybillNumber waybill, string sessionId, SegmentProduct segment)
-        => ArchiveLayout.BuildLocation(waybill, sessionId, segment.Sequence, segment.StartedAt);
 }

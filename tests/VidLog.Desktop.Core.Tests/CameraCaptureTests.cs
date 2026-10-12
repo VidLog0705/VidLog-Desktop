@@ -1,5 +1,7 @@
 using VidLog.Desktop.Core.Camera;
 using VidLog.Desktop.Core.Diagnostics;
+using VidLog.Desktop.Core.Index;
+using VidLog.Desktop.Core.Labels;
 using VidLog.Desktop.Core.Media;
 using VidLog.Desktop.Core.Recording;
 
@@ -1101,6 +1103,137 @@ public class FfmpegCameraCaptureIntegrationTests
         }
     }
 
+    // ─────────────────────────────────────────────
+    // 真机整场：滚段 → 收尾合成一条 → 新路径（2026-10-12「一个单号一个文件」）
+    // ─────────────────────────────────────────────
+
+    [RequiresMicrophoneFact]
+    public async Task 真机一场滚段后收尾_盘上只有一个成品_落在新路径上_同号第二场是_2()
+    {
+        // ⚠️ 这一条盖的是 2026-10-12 那两件事**在真机上**的合体：真摄像头 + 真麦克风
+        // 滚出多片 MKV（预录段与正片是同一个形态），收尾把它们合成**一个** MP4，
+        // 落在 `VidLog-Video/<日期>/发货/<单号>.mp4`；同一个单号再录一场落 `_2`。
+        //
+        // 既有真机用例只盖到「采到一片 MKV + remux 一次」；「一整场好几片合成一个、
+        // 且落点换形状」从来没有真跑过 —— 而它正是这一批改动的全部内容。
+        //
+        // ⚠️ 它同时真跑那两条单元测试盖不到的风险：真 AAC 音轨跨段 `-c copy` 合成后
+        // 还在不在（丢流不报错，只是从头到尾没声音）、以及 `_2` 的原子改名在真文件
+        // 系统上成不成立。
+        using var dir = new TempDir();
+        var video = (await DshowDevices.ListVideoAsync(Ffmpeg))[0];
+        var mic = (await DshowDevices.ListAudioAsync(Ffmpeg))[0];
+        var runner = new SystemProcessRunner();
+        var encoder = await PickEncoderAsync(runner);
+
+        var archive = dir.Dir("archive");
+        var index = new JsonLinesRecordingIndex(dir.File("index.jsonl"));
+        var finalizer = new SessionFinalizer(
+            new RemuxPipeline(Ffmpeg, runner),
+            new DecodeVerifier(Ffmpeg, runner),
+            index,
+            archive);
+
+        var waybill = WaybillNumber.Parse("SF100001234567");
+
+        // ── 第一场 ──
+        var first = await RecordRolledAsync(dir, "one", video, mic, encoder);
+
+        var outcome = await finalizer.FinalizeAsync(
+            "session-1", waybill, "video=" + video, first, StopReason.Manual,
+            businessType: BusinessType.Outbound);
+
+        Assert.True(outcome.Succeeded, outcome.FailureReason);
+
+        // ★ 落点**形状**：`VidLog-Video/<yyyy-MM-dd>/发货/<单号>.mp4`（一个单号一个文件、
+        //   文件名里没有会话号与序号）。按形状断言而不是按写死的日期，避开跨午夜的时钟竞态。
+        var location = Assert.IsType<RelativePath>(outcome.Segments[0].Location);
+        Assert.Matches(
+            @"^VidLog-Video/\d{4}-\d{2}-\d{2}/发货/SF100001234567\.mp4$",
+            location.Value);
+
+        var expected = Path.Combine(archive, location.Value);
+        Assert.True(File.Exists(expected), $"成品不在新路径上：{expected}");
+        Assert.Equal(expected, outcome.Segments[0].PublishedPath);
+
+        // ★ 同一个单号、同一层目录下**只有一个** mp4（没有 `_000` / `_001` 那一串）。
+        var folder = Path.GetDirectoryName(expected)!;
+        Assert.Single(Directory.GetFiles(folder, "*.mp4"));
+
+        // ★ 合成后音轨还在、而且真的能解码（不是「文件在盘上、体积不为零」那种假通过）。
+        await AssertHasAudioTrackAsync(runner, expected);
+        var verification = await new DecodeVerifier(Ffmpeg, runner).VerifyAsync(expected);
+        Assert.True(verification.IsPlayable, verification.FailureReason);
+
+        // ★ 索引里只有这一条，证据 ID 仍是 `{会话}-000`（形状一字未变）。
+        var entries = await index.LoadAllAsync();
+        var only = Assert.Single(entries);
+        Assert.Equal("session-1-000", only.EvidenceId);
+        Assert.Equal(location.Value, only.Location.Value);
+
+        // ── 第二场：同一个单号 ──
+        var second = await RecordRolledAsync(dir, "two", video, mic, encoder);
+
+        var again = await finalizer.FinalizeAsync(
+            "session-2", waybill, "video=" + video, second, StopReason.Manual,
+            businessType: BusinessType.Outbound);
+
+        Assert.True(again.Succeeded, again.FailureReason);
+
+        var secondPath = Path.Combine(archive, location.Value[..^4] + "_2.mp4");
+
+        Assert.True(File.Exists(secondPath), $"同号第二场该落到 _2：{secondPath}");
+        Assert.True(File.Exists(expected), "第二场不许覆盖第一场");
+
+        // 一个单号 = 两份**各自独立**的证据：两条索引条目、盘上两个文件。
+        Assert.Equal(2, (await index.LoadAllAsync()).Count);
+        Assert.Equal(2, Directory.GetFiles(folder, "*.mp4").Length);
+    }
+
+    /// <summary>真机滚出几片 MKV（每片 3 秒），返回按序号排好的分段。</summary>
+    private static async Task<List<SegmentProduct>> RecordRolledAsync(
+        TempDir dir, string tag, string video, string mic, string encoder)
+    {
+        var work = dir.Dir("work-" + tag);
+        Directory.CreateDirectory(work);
+
+        var process = await new FfmpegCameraCapture(Ffmpeg).StartAsync(
+            CameraSource.Local(video),
+            Path.Combine(work, "segment-%03d.mkv"),
+            encoder,
+            microphone: mic,
+            segmentSeconds: 3,
+            segmentStartNumber: 0);
+
+        // 真麦克风接上了就不该降级 —— 降级了这条测的就不是「带音轨的合成」了。
+        Assert.Null(process.StartupWarning);
+
+        // 每片 3 秒；录满 7 秒 ⇒ 至少两片（末片在优雅停止时封口）。
+        await Task.Delay(TimeSpan.FromSeconds(7));
+        var exit = await process.StopAsync(TimeSpan.FromSeconds(20));
+        Assert.Equal(0, exit);
+
+        var files = Directory.GetFiles(work, "segment-*.mkv")
+            .OrderBy(p => p, StringComparer.Ordinal)
+            .ToList();
+
+        Assert.True(files.Count >= 2, $"滚段至少该出两片，实际 {files.Count} 片");
+
+        // 起止时刻给个自洽的区间即可 —— 落点只按**日期**分目录，这里不跨午夜。
+        var started = DateTimeOffset.Now.AddSeconds(-files.Count * 3.0);
+        return [.. files.Select((path, i) => new SegmentProduct(
+            i, path, started.AddSeconds(i * 3.0), started.AddSeconds((i + 1) * 3.0)))];
+    }
+
+    /// <summary>成品里到底有没有音轨 —— `-map 0:a:0` 在没有音频流时直接失败。</summary>
+    private static async Task AssertHasAudioTrackAsync(IProcessRunner runner, string path)
+    {
+        var audio = await runner.RunAsync(Ffmpeg,
+            ["-v", "error", "-i", path, "-map", "0:a:0", "-f", "null", "-"]);
+
+        Assert.True(audio.Succeeded, $"合成后的成品里没有音轨：{audio.StandardError}");
+    }
+
     /// <summary>从产物里读它**实际**的尺寸与帧率（独立于探测那一路，用来交叉核对）。</summary>
     /// <remarks>
     /// ⚠️ argv 走 <see cref="FfmpegSpecProbe.ReadBackArguments"/>（生产那一份）——
@@ -1141,6 +1274,8 @@ public class FfmpegCameraCaptureIntegrationTests
         }
 
         public string File(string name) => System.IO.Path.Combine(Path, name);
+
+        public string Dir(string name) => System.IO.Path.Combine(Path, name);
 
         public void Dispose()
         {

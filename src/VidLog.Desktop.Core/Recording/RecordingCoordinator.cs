@@ -1230,7 +1230,9 @@ public sealed class RecordingCoordinator : IAsyncDisposable
     {
         if (outcome.Succeeded)
         {
-            _logger.Log(LogLevel.Info, "录制", $"已入库 {outcome.Segments.Count} 段",
+            // ⚠️ `Segments.Count` 是**源分段数**（2026-10-12 起整场合并成一个成品），
+            // 所以措辞必须写明「合成一条」—— 单说「N 段」会被读成盘上有 N 个文件。
+            _logger.Log(LogLevel.Info, "录制", $"已入库（由 {outcome.Segments.Count} 段合成一条）",
                 new Dictionary<string, object?>
                 {
                     ["会话"] = session.SessionId,

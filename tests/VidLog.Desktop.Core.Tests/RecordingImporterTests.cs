@@ -82,10 +82,10 @@ public class RecordingImporterTests
         Assert.Equal(entry.EvidenceId, result.EvidenceId);
         Assert.Equal(entry.Location, result.Location);
 
-        // 落点：<年>/<月>/<日>/<单号>/<会话>_000.mp4，会话号**由内容哈希推出来**。
-        Assert.Equal(
-            $"2026/09/30/SF1000000001/import-{entry.ContentHash.Value[..12]}_000.mp4",
-            entry.Location.Value);
+        // 落点：VidLog-Video/<年-月-日>/<发货|退货>/<单号>.mp4（需求方 2026-10-12 定的形状）。
+        // ⚠️ 文件名里**不再有会话号**（那个由内容哈希推出来、曾经用来给重复导入去重）——
+        // 去重现在靠内容比对，见 `盘上已经有一份同名同内容的不覆盖它_只把索引补上`。
+        Assert.Equal("VidLog-Video/2026-09-30/退货/SF1000000001.mp4", entry.Location.Value);
 
         // 归档目录里真的有一份，内容与源文件一比一
         var published = Path.Combine(dir.Dir("archive"), entry.Location.Value);
@@ -169,19 +169,27 @@ public class RecordingImporterTests
     }
 
     [Fact]
-    public async Task 盘上已经有一份时不覆盖它_只把索引补上()
+    public async Task 盘上已经有一份同名同内容的不覆盖它_只把索引补上()
     {
         // 上一次导到一半：文件落了盘、索引没写成（断电、进程被杀）。
         // 再导一次同一个文件应当**只补索引**，而不是把已有的那份重写一遍。
+        //
+        // ⚠️ 2026-10-12 换了归档形状之后这一条更要紧：文件名里不再有会话号，
+        // 所以「名字对上了」**不再等于**「就是同一个东西」—— 判据只能是内容。
         using var dir = new TempDir();
         var source = dir.File("SF1000000001.mp4");
         await File.WriteAllTextAsync(source, "the-recording-bytes");
 
         var archive = dir.Dir("archive");
-        var sessionId = $"import-{(await HashOf(source))[..12]}";
-        var destination = Path.Combine(archive, "2026", "09", "30", "SF1000000001", $"{sessionId}_000.mp4");
+        var destination = Path.Combine(
+            archive, "VidLog-Video", "2026-09-30", "发货", "SF1000000001.mp4");
         Directory.CreateDirectory(Path.GetDirectoryName(destination)!);
         await File.WriteAllTextAsync(destination, "the-recording-bytes");
+
+        // 把这个时间戳钉到一个旧值上：真被重写的话它会变成「现在」，
+        // 而内容比对看不出来（两份字节本来就一样）—— 这条断言才是「没重写」的判据。
+        var stamp = new DateTime(2020, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+        File.SetLastWriteTimeUtc(destination, stamp);
 
         var index = new IndexSpy();
         var importer = Build(archive, index, new FakeFfmpeg());
@@ -192,7 +200,50 @@ public class RecordingImporterTests
 
         Assert.True(result.Imported, result.FailureReason);
         Assert.Single(index.Entries);
+        Assert.Equal("VidLog-Video/2026-09-30/发货/SF1000000001.mp4", result.Location!.Value);
         Assert.Equal("the-recording-bytes", await File.ReadAllTextAsync(destination));
+        Assert.Equal(stamp, File.GetLastWriteTimeUtc(destination));
+    }
+
+    [Fact]
+    public async Task 同一个单号下内容不同的两份_后一个落成_2()
+    {
+        // ★ 2026-10-12 换形状带出来的新岔路：文件名里没有会话号之后，
+        // 「同一个单号 + 同一个录制时刻」的两段**内容不同**的录像会拼出同一个名字。
+        // 沿用旧名字的后果是索引里记着新哈希、盘上躺着旧内容 ——
+        // 两边对不上，而**谁都不会报错**（从前有会话号，这种情况根本不会发生）。
+        using var dir = new TempDir();
+        var archive = dir.Dir("archive");
+        var index = new IndexSpy();
+        var importer = Build(archive, index, new FakeFfmpeg());
+
+        var started = new DateTimeOffset(2026, 9, 30, 14, 5, 30, TimeSpan.FromHours(8));
+        var waybill = WaybillNumber.Parse("SF1000000001");
+
+        var first = dir.File("a.mp4");
+        await File.WriteAllTextAsync(first, "第一段");
+        var one = await importer.ImportAsync(
+            new ImportRequest(first, waybill, BusinessType.Outbound, started));
+        Assert.True(one.Imported, one.FailureReason);
+        Assert.Equal("VidLog-Video/2026-09-30/发货/SF1000000001.mp4", one.Location!.Value);
+
+        var second = dir.File("b.mp4");
+        await File.WriteAllTextAsync(second, "第二段");
+        var two = await importer.ImportAsync(
+            new ImportRequest(second, waybill, BusinessType.Outbound, started));
+        Assert.True(two.Imported, two.FailureReason);
+
+        // ⚠️ 后缀插在**扩展名之前**：`SF1000000001_2.mp4` 是 mp4，
+        // `SF1000000001.mp4_2` 双击打不开。
+        Assert.Equal("VidLog-Video/2026-09-30/发货/SF1000000001_2.mp4", two.Location!.Value);
+
+        // 两份都在盘上，各自是各自的内容 —— 谁都没被覆盖。
+        Assert.Equal("第一段", await File.ReadAllTextAsync(
+            Path.Combine(archive, one.Location.Value)));
+        Assert.Equal("第二段", await File.ReadAllTextAsync(
+            Path.Combine(archive, two.Location.Value)));
+
+        Assert.Equal(2, index.Entries.Count);
     }
 
     // ─────────────────────────────────────────────
@@ -405,9 +456,6 @@ public class RecordingImporterTests
             labels,
             relay: null,
             logger);
-
-    private static async Task<string> HashOf(string path) =>
-        Convert.ToHexString(SHA256.HashData(await File.ReadAllBytesAsync(path))).ToLowerInvariant();
 
     private static IReadOnlyList<string> FilesIn(string root) =>
         Directory.Exists(root)

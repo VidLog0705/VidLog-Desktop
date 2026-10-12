@@ -149,8 +149,9 @@
                     <TextBlock x:Name="TotalCountText" FontSize="{StaticResource TextSizeStat}" FontWeight="Bold"
                                Margin="0,4,0,0" Foreground="{DynamicResource TextPrimary}"
                                Text="0"/>
-                    <!-- ⚠️ 两个口径都给出来：一个单号可以有好几段录像，
-                         只说一个数的话「件」这个词是含糊的。 -->
+                    <!-- ⚠️ 两个口径都给出来：一个单号可以录好几场（2026-10-12 起
+                         一场一个文件），只说一个数的话「件」这个词是含糊的。
+                         量词走「条」不走「段」—— 见 `Render` 里那段说明。 -->
                     <TextBlock x:Name="TotalWaybillsText" Style="{StaticResource Caption}"
                                Margin="0,2,0,0" Text=""/>
                 </StackPanel>

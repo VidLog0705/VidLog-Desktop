@@ -393,31 +393,82 @@ public sealed class UploadReceiver
         // （那是"上一次发布到一半断电了"要处理的那种），不在才按列表挑一块盘写。
         // 只按活动根拼路径的话，另一块盘上那份同名的会被当成"不存在"而重复写一遍，
         // 于是同一条录像在盘上有了两份 —— 而它们将来会各自被清理判定一次。
-        var location = ArchiveLayout.BuildLocation(waybill, request.SessionId, request.Sequence, request.StartedAt);
+        //
+        // ⚠️ 2026-10-12 换了归档形状：文件名里**不再有会话号与段号**（一个单号一个名字）。
+        // 于是同一个单号真的会撞名，而撞上的那个可能是：
+        // <list type="number">
+        // <item>同一条录像**上一次发布到一半断电了**（内容一样）⇒ 复用它，
+        // 下面 <c>EnsureSidecars</c> 会把索引与回执补上；</item>
+        // <item>同一个单号下**另一段 / 另一次录的**（内容不同）⇒ 换 <c>_2</c>。
+        // 手机端不合并（需求方 2026-10-12 裁定 C），所以一场多段**本来就该是多个文件**，
+        // 一段一段传上来正好各占一个名字。</item>
+        // </list>
+        // 判据因此只能是**内容**，不能是名字。
+        // <para>
+        // 「同一个证据重复传且内容不同」那条拒收（<see cref="UploadErrors.AlreadyPublished"/>）
+        // 仍然在 —— 它按 <c>evidenceId</c> 判，在上面的回执那一关，与文件名无关。
+        // </para>
+        var baseLocation = ArchiveLayout.BuildLocation(
+            waybill, BusinessTypeOf(request.Labels), request.StartedAt);
         var storage = _storage ?? StorageLocations.Single(_layout.ArchiveRoot);
-        var destination = storage.Resolve(location.Value)
-            ?? Path.Combine(storage.ActiveRoot, location.Value);
 
-        if (File.Exists(destination))
+        var location = baseLocation;
+        string? destination = null;
+
+        for (var ordinal = 0; ordinal <= ArchiveLayout.MaxDuplicates; ordinal++)
         {
-            // 走到这里说明「文件在、回执不在」—— 上一次发布到一半断电了。
-            // 内容一样就接着走（下面 EnsureSidecars 会把索引和回执补上）；
-            // 内容不一样就是**归档层里另有一份同名的东西**，不能覆盖它。
-            var onDisk = await ContentHasher.ComputeFileHashAsync(destination, cancellationToken);
-            Require(
-                string.Equals(onDisk.Value, contentHash!.Value, StringComparison.Ordinal),
-                UploadErrors.AlreadyPublished,
-                $"归档层已存在同名文件且内容不同：{location.Value}");
-        }
-        else
-        {
-            var parent = Path.GetDirectoryName(destination);
+            location = ArchiveLayout.Deduplicated(baseLocation, ordinal);
+
+            var candidate = storage.Resolve(location.Value)
+                ?? Path.Combine(storage.ActiveRoot, location.Value);
+
+            if (File.Exists(candidate))
+            {
+                var onDisk = await ContentHasher.ComputeFileHashAsync(candidate, cancellationToken);
+                if (string.Equals(onDisk.Value, contentHash!.Value, StringComparison.Ordinal))
+                {
+                    destination = candidate;
+                    break;
+                }
+
+                continue;   // 撞名且内容不同 ⇒ 换 `_2`
+            }
+
+            var parent = Path.GetDirectoryName(candidate);
             if (!string.IsNullOrEmpty(parent))
             {
                 Directory.CreateDirectory(parent);
             }
 
-            File.Move(assembled, destination, overwrite: false);
+            File.Move(assembled, candidate, overwrite: false);
+            destination = candidate;
+            break;
+        }
+
+        // ⚠️ **刻意复用 `AlreadyPublished`**（2026-10-12 核过，别当疏漏「修」掉）：
+        // 手机端 `UploadFailure.kind` 里**任何不认得的码都落到 `terminal`**
+        // （`upload_protocol.dart` 的 `_ =>`），所以新开一个码的**行为**与它完全一样；
+        // 而它给出的提示「电脑上已经有一份同名但内容不同的录像，请找管理员核对」
+        // 在这个分支里**字面上也成立**（那 100 份就是内容各不相同），
+        // 指向的下一步（去电脑上核对）与真因（那个单号下堆满了，要清）是同一个地方。
+        // 新开码要同时动两侧的码表 + 母仓 `docs/05-上传接口形状.md` §3，
+        // 而这是一个防呆分支、撞不到 —— 不值得为它改协议表。
+        Require(
+            destination is not null,
+            UploadErrors.AlreadyPublished,
+            $"同一个单号下已经堆了 {ArchiveLayout.MaxDuplicates + 1} 份内容不同的录像：{baseLocation.Value}");
+
+        if (location != baseLocation)
+        {
+            // 落到 `_2` 之类的名字上了 —— 手机端不合并（裁定 C），同一个单号的多段
+            // 本来就各占一个名字，所以这不是错误；但它是「这个单号下面为什么有两个
+            // 文件」唯一能在日志里找到的解释（§6.1「只在变了的时候记」）。
+            _logger.Log(LogLevel.Info, "上传", $"{waybill.Value} 撞名，这一段落到 {location.Value}",
+                new Dictionary<string, object?>
+                {
+                    ["证据"] = evidenceId,
+                    ["单号"] = waybill.Value,
+                });
         }
 
         var now = _now();
@@ -605,6 +656,35 @@ public sealed class UploadReceiver
 
         Require(value.Length <= 128, UploadErrors.BadRequest, "evidenceId 过长");
         return value;
+    }
+
+    /// <summary>
+    /// 这一段是发货还是退货 —— 从**报文自带的标签**里取。
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ 报文里**没有专门的字段**，而标签里有：手机端收尾时就会写下这个标签
+    /// （<c>BusinessType.labelKey</c>），上传时整份带上。所以这里读它，
+    /// 取不到就回落「发货」—— 与 <c>CloudUploadService.BusinessTypeOfAsync</c>
+    /// 同一个口径（那边读的是已经落盘的标签，这里是还没落盘的）。
+    /// <para>
+    /// 它决定这一段落在 <c>发货/</c> 还是 <c>退货/</c> 目录下。按需求方 2026-10-12
+    /// 的裁定，这就是**手机端开始工作时选的那一档**（手机端在收尾那一刻冻结它）。
+    /// 找不到时落到「发货」是**猜**，但只影响目录归类，不影响证据本身；
+    /// 而且用户之后改标签也改不动路径 —— 那条是刻意定死的（见 <see cref="ArchiveLayout"/>）。
+    /// </para>
+    /// </remarks>
+    private static BusinessType BusinessTypeOf(IReadOnlyList<LabelPayload> labels)
+    {
+        foreach (var label in labels)
+        {
+            if (label.Key == LabelKeys.BusinessType
+                && BusinessTypes.TryParse(label.Value, out var parsed))
+            {
+                return parsed;
+            }
+        }
+
+        return BusinessType.Outbound;
     }
 
     private static PunchSource ParseSource(string? value) => value switch

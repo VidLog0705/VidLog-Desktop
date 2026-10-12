@@ -228,6 +228,132 @@ public class FfmpegIntegrationTests
     }
 
     // ─────────────────────────────────────────────
+    // 合并分段（2026-10-12 起一场录制合成一个成品）
+    // ─────────────────────────────────────────────
+
+    /// <summary>
+    /// 造一段**带音轨**的 1 秒片段。
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ 音轨是这条用例的重点：合并走的是 <c>-c copy</c>，任何一路流没被接上
+    /// 都**不会报错** —— 出来的片子照样能播，只是从头到尾没声音。
+    /// 本仓吃过这个亏（ffmpeg 管道那次静默丢音轨），所以这里必须有音轨。
+    /// </remarks>
+    private static async Task<string> EncodeClipWithAudioAsync(TempDir dir, string fileName)
+    {
+        var path = dir.File(fileName);
+        var result = await new SystemProcessRunner().RunAsync(Ffmpeg, [
+            "-hide_banner", "-v", "error",
+            "-f", "lavfi", "-i", "testsrc=size=160x120:rate=10:duration=1",
+            "-f", "lavfi", "-i", "sine=frequency=440:duration=1",
+            "-c:v", "libx264", "-c:a", "aac", "-shortest",
+            "-y", path,
+        ]);
+
+        Assert.True(result.Succeeded, $"测试素材编码失败：{result.StandardError}");
+        return path;
+    }
+
+    /// <summary>把 ffmpeg 那句 <c>Duration: 00:00:02.00</c> 读成秒；读不出来给 -1。</summary>
+    private static double DurationSeconds(string stderr)
+    {
+        var match = System.Text.RegularExpressions.Regex.Match(
+            stderr, @"Duration: (\d+):(\d\d):(\d\d(?:\.\d+)?)");
+
+        if (!match.Success)
+        {
+            return -1;
+        }
+
+        return (int.Parse(match.Groups[1].Value) * 3600)
+            + (int.Parse(match.Groups[2].Value) * 60)
+            + double.Parse(match.Groups[3].Value, System.Globalization.CultureInfo.InvariantCulture);
+    }
+
+    [RequiresFfmpegFact]
+    public async Task 两段带音轨的片段合并成一条_音轨与时长都在()
+    {
+        // 这是「一个单号一个文件」那条改动的**真跑一遍**：预录开场段与正片是
+        // 两个独立 ffmpeg 进程写的两个 MKV，收尾时要能接成一条。
+        using var dir = new TempDir();
+
+        var first = await EncodeClipWithAudioAsync(dir, "segment-000.mkv");
+        var second = await EncodeClipWithAudioAsync(dir, "segment-001.mkv");
+        var output = dir.File("merged.mp4");
+
+        var runner = new SystemProcessRunner();
+        var merge = await new RemuxPipeline(Ffmpeg, runner).MergeAsync([first, second], output);
+
+        Assert.True(merge.Succeeded, merge.FailureReason);
+
+        // 探一遍成品：时长 2 秒（两段接上了）、且**音轨还在**。
+        var probe = await runner.RunAsync(Ffmpeg, ["-hide_banner", "-i", output]);
+        var said = probe.StandardError + probe.StandardOutput;
+
+        Assert.True(
+            Math.Abs(DurationSeconds(said) - 2.0) < 0.35,
+            $"合并后的时长不是两段之和：{DurationSeconds(said)} 秒\n{said}");
+        Assert.Contains("Audio: ", said, StringComparison.Ordinal);
+    }
+
+    /// <summary>一个独立 ffmpeg 进程写的 1 秒 440Hz 音调（MKV / AAC 44100 单声道 64k）。</summary>
+    /// <remarks>
+    /// ⚠️ 音频参数**照抄生产**（<c>FfmpegCameraCapture.BuildArguments</c> 里那四个）——
+    /// 参数不同的话接缝处的行为就不是生产那条了，这条量到的数也就不作数。
+    /// </remarks>
+    private static async Task<string> EncodeToneClipAsync(TempDir dir, string fileName)
+    {
+        var path = dir.File(fileName);
+
+        var result = await new SystemProcessRunner().RunAsync(Ffmpeg, [
+            "-hide_banner", "-v", "error",
+            "-f", "lavfi", "-i", "sine=frequency=440:duration=1",
+            "-c:a", "aac", "-ac", "1", "-ar", "44100", "-b:a", "64k",
+            "-f", "matroska", "-y", path,
+        ]);
+
+        Assert.True(result.Succeeded, $"测试素材编码失败：{result.StandardError}");
+        return path;
+    }
+
+    [RequiresFfmpegFact]
+    public async Task 两个进程各写一段音轨_合成后接缝处没有缺口()
+    {
+        // ★ 这是交接单里那条「**最大的未验证项**」的自动化量具：预录开场段与正片是
+        // **两个独立 ffmpeg 进程**写的、各带自己的 AAC priming（约 21~43 ms），收尾走
+        // `-c copy` 把它们接起来 —— 而这一步**不会报错**：接缝处真缺一小截声音，
+        // 退出码照样是 0，用户只会觉得「开头那一下怪怪的」。
+        //
+        // 量具：两个进程各写 1 秒 440Hz。两段都是 440 个整周期、都从相位 0 起，
+        // 接起来本该是一段**不断的** 2 秒音 ⇒ 合成后任何 ≥50 ms 的静默都是接缝被啃掉。
+        //
+        // ⚠️ 它抓的是**缺口**，抓不到「重了一小截 / 相位毛刺」那种听感上的「咔」——
+        // 那一半要人耳，见交接单。
+        using var dir = new TempDir();
+
+        var first = await EncodeToneClipAsync(dir, "segment-000.mkv");
+        var second = await EncodeToneClipAsync(dir, "segment-001.mkv");
+        var output = dir.File("merged.mp4");
+
+        var runner = new SystemProcessRunner();
+        var merge = await new RemuxPipeline(Ffmpeg, runner).MergeAsync([first, second], output);
+        Assert.True(merge.Succeeded, merge.FailureReason);
+
+        var probe = await runner.RunAsync(Ffmpeg, [
+            "-hide_banner", "-v", "info",
+            "-i", output,
+            "-af", "silencedetect=n=-50dB:d=0.05",
+            "-f", "null", "-",
+        ]);
+        var said = probe.StandardError + probe.StandardOutput;
+
+        Assert.True(
+            Math.Abs(DurationSeconds(said) - 2.0) < 0.15,
+            $"合成后的时长不是两段之和：{DurationSeconds(said)} 秒\n{said}");
+        Assert.DoesNotContain("silence_start", said, StringComparison.Ordinal);
+    }
+
+    // ─────────────────────────────────────────────
     // FFmpeg 定位
     // ─────────────────────────────────────────────
 

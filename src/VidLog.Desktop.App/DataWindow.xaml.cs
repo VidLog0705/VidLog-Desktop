@@ -247,12 +247,16 @@ public partial class DataWindow : Window
         var buckets = RecordingStats.Aggregate(_entries, from, to, by);
 
         // 「打包总件数」的大字是**单号数** —— 用户心里的「今天打了多少件」
-        // 就是这个数。段数写在下面一行：分段录时一个单号可以有好几段，
-        // 把段数当件数会把它算成好几件。
+        // 就是这个数。条数写在下面一行：同一个单号可以录好几场，
+        // 把条数当件数会把它算成好几件。
+        //
+        // ⚠️ 量词是**条**不是**段**（需求方 2026-10-12 拍板）：一场录制收尾时
+        // 已经合成一个文件，所以「一条 = 一场 = 盘上一个文件」。说「段」会让
+        // 用户以为盘上有好几个文件 —— 那个说法是旧形状留下的。
         TotalCountText.Text = $"{summary.WaybillCount} 件";
         TotalWaybillsText.Text = summary.Count == summary.WaybillCount
-            ? $"共 {summary.Count} 段录像"
-            : $"共 {summary.Count} 段录像（其中 {summary.Count - summary.WaybillCount} 段是同一个单号的续录）";
+            ? $"共 {summary.Count} 条录像"
+            : $"共 {summary.Count} 条录像（其中 {summary.Count - summary.WaybillCount} 条是同一个单号的续录）";
 
         TotalBytesText.Text = $"约 {Display.Bytes(summary.EstimatedBytes)}";
         TotalDurationText.Text = Display.Duration(summary.Duration);
@@ -269,8 +273,8 @@ public partial class DataWindow : Window
         BucketScroll.Visibility = rows.Count == 0 ? Visibility.Collapsed : Visibility.Visible;
 
         // `Aggregate` 与 `Summarize` 用的是**同一个过滤条件**，所以
-        // 「一个桶都没有」与「一段录像都没有」是同一件事，不用分两种情况说。
-        ChartStatusText.Text = $"共 {rows.Count} 个时间段 · {summary.Count} 段录像";
+        // 「一个桶都没有」与「一条录像都没有」是同一件事，不用分两种情况说。
+        ChartStatusText.Text = $"共 {rows.Count} 个时间段 · {summary.Count} 条录像";
     }
 
     // ⚠️ 下面这四件（图里每一行怎么算、两个标题、左边那一列时间）
