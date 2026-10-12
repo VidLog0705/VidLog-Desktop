@@ -1,3 +1,5 @@
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using VidLog.Desktop.Core.Diagnostics;
 
@@ -28,12 +30,22 @@ public sealed record BaiduLogin(
 /// <item>退出登录就是**删掉它**（不删网盘上的任何东西）。</item>
 /// </list>
 /// <para>
-/// ⚠️ <b>它是明文。</b>本仓的依赖纪律是「能不加包就不加」（见两个 csproj 的注释），
-/// 而在这台机器上做用户级加密要么加 <c>System.Security.Cryptography.ProtectedData</c>
-/// 这个包、要么自己造一个密钥 —— 后者只是把一把钥匙放在同一间屋子里。
-/// 所以这里选择**明文 + 说明白**：文件在只有本用户能读的目录里，
-/// 而任何能读这个文件的人本来也能读这台机器上的全部录像。
-/// 这件事记在 <c>docs/实现决策.md</c> §87，不藏着。
+/// ⚠️ <b>它是加密的（2026-10-12 起，需求方拍板「token 别明文存」）。</b>
+/// 走 Windows 的数据保护 API（<see cref="ProtectedData"/>，<c>CurrentUser</c> 作用域）：
+/// 密钥由**当前 Windows 用户的登录凭据**派生，所以换一个 Windows 账号登进来解不开。
+/// </para>
+/// <para>
+/// ⚠️ <b>为什么不用「同目录再放一份密钥文件」那种做法</b>（PackingProof 就是那样）：
+/// 那把钥匙和锁在同一间屋子里，挡得住「配置文件被误发出去」，
+/// 挡不住任何能读这台机器文件的人 —— 而后者才是这个文件真正的暴露面。
+/// 本类原先那句「任何能读这个文件的人本来也能读这台机器上的全部录像」现在不成立了：
+/// 加密之后，能读到密文的人**未必**能拿到令牌。
+/// （这一点与 <c>docs/实现决策.md</c> §87 记的那条不同 —— 那条已被本条取代，
+/// 那份文档本仓无权改动，留待需求方处置。）
+/// </para>
+/// <para>
+/// ⚠️ <b>老格式（明文 JSON）继续读得动，而且读出来就**立刻改写成加密的**</b>：
+/// 不迁移的话，那个明文文件会一直躺到 30 天后令牌自然过期为止。
 /// </para>
 /// </remarks>
 public sealed class BaiduPanTokenStore
@@ -42,6 +54,19 @@ public sealed class BaiduPanTokenStore
     {
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
     };
+
+    /// <summary>
+    /// 加密时混进去的一串「附加熵」。
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ 它**不是密钥**（密钥由 DPAPI 从 Windows 账号派生），只是一段谁都得知道的
+    /// 上下文：别的程序即使在同一用户下解开同一份字节，也得知道这串东西。
+    /// 换掉它 = 已有令牌全部作废、要重新登录，所以**别动**。
+    /// </remarks>
+    private static readonly byte[] Entropy = Encoding.UTF8.GetBytes("VidLog/cloud/baidu-pan");
+
+    /// <summary>明文 JSON 文件长什么样（用来认老格式）。</summary>
+    private const char LegacyFirstChar = '{';
 
     private readonly IAppLogger _logger;
 
@@ -63,16 +88,34 @@ public sealed class BaiduPanTokenStore
 
         try
         {
-            var text = await File.ReadAllTextAsync(Path, cancellationToken);
-            var login = JsonSerializer.Deserialize<BaiduLogin>(text, Options);
+            var text = (await File.ReadAllTextAsync(Path, cancellationToken)).Trim();
 
-            return login is { AccessToken.Length: > 0, RefreshToken.Length: > 0 } ? login : null;
+            // ⚠️ 旧的那份是明文 JSON（**以 `{` 开头**），新的是 DPAPI 密文的 Base64
+            // （Base64 字母表里没有 `{`）。所以这一个字符就是格式判据 ——
+            // 不必再往文件里塞一个版本号头：多一个字段就多一处「写的人忘了写、读的人不认识」。
+            var legacy = text.StartsWith(LegacyFirstChar);
+
+            var login = Parse(legacy ? text : Decrypt(text));
+
+            if (login is not null && legacy)
+            {
+                // 读到明文就**顺手改成加密的**。不迁的话那份明文会一直躺到
+                // 30 天后令牌自然过期为止 —— 而这正是这次改造要消灭的东西。
+                _logger.Log(LogLevel.Info, "网盘", "登录信息还是老的明文格式，已改成加密存放");
+                await SaveAsync(login, cancellationToken);
+            }
+
+            return login;
         }
-        catch (Exception ex) when (ex is IOException or JsonException or UnauthorizedAccessException)
+        catch (Exception ex) when (ex is IOException or JsonException or UnauthorizedAccessException
+            or CryptographicException or FormatException)
         {
             // ⚠️ 读坏了就当**没登录**，不抛：一个坏掉的令牌文件不该让整个程序起不来，
             // 也不该让用户看到「百度网盘」那一页变成一片红。重新登录一次就好。
             // 但要留痕 —— 否则「为什么每次开机都要重新登录」查不出来。
+            //
+            // ⚠️ 这里也接住了**换了 Windows 账号 / 改过密码之后解不开**那一类
+            // （`CryptographicException`）：表现正是「又要重新登录一次」，而那是正确行为。
             _logger.Log(LogLevel.Warn, "网盘", $"登录信息读不出来，按未登录处理：{ex.Message}");
 
             return null;
@@ -88,11 +131,38 @@ public sealed class BaiduPanTokenStore
         }
 
         // 先写临时名再改名：写一半断电时留下的是一个 `.part`，
-        // 而不是一个看着像 JSON、解出来是半截令牌的文件。
+        // 而不是一个看着像密文、解出来是半截令牌的文件。
         var staging = Path + ".part";
-        await File.WriteAllTextAsync(staging, JsonSerializer.Serialize(login, Options), cancellationToken);
+        await File.WriteAllTextAsync(staging, Encrypt(login), cancellationToken);
         File.Move(staging, Path, overwrite: true);
     }
+
+    // ⚠️ CA1416：`ProtectedData` 只有 Windows 上有实现，而本工程的目标框架是
+    // **不带平台后缀**的 `net9.0`，于是分析器认为它可能在非 Windows 上跑。
+    // 这个担心是形式上的：本工程已经依赖 `System.Management`（同样只有 Windows 有），
+    // 整个桌面端就是 Windows 应用。所以在这里挡掉这一条，而不是把它推给每个调用点。
+#pragma warning disable CA1416
+    /// <summary>令牌 → 要落盘的那段文本（DPAPI 加密后再 Base64）。</summary>
+    private static string Encrypt(BaiduLogin login) => Convert.ToBase64String(
+        ProtectedData.Protect(
+            Encoding.UTF8.GetBytes(JsonSerializer.Serialize(login, Options)),
+            Entropy,
+            DataProtectionScope.CurrentUser));
+
+    /// <summary>落盘的那段文本 → 明文 JSON。解不开会抛，由调用方按「未登录」落。</summary>
+    private static string Decrypt(string text) => Encoding.UTF8.GetString(
+        ProtectedData.Unprotect(
+            Convert.FromBase64String(text),
+            Entropy,
+            DataProtectionScope.CurrentUser));
+#pragma warning restore CA1416
+
+    /// <summary>明文 JSON → 令牌；解不出来、或者缺关键字段，一律 <see langword="null"/>。</summary>
+    private static BaiduLogin? Parse(string json) =>
+        JsonSerializer.Deserialize<BaiduLogin>(json, Options)
+            is { AccessToken.Length: > 0, RefreshToken.Length: > 0 } login
+                ? login
+                : null;
 
     /// <summary>退出登录：把令牌文件删掉。⚠️ **不碰网盘上的任何文件。**</summary>
     public void Forget()

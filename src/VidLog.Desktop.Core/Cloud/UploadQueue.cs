@@ -23,6 +23,40 @@ public enum CloudUploadState
 
     /// <summary>传失败了，等重试。</summary>
     Failed = 3,
+
+    /// <summary>
+    /// 用户明确说了「这条我不传了」。
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ 与 <see cref="Failed"/> 是**两件事**：失败是「没传成，还要试」，
+    /// 放弃是「别再试了」。混成一个的话，那句「立即重试失败上传」会把用户
+    /// 明确放弃掉的又翻出来重传一遍 —— 而他点的是「重试失败的那些」。
+    /// </remarks>
+    Abandoned = 4,
+}
+
+/// <summary>
+/// 一个状态还能做什么。
+/// </summary>
+/// <remarks>
+/// ⚠️ 放在 Core 而不是界面那边：这两个判断**不只是「显示哪个按钮」**——
+/// <see cref="CloudUploadService"/> 自己也要按同一把尺子拒掉
+/// 「放弃一条已经传完的」。界面上写一份、服务里再写一份的话，
+/// 迟早出现「按钮亮着但按下去说了不算」。
+/// </remarks>
+public static class CloudUploadStates
+{
+    /// <summary>这一条还能不能【放弃】。</summary>
+    /// <remarks>已经传完的、已经放弃的都不该再放弃一次。</remarks>
+    public static bool CanAbandon(CloudUploadState state) => state is not (CloudUploadState.Done
+        or CloudUploadState.Abandoned);
+
+    /// <summary>这一条还能不能【恢复】。</summary>
+    public static bool CanResume(CloudUploadState state) => state == CloudUploadState.Abandoned;
+
+    /// <summary>这一条会不会被自动重试（界面上要把它说清楚）。</summary>
+    public static bool WillRetry(CloudUploadState state, DateTimeOffset? nextAttemptAt) =>
+        state == CloudUploadState.Failed && nextAttemptAt is not null;
 }
 
 /// <summary>
@@ -45,6 +79,15 @@ public enum CloudUploadState
 /// <param name="Attempts">试过几次。</param>
 /// <param name="LastError">上一次为什么没成（给人看的一句话）。</param>
 /// <param name="UpdatedAt">这一行是什么时候写的。</param>
+/// <param name="NextAttemptAt">
+/// 下一次自动重试的时刻。
+/// </param>
+/// <remarks>
+/// ⚠️ <b><see langword="null"/> 就是「不再自动重试」</b>，而且只有一个含义：
+/// 要么是这次失败被判成终态（<c>BaiduPanException.IsHopeless</c>，或者次数用完），
+/// 要么是这条本来就是老版本写下的（那时还没有自动重试这回事）。
+/// 两种都是「要人动手」——界面照这句话写，不必再分。
+/// </remarks>
 public sealed record UploadQueueItem(
     string EvidenceId,
     string Location,
@@ -54,7 +97,8 @@ public sealed record UploadQueueItem(
     CloudUploadState State,
     int Attempts,
     string? LastError,
-    DateTimeOffset UpdatedAt);
+    DateTimeOffset UpdatedAt,
+    DateTimeOffset? NextAttemptAt = null);
 
 /// <summary>
 /// 上传队列的落盘形态（JSON Lines，**最后一行胜出**）。

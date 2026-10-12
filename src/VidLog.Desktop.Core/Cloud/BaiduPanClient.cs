@@ -112,6 +112,16 @@ public sealed class BaiduPanClient : IBaiduPanApi
     private const string FileBase = "https://pan.baidu.com/rest/2.0/xpan/file";
     private const string NasBase = "https://pan.baidu.com/rest/2.0/xpan/nas";
 
+    /// <summary>
+    /// 容量（「获取网盘容量信息」）。
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ 它**不在 <c>/rest/2.0/xpan/</c> 那一族里**（文档把这一页归在「网盘基础服务」
+    /// 下面，路径就是 <c>/api/quota</c>），所以单独一个常量。
+    /// PackingProof 用的是同一个地址。
+    /// </remarks>
+    private const string QuotaUrl = "https://pan.baidu.com/api/quota";
+
     /// <summary>取上传域名的那一个服务（016）。**注意它只负责发域名，不收分片。**</summary>
     private const string UploadLocateBase = "https://d.pcs.baidu.com/rest/2.0/pcs/file";
 
@@ -260,6 +270,40 @@ public sealed class BaiduPanClient : IBaiduPanApi
             ?? Optional(json, "baidu_name")
             ?? "（网盘没回昵称）";
     }
+
+    public async Task<BaiduPanQuota?> GetQuotaAsync(
+        string accessToken, CancellationToken cancellationToken = default)
+    {
+        var url = $"{QuotaUrl}?access_token={Uri.EscapeDataString(accessToken)}"
+            + "&checkexpire=1&checkfree=1";
+
+        JsonElement json;
+        try
+        {
+            json = await GetJsonAsync(url, cancellationToken);
+        }
+        catch (Exception ex) when (ex is BaiduPanException or HttpRequestException)
+        {
+            // ⚠️ 容量是**锦上添花**：拿不到不该让设置页那一块变成一句错误，
+            // 更不该把「上传队列」那半边也带下水。留痕后返回 null。
+            _logger.Log(LogLevel.Warn, "网盘", $"网盘容量没问出来：{ex.Message}");
+            return null;
+        }
+
+        // ⚠️ 只认 `used` / `total`，**不用那个 `free`** —— 它回的是「免费容量」，
+        // 不是剩余空间（实测：总 100 GiB、已用 34.25 GiB 的账号，free 回的是 100 GiB）。
+        // 拿它当剩余会把快满的网盘显示成空的。理由同 `BaiduPanQuota` 的说明。
+        var used = Number(json, "used");
+        var total = Number(json, "total");
+
+        return used is null || total is null ? null : new BaiduPanQuota(used.Value, total.Value);
+    }
+
+    /// <summary>JSON 里一个数字字段；不是数字（或缺席）就是 <see langword="null"/>。</summary>
+    private static long? Number(JsonElement json, string name) =>
+        json.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.Number
+            ? value.GetInt64()
+            : null;
 
     public async Task<BaiduPrecreate> PrecreateAsync(
         string accessToken,
@@ -637,10 +681,14 @@ public sealed class BaiduPanClient : IBaiduPanApi
     }
 
     /// <summary>
-    /// 几个「用户自己动手才能解决」的错误码，补一句人话。
+    /// 出事了值得补一句人话的错误码。
     /// </summary>
     /// <remarks>
-    /// ⚠️ 这几个码的共同点是：**重试一万次也没用**，得去开放平台后台做点什么。
+    /// ⚠️ <b>这张表**不等于**「重试没用」</b>（这里原先就是这么写的，那句话是错的）：
+    /// 里面既有「得去开放平台后台做点什么」的（<c>20011</c> / <c>20013</c>），
+    /// 也有**缓一缓就能成**的（<c>31034</c> 频控、<c>20012</c> 调用量达上限）。
+    /// 「重试到底有没有用」是**另一件事**，判据在 <see cref="BaiduPanException.IsHopeless"/>，
+    /// 自动重试读的是那一个。两者分开，是因为这张表是给人看的、那张是给调度用的。
     /// 光把 <c>errno=20013</c> 抛到界面上，用户（和半年后的我们）都得回来翻文档。
     /// 文案照 063 公共错误码表的「排查方向」列写。
     /// </remarks>

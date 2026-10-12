@@ -1,5 +1,6 @@
 using VidLog.Desktop.Core.Cloud;
 using VidLog.Desktop.Core.Configuration;
+using VidLog.Desktop.Core.Diagnostics;
 using VidLog.Desktop.Core.Index;
 using VidLog.Desktop.Core.Labels;
 
@@ -313,6 +314,270 @@ public class CloudUploadTests
     }
 
     // ─────────────────────────────────────────────
+    // 自动重试（2026-10-12，建议 2：失败上传要有出口，现场没人盯着）
+    // ─────────────────────────────────────────────
+
+    [Fact]
+    public async Task 传失败后_记下下次自己再试的时刻()
+    {
+        using var harness = new Harness(Open());
+        await harness.AddRecordingAsync("e1");
+
+        harness.Api.FailUploads = new HttpRequestException("网断了");
+        await harness.Service.SyncNowAsync();
+
+        var item = await harness.Queue.FindAsync("e1");
+
+        Assert.Equal(1, item!.Attempts);
+        // 第 1 次失败 ⇒ 60 秒后再试（`Backoff`：60/120/240/480/960/1800…封顶 30 分钟）。
+        Assert.Equal(Now.AddSeconds(60), item.NextAttemptAt);
+        Assert.True(CloudUploadStates.WillRetry(item.State, item.NextAttemptAt));
+    }
+
+    [Fact]
+    public async Task 还没到点的不重传_到点了自己传上去()
+    {
+        // ⚠️ 这条是「自动重试」的**承重判据**：不看到点时刻的话，
+        // 退避就退化成「每一拍都重试」—— 而那正好会把这 10 次/小时的额度烧光。
+        using var harness = new Harness(Open());
+        await harness.AddRecordingAsync("e1");
+
+        harness.Api.FailUploads = new HttpRequestException("网断了");
+        await harness.Service.SyncNowAsync();
+
+        harness.Api.FailUploads = null;
+
+        harness.Clock = Now.AddSeconds(59);
+        Assert.Equal(0, await harness.Service.SyncNowAsync());
+        Assert.Equal(CloudUploadState.Failed, (await harness.Queue.FindAsync("e1"))!.State);
+
+        // 正好到点（`due <= now`，两端都算数）。
+        harness.Clock = Now.AddSeconds(60);
+        Assert.Equal(1, await harness.Service.SyncNowAsync());
+
+        var item = await harness.Queue.FindAsync("e1");
+        Assert.Equal(CloudUploadState.Done, item!.State);
+        Assert.Equal(2, item.Attempts);
+        Assert.Null(item.NextAttemptAt);
+    }
+
+    [Fact]
+    public async Task 次数用完就不再自动重试了()
+    {
+        // ⚠️ 上限**必须有**：过审之前每小时只有 10 次调用，而无上限的重试会
+        // 把这 10 次全喂给同一个失败，别的录像一次机会都没有。
+        using var harness = new Harness(Open());
+        await harness.AddRecordingAsync("e1");
+
+        harness.Api.FailUploads = new HttpRequestException("网断了");
+
+        for (var i = 0; i < CloudUploadService.MaxAttempts; i++)
+        {
+            await harness.Service.SyncNowAsync();
+
+            // 推过这一轮的退避时刻（最大 30 分钟，推 1 小时一定过）。
+            harness.Clock = harness.Clock.AddHours(1);
+        }
+
+        var item = await harness.Queue.FindAsync("e1");
+        Assert.Equal(CloudUploadService.MaxAttempts, item!.Attempts);
+        Assert.Null(item.NextAttemptAt);
+
+        // 再推着时钟跑一轮也不会动它 —— 落终态了。
+        var attemptsBefore = item.Attempts;
+        await harness.Service.SyncNowAsync();
+
+        Assert.Equal(attemptsBefore, (await harness.Queue.FindAsync("e1"))!.Attempts);
+    }
+
+    [Fact]
+    public async Task 重试没有用的那种错_一次就落终态()
+    {
+        // 「应用还在审核中」（20011）重发一万次都是同一个结果，
+        // 而每发一次都要花掉那 10 次额度里的一次。
+        using var harness = new Harness(Open());
+        await harness.AddRecordingAsync("e1");
+
+        harness.Api.PrecreateErrnos.Enqueue(20011);
+        await harness.Service.SyncNowAsync();
+
+        var item = await harness.Queue.FindAsync("e1");
+        Assert.Equal(CloudUploadState.Failed, item!.State);
+        Assert.Null(item.NextAttemptAt);
+
+        // 但**次数照记**：界面上要能说出「试过 1 次」。
+        Assert.Equal(1, item.Attempts);
+    }
+
+    [Fact]
+    public void 终态判据_限流不算终态()
+    {
+        // ⚠️ `20012` 文档原话是「应用过审之前只能用于测试开发，**也可能就是调得太密**」——
+        // 当终态会把一条本来传得上去的录像**永久判死**。
+        Assert.False(new BaiduPanException(20012, "调用量达上限").IsHopeless);
+        Assert.False(new BaiduPanException(31034, "请求太频繁").IsHopeless);
+
+        // 这三个是要去开放平台后台才有解的。
+        Assert.True(new BaiduPanException(20011, "还在审核中").IsHopeless);
+        Assert.True(new BaiduPanException(20013, "没有接口权限").IsHopeless);
+        Assert.True(new BaiduPanException(20020, "路径不在允许范围").IsHopeless);
+
+        // 凭据那四个（`IsCredentialProblem`）也是终态 —— 那条路另有处置。
+        Assert.True(new BaiduPanException(-6, "身份验证失败").IsHopeless);
+        Assert.True(new BaiduPanException(20017, "已被用户解绑").IsHopeless);
+    }
+
+    // ─────────────────────────────────────────────
+    // 放弃 / 恢复（2026-10-12，建议 6：队列行要有出口）
+    // ─────────────────────────────────────────────
+
+    [Fact]
+    public async Task 放弃之后_补传和重试都不再碰它()
+    {
+        using var harness = new Harness(Open());
+        var location = await harness.AddRecordingAsync("e1");
+
+        harness.Api.FailUploads = new HttpRequestException("网断了");
+        await harness.Service.SyncNowAsync();
+        harness.Api.FailUploads = null;
+
+        Assert.True(await harness.Service.AbandonAsync("e1"));
+
+        // ①【立即重试失败上传】只认「失败」—— 用户明确说不传的那条不该被它翻出来。
+        Assert.Equal(0, await harness.Service.RetryFailedAsync());
+
+        // ② 收尾那条路也要认：同一个单号又收尾一次时会走到这儿。
+        var again = await harness.Service.PublishAsync(location, harness.LocalPathOf(location));
+        Assert.False(again.Published);
+        Assert.Contains("放弃", again.FailureReason);
+
+        Assert.Empty(harness.Api.Created);
+
+        var item = await harness.Queue.FindAsync("e1");
+        Assert.Equal(CloudUploadState.Abandoned, item!.State);
+        Assert.Equal(1, item.Attempts); // 放弃不等于再试一次
+    }
+
+    [Fact]
+    public async Task 恢复之后能传上去()
+    {
+        using var harness = new Harness(Open());
+        await harness.AddRecordingAsync("e1");
+
+        harness.Api.FailUploads = new HttpRequestException("网断了");
+        await harness.Service.SyncNowAsync();
+        harness.Api.FailUploads = null;
+
+        await harness.Service.AbandonAsync("e1");
+        Assert.True(await harness.Service.ResumeAsync("e1"));
+
+        // 恢复 = 重新排队。⚠️ 不该还等着那个退避时刻（它是上一次失败留下的）。
+        var queued = await harness.Queue.FindAsync("e1");
+        Assert.Equal(CloudUploadState.Pending, queued!.State);
+        Assert.Null(queued.NextAttemptAt);
+
+        Assert.Equal(1, await harness.Service.SyncNowAsync());
+        Assert.Equal(CloudUploadState.Done, (await harness.Queue.FindAsync("e1"))!.State);
+    }
+
+    [Fact]
+    public async Task 已经传完的不许再放弃()
+    {
+        // 界面上那颗按钮是按同一把尺子显隐的（`CloudUploadStates`），
+        // 所以这一条同时也是「按钮亮着但按下去说了不算」那个病的闸。
+        using var harness = new Harness(Open());
+        var location = await harness.AddRecordingAsync("e1");
+
+        await harness.Service.PublishAsync(location, harness.LocalPathOf(location));
+
+        Assert.False(await harness.Service.AbandonAsync("e1"));
+        Assert.Equal(CloudUploadState.Done, (await harness.Queue.FindAsync("e1"))!.State);
+    }
+
+    [Fact]
+    public async Task 队列里没有的那一条_放弃与恢复都说不算()
+    {
+        using var harness = new Harness(Open());
+
+        Assert.False(await harness.Service.AbandonAsync("没有这一条"));
+        Assert.False(await harness.Service.ResumeAsync("没有这一条"));
+    }
+
+    [Fact]
+    public void 三种状态能做什么()
+    {
+        Assert.True(CloudUploadStates.CanAbandon(CloudUploadState.Pending));
+        Assert.True(CloudUploadStates.CanAbandon(CloudUploadState.Failed));
+        Assert.False(CloudUploadStates.CanAbandon(CloudUploadState.Done));
+        Assert.False(CloudUploadStates.CanAbandon(CloudUploadState.Abandoned));
+
+        Assert.True(CloudUploadStates.CanResume(CloudUploadState.Abandoned));
+        Assert.False(CloudUploadStates.CanResume(CloudUploadState.Failed));
+
+        Assert.True(CloudUploadStates.WillRetry(CloudUploadState.Failed, Now));
+        Assert.False(CloudUploadStates.WillRetry(CloudUploadState.Failed, null));
+        Assert.False(CloudUploadStates.WillRetry(CloudUploadState.Pending, Now));
+    }
+
+    [Fact]
+    public async Task 队列计数把已放弃的算进总数()
+    {
+        // `Total` 少加一档的话，界面上「队列 N 条」与底下那几档加起来对不上。
+        using var harness = new Harness(Open());
+        await harness.AddRecordingAsync("e1");
+
+        harness.Api.FailUploads = new HttpRequestException("网断了");
+        await harness.Service.SyncNowAsync();
+        harness.Api.FailUploads = null;
+
+        await harness.Service.AbandonAsync("e1");
+
+        var status = await harness.Service.StatusAsync();
+        Assert.Equal(1, status.Abandoned);
+        Assert.Equal(0, status.Failed);
+        Assert.Equal(1, status.Total);
+    }
+
+    // ─────────────────────────────────────────────
+    // 网盘容量（2026-10-12，建议 5：显示还剩多少）
+    // ─────────────────────────────────────────────
+
+    [Fact]
+    public async Task 容量问到了就回读数()
+    {
+        using var harness = new Harness(Open());
+
+        harness.Api.Quota = new BaiduPanQuota(UsedBytes: 36_776_166_068, TotalBytes: 107_374_182_400);
+
+        var quota = await harness.Service.QuotaAsync();
+
+        Assert.NotNull(quota);
+        Assert.Equal(107_374_182_400 - 36_776_166_068, quota.FreeBytes);
+        Assert.Equal(1, harness.Api.QuotaCalls);
+    }
+
+    [Fact]
+    public async Task 容量问不到时回空_而且不抛()
+    {
+        // 容量是**锦上添花**：拿不到不该让设置页那一块变成一句错误。
+        using var harness = new Harness(Open());
+        harness.Api.Quota = null;
+
+        Assert.Null(await harness.Service.QuotaAsync());
+    }
+
+    [Fact]
+    public async Task 没登录时不问容量()
+    {
+        // 没登录时问必定失败，还白留一条日志 —— 而且会占掉那 10 次额度里的一次。
+        using var harness = new Harness(Open());
+        await harness.Session.LogoutAsync();
+
+        Assert.Null(await harness.Service.QuotaAsync());
+        Assert.Equal(0, harness.Api.QuotaCalls);
+    }
+
+    // ─────────────────────────────────────────────
     // 分片：照预创建说的那几片传（断点续传 / 秒传）
     // ─────────────────────────────────────────────
 
@@ -543,11 +808,49 @@ public class CloudUploadTests
             > BaiduPanBlocks.MaxSlicesPerCreate);
     }
 
+    [Fact]
+    public void 定时检查起来与停下_各记一条日志()
+    {
+        // ⚠️ §6.1「起定时器 ⇒ 起、停、失败各一条」。
+        // 这个循环平时一声不响（没登录、队列空的时候一个字都不记），少了这一对，
+        // 日志里「正常关机」与「定时器压根没起来 / 挂了」长得**一模一样**。
+        var logger = new CapturingLogger();
+        var harness = new Harness(Open(), logger);
+
+        try
+        {
+            harness.Service.Start();
+            harness.Service.Start(); // 重复调用是安全的 ⇒ 也不该多记一条
+
+            Assert.Single(logger.Messages, message => message.Contains("定时检查上传队列已起"));
+        }
+        finally
+        {
+            // ⚠️ 关这一次就是「停」那条的判据：`DisposeAsync` 会 `await _loop`，
+            // 所以它返回时那条一定已经落下了（不像档案那边只发信号不等）。
+            harness.Dispose();
+        }
+
+        Assert.Single(logger.Messages, message => message.Contains("定时检查上传队列已停"));
+    }
+
     private static CloudUploadSettings Open() => CloudUploadSettings.Default with { AutoUpload = true };
 
     // ─────────────────────────────────────────────
     // 夹具
     // ─────────────────────────────────────────────
+
+    /// <summary>把日志收下来。只记文本 —— 这些用例判的是「有没有这一条」。</summary>
+    private sealed class CapturingLogger : IAppLogger
+    {
+        public List<string> Messages { get; } = [];
+
+        public void Log(LogLevel level, string category, string message) => Messages.Add(message);
+
+        public void Log(
+            LogLevel level, string category, string message, IReadOnlyDictionary<string, object?> data) =>
+            Messages.Add(message);
+    }
 
     /// <summary>一整套真的 Core 对象 + 一个假网盘。</summary>
     private sealed class Harness : IDisposable
@@ -565,7 +868,17 @@ public class CloudUploadTests
 
         private int _sequence;
 
-        public Harness(CloudUploadSettings settings)
+        /// <summary>
+        /// 服务眼里的「现在」。
+        /// </summary>
+        /// <remarks>
+        /// ⚠️ <b>要能推着走</b>：自动重试是「到点了才试」，而真等的退避是
+        /// 60 秒起、后面每次翻倍 —— 用例里真等一等就是十几分钟。
+        /// 只有**服务**用这个钟；会话那边仍用固定的 <see cref="Now"/>（它只关心令牌过期）。
+        /// </remarks>
+        public DateTimeOffset Clock { get; set; } = Now;
+
+        public Harness(CloudUploadSettings settings, IAppLogger? logger = null)
         {
             Root = System.IO.Path.Combine(
                 System.IO.Path.GetTempPath(), "vidlog-cloud-" + Guid.NewGuid().ToString("N"));
@@ -597,7 +910,8 @@ public class CloudUploadTests
                 Labels,
                 Storage,
                 settings,
-                now: () => Now);
+                logger: logger,
+                now: () => Clock);
         }
 
         /// <summary>往索引里放一条，并按需在本机落一个真的文件。</summary>
@@ -737,6 +1051,20 @@ public class CloudUploadTests
         public Task<string> GetDisplayNameAsync(
             string accessToken, CancellationToken cancellationToken = default) =>
             Task.FromResult("测试账号");
+
+        /// <summary>网盘容量问回来什么；<see langword="null"/> = 问不到。</summary>
+        public BaiduPanQuota? Quota { get; set; }
+
+        /// <summary>问了几次容量（验「限频」是靠调用方做的）。</summary>
+        public int QuotaCalls { get; private set; }
+
+        public Task<BaiduPanQuota?> GetQuotaAsync(
+            string accessToken, CancellationToken cancellationToken = default)
+        {
+            QuotaCalls++;
+
+            return Task.FromResult(Quota);
+        }
 
         public Task<BaiduPrecreate> PrecreateAsync(
             string accessToken,

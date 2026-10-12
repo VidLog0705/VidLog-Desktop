@@ -14,6 +14,17 @@
     -->
     <PackageReference Include="System.Management" Version="10.0.12" />
     <PackageReference Include="ZXing.Net" Version="0.16.10" />
+
+    <!--
+      网盘令牌加密落盘（2026-10-12，需求方拍板「token 别明文存」）。
+      走 Windows 的数据保护 API（DPAPI），密钥由**当前 Windows 用户**的登录凭据派生 ——
+      不是「同目录再放一个密钥文件」：那种只挡得住误发文件，挡不住能读本机的人，
+      而本仓原来的注释（`BaiduPanTokenStore`）已经把这一点写明了。
+      这也是 .NET 5+ 里 `ProtectedData` 唯一的位置（核心包不含它，见 `net9.0` 的
+      `Microsoft.NETCore.App.Ref` 里没有这个程序集）。它同样是微软自家的包，
+      不改变「唯一的第三方依赖是 ZXing.Net」这条。
+    -->
+    <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="9.0.0" />
   </ItemGroup>
 
   <PropertyGroup>

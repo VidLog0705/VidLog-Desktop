@@ -129,6 +129,19 @@ public partial class SettingsWindow : Window
     /// <summary>队列的**只读**读法。写永远走服务里那一个（<c>UploadQueue.AppendAsync</c>）。</summary>
     private readonly UploadQueue? _cloudQueueReader;
 
+    /// <summary>上一次问到的网盘容量；没登录、或者没问到时是 <see langword="null"/>。</summary>
+    private BaiduPanQuota? _cloudQuota;
+
+    /// <summary>
+    /// 下一次**允许**问网盘容量的时刻。
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ <b>必须有它。</b>这一页的刷新节拍是每 2 秒一次，而容量是**一次真实的对外请求** ——
+    /// 照节拍问就是每 2 秒问一次网盘，对一个还没过审（10 次/小时额度）的应用
+    /// 等于把额度全喂给「显示还剩多少」。所以卡到每 60 秒最多一次（与 PackingProof 同）。
+    /// </remarks>
+    private DateTimeOffset _cloudQuotaNextAt = DateTimeOffset.MinValue;
+
     public SettingsWindow(AppHost host)
     {
         _host = host;

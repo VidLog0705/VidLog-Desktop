@@ -639,6 +639,11 @@
 
                         <StackPanel Orientation="Horizontal" HorizontalAlignment="Right"
                                     Margin="0,10,0,0">
+                            <!-- 建议 4：一块一块挑太慢，这一颗把本机固定磁盘一次加进来。
+                                 ⚠️ 它是**手点的**，不是开箱自动填 —— 见 `OnAddLocalDisks` 里的说明。 -->
+                            <Button Content="加上本机磁盘"
+                                    Style="{StaticResource SecondaryButton}" Padding="14,6"
+                                    Margin="0,0,8,0" Click="OnAddLocalDisks"/>
                             <Button Content="添加磁盘" Tag="Save"
                                     Style="{StaticResource SecondaryButton}" Padding="14,6"
                                     Click="OnAddDisk"/>
@@ -874,9 +879,13 @@
                         <Border x:Name="CloudUploadCard" Style="{StaticResource Card}" Margin="0,14,0,0">
                             <StackPanel>
                                 <TextBlock Style="{StaticResource SectionTitle}" Text="上传与补传"/>
+                                <!-- ⚠️ 这句话 2026-10-12 改过一次形状：在那之前写的是
+                                     「单号_会话_序号.mp4」，而归档合并之后网盘上也变成
+                                     **一个单号一个文件**了（见 `BaiduPanLayout`）。
+                                     留着旧的那半句，用户会照着去网盘上找一个不存在的文件名。 -->
                                 <TextBlock Style="{StaticResource Caption}" TextWrapping="Wrap"
                                            MaxWidth="520"
-                                           Text="录像上传到百度网盘「我的应用数据/[网盘目录应用名]/(日期)/发货或退货/单号_会话_序号.mp4」，按开录日期与发货退货分类。"/>
+                                           Text="录像上传到百度网盘「我的应用数据/[网盘目录应用名]/(日期)/发货或退货/单号.mp4」，按开录日期与发货退货分类。"/>
 
                                 <Grid Margin="0,14,0,0">
                                     <Grid.ColumnDefinitions>
@@ -905,9 +914,15 @@
                                     <StackPanel Grid.Column="0">
                                         <TextBlock Style="{StaticResource SectionTitle}" Margin="0"
                                                    Text="自动对比补传"/>
+                                        <!-- ⚠️ 这句 2026-10-12 按代码真值重写过（建议 7：文案与实现对齐）。
+                                             改之前写的是「网盘已有的**单号视频**自动去重」——
+                                             那句话把范围说大了：`CompareAsync` 比的是
+                                             **该条远端路径所在目录**下有没有同名文件，不是
+                                             「全盘按单号去重」。同单号换个日期录的那一条照样要传
+                                             （本来就该传，它是另一场），但照旧文案用户会以为不会。 -->
                                         <TextBlock Style="{StaticResource Caption}" Margin="0,2,0,0"
                                                    TextWrapping="Wrap" MaxWidth="420"
-                                                   Text="定期与网盘实际内容对比：网盘已有的单号视频自动去重，只补传网盘上没有的；开启后约每分钟检查一次队列。"/>
+                                                   Text="定期与网盘实际内容对比：远端那个目录下已经有同名文件的，本机这条直接标成「已完成」，不重复上传；其余按「补传范围」补传。开启后约每分钟检查一次队列。"/>
                                     </StackPanel>
                                     <ToggleButton Grid.Column="1" x:Name="CloudCompareToggle"
                                                   Style="{StaticResource ToggleSwitch}"
@@ -961,9 +976,13 @@
                                     <StackPanel Grid.Column="0">
                                         <TextBlock Style="{StaticResource SectionTitle}" Margin="0"
                                                    Text="网盘目录应用名"/>
+                                        <!-- ⚠️ 这一句要说清「填错会怎样」：路径对不上时网盘回的
+                                             是 errno 20020「路径不在应用允许访问的范围内」，
+                                             而那句话里一个字都没提「应用名填错了」——
+                                             没有这一句，用户会去查权限、查过审，查半天。 -->
                                         <TextBlock Style="{StaticResource Caption}" Margin="0,2,0,0"
                                                    TextWrapping="Wrap" MaxWidth="420"
-                                                   Text="开放平台后台填写的「产品名称」，远端路径为 /apps/(该名称)/。"/>
+                                                   Text="开放平台后台填写的「产品名称」，必须一字不差（含大小写与空格）。远端路径就是 /apps/(这个名称)/；填错的表现是所有上传都报「路径不在应用允许访问的范围内」，而那句话里看不出是名字填错了。"/>
                                     </StackPanel>
                                     <TextBox Grid.Column="1" x:Name="CloudAppNameBox" Width="220"
                                              VerticalAlignment="Center"/>
@@ -987,13 +1006,40 @@
                                                VerticalAlignment="Center"/>
                                 </Grid>
 
+                                <!-- ⚠️ `HorizontalContentAlignment="Stretch"`：ListBoxItem 默认是
+                                     左对齐的，不写这一句右边那一列按钮会挤在文字尾巴上、离开右边界。 -->
                                 <ListBox x:Name="CloudQueueList" Margin="0,12,0,0" MaxHeight="280"
                                          BorderThickness="0" Background="Transparent"
+                                         HorizontalContentAlignment="Stretch"
                                          ScrollViewer.HorizontalScrollBarVisibility="Disabled">
                                     <ListBox.ItemTemplate>
                                         <DataTemplate>
-                                            <TextBlock Text="{Binding}" TextWrapping="Wrap" FontSize="{StaticResource TextSizeBody}"
-                                                       Foreground="{DynamicResource TextPrimary}"/>
+                                            <Grid>
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="*"/>
+                                                    <ColumnDefinition Width="Auto"/>
+                                                </Grid.ColumnDefinitions>
+                                                <TextBlock Grid.Column="0" Text="{Binding Text}" TextWrapping="Wrap"
+                                                           VerticalAlignment="Center"
+                                                           FontSize="{StaticResource TextSizeBody}"
+                                                           Foreground="{DynamicResource TextPrimary}"/>
+                                                <!-- ⚠️ 两颗按钮靠 `Visibility` 显隐，**不是靠禁用**：
+                                                     一条正常在传的行上摊着一颗灰掉的【恢复】，
+                                                     用户只会去点它，然后觉得这个界面坏了。
+                                                     显隐由 Core 的 `CloudUploadStates` 决定（与
+                                                     服务里那条判断是同一把尺子），界面这边不另写一份。 -->
+                                                <StackPanel Grid.Column="1" Orientation="Horizontal"
+                                                            VerticalAlignment="Center" Margin="12,0,0,0">
+                                                    <Button Content="放弃" Click="OnCloudQueueAbandon"
+                                                            Style="{StaticResource SecondaryButton}"
+                                                            Padding="10,3" FontSize="12"
+                                                            Visibility="{Binding AbandonVisibility}"/>
+                                                    <Button Content="恢复" Click="OnCloudQueueResume"
+                                                            Style="{StaticResource SecondaryButton}"
+                                                            Padding="10,3" FontSize="12" Margin="6,0,0,0"
+                                                            Visibility="{Binding ResumeVisibility}"/>
+                                                </StackPanel>
+                                            </Grid>
                                         </DataTemplate>
                                     </ListBox.ItemTemplate>
                                 </ListBox>

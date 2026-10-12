@@ -80,6 +80,32 @@ public sealed record BaiduToken(string AccessToken, string RefreshToken, int Exp
 /// </remarks>
 public sealed record BaiduPrecreate(string UploadId, IReadOnlySet<int> Pending);
 
+/// <summary>
+/// 网盘账号的容量读数（「获取网盘容量信息」）。
+/// </summary>
+/// <param name="UsedBytes">已用。</param>
+/// <param name="TotalBytes">总容量。</param>
+/// <remarks>
+/// <para>
+/// ⚠️ <b>响应里那个 <c>free</c> 字段**不是剩余空间**</b>，它回的是「免费容量」。
+/// 2026-10-12 拿真账号实测：总量 100 GiB、已用 ≈34.25 GiB 的账号，
+/// <c>free</c> 回的正是 100 GiB（= total）。
+/// 照着它写「剩余」会把一个快满的网盘显示成「满满的都是空」。
+/// 所以剩余一律**自己算** —— 见 <see cref="FreeBytes"/>。
+/// PackingProof 那边也没用这个字段，是自己算 <c>Total - Used</c>。
+/// </para>
+/// <para>
+/// ⚠️ 这个接口是**额外的一次对外请求**，而未过审的应用只有 10 次/小时
+/// （见 <c>BaiduPanException.IsHopeless</c> 里那一条）。所以调用方必须自己限频 ——
+/// 界面上是每 60 秒最多问一次。
+/// </para>
+/// </remarks>
+public sealed record BaiduPanQuota(long UsedBytes, long TotalBytes)
+{
+    /// <summary>剩余（<b>自己算的</b>，不是响应里那个 <c>free</c>）。</summary>
+    public long FreeBytes => Math.Max(0, TotalBytes - UsedBytes);
+}
+
 /// <summary>网盘那边报错。</summary>
 /// <remarks>
 /// ⚠️ 是普通类不是 <c>record</c>：<c>record</c> 只能继承对象或另一条 record，
@@ -146,6 +172,40 @@ public sealed class BaiduPanException : Exception
     /// </para>
     /// </remarks>
     public bool IsPathProblem => Errno is -7 or -9 or 31064 or 31066 or 31190;
+
+    /// <summary>
+    /// 这个错是不是「**重发多少次都一样**」—— 自动重试对它没有意义。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// 这是自动重试（<c>CloudUploadService</c>）的**终态判据**。分四类：
+    /// </para>
+    /// <list type="bullet">
+    /// <item><b>应用侧</b>：<c>20011</c>（还在审核中，只有前 10 个用户能用）、
+    /// <c>20013</c>（没申请这个接口的权限）、<c>20015</c>（应用已失效）、
+    /// <c>20020</c>（路径不在允许范围）—— 去开放平台后台才有解。</item>
+    /// <item><b>我们自己说错话</b>：<c>31023</c> / <c>2</c>（参数格式不对）——
+    /// 重发的是同一句话。</item>
+    /// <item><b>这一条文件本身</b>：<c>31064</c>、<c>31066</c>、<c>-9</c>（路径/文件）、
+    /// <c>31190</c> / <c>31363</c>（分片缺失）、<c>31299</c> / <c>31364</c>（分片大小）、
+    /// <c>31365</c>（文件超过单文件上限）。</item>
+    /// <item><b>凭据</b>：见 <see cref="IsCredentialProblem"/> 那四个 —— 那条路另有处置
+    /// （丢弃本机令牌、要用户重新授权），重试同样没用。</item>
+    /// </list>
+    /// <para>
+    /// ⚠️ <b><c>20012</c>（调用次数达上限被限流）**不在**这里</b>：它的文档说明是
+    /// 「应用过审之前只能用于测试开发，**也可能就是调得太密**」—— 后者缓一缓是能成的。
+    /// 当终态会把一条本来传得上去的录像永久判死。它走普通的退避重试，靠次数上限收口。
+    /// </para>
+    /// <para>
+    /// ⚠️ 同理 <c>31034</c>（请求太频繁）也不在这里。
+    /// </para>
+    /// </remarks>
+    public bool IsHopeless => Errno is
+        20011 or 20013 or 20015 or 20020
+        or 31023 or 2
+        or -9 or 31064 or 31066 or 31190 or 31299 or 31363 or 31364 or 31365
+        || IsCredentialProblem;
 }
 
 /// <summary>
@@ -185,6 +245,18 @@ public interface IBaiduPanApi
 
     /// <summary>网盘上的用户名（用来在界面上说「登录成了，你是某某」）。</summary>
     Task<string> GetDisplayNameAsync(string accessToken, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// 网盘账号的容量。
+    /// </summary>
+    /// <returns>问不到（网络、限流…）返回 <see langword="null"/> —— 它是**锦上添花**，
+    /// 拿不到不该让设置页那一块变成一句错误。</returns>
+    /// <remarks>
+    /// ⚠️ 这是**额外的一次对外请求**：界面上必须限频（现在是每 60 秒最多一次），
+    /// 理由见 <see cref="BaiduPanQuota"/>。
+    /// </remarks>
+    Task<BaiduPanQuota?> GetQuotaAsync(
+        string accessToken, CancellationToken cancellationToken = default);
 
     /// <summary>预创建：告诉网盘要传一个多大的文件，拿回 uploadid 与已有分片。</summary>
     Task<BaiduPrecreate> PrecreateAsync(

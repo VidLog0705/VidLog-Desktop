@@ -13,6 +13,7 @@ namespace VidLog.Desktop.Core.Cloud;
 /// <param name="Uploading">正在传的。</param>
 /// <param name="Done">网盘上已经有了的。</param>
 /// <param name="Failed">传失败了的。</param>
+/// <param name="Abandoned">用户明确说了「这条不传了」的。</param>
 /// <param name="Active">此刻真的在跑的并发数（「同时上传数」是它的上限）。</param>
 /// <param name="LastError">最近一次出错的原因；没出过错就是 <see langword="null"/>。</param>
 /// <param name="LastChecked">最近一次与网盘对比是什么时候。</param>
@@ -25,13 +26,14 @@ public sealed record UploadStatus(
     int Uploading,
     int Done,
     int Failed,
+    int Abandoned,
     int Active,
     string? LastError,
     DateTimeOffset? LastChecked,
     bool Enabled)
 {
     /// <summary>队列里一共几条。</summary>
-    public int Total => Pending + Uploading + Done + Failed;
+    public int Total => Pending + Uploading + Done + Failed + Abandoned;
 }
 
 /// <summary>
@@ -63,6 +65,39 @@ public sealed class CloudUploadService : IAsyncDisposable
     /// <summary>多久检查一次队列。</summary>
     /// <remarks>设计图 `_46` 原话：「开启后约每分钟检查一次队列」。</remarks>
     public static readonly TimeSpan DefaultInterval = TimeSpan.FromSeconds(60);
+
+    /// <summary>
+    /// 一条录像最多自动试几次（**含第一次**）。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// ⚠️ <b>必须有上限</b>：这个应用在开放平台过审之前每小时只有 10 次调用，
+    /// 而传一个 100MB 的文件就要 ~28 次请求 —— 无上限的重试会把这 10 次
+    /// 全部喂给同一个失败，其它录像一次机会都没有。
+    /// （PackingProof 那边是**无上限**的；它没有额度这一层顾虑，我们有。）
+    /// </para>
+    /// <para>
+    /// 8 次按 <see cref="Backoff"/> 铺开大概是 1 小时 40 分钟。
+    /// 现场「网线松了」「对面重启一下」这类事在这个尺度内都能自己缓过来；
+    /// 缓不过来的多半是要人去看的（凭据、过审、这条文件本身），
+    /// 而那一类由 <c>BaiduPanException.IsHopeless</c> 直接判终态，不等次数。
+    /// </para>
+    /// </remarks>
+    public const int MaxAttempts = 8;
+
+    /// <summary>两次自动重试之间最多等多久。</summary>
+    private static readonly TimeSpan MaxBackoff = TimeSpan.FromMinutes(30);
+
+    /// <summary>
+    /// 第 <paramref name="attempts"/> 次失败之后等多久再试（指数退避，封顶 30 分钟）。
+    /// </summary>
+    /// <remarks>
+    /// 60 秒起、每次翻倍：60 / 120 / 240 / 480 / 960 / 1800 / 1800……
+    /// 不照着 PackingProof 那套 30 秒起：那个尺度是给「一直挂着也没事」的场景准备的，
+    /// 而我们要省着那 10 次/小时的额度。
+    /// </remarks>
+    private static TimeSpan Backoff(int attempts) => TimeSpan.FromSeconds(
+        Math.Min(MaxBackoff.TotalSeconds, Math.Pow(2, Math.Min(attempts - 1, 5)) * 60));
 
     private readonly BaiduPanSession _session;
     private readonly BaiduPanUploader _uploader;
@@ -195,6 +230,14 @@ public sealed class CloudUploadService : IAsyncDisposable
             return ArchivePublishResult.Ok;
         }
 
+        // ⚠️ 用户明确说过「这一条不传」（队列那一行的【放弃】）。这里**必须认**：
+        // 不认的话，「同一个单号又收尾了一次」这种少见但真会发生的路径
+        // 会绕过他的决定，把这条又传上去。
+        if (item.State == CloudUploadState.Abandoned)
+        {
+            return ArchivePublishResult.Failed("这一条在队列里被标成「放弃上传」了，没有传。");
+        }
+
         var outcome = await UploadOneAsync(item, localPath, cancellationToken);
 
         return outcome.Published
@@ -212,10 +255,37 @@ public sealed class CloudUploadService : IAsyncDisposable
             items.Count(i => i.State == CloudUploadState.Uploading),
             items.Count(i => i.State == CloudUploadState.Done),
             items.Count(i => i.State == CloudUploadState.Failed),
+            items.Count(i => i.State == CloudUploadState.Abandoned),
             Volatile.Read(ref _active),
             _lastError,
             _lastChecked,
             _settings.AutoUpload);
+    }
+
+    /// <summary>
+    /// 网盘账号的容量（设置页要显示「还剩多少」）。
+    /// </summary>
+    /// <returns>没登录、或者问不到时返回 <see langword="null"/>。</returns>
+    /// <remarks>
+    /// ⚠️ <b>这里不限频，限频是调用方的事。</b>这个类自己的定时检查是每分钟一次，
+    /// 而设置页那个刷新节拍是每 2 秒一次 —— 谁调谁按 <see cref="BaiduPanQuota"/>
+    /// 那条说明去限。在这里限的话，两个调用方会被同一把尺子卡住一个。
+    /// </remarks>
+    public async Task<BaiduPanQuota?> QuotaAsync(CancellationToken cancellationToken = default)
+    {
+        string token;
+
+        try
+        {
+            token = await _session.TokenAsync(cancellationToken);
+        }
+        catch (Exception ex) when (ex is BaiduPanException or HttpRequestException)
+        {
+            _logger.Log(LogLevel.Warn, "网盘", $"问网盘容量之前先拿令牌，没拿到：{ex.Message}");
+            return null;
+        }
+
+        return await _api.GetQuotaAsync(token, cancellationToken);
     }
 
     /// <summary>
@@ -242,22 +312,115 @@ public sealed class CloudUploadService : IAsyncDisposable
     }
 
     /// <summary>「立即重试失败上传」：把失败的那些翻回「等着传」，然后开传。</summary>
+    /// <remarks>
+    /// ⚠️ <b>只认 <see cref="CloudUploadState.Failed"/>，不碰「已放弃」的</b>：
+    /// 把用户明确放弃掉的又翻出来传，是拿他的一句话当没说过。
+    /// 【恢复】那一颗按钮才是把放弃的翻回来。
+    /// </remarks>
     public async Task<int> RetryFailedAsync(CancellationToken cancellationToken = default)
     {
         var items = await _queue.LoadAsync(cancellationToken);
         var now = _now();
 
-        foreach (var item in items.Where(i => i.State == CloudUploadState.Failed))
+        var revived = items.Where(i => i.State == CloudUploadState.Failed).ToList();
+
+        foreach (var item in revived)
         {
             await _queue.AppendAsync(
-                item with { State = CloudUploadState.Pending, LastError = null, UpdatedAt = now },
+                item with
+                {
+                    State = CloudUploadState.Pending,
+                    LastError = null,
+                    UpdatedAt = now,
+                    NextAttemptAt = null,
+                },
                 cancellationToken);
+        }
+
+        // ⚠️ 这也是一次**状态变更**，与【放弃】/【恢复】同一类（那两处各自记一条）。
+        // 不记的话，「我点了重试，然后关窗走了」这件事在日志里一个字都没有 ——
+        // 而事后追问的正是「那几条到底被翻出来过没有」。
+        if (revived.Count > 0)
+        {
+            _logger.Log(LogLevel.Info, "网盘", $"手动重试：{revived.Count} 条失败的被翻回等待",
+                new Dictionary<string, object?> { ["条数"] = revived.Count });
         }
 
         return await DrainAsync(cancellationToken);
     }
 
+    /// <summary>
+    /// 队列里某一条【放弃】：这一条不再传了。
+    /// </summary>
+    /// <returns>真的改了状态返回 true；已经传完的、已经放弃的返回 false。</returns>
+    /// <remarks>
+    /// ⚠️ <b>只改队列，不动本机那份录像、也不动网盘上的东西</b>（I2）：
+    /// 它的意思只有「别再往网上传这一条了」。放弃之后再过一次
+    /// 【立即对比同步】，网盘上真有的照样会被标成「已完成」——
+    /// 对比读的是网盘的实际内容，不是这一格。
+    /// </remarks>
+    public Task<bool> AbandonAsync(string evidenceId, CancellationToken cancellationToken = default) =>
+        SetStateAsync(evidenceId, "放弃上传", CloudUploadState.Abandoned, cancellationToken);
+
+    /// <summary>队列里某一条【恢复】：把它放回「等着传」。</summary>
+    /// <returns>真的是「已放弃」的那些返回 true；别的状态返回 false。</returns>
+    public Task<bool> ResumeAsync(string evidenceId, CancellationToken cancellationToken = default) =>
+        SetStateAsync(evidenceId, "恢复上传", CloudUploadState.Pending, cancellationToken);
+
+    /// <summary>放弃 / 恢复共用的那一圈（判断在 <see cref="CloudUploadStates"/> 里）。</summary>
+    private async Task<bool> SetStateAsync(
+        string evidenceId, string what, CloudUploadState state, CancellationToken cancellationToken)
+    {
+        var item = await _queue.FindAsync(evidenceId, cancellationToken);
+
+        if (item is null)
+        {
+            _logger.Log(LogLevel.Warn, "网盘", $"{what}失败：队列里没有这一条 {evidenceId}");
+            return false;
+        }
+
+        // ⚠️ 判断**与界面用的是同一把尺子**（`CloudUploadStates`），不是在服务里另写一份：
+        // 两处不一样时的表现是「按钮亮着，按下去说了不算」。
+        var allowed = state == CloudUploadState.Abandoned
+            ? CloudUploadStates.CanAbandon(item.State)
+            : CloudUploadStates.CanResume(item.State);
+
+        if (!allowed)
+        {
+            _logger.Log(LogLevel.Warn, "网盘",
+                $"{what}没做：这一条现在是「{item.State}」，不该{what}");
+            return false;
+        }
+
+        await _queue.AppendAsync(
+            item with
+            {
+                State = state,
+                // 恢复 = 重新排队，上一条错误留着（给用户看「它上次为什么没成」）；
+                // 放弃 = 变终态，也不清错误。
+                UpdatedAt = _now(),
+                // 恢复之后由下一轮 drain 立刻接手，不该再等那个退避时刻。
+                NextAttemptAt = null,
+            },
+            cancellationToken);
+
+        _logger.Log(LogLevel.Info, "网盘", $"{what}：{BaiduPanLayout.FileNameOf(item.RemotePath)}",
+            new Dictionary<string, object?>
+            {
+                ["evidenceId"] = item.EvidenceId,
+                ["从"] = item.State.ToString(),
+                ["到"] = state.ToString(),
+            });
+
+        return true;
+    }
+
     /// <summary>起定时检查。重复调用是安全的（第二次什么也不做）。</summary>
+    /// <remarks>
+    /// ⚠️ 起了、停了**各记一条**（§6.1「起定时器 ⇒ 起、停、失败各一条」）。
+    /// 这个循环平时一声不响（没登录、队列空的时候一个字都不记），所以少了这一对，
+    /// 日志里「正常关机」与「定时器压根没起来 / 挂了」长得**一模一样**。
+    /// </remarks>
     public void Start()
     {
         if (_loop is not null)
@@ -278,9 +441,14 @@ public sealed class CloudUploadService : IAsyncDisposable
             }
             catch (OperationCanceledException)
             {
-                // 正常停止。
+                // 正常停止（停机信号）。⚠️ 不是故障，所以记 Info 不记 Warn。
+                // ⚠️ 这条**一定写得下去**：`DisposeAsync` 会 `await _loop`。
+                _logger.Log(LogLevel.Info, "网盘", "定时检查上传队列已停（应用要关了）。");
             }
         });
+
+        _logger.Log(LogLevel.Info, "网盘",
+            $"定时检查上传队列已起（每 {_interval.TotalSeconds:0} 秒一趟）。");
     }
 
     /// <summary>一次定时检查。</summary>
@@ -491,7 +659,14 @@ public sealed class CloudUploadService : IAsyncDisposable
         }
     }
 
-    /// <summary>把队列里等着传的那些传上去。返回成功几条。</summary>
+    /// <summary>
+    /// 把队列里该传的那些传上去。返回成功几条。
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ <b>该传的 = 等着的 + 到点的重试</b>。只取「等着」的话，失败的那些
+    /// 就永远要人来点【立即重试】—— 而那正是这次的改造要消灭的东西（现场没人盯着）。
+    /// 「已放弃」「已完成」两种都不在这里，见各自的状态说明。
+    /// </remarks>
     private async Task<int> DrainAsync(CancellationToken cancellationToken)
     {
         if (!await _drainGate.WaitAsync(0, cancellationToken))
@@ -503,8 +678,12 @@ public sealed class CloudUploadService : IAsyncDisposable
 
         try
         {
+            var now = _now();
+
             var pending = (await _queue.LoadAsync(cancellationToken))
-                .Where(i => i.State == CloudUploadState.Pending)
+                .Where(i => i.State == CloudUploadState.Pending
+                    || (i.State == CloudUploadState.Failed
+                        && i.NextAttemptAt is { } due && due <= now))
                 .ToList();
 
             if (pending.Count == 0)
@@ -563,7 +742,7 @@ public sealed class CloudUploadService : IAsyncDisposable
         catch (Exception ex) when (ex is BaiduPanException or HttpRequestException)
         {
             var reason = $"还没登上百度网盘：{ex.Message}";
-            await FailAsync(item, reason, countAttempt: true, cancellationToken);
+            await FailAsync(item, reason, countAttempt: true, cancellationToken, ex);
 
             return (false, reason);
         }
@@ -586,6 +765,7 @@ public sealed class CloudUploadService : IAsyncDisposable
                     Attempts = item.Attempts + 1,
                     LastError = null,
                     UpdatedAt = _now(),
+                    NextAttemptAt = null,
                 },
                 cancellationToken);
 
@@ -598,7 +778,7 @@ public sealed class CloudUploadService : IAsyncDisposable
         }
         catch (Exception ex) when (ex is BaiduPanException or HttpRequestException or IOException)
         {
-            await FailAsync(item, ex.Message, countAttempt: true, cancellationToken);
+            await FailAsync(item, ex.Message, countAttempt: true, cancellationToken, ex);
 
             return (false, ex.Message);
         }
@@ -608,22 +788,56 @@ public sealed class CloudUploadService : IAsyncDisposable
         }
     }
 
+    /// <summary>
+    /// 记一次失败，并决定**还试不试**。
+    /// </summary>
+    /// <param name="item">哪一条。</param>
+    /// <param name="reason">给人看的一句话。</param>
+    /// <param name="countAttempt">
+    /// 这一次算不算「试过一次」。⚠️ 「本机那一份不在了」传 <see langword="false"/> ——
+    /// 那不是网盘的错，而且再试一万次那一份也回不来。
+    /// </param>
+    /// <param name="cancellationToken">取消。</param>
+    /// <param name="error">
+    /// 原始异常（有就带上）。**它是「还试不试」的判据**：<c>IsHopeless</c> 那一类
+    /// （应用没过审、没有接口权限、路径不对…）重发多少次都是同一个结果，
+    /// 直接落终态，不浪费那 10 次/小时的额度。
+    /// </param>
     private async Task FailAsync(
-        UploadQueueItem item, string reason, bool countAttempt, CancellationToken cancellationToken)
+        UploadQueueItem item,
+        string reason,
+        bool countAttempt,
+        CancellationToken cancellationToken,
+        Exception? error = null)
     {
         _lastError = reason;
+
+        var attempts = countAttempt ? item.Attempts + 1 : item.Attempts;
+
+        var hopeless = error is BaiduPanException pan && pan.IsHopeless;
+
+        // ⚠️ 判终态的**只有**「重发多少次都一样」那一类和次数用完。
+        // 限流（31034）、调用量达上限（20012）**都不是终态** —— 文档对 20012 的原话
+        // 就是「也可能就是调得太密」，缓一缓是能成的，判死会把一条传得上去的录像丢掉。
+        var next = countAttempt && !hopeless && attempts < MaxAttempts
+            ? _now() + Backoff(attempts)
+            : (DateTimeOffset?)null;
 
         await _queue.AppendAsync(
             item with
             {
                 State = CloudUploadState.Failed,
-                Attempts = countAttempt ? item.Attempts + 1 : item.Attempts,
+                Attempts = attempts,
                 LastError = reason,
                 UpdatedAt = _now(),
+                NextAttemptAt = next,
             },
             cancellationToken);
 
-        _logger.Log(LogLevel.Warn, "网盘", $"上传百度网盘失败：{reason}",
+        _logger.Log(LogLevel.Warn, "网盘", next is { } at
+            ? $"上传百度网盘失败（第 {attempts} 次），{at:yyyy-MM-dd HH:mm:ss} 自己再试：{reason}"
+            : $"上传百度网盘失败（第 {attempts} 次），不再自动重试"
+              + $"（{(hopeless ? "这个错重试没有用" : "次数已用完")}）：{reason}",
             new Dictionary<string, object?> { ["remote"] = item.RemotePath });
     }
 

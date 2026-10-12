@@ -254,6 +254,10 @@ public class BaiduPanSessionTests
             string accessToken, CancellationToken cancellationToken = default) =>
             Task.FromResult("测试账号");
 
+        public Task<BaiduPanQuota?> GetQuotaAsync(
+            string accessToken, CancellationToken cancellationToken = default) =>
+            Task.FromResult<BaiduPanQuota?>(null);
+
         public Task<BaiduPrecreate> PrecreateAsync(
             string accessToken,
             string remotePath,

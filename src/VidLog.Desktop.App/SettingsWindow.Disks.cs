@@ -263,6 +263,83 @@ public partial class SettingsWindow : Window
             .ToString();
     }
 
+    /// <summary>
+    /// 【加上本机磁盘】：把本机上还没列进来的固定磁盘一次加进来（建议 4）。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>为什么要它</b>：此前这一格是新装好的机器上**空的**，得一块盘一块盘地
+    /// 【添加磁盘】挑进来 —— 而现场那台机器上「录像到底存哪块盘」是装机时就该定好的事，
+    /// 不该留一个空表等人填。
+    /// </para>
+    /// <para>
+    /// ⚠️ <b>为什么是「一颗按钮」而不是「开箱自动填满」</b>（PackingProof 是后者）：
+    /// 自动填会**不需要任何人同意就改掉录像落盘的位置**。对一台已经装好的机器来说，
+    /// 表是空的时候录像写的是兜底根（数据目录下的 archive，在 C 盘），
+    /// 升级上来那一下会把它悄悄改成别处 —— 而这是「东西还在但跑到别的地方去了」，
+    /// 正是本仓一直在防的那类事。所以规则留在这里，扳机交给用户。
+    /// 要做成开箱自动，只在**安装后第一次运行**时调一次本方法即可。
+    /// </para>
+    /// <para>
+    /// ⚠️ <b>从 Z 往 A 加</b>（<see cref="DriveInfo.GetDrives"/> 给的是 C、D、E…，这里倒过来）：
+    /// 挑盘是按**列表顺序**挑第一个还有余量的（<c>StorageLocations.PickActive</c>），
+    /// 正着加的话列表第一个就是 C 盘，一装好就往系统盘上堆录像。
+    /// 倒过来之后系统盘排在最后，别的盘都满了才轮到它 —— 与 PackingProof 同一个排法。
+    /// </para>
+    /// <para>
+    /// ⚠️ 它**只往后面加、不重排已有的行**：用户手动排过的顺序是他的意思表示
+    /// （顺序就是写入优先级），自动动作不该把它搅乱。已经在表里的盘一律跳过，
+    /// 而且按路径比（不区分大小写），所以连点两次不会加出重复项。
+    /// </para>
+    /// </remarks>
+    private void OnAddLocalDisks(object sender, RoutedEventArgs e)
+    {
+        var rows = _saveDiskRows;
+        var list = SaveDiskList;
+
+        try
+        {
+            var added = 0;
+
+            foreach (var drive in DriveInfo.GetDrives()
+                .Where(one => one is { IsReady: true, DriveType: DriveType.Fixed })
+                .OrderByDescending(one => one.Name, StringComparer.OrdinalIgnoreCase))
+            {
+                var path = drive.RootDirectory.FullName;
+
+                if (rows.Any(row => string.Equals(
+                    row.Folder, path, StringComparison.OrdinalIgnoreCase)))
+                {
+                    continue;
+                }
+
+                rows.Add(new DiskSlotRow(path, DefaultReserveText(path), true, null, list, MarkDirty));
+                added++;
+            }
+
+            if (added == 0)
+            {
+                SettingsStatus.Text = "本机的固定磁盘都已经在列表里了。";
+                return;
+            }
+
+            BindDisks();
+            MarkDirty();
+
+            SettingsStatus.Text = $"加了 {added} 块盘。列表顺序就是写入顺序"
+                + "（从最后一块盘开始写，系统盘排在最后）—— 不想要的用【移除选中】拿掉，"
+                + "想换顺序用【上移】/【下移】。";
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            // ⚠️ 这一颗按钮的处理器是 `void` 的：异常抛出去**没有任何人接**，
+            // 表现是整个程序崩掉 —— 而它只是在列磁盘。枚举磁盘会失败是真的会发生的
+            // （没插卡的读卡器、掉线的驱动器、被组策略挡住）。所以在这里收口，
+            // 并**说出来**（`SettingsStatus` 就在这两张表底下）而不是静默当没发生。
+            SettingsStatus.Text = $"列本机磁盘没成功：{ex.Message}。可以照旧用【添加磁盘】一块一块挑。";
+        }
+    }
+
     private void OnRemoveDisk(object sender, RoutedEventArgs e)
     {
         var save = IsSaveTable(sender);

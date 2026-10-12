@@ -38,6 +38,35 @@ using VidLog.Desktop.Core.Upload;
 
 namespace VidLog.Desktop.App;
 
+/// <summary>
+/// 「上传队列」列表里的一行。
+/// </summary>
+/// <param name="Text">这一行显示的那段话（可能好几行）。</param>
+/// <param name="Title">只有文件名 —— 提示语里用它，不要把整段话塞进去。</param>
+/// <param name="EvidenceId">哪一条录像。**放弃 / 恢复按它定位**。</param>
+/// <param name="AbandonVisibility">【放弃】显不显示。</param>
+/// <param name="ResumeVisibility">【恢复】显不显示。</param>
+/// <remarks>
+/// <para>
+/// ⚠️ 显隐直接给 <see cref="Visibility"/> 而不是给两个 <c>bool</c>：
+/// 给 bool 就得再挂一个值转换器，而这一页到现在一个转换器都没有 ——
+/// 为两个按钮显隐多养一个类是白养的。判断本身在 <see cref="CloudUploadStates"/> 里
+/// （与服务里那条判断共用一把尺子），这里只是把它翻译成显隐。
+/// </para>
+/// <para>
+/// ⚠️ 用**具名类型**而不是匿名类型：这一行要能被强类型地取回来 ——
+/// 两颗按钮的处理器要拿 <see cref="EvidenceId"/>（写法照 `SearchResultRow`）。
+/// 也必须是**命名空间级**而不是嵌在窗口类里：模板里的 `{Binding}` 走的是
+/// 反射，`SearchResultRow` 那样放在命名空间级是这个仓里已经验过的一条路。
+/// </para>
+/// </remarks>
+internal sealed record CloudQueueRow(
+    string Text,
+    string Title,
+    string EvidenceId,
+    Visibility AbandonVisibility,
+    Visibility ResumeVisibility);
+
 public partial class SettingsWindow : Window
 {
     // ─────────────────────────────────────────────
@@ -51,7 +80,12 @@ public partial class SettingsWindow : Window
         ("FromDate", "自定起始日"),
     ];
 
-    /// <summary>队列下面那个「筛选」下拉。四档与队列状态一一对应。</summary>
+    /// <summary>队列下面那个「筛选」下拉。每一档与一个队列状态一一对应。</summary>
+    /// <remarks>
+    /// ⚠️ `Tag` 就是 <see cref="CloudUploadState"/> 的**成员名**（筛的时候直接
+    /// 拿 `ToString()` 比）。所以改了枚举名就要改这里 —— 反过来说，
+    /// 这里加了新档却没加枚举值，筛出来会永远是空的。
+    /// </remarks>
     private static readonly (string Tag, string Label)[] CloudFilters =
     [
         ("All", "全部"),
@@ -59,6 +93,7 @@ public partial class SettingsWindow : Window
         ("Uploading", "上传中"),
         ("Done", "已完成"),
         ("Failed", "失败"),
+        ("Abandoned", "已放弃"),
     ];
 
     /// <summary>把设置读进这一页的控件。只在开窗时跑一次（与别的节一样）。</summary>
@@ -211,6 +246,17 @@ public partial class SettingsWindow : Window
 
         var status = await service.StatusAsync();
 
+        // 网盘容量（建议 5）。**每 60 秒最多问一次** —— 这一页每 2 秒刷一次，
+        // 照节拍问就是拿那 10 次/小时的额度去换一句「还剩多少」。
+        // 没登录时不问：问了必定失败，还会白留一条日志。
+        if (session.IsLoggedIn && DateTimeOffset.Now >= _cloudQuotaNextAt)
+        {
+            // ⚠️ 时刻**先**推、再 await：反过来的话，一次慢请求会让下一拍又发一遍，
+            // 而「限频」在这儿的全部意义就是别多发。
+            _cloudQuotaNextAt = DateTimeOffset.Now + TimeSpan.FromMinutes(1);
+            _cloudQuota = await service.QuotaAsync();
+        }
+
         CloudLoginButton.IsEnabled = !_cloudBusy && !session.IsLoggedIn && _cloudLogin is null;
         CloudLogoutButton.IsEnabled = !_cloudBusy && session.IsLoggedIn;
         CloudSyncButton.IsEnabled = !_cloudBusy;
@@ -345,9 +391,24 @@ public partial class SettingsWindow : Window
             lines.Add($"已登录：{login.DisplayName}（登录信息记在本机，过期前会自动续期）。");
         }
 
+        // 剩余容量（建议 5）。⚠️ 只在登录之后说：没登录时它必然是空的，
+        // 而那一行「还没登录」已经把话说完了。
+        if (session.IsLoggedIn)
+        {
+            // ⚠️ 用的是 `FreeBytes`（自己算的 Total-Used），**不是**接口回的那个
+            // `free` 字段 —— 那个是「免费容量」，拿它当剩余会把快满的网盘显示成空的。
+            lines.Add(_cloudQuota is { } quota
+                ? $"网盘还剩 {Display.Bytes(quota.FreeBytes)}"
+                  + $"（已用 {Display.Bytes(quota.UsedBytes)}／共 {Display.Bytes(quota.TotalBytes)}，"
+                  + "每分钟更新一次）。"
+                // 拿不到**不影响上传**，所以要说清「这不是故障」，否则用户会以为传不上去了。
+                : "网盘容量还没问出来（不影响上传）。");
+        }
+
         lines.Add(
             $"队列 {status.Total} 条：等待 {status.Pending}、上传中 {status.Uploading}、"
-            + $"已完成 {status.Done}、失败 {status.Failed}；此刻正在传 {status.Active} 条。"
+            + $"已完成 {status.Done}、失败 {status.Failed}、已放弃 {status.Abandoned}；"
+            + $"此刻正在传 {status.Active} 条。"
             + (status.LastChecked is { } checkedAt
                 ? $"最近一次与网盘对比：{checkedAt:yyyy-MM-dd HH:mm:ss}。"
                 : "还没与网盘对比过。"));
@@ -401,17 +462,36 @@ public partial class SettingsWindow : Window
     /// ⚠️ 远端路径**要显示出来**：用户上网页版找不到文件时，
     /// 唯一能把话说清楚的凭据就是它（它记的是上传那一刻的标签，不跟着后来的改动变）。
     /// </remarks>
-    private static string DescribeCloudQueueItem(UploadQueueItem item) =>
-        $"{CloudStateLabel(item.State)}｜{BaiduPanLayout.FileNameOf(item.RemotePath)}｜"
-        + $"{Display.Bytes(item.SizeBytes)}｜开录 {item.StartedAt:MM-dd HH:mm}｜试过 {item.Attempts} 次"
-        + (item.LastError is { Length: > 0 } error ? $"\n　　⚠️ {error}" : string.Empty)
-        + $"\n　　远端：{item.RemotePath}";
+    private static CloudQueueRow DescribeCloudQueueItem(UploadQueueItem item)
+    {
+        var name = BaiduPanLayout.FileNameOf(item.RemotePath);
+
+        var text = $"{CloudStateLabel(item.State)}｜{name}｜"
+            + $"{Display.Bytes(item.SizeBytes)}｜开录 {item.StartedAt:MM-dd HH:mm}｜试过 {item.Attempts} 次"
+            // 失败的那一行要说清「还会不会自己再试」：光写「失败」两个字，
+            // 「1 分钟后自己会重试」与「要你动手」是同一句话 —— 而那是两件事。
+            + (item.State == CloudUploadState.Failed
+                ? item.NextAttemptAt is { } at
+                    ? $"｜{at:HH:mm:ss} 自己再试"
+                    : "｜不再自动重试"
+                : string.Empty)
+            + (item.LastError is { Length: > 0 } error ? $"\n　　⚠️ {error}" : string.Empty)
+            + $"\n　　远端：{item.RemotePath}";
+
+        return new CloudQueueRow(
+            text,
+            name,
+            item.EvidenceId,
+            CloudUploadStates.CanAbandon(item.State) ? Visibility.Visible : Visibility.Collapsed,
+            CloudUploadStates.CanResume(item.State) ? Visibility.Visible : Visibility.Collapsed);
+    }
 
     private static string CloudStateLabel(CloudUploadState state) => state switch
     {
         CloudUploadState.Pending => "等待中",
         CloudUploadState.Uploading => "上传中",
         CloudUploadState.Done => "已完成",
+        CloudUploadState.Abandoned => "已放弃",
         _ => "失败",
     };
 
@@ -519,6 +599,10 @@ public partial class SettingsWindow : Window
         {
             await service.Session.LogoutAsync();
             _cloudLogin = null;
+            // 容量是**上一个账号**的读数，留着就是在显示别人的数字。
+            // 下一次登录时那一拍会立刻重问（`_cloudQuotaNextAt` 一并清掉）。
+            _cloudQuota = null;
+            _cloudQuotaNextAt = DateTimeOffset.MinValue;
             _cloudNote = "已退出登录。网盘上的文件一个都没动。";
         }
         catch (Exception ex)
@@ -537,6 +621,50 @@ public partial class SettingsWindow : Window
 
     private async void OnCloudRetry(object sender, RoutedEventArgs e) =>
         await RunCloudActionAsync("立即重试失败上传", (service, ct) => service.RetryFailedAsync(ct));
+
+    /// <summary>队列某一行的【放弃】：这一条不再传了。</summary>
+    private async void OnCloudQueueAbandon(object sender, RoutedEventArgs e) =>
+        await RunQueueRowActionAsync(sender, "已放弃上传", (s, id) => s.AbandonAsync(id));
+
+    /// <summary>队列某一行的【恢复】：把它放回「等着传」。</summary>
+    private async void OnCloudQueueResume(object sender, RoutedEventArgs e) =>
+        await RunQueueRowActionAsync(sender, "已恢复上传", (s, id) => s.ResumeAsync(id));
+
+    /// <summary>队列那一行两颗按钮共用的那一圈。</summary>
+    /// <remarks>
+    /// ⚠️ <b>两个动作都不弹确认框，而且是有意的。</b>
+    /// 【放弃】不动本机那份录像、也不动网盘上的东西（I2），只改这一行的状态，
+    /// 而且旁边就摆着【恢复】—— 为一个点错了也能一步撤回的动作弹一个模态框，
+    /// 是在用「多一次点击」换「用户随手点一下确认」。真正不可逆的是【删除录像】，
+    /// 那个才有框（见清理那一段）。
+    /// </remarks>
+    private async Task RunQueueRowActionAsync(
+        object sender, string done, Func<CloudUploadService, string, Task<bool>> action)
+    {
+        var service = _host.Services.CloudUploads;
+
+        if (service is null || (sender as FrameworkElement)?.DataContext is not CloudQueueRow row)
+        {
+            return;
+        }
+
+        try
+        {
+            _cloudNote = await action(service, row.EvidenceId)
+                ? $"{done}：{row.Title}"
+                // 说的不算数只有两个可能：这一行在点下去之前已经变了状态
+                // （后台正好推进了它），或者它已经不在队列里了 —— 服务那边会留痕。
+                : $"没改：{row.Title} 的状态刚刚变过，刷新一下再看。";
+        }
+        catch (Exception ex)
+        {
+            _cloudNote = $"改队列没成功：{ex.Message}";
+        }
+        finally
+        {
+            await RefreshCloudPageAsync();
+        }
+    }
 
     /// <summary>【立即对比同步】/【立即重试失败上传】共用的那一圈。</summary>
     /// <remarks>
