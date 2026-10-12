@@ -505,13 +505,22 @@ public sealed class DesktopServices : IAsyncDisposable
             warnings.Add($"归档层没配好：{problem}本机这份仍然是好的，但它现在只有一份。");
         }
 
+        // ⚠️ `labels` 必须传（2026-10-11 补的）。它是**可选参数**，不传编译器一个字都不说，
+        // 而后果是「每一条电脑端自己录的录像都不带发货 / 退货标签」：回放页那一列恒显示
+        // 「类型未知」、按业务类型的保留期一律豁免（永远清不掉）、传到网盘的一律落进
+        // 「发货」目录（`CloudUploadService.BusinessTypeOfAsync` 的回退）。
+        // 只有**导入**那一条路（下面 `Importer`）一直是传的，所以这个洞只在
+        // 「本机录的」那一半上藏了很久 —— 单测全绿，因为那些测试自己 `new` 了 finalizer
+        // 并显式传了 `labels`（见 `RecordingCoordinatorTests`）。
+        // 装上闸的是 `LoggingWiringTests.标签表可选的那些构造点_生产代码里一处都不许漏传`。
         var finalizer = new SessionFinalizer(
             new RemuxPipeline(toolPath, runner),
             new DecodeVerifier(toolPath, runner),
             index,
             locations,
             logger,
-            relay);
+            relay,
+            labels);
 
         // ⚠️ logger 一定要传：工作区是「读不出来的会话」唯一的留痕出口，
         // 而那一条正是本仓**唯一会丢证据**的方向（见 `ReadManifestAsync`）。

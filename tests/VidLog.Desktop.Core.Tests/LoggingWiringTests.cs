@@ -1,12 +1,13 @@
 using System.Reflection;
 using System.Text.RegularExpressions;
 using VidLog.Desktop.Core.Diagnostics;
+using VidLog.Desktop.Core.Labels;
 
 namespace VidLog.Desktop.Core.Tests;
 
 /// <summary>
-/// 钉住 <c>AGENTS.md</c> §6.1 里那条**一直没有检查**的规矩：日志器可选的构造点，
-/// **调用处必须传**。
+/// 钉住 <c>AGENTS.md</c> §6.1 里那条**一直没有检查**的规矩：可选协作对象（日志器、标签表）
+/// 的构造点，**调用处必须传**。
 /// </summary>
 /// <remarks>
 /// <para>
@@ -44,34 +45,110 @@ namespace VidLog.Desktop.Core.Tests;
 /// 反射看不到（它们在 Windows 专用程序集里），仍由
 /// <c>DesktopServicesTests</c> 那几条手写的绊线管着。</item>
 /// <item>同名类型（不同命名空间）按**并集**放行，可能漏掉其中一支。</item>
+/// <item><b>「哪些可选参数要抓」是手工登记的谓词</b>（<c>IsOptionalLogger</c> /
+/// <c>IsOptionalLabels</c>）—— 反射看不出一个 <c>= null</c> 是「静默不发生」（要抓）
+/// 还是「有合理默认」（不该抓，比如 <c>IClockSource? clockSource = null</c>）。
+/// 再加一个同形状的协作对象时，补一个谓词 + 一条同形的 [Fact]。</item>
 /// </list>
 /// </para>
 /// </remarks>
 public class LoggingWiringTests
 {
-    /// <summary>`new T(` 与 `X.Y(` 两种调用形状。</summary>
+    /// <summary>`new T(` / `new A.B(` 与 `X.Y(` 三种调用形状。</summary>
     /// <remarks>
-    /// ⚠️ 前者认构造点、后者认静态方法；后者会匹配到源码里**每一处** <c>a.B(</c>，
+    /// ⚠️ 第一条认不带前缀的构造点、第二条认**带命名空间 / 类型前缀**的（`new Import.RecordingImporter(`），
+    /// 第三条认静态方法；第三条会匹配到源码里**每一处** <c>a.B(</c>，
     /// 这是有意的 —— 靠字典查一下就知道要不要管，比先精确匹配再回溯简单得多。
+    /// <para>
+    /// ⚠️ 第二条是 2026-10-11 补的：在那之前，全仓唯一一处 `new Import.RecordingImporter(`
+    /// 的**实参根本没被看过**（而它恰好是一个「标签表可选」的构造点）——
+    /// 也就是说这道闸自己有个洞，而洞的形状正好是被它盯着的那一种。
+    /// </para>
     /// </remarks>
     private static readonly Regex Calls = new(
-        @"new\s+(?<ctor>[A-Za-z_]\w*)\s*\(|(?<owner>[A-Za-z_]\w*)\.(?<member>[A-Za-z_]\w*)\s*\(",
+        @"new\s+(?<ctor>[A-Za-z_]\w*)\s*\("
+            + @"|new\s+[A-Za-z_]\w*\s*\.\s*(?<ctor>[A-Za-z_]\w*)\s*\("
+            + @"|(?<owner>[A-Za-z_]\w*)\.(?<member>[A-Za-z_]\w*)\s*\(",
         RegexOptions.Compiled);
 
-    /// <summary>参数写成 `logger: ...` 吗（按名字传的，位置就不作数了）。</summary>
-    private static readonly Regex NamedLogger = new(@"^\s*logger\s*:", RegexOptions.Compiled);
+    /// <summary>参数是不是写成 `名字: …` 传的（按名字传的，位置就不作数了）。</summary>
+    private static Regex NamedArgument(string name) =>
+        new($@"^\s*{name}\s*:", RegexOptions.Compiled);
 
     [Fact]
     public void 日志器可选的那些构造点_生产代码里一处都不许漏传()
     {
-        var sites = LoggerOptionalSites();
+        var found = Scan(IsOptionalLogger, "logger");
 
         // 哨兵①：反射真的量到东西了。（量不到时下面会一条不报地绿。）
         Assert.True(
-            sites.Count >= 30,
-            $"只从 Core 程序集里量到 {sites.Count} 个「日志器可选」的构造点 —— "
+            found.Sites >= 30,
+            $"只从 Core 程序集里量到 {found.Sites} 个「日志器可选」的构造点 —— "
                 + "反射大概走偏了（类型改成 internal、或者程序集换了）。");
 
+        // 哨兵②：扫到了真的调用点。少了这一句，正则写坏（比如路径过期、扫到 0 个文件）
+        // 照样绿 —— 与「许可那句话只有一份」那条同一个教训（2026-10-07 当场撞到过）。
+        Assert.True(found.Reached >= 20, $"只认到 {found.Reached} 处调用 —— 扫描路径或正则过期了，这条会空着绿。");
+
+        Assert.True(
+            found.Offenders.Count == 0,
+            "下面这些地方构造出来的对象，**日志器是可选的**（`IAppLogger? logger = null`）——"
+                + "不传就静默不落盘，而编译器一个字都不会说（`AGENTS.md` §6.1 / §6.1.1）。"
+                + "把 `AppHost.Logger`（Core 里是 `logger`）递下去：\n  "
+                + string.Join("\n  ", found.Offenders));
+    }
+
+    /// <summary>
+    /// 同一条闸，管**标签表**（2026-10-11）。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// ⚠️ <b>为什么补它</b>：需求方当天报「回放页不显示分类，一直『类型未知』」。
+    /// 根因是组合根那一句 <c>new SessionFinalizer(…, logger, relay)</c> 少了 <c>labels</c>
+    /// —— 而它是可选参数（<c>ILabelStore? labels = null</c>），编译器一个字都不说，
+    /// 于是**每一条电脑端自己录的录像都没打过发货 / 退货标签**，藏了不知多久。
+    /// 与上面那条日志器的缺口**是同一个形状**（`AGENTS.md` §6.1.1 第 1 条点名的那个），
+    /// 所以走同一套机器，不另造一个。
+    /// </para>
+    /// <para>
+    /// ⚠️ <b>为什么单测一直是绿的</b>：那些测试**自己 new 了 finalizer 并显式传了 labels**
+    /// （<c>RecordingCoordinatorTests</c> 那条断言「标签写进去了」就是），
+    /// 证明的是「这个类会写」，不是「生产上有人递给它」—— 与上面那条一字不差的道理。
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public void 标签表可选的那些构造点_生产代码里一处都不许漏传()
+    {
+        var found = Scan(IsOptionalLabels, "labels");
+
+        // 哨兵①：Core 里带 `ILabelStore? labels = null` 的就这么几个
+        // —— `SessionFinalizer` 两支重载 + `RecordingImporter`（2026-10-11 实测）。
+        Assert.True(found.Sites >= 2, $"只量到 {found.Sites} 个「标签表可选」的构造点 —— 反射走偏了。");
+
+        // 哨兵②：源码里认到的调用点两处 —— 组合根上那两处（`SessionFinalizer` 与
+        // `Import.RecordingImporter`，后者要带命名空间前缀那条分支才认得到）。
+        Assert.True(found.Reached >= 2, $"只认到 {found.Reached} 处调用 —— 扫描路径或正则过期了，这条会空着绿。");
+
+        Assert.True(
+            found.Offenders.Count == 0,
+            "下面这些地方构造出来的对象，**标签表是可选的**（`ILabelStore? labels = null`）——"
+                + "不传就静默不写标签，而编译器一个字都不会说。后果是用户看得见的："
+                + "回放页那一列恒显示「类型未知」、按业务类型的保留期一律豁免（永远清不掉）、"
+                + "传到网盘的一律落进「发货」目录。把组合根那个 `labels` 递下去：\n  "
+                + string.Join("\n  ", found.Offenders));
+    }
+
+    /// <summary>
+    /// 把「可选协作对象漏传」扫一遍：量出构造点、扫 `src/`、列出漏传的。
+    /// </summary>
+    /// <param name="isOptional">哪些可选参数算「不传就静默不发生」。</param>
+    /// <param name="argumentName">它在源码里会写出来的参数名（认 `名字:` 那种传法）。</param>
+    private static (int Sites, int Reached, List<string> Offenders) Scan(
+        Func<ParameterInfo, bool> isOptional,
+        string argumentName)
+    {
+        var sites = OptionalSites(isOptional);
+        var named = NamedArgument(argumentName);
         var offenders = new List<string>();
         var reached = 0;
 
@@ -86,7 +163,7 @@ public class LoggingWiringTests
                     ? call.Groups["ctor"].Value
                     : call.Groups["owner"].Value + "." + call.Groups["member"].Value;
 
-                if (!sites.TryGetValue(key, out var loggerAt))
+                if (!sites.TryGetValue(key, out var at))
                 {
                     continue;
                 }
@@ -94,8 +171,8 @@ public class LoggingWiringTests
                 reached++;
                 var args = ArgumentsAt(code, call.Index + call.Length - 1);
 
-                // 位置够得着 → 传了；写成 `logger:` → 也传了（位置就不作数）。
-                if (args.Count > loggerAt.Min() || args.Any(one => NamedLogger.IsMatch(one)))
+                // 位置够得着 → 传了；写成 `名字:` → 也传了（位置就不作数）。
+                if (args.Count > at.Min() || args.Any(one => named.IsMatch(one)))
                 {
                     continue;
                 }
@@ -105,16 +182,7 @@ public class LoggingWiringTests
             }
         }
 
-        // 哨兵②：扫到了真的调用点。少了这一句，正则写坏（比如路径过期、扫到 0 个文件）
-        // 照样绿 —— 与「许可那句话只有一份」那条同一个教训（2026-10-07 当场撞到过）。
-        Assert.True(reached >= 20, $"只认到 {reached} 处调用 —— 扫描路径或正则过期了，这条会空着绿。");
-
-        Assert.True(
-            offenders.Count == 0,
-            "下面这些地方构造出来的对象，**日志器是可选的**（`IAppLogger? logger = null`）——"
-                + "不传就静默不落盘，而编译器一个字都不会说（`AGENTS.md` §6.1 / §6.1.1）。"
-                + "把 `AppHost.Logger`（Core 里是 `logger`）递下去：\n  "
-                + string.Join("\n  ", offenders));
+        return (sites.Count, reached, offenders);
     }
 
     // ─────────────────────────────────────────────
@@ -122,15 +190,15 @@ public class LoggingWiringTests
     // ─────────────────────────────────────────────
 
     /// <summary>
-    /// Core 程序集里**每一个**带「可选日志器参数」的公开构造点。
+    /// Core 程序集里**每一个**带「这类可选参数」的公开构造点。
     /// 键是源码里会写出来的那个名字（构造点用类型名、静态方法用 `类型.方法`）。
     /// </summary>
     /// <remarks>
-    /// ⚠️ 一个类型有几支重载、日志器落在不同位置时，这里存的是**并集** ——
+    /// ⚠️ 一个类型有几支重载、那个参数落在不同位置时，这里存的是**并集** ——
     /// 判断时「够得着其中任一支」就算传了。这是**故意放宽**的：误红一条就会有人
     /// 把它改成白名单，那这条就废了；而真正的缺口（**一处都不传**）照样抓得住。
     /// </remarks>
-    private static Dictionary<string, int[]> LoggerOptionalSites()
+    private static Dictionary<string, int[]> OptionalSites(Func<ParameterInfo, bool> isOptional)
     {
         var sites = new Dictionary<string, List<int>>(StringComparer.Ordinal);
 
@@ -157,7 +225,7 @@ public class LoggingWiringTests
 
                 for (var i = 0; i < parameters.Length; i++)
                 {
-                    if (IsOptionalLogger(parameters[i]))
+                    if (isOptional(parameters[i]))
                     {
                         Add(type.Name, i);
                     }
@@ -172,7 +240,7 @@ public class LoggingWiringTests
 
                 for (var i = 0; i < parameters.Length; i++)
                 {
-                    if (IsOptionalLogger(parameters[i]))
+                    if (isOptional(parameters[i]))
                     {
                         Add(type.Name + "." + method.Name, i);
                     }
@@ -183,8 +251,23 @@ public class LoggingWiringTests
         return sites.ToDictionary(one => one.Key, one => one.Value.ToArray(), StringComparer.Ordinal);
     }
 
-    private static bool IsOptionalLogger(ParameterInfo parameter) =>
-        parameter.IsOptional && parameter.ParameterType == typeof(IAppLogger);
+    /// <summary>`IAppLogger? logger = null` —— 不传就静默不落盘。</summary>
+    private static bool IsOptionalLogger(ParameterInfo parameter) => IsOptional<IAppLogger>(parameter);
+
+    /// <summary>
+    /// `ILabelStore? labels = null` —— 与日志器同一种形状、同一种后果：不传就一个字都不写，
+    /// 只是这回**用户看得见**（回放页那一列恒是「类型未知」）。
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ <b>这里是手工登记的，不是推出来的</b>：反射只能看出「参数可空且默认 null」，
+    /// 看不出那个 null 是「静默不发生」（要抓）还是「有合理默认」（不该抓，
+    /// 比如 <c>IClockSource? clockSource = null</c> 那种）。**再加一个同形状的协作对象时，
+    /// 这里补一个谓词、并在上面加一条同形的 [Fact]。**
+    /// </remarks>
+    private static bool IsOptionalLabels(ParameterInfo parameter) => IsOptional<ILabelStore>(parameter);
+
+    private static bool IsOptional<T>(ParameterInfo parameter) =>
+        parameter.IsOptional && parameter.ParameterType == typeof(T);
 
     // ─────────────────────────────────────────────
     // 扫源码

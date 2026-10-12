@@ -637,7 +637,12 @@ public class DesktopServicesTests
         // 录像可能落在用户配的**任意一块盘**上，而收尾得知道往哪块写。
         // 绊线要挡的**还是同一件事**（relay 这根线不能从收尾那条路上掉），
         // 所以跟着改文本、不改口径。
-        Assert.Contains("locations,\n            logger,\n            relay);", code.Replace("\r\n", "\n"),
+        //
+        // ⚠️ 2026-10-11：后面又补了一个 `labels`（回放页那一列一直是「类型未知」的根因）
+        // ⇒ 判据**只到 `relay,`、不带结尾那个 `)`**，与下面第 ④ 条同一个教训：
+        // 该挡的是「relay 被摘掉」，不是「末尾多了一个参数」。
+        // `labels` 那一根线由 `LoggingWiringTests` 的泛化闸管着（不在这里再抄一遍）。
+        Assert.Contains("locations,\n            logger,\n            relay,", code.Replace("\r\n", "\n"),
             StringComparison.Ordinal);
 
         // ③ 入网决策（安全事件）+ **机位闸门**（`04-许可设计.md` §5.1）。
