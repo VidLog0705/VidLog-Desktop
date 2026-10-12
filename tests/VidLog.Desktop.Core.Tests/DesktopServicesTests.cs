@@ -390,6 +390,69 @@ public class DesktopServicesTests
     }
 
     [Fact]
+    public async Task 一直划不掉时_两次补发之间越隔越久()
+    {
+        // ⚠️ 3.2 掉线熔断的**接口那一半**。`ArchiveRetryBackoff.Next` 自己有 5 条直测，
+        // 但那 5 条只证明「这个式子算得对」—— 「**那个循环真的把它的结果用上了**」
+        // 原先只有读代码能证。这条就是那个缺的闸。
+        //
+        // 判据是**趟数**不是时刻：账一直划不掉 ⇒ 间隔翻倍（100 → 200 → 400 → 800…），
+        // 3 秒内轮得到三五趟；要是循环把 `Next` 的结果丢了（照旧每 100 毫秒一趟），
+        // 同样 3 秒会轮上三十来趟。⚠️ **只卡上界**：机器忙只会让趟数更少，
+        // 那是这台机器的抖动，不是熔断坏了 —— 卡下界才会把抖动引进来。
+        using var dir = new TempDir();
+        var layout = new DataLayout(dir.Dir("data"));
+
+        // 拿一个**文件**当归档根：发布必然失败，而且这条用例里**永远不修好**
+        // —— 熔断要看的正是「一直划不掉」。
+        var nas = System.IO.Path.Combine(dir.Path, "not-a-directory");
+        await File.WriteAllTextAsync(nas, "x");
+
+        var relative = RelativePath.Parse("2026/10/06/SF1000000001/e-000.mp4");
+        var local = System.IO.Path.Combine(layout.ArchiveRoot, relative.Value);
+        Directory.CreateDirectory(System.IO.Path.GetDirectoryName(local)!);
+        await File.WriteAllTextAsync(local, "x");
+
+        var logger = new CapturingLogger();
+
+        var services = DesktopServices.Create(
+            layout, playbackPort: null,
+            logger: logger,
+            archive: new ArchiveTarget(ArchiveBackendKind.Nas, nas),
+            archiveRetryInterval: TimeSpan.FromMilliseconds(100));
+
+        try
+        {
+            // 账上先有东西 —— 没欠账的时候那一路一条日志都不记（这是刻意的），
+            // 数不了趟数。
+            var published = await services.ArchiveRelay!.PublishAsync("e-000", relative, local);
+            Assert.False(published.Published);
+            Assert.Single(services.ArchiveFailures.Outstanding);
+
+            await services.StartAsync();
+
+            // 一轮「补发一次」记一条 —— 数它就是数趟数。
+            int Attempts() => logger.Messages.Count(
+                message => message.Contains("现在补发一次", StringComparison.Ordinal));
+
+            await Task.Delay(TimeSpan.FromSeconds(3));
+
+            // 期望 5 趟左右（启动那一趟 + 0.1 / 0.3 / 0.7 / 1.5 秒那四趟）。
+            // 上界放到 9：够宽，容得下几毫秒的调度误差；而「间隔不涨」是 31 趟上下，
+            // 隔着一条街 —— 这个闸不会因为机器忙而误报。
+            var attempts = Attempts();
+            Assert.True(
+                attempts <= 9,
+                $"3 秒里补发了 {attempts} 趟 —— 账一条都没划掉，间隔却没往后拖，"
+                + "像是循环把 `ArchiveRetryBackoff.Next` 的结果丢了。");
+        }
+        finally
+        {
+            await services.DisposeAsync();
+        }
+    }
+
+    [Fact]
     public async Task 归档层不是目录型时不补发_网盘那一档自己有重传队列()
     {
         // ⚠️ T23-B 的**克制**那一半（清单原话：「只针对有一张落盘失败表的那些，
