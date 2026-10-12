@@ -16,7 +16,8 @@
         ▓▓ 版式 ▓▓
           顶栏   ：[当前类型] [扫码输入 .................✕] [开始录制]
           左主体 ： 深色预览区  + 底部统计条（今日 N 件 · 平均 N 秒 · 总耗时）
-          右侧栏 ： 本机录制动态（原来的「概览」页收进来了）+ 连接手机入口
+          右侧栏 ： 本机录制动态（原来的「概览」页收进来了）+ 换用途入口
+                   （2026-10-11 之前这里是「连接手机」，需求方换成了【切换功能】）
 
         ⚠️ 这**取代**了 2026-09-28 早先那版 SaaS 版式（左 216px 竖导航 +
         右侧四页切 Visibility）。那版整个作废 —— 四个页面拆成了两个独立窗口
@@ -515,11 +516,17 @@
 
                         <Separator Margin="0,14,0,12"/>
 
-                        <Button x:Name="EnrollButton" Content="连接电脑 / 手机"
+                        <!-- ⚠️ 这里原来是【连接电脑 / 手机】（需求方 2026-10-11 换掉的）：
+                             录制台上换用途只能绕到设置里翻，而备份主机那一屏
+                             （`BackupRoot` 的 `BackupSwitchRoleButton`）本来就有一颗。
+                             绑手机的两个入口都还在：设置 →【局域网与网页】、
+                             Ctrl+K 命令面板的「连接电脑」。
+                             ⚠️ 文案与那一颗**逐字一致**（需求方 2026-10-11 定的：不许一
+                             张窗两个名字）；它顶上的 `x:Name` 则必须与那一颗区分开 ——
+                             同一个窗里的 `x:Name` 重了是 CS0102。 -->
+                        <Button x:Name="SwitchRoleButton" Content="切换用途"
                                 Style="{StaticResource SecondaryButton}"
-                                HorizontalAlignment="Stretch" Click="OnEnroll"/>
-                        <TextBlock Style="{StaticResource Caption}" Margin="0,6,0,0"
-                                   Text="手机要接进来，得先在这里发一张二维码给它扫。"/>
+                                HorizontalAlignment="Stretch" Click="OnSwitchRole"/>
 
                         <Separator Margin="0,14,0,12"/>
 
@@ -609,7 +616,10 @@
                                Margin="0,6,0,0"/>
                 </StackPanel>
 
-                <Button x:Name="SwitchRoleButton" Grid.Column="1"
+                <!-- ⚠️ 名字带 `Backup` 前缀是**跟这一屏的惯例**（`BackupRoot` /
+                     `BackupRoleText` / `BackupAddressText` …）；录制台那一屏也有一颗
+                     同样的（`SwitchRoleButton`），两者文案逐字一致、只是住两屏。 -->
+                <Button x:Name="BackupSwitchRoleButton" Grid.Column="1"
                         VerticalAlignment="Top"
                         Style="{StaticResource SecondaryButton}" Padding="14,7"
                         Click="OnSwitchRole">
