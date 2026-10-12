@@ -42,6 +42,31 @@ public sealed class DesktopServices : IAsyncDisposable
     /// <summary>T23-B 那一趟补发的停机信号（见 <see cref="DisposeAsync"/>）。</summary>
     private readonly CancellationTokenSource _archiveRetryStop = new();
 
+    /// <summary>
+    /// 运行期补发**两趟之间**的间隔（T23-B 3.1）。
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ <b>出厂值，不是设置项</b>：这个数调错了没有任何用户看得见的表现 ——
+    /// 唯一的效果是「归档层回来之后，那几条欠账多久才有人管」。
+    /// 做成参数只为一件事：**能测**（不注入的话，「运行期真的会再试一趟」这句话
+    /// 要在测试里等满 60 秒才验得了，而 60 秒的测试没人会留着）。
+    /// </remarks>
+    private TimeSpan ArchiveRetryInterval { get; init; }
+
+    /// <summary>归档层回来之后，欠账最多等这么久就有人管一次。</summary>
+    private static readonly TimeSpan DefaultArchiveRetryInterval = TimeSpan.FromSeconds(60);
+
+    /// <summary>
+    /// 欠账一直划不掉时，两趟之间最长拖到这么久（3.2 掉线熔断）。
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ 30 分钟这个上限不是随手定的：一趟补发要**真的把录像整份拷过去**，
+    /// 归档层「在、但写不进去」（盘满、只读挂载、权限被改）时，60 秒一趟就是
+    /// 每分钟重写几百 MB —— 而它这十分钟之内不可能自己好。与
+    /// <c>CloudUploadService.MaxBackoff</c> 同一个刻度，别再发明一套。
+    /// </remarks>
+    private static readonly TimeSpan MaxArchiveRetryInterval = TimeSpan.FromMinutes(30);
+
     private DesktopServices(
         DataLayout layout,
         IRecordingIndex index,
@@ -172,6 +197,16 @@ public sealed class DesktopServices : IAsyncDisposable
     public Task<int>? ArchiveRetry { get; private set; }
 
     /// <summary>
+    /// 装配时那一个 logger（不传就是 <see cref="NullLogger.Instance"/>）。
+    /// </summary>
+    /// <remarks>
+    /// 本来没有这一格 —— 它是被 <see cref="ArchiveRetryLoopAsync"/> 逼出来的：
+    /// 那个循环**跑在后台**，它的 catch 想记一句话时手上什么都没有，
+    /// 而「循环死了却没人知道」正是那一处最要防的事。
+    /// </remarks>
+    private IAppLogger Logger { get; init; } = NullLogger.Instance;
+
+    /// <summary>
     /// 清理链路（规格 §3.5.4 / §3.5.5）。
     /// </summary>
     /// <remarks>
@@ -295,6 +330,10 @@ public sealed class DesktopServices : IAsyncDisposable
     /// 归档层（NAS / 挂载盘）要落的目录，有序。**不传 = 用
     /// <see cref="ArchiveTarget.DirectoryPath"/> 那一个**（老配置的写法）。
     /// </param>
+    /// <param name="archiveRetryInterval">
+    /// 运行期补发两趟之间的间隔。**不传 = <see cref="DefaultArchiveRetryInterval"/>**。
+    /// 只有测试会传它（见那个属性的 remarks）。
+    /// </param>
     public static DesktopServices Create(
         DataLayout layout,
         string? ffmpegPath = null,
@@ -305,7 +344,8 @@ public sealed class DesktopServices : IAsyncDisposable
         IClockSource? clockSource = null,
         StorageLocations? storage = null,
         IReadOnlyList<string>? archiveDirectories = null,
-        CloudUploadSettings? cloud = null)
+        CloudUploadSettings? cloud = null,
+        TimeSpan? archiveRetryInterval = null)
     {
         layout.EnsureCreated();
 
@@ -639,6 +679,8 @@ public sealed class DesktopServices : IAsyncDisposable
             Storage = locations,
             ArchiveRelay = relay,
             ArchiveFailures = archiveFailures,
+            ArchiveRetryInterval = archiveRetryInterval ?? DefaultArchiveRetryInterval,
+            Logger = effectiveLogger,
             Live = live,
             Cleanup = cleanup,
             CleanupFlow = cleanupFlow,
@@ -776,7 +818,7 @@ public sealed class DesktopServices : IAsyncDisposable
             CloudUploads.Start();
         }
 
-        // ── 归档层没发上去的那些，补发一次（T23-B）────────────────────
+        // ── 归档层没发上去的那些，补发（T23-B / 3.1）────────────────────
         //
         // ⚠️ **只对目录型那一档**（NAS / 挂载盘）。网盘那一档有自己的**落盘重传队列**
         // （`CloudUploadService` 的 `UploadQueue` + 定时 `TickAsync`），在这儿再补一次
@@ -788,20 +830,103 @@ public sealed class DesktopServices : IAsyncDisposable
         // 精神（I4）：补发是补救，不是启动的前置条件。
         //
         // ⚠️ 正常机器上这本账是空的 ⇒ 这一趟**立刻返回、一条日志都不记**。
+        //
+        // ⚠️ **不止启动这一趟**（3.1）：NAS 在录到一半掉线、过十分钟又回来，
+        // 那几条欠账原来要**等到下次重启**才有人管 —— 而重启不一定会发生
+        // （机器一直开着才是常态）。所以下面那个循环会一直按间隔再试，
+        // 直到这本账空了为止（空着的时候一趟就是一次字典计数）。
         if (ArchiveRelay is not null && ArchiveTarget.IsDirectoryType)
         {
-            ArchiveRetry = Task.Run(
+            // ⚠️ 启动这一趟**单独留一个 Task**（就是 `ArchiveRetry`）：它答的是
+            // 「这次启动补了几条」，是个**会结束**的任务；下面那个循环是**一直在跑**的。
+            // 两件事不能共用一个属性 —— 共用了的话，`await ArchiveRetry` 永远不返回。
+            var firstPass = Task.Run(
                 () => ArchiveRelay.RetryOutstandingAsync(
                     Storage.ResolveOrActive, _archiveRetryStop.Token),
                 _archiveRetryStop.Token);
+
+            ArchiveRetry = firstPass;
+
+            // ⚠️ 那一趟**当参数传进去**，不让循环自己去读 `ArchiveRetry`：
+            // `Task.Run` 可能在这句赋值落下来之前就把它跑起来了，读到 null 就会
+            // 与上面那一趟**同时**发同一条（两个写者）。
+            _ = Task.Run(
+                () => ArchiveRetryLoopAsync(firstPass, Storage.ResolveOrActive),
+                _archiveRetryStop.Token);
+
+            // §6.1「起定时器 ⇒ 起、停、失败各一条」的**起**。
+            // ⚠️ 这条不是可有可无的：下面那个循环**平时一声不响**（没欠账时不记任何东西），
+            // 于是日志里「有起、有停」与「只有失败那条 Warn、没有停」能分出两件事 ——
+            // 后者才是「循环死了」。少了它，那两种情况长得一模一样。
+            Logger.Log(LogLevel.Info, "归档",
+                $"归档层是{ArchiveTarget.Label}：运行期补发已起"
+                + $"（起点每 {ArchiveRetryInterval.TotalSeconds:0} 秒看一次这本账，"
+                + $"一直划不掉就往后拖，最多 {MaxArchiveRetryInterval.TotalMinutes:0} 分钟）。");
         }
 
         return new StartupReport(orphanOutcomes, playbackUrl, warnings);
     }
 
+    /// <summary>
+    /// 等启动那一趟跑完，然后按间隔一直再试（3.1 运行期补发 + 3.2 掉线熔断）。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// ⚠️ <b>这个循环绝不能死</b>：它死掉的表现是「归档层再也没人补发过，而界面上
+    /// 一切正常」—— 没有任何人会知道（与 <c>CloudUploadService.TickAsync</c> 同一条）。
+    /// 所以下面把两种异常分开收：停机是**正常收场**，别的只记一句 Warn 接着跑。
+    /// </para>
+    /// <para>
+    /// ⚠️ 它**没有返回值**、也**没人 await**（`Task.Run` 那个结果被丢掉了）：
+    /// 它按设计就是在停机信号下来时结束，唯一的出口是 <see cref="DisposeAsync"/>。
+    /// </para>
+    /// </remarks>
+    private async Task ArchiveRetryLoopAsync(
+        Task firstPass, Func<string, string?> resolveLocalPath)
+    {
+        var interval = ArchiveRetryInterval;
+
+        try
+        {
+            // ⚠️ 先等上面那一趟 —— 同一个补发同时跑两遍就是两个写者发同一条
+            //（第二次会被判成「归档层上已经有这个名字」，内容一样所以不会出事，
+            // 但整个文件白拷一遍）。
+            await firstPass;
+
+            while (true)
+            {
+                await Task.Delay(interval, _archiveRetryStop.Token);
+
+                var before = ArchiveFailures.Outstanding.Count;
+
+                await ArchiveRelay!.RetryOutstandingAsync(
+                    resolveLocalPath, _archiveRetryStop.Token);
+
+                var after = ArchiveFailures.Outstanding.Count;
+
+                // 3.2 掉线熔断：为什么用「欠账少了多少」而不是返回值判，见
+                // `ArchiveRetryBackoff.Next` 上的那两条 ⚠️。
+                interval = ArchiveRetryBackoff.Next(
+                    interval, before, after, ArchiveRetryInterval, MaxArchiveRetryInterval);
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // 停机信号，**不是异常情况** —— 与 `DisposeAsync` 那句「只发停机信号、
+            // 不等它」是同一件事的两头。所以记 Info 不记 Warn。
+            Logger.Log(LogLevel.Info, "归档", "运行期补发已停（应用要关了）。");
+        }
+        catch (Exception ex)
+        {
+            Logger.Log(LogLevel.Warn, "归档",
+                $"定时补发到{ArchiveTarget.Label}出错，不再自动重试：{ex.Message}"
+                + "（欠账还在账上，下次启动仍会补发；也可以改完归档层设置后重启一次。）");
+        }
+    }
+
     public async ValueTask DisposeAsync()
     {
-        // T23-B 那一趟补发：**只发停机信号，不等它**。
+        // T23-B 那一趟补发（含 3.1 那个一直跑的循环）：**只发停机信号，不等它**。
         //
         // 等的代价很具体：归档层是掉线的 NAS 时，`CopyAsync` 会一直卡在写盘上，
         // 而那会把**关窗**也一起卡住 —— 用户只看到应用关不掉。
@@ -809,6 +934,8 @@ public sealed class DesktopServices : IAsyncDisposable
         // 回查时判「不存在」，下次启动照旧在账上、照旧补发。
         // （被这一下打断的那一趟会以 `OperationCanceledException` 收场，而**没人 await 它** ——
         // 停机路上的一次取消不是异常情况，正是上面「不等」的意思。）
+        // ⚠️ 那个循环也是靠这个信号收场的（它的 `Task.Delay` 会抛取消）——
+        // 它是**唯一的**停机路径，所以这句不能挪到任何 `await` 后面去。
         _archiveRetryStop.Cancel();
 
         // ⚠️ 先停上传再停回放：上传是**往外发数据**的那一个，

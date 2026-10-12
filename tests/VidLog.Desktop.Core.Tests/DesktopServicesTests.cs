@@ -294,6 +294,102 @@ public class DesktopServicesTests
     }
 
     [Fact]
+    public async Task 归档层回来了_不用重启_运行期自己就补上了()
+    {
+        // ⚠️ **3.1 的验收本身**，而且是上一条的**补集**：上一条只答「重启之后有人管」，
+        // 这一条答的是「**不重启**的时候呢」—— 而机器一直开着才是常态。
+        //
+        // 场景照实说：录到一半 NAS 掉线 ⇒ 那几条欠账留在账上；过十分钟 NAS 回来了。
+        // 在 3.1 之前，它们要**等到下次重启**才有人管，而那次重启可能永远不会发生。
+        using var dir = new TempDir();
+        var layout = new DataLayout(dir.Dir("data"));
+
+        // 拿一个**文件**当归档根：发布必然失败。⚠️ 后面会把它**原样换成一个真目录** ——
+        // 这就是「NAS 回来了」，路径一个字没改，重启也没有。
+        var nas = System.IO.Path.Combine(dir.Path, "not-a-directory");
+        await File.WriteAllTextAsync(nas, "x");
+
+        var relative = RelativePath.Parse("2026/10/06/SF1000000001/e-000.mp4");
+        var local = System.IO.Path.Combine(layout.ArchiveRoot, relative.Value);
+        Directory.CreateDirectory(System.IO.Path.GetDirectoryName(local)!);
+        await File.WriteAllTextAsync(local, "x");
+
+        var logger = new CapturingLogger();
+
+        // ⚠️ 这里**不用 `await using`**：下面要断言关机之后那条「已停」的日志，
+        // 而它是循环在自己线程上收到取消信号之后才写下去的 —— 得等它一下。
+        var services = DesktopServices.Create(
+            layout, playbackPort: null,
+            logger: logger,
+            archive: new ArchiveTarget(ArchiveBackendKind.Nas, nas),
+            // ⚠️ 出厂值是 60 秒，测试里等不起 ⇒ 注入一个 100 毫秒的。
+            // 它只改**两趟之间隔多久**，退避那部分照旧走真刻度（见 `ArchiveRetryBackoffTests`）。
+            archiveRetryInterval: TimeSpan.FromMilliseconds(100));
+
+        try
+        {
+            // ── 录到一半 NAS 掉线：这一条发布失败、欠账落下 ──
+            // ⚠️ 这一步**必须在 `StartAsync` 之前**：启动那一趟补发读的就是这本账，
+            // 先让账上有东西，下面才验得到「启动那趟没发成、之后自己又试了一趟」。
+            var published = await services.ArchiveRelay!.PublishAsync("e-000", relative, local);
+            Assert.False(published.Published);
+            Assert.Single(services.ArchiveFailures.Outstanding);
+
+            await services.StartAsync();
+
+            // 前提：启动那一趟真的**试过**（NAS 还没回来，所以试了也没成）。
+            Assert.Equal(1, await services.ArchiveRetry!);
+            Assert.Single(services.ArchiveFailures.Outstanding);
+
+            // §6.1「起定时器 ⇒ 起、停、失败各一条」的**起**。
+            // ⚠️ 这条与文件末尾那条「停」是一对：那个循环平时一声不响，
+            // 有了这一对，「正常关机」与「循环挂了」才分得出来。
+            Assert.True(
+                logger.Has("运行期补发已起"),
+                "没记「运行期补发已起」—— 那这条线索就断了。");
+
+            // ── NAS「回来了」：不重启、不重新装配，只把那颗挡路的文件换成真目录 ──
+            File.Delete(nas);
+            Directory.CreateDirectory(nas);
+
+            // 等循环自己再试一趟。⚠️ 不 `await` 任何任务句柄 —— 那个循环**按设计永不结束**，
+            // 能观察到的只有它的**效果**：账空了、归档层上真有那一份了。
+            var deadline = DateTime.UtcNow.AddSeconds(15);
+            while (services.ArchiveFailures.Outstanding.Count > 0 && DateTime.UtcNow < deadline)
+            {
+                await Task.Delay(50);
+            }
+
+            Assert.True(
+                services.ArchiveFailures.Outstanding.Count == 0,
+                "归档层已经回来了，账上却还欠着 —— 运行期那一趟没跑（或没跑成）。");
+
+            // 账清了还不够，得**真发上去**了：账清也有可能是被别的东西划掉的。
+            Assert.True(File.Exists(System.IO.Path.Combine(nas, relative.Value)));
+            Assert.Equal("x", await File.ReadAllTextAsync(System.IO.Path.Combine(nas, relative.Value)));
+        }
+        finally
+        {
+            await services.DisposeAsync();
+        }
+
+        // §6.1 那三条里的**停**。⚠️ 它是在循环自己那个线程上写的（收到取消信号之后），
+        // 而 `DisposeAsync` **按设计不等它** ⇒ 这里只能等一小会儿。
+        var sawStop = false;
+        var until = DateTime.UtcNow.AddSeconds(5);
+        while (!sawStop && DateTime.UtcNow < until)
+        {
+            sawStop = logger.Has("运行期补发已停");
+            if (!sawStop)
+            {
+                await Task.Delay(25);
+            }
+        }
+
+        Assert.True(sawStop, "关掉之后没等到「运行期补发已停」。");
+    }
+
+    [Fact]
     public async Task 归档层不是目录型时不补发_网盘那一档自己有重传队列()
     {
         // ⚠️ T23-B 的**克制**那一半（清单原话：「只针对有一张落盘失败表的那些，
@@ -2035,14 +2131,40 @@ public class DesktopServicesTests
     }
 
     /// <summary>把日志收起来的假 logger（本仓测试的惯例）。</summary>
+    /// <remarks>
+    /// ⚠️ 加了锁、`Messages` 改成每次给一份快照：本组里**有从后台线程写的日志**
+    /// （补发那个循环、它的「停」那条），而测试是在主线程上一边跑一边读的 ——
+    /// 一个 `List` 被一边 `Add`（可能正好在扩容）一边 `Any` 会偶发抛
+    /// 「集合已修改」，那种红会把人引到错的地方去。
+    /// </remarks>
     private sealed class CapturingLogger : IAppLogger
     {
-        public List<string> Messages { get; } = [];
+        private readonly object _gate = new();
+        private readonly List<string> _messages = [];
 
-        public void Log(LogLevel level, string category, string message) => Messages.Add(message);
+        public IReadOnlyList<string> Messages
+        {
+            get { lock (_gate) { return _messages.ToArray(); } }
+        }
+
+        public bool Has(string fragment)
+        {
+            lock (_gate)
+            {
+                return _messages.Any(message => message.Contains(fragment, StringComparison.Ordinal));
+            }
+        }
+
+        public void Log(LogLevel level, string category, string message)
+        {
+            lock (_gate) { _messages.Add(message); }
+        }
 
         public void Log(
             LogLevel level, string category, string message,
-            IReadOnlyDictionary<string, object?> data) => Messages.Add(message);
+            IReadOnlyDictionary<string, object?> data)
+        {
+            lock (_gate) { _messages.Add(message); }
+        }
     }
 }
