@@ -125,7 +125,7 @@ public class ArchiveBackendTests
     }
 
     [Fact]
-    public async Task 归档层上已经有一份就不重发()
+    public async Task 归档层上已经有一份而且内容一样就不重发()
     {
         using var dir = new TempDir();
         var nas = System.IO.Path.Combine(dir.Path, "nas");
@@ -135,16 +135,44 @@ public class ArchiveBackendTests
         await File.WriteAllBytesAsync(local, [1, 2, 3]);
         await backend.PublishAsync(Where("e.mp4"), local);
 
-        // 把归档层那一份改掉，再发一次：**内容不该被覆盖**。
-        // 归档路径是「单号 + 会话 + 序号 + 时间」推出来的，同名就是同一条录像；
-        // 覆盖它等于抹掉归档层上可能更早、更可信的那一份。
+        // 再发一次同一个文件：**认下归档层那一份**，不用重写一遍。
+        // 这是「补传 / 重发不会白读一遍盘」那一档。
+        var result = await backend.PublishAsync(Where("e.mp4"), local);
+
+        Assert.True(result.Published);
+        Assert.Null(result.FailureReason);
+        Assert.Equal([1, 2, 3], await File.ReadAllBytesAsync(System.IO.Path.Combine(nas, "e.mp4")));
+    }
+
+    [Fact]
+    public async Task 归档层上同名但内容不同_判成撞名且两边都不被覆盖()
+    {
+        using var dir = new TempDir();
+        var nas = System.IO.Path.Combine(dir.Path, "nas");
+        var backend = new DirectoryArchiveBackend(nas, ArchiveBackendKind.Nas);
+
+        var local = System.IO.Path.Combine(dir.Path, "local.mp4");
+        await File.WriteAllBytesAsync(local, [1, 2, 3]);
+        await backend.PublishAsync(Where("e.mp4"), local);
+
+        // 把归档层那一份改成**别的内容**，再发一次。
+        //
+        // ⚠️ 从前这里判「同名 = 同一条录像」⇒ 回 `Ok`（= 声称已经传上去了），
+        // 而盘上躺着的是**别人的**那一份 —— 那正是 §四 要修的那个谎
+        // （2026-10-12 换路径形状之后，名字里没有会话号，同名单号必然撞名）。
+        // 现在的判据是**内容**：一样才 `Ok`，不一样就是撞名，要人来处理。
         var copied = System.IO.Path.Combine(nas, "e.mp4");
         await File.WriteAllBytesAsync(copied, [9, 9, 9]);
 
         var result = await backend.PublishAsync(Where("e.mp4"), local);
 
-        Assert.True(result.Published);
+        Assert.False(result.Published);
+        Assert.Equal(ArchiveFailureKind.Conflict, result.Kind);
+        Assert.False(string.IsNullOrWhiteSpace(result.FailureReason));
+
+        // 两边都**不许被覆盖** —— 这两份内容不同，可能都是别人的证据。
         Assert.Equal([9, 9, 9], await File.ReadAllBytesAsync(copied));
+        Assert.Equal([1, 2, 3], await File.ReadAllBytesAsync(local));
     }
 
     [Fact]

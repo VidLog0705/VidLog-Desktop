@@ -271,7 +271,13 @@ public partial class SettingsWindow : Window
             ArchiveRelayNote.Text =
                 $"⚠️ 最近一次发布到{relay.Label}没成功：{failure}\n"
                 + "盘上这一份仍然是好的、也能检索 —— 但它现在只有一份，"
-                + "在发上去之前别删它。修好之后下次收尾会自动再发。";
+                + "在发上去之前别删它。"
+                // ⚠️ 尾巴那句话**两档不一样**（§四）：撞名不是在等网络、也不是等重试，
+                // 是在等**一个人**。不分开说，用户会一直等一个永远不会发生的事。
+                + (relay.LastFailureKind == ArchiveFailureKind.Conflict
+                    ? "这一条不会自己好 —— 归档层上那份和这一份内容不一样，"
+                      + "两份都得留着，得你自己决定改哪个名 / 删哪一份。"
+                    : "修好之后下次收尾会自动再发。");
             return;
         }
 
@@ -290,13 +296,22 @@ public partial class SettingsWindow : Window
         var newest = outstanding.OrderByDescending(r => r.At).First();
         var rest = outstanding.Count - 1;
 
+        // ⚠️ **撞名的要先单独说**（§四）：它们等的是人，不是网络 —— 混在
+        // 「N 条没发上去」里，用户会去查网络，而查多久都不会动。
+        var conflicts = outstanding.Count(r => r.Kind == ArchiveFailureKind.Conflict);
+
         ArchiveRelayNote.Visibility = Visibility.Visible;
         ArchiveRelayNote.Text =
-            $"⚠️ 有 {outstanding.Count} 条录像没发到归档层（最近一条：{newest.EvidenceId}，"
+            (conflicts > 0
+                ? $"⚠️ 有 {conflicts} 条「撞名」：归档层上已经有同名的文件，但内容不是这一份。"
+                  + "两份都得留着，得你自己决定改哪个名 / 删哪一份 —— 不会自己好。\n"
+                : string.Empty)
+            + $"⚠️ 有 {outstanding.Count} 条录像没发到归档层（最近一条：{newest.EvidenceId}，"
             + $"{newest.At.LocalDateTime:yyyy-MM-dd HH:mm} —— {newest.Reason}）"
             + (rest > 0 ? $"，另有 {rest} 条更早的。" : "。")
             + "\n盘上这些仍然是好的、也能检索 —— 但它们现在只有一份，"
-            + "在发上去之前别删。修好之后下次收尾会自动再发。";
+            + "在发上去之前别删。"
+            + (conflicts == 0 ? "修好之后下次收尾会自动再发。" : string.Empty);
     }
 
     /// <summary>界面上当前选中的归档层。</summary>

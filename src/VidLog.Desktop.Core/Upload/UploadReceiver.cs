@@ -415,6 +415,12 @@ public sealed class UploadReceiver
         var location = baseLocation;
         string? destination = null;
 
+        // 索引里已经用掉的名字（§四）—— 与下面 `File.Exists` 那一路是两个来源：
+        // 「上一次传到一半」看得见盘，而「本机那份后来被人工删了」盘上看不见，
+        // 只有索引知道那个名字有主。两个都不看的话，索引里会出现两条记录共用一个
+        // `Location`，而回查／清理／`Locate` 全都指望它唯一。
+        var used = await _index.UsedLocationsAsync(_logger, cancellationToken);
+
         for (var ordinal = 0; ordinal <= ArchiveLayout.MaxDuplicates; ordinal++)
         {
             location = ArchiveLayout.Deduplicated(baseLocation, ordinal);
@@ -432,6 +438,14 @@ public sealed class UploadReceiver
                 }
 
                 continue;   // 撞名且内容不同 ⇒ 换 `_2`
+            }
+
+            // ⚠️ 盘上没有，但**索引里有**（§四）：那个名字属于另一条录像，换 `_2`。
+            // 判据放在内容那一关**之后** —— 同一条录像重复传（内容一样）仍然要认下
+            // 盘上那一份，那是「传到一半断电、重启后重传不会多出一份」的唯一依靠。
+            if (used.Contains(location.Value))
+            {
+                continue;
             }
 
             var parent = Path.GetDirectoryName(candidate);

@@ -18,6 +18,30 @@ public enum ArchiveFailureState
     Recovered = 1,
 }
 
+/// <summary>没发上去的**种类** —— 决定「再试一次有没有意义」。</summary>
+/// <remarks>
+/// ⚠️ 落盘存的是**数字**，所以**顺序即格式，别重排**（与 <see cref="ArchiveFailureState"/> 同一条规矩）。
+/// <para>
+/// ⚠️ 老账本里那些行**没有这一格** ⇒ 反序列化落到 <see cref="Ordinary"/>（= 0），
+/// 也就是「照旧会重试」—— 正是它们当年的行为。所以这个字段是**纯追加，不用迁移**。
+/// </para>
+/// </remarks>
+public enum ArchiveFailureKind
+{
+    /// <summary>普通的没发上去：网络、满盘、权限、网盘在维护……**再试一次是有意义的**。</summary>
+    Ordinary = 0,
+
+    /// <summary>
+    /// 归档层上**已经有这个名字，但内容不是这一份**（§四 的撞名）。
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ <b>重试多少次都是同一个结果</b>：两份内容都要、而这个名字只能占一个，
+    /// 除非人来做决定（改名 / 删掉多余的那一份）。所以补发那一路**跳过它**，
+    /// 否则它每次启动都重试一次、每次都记一条 Warn，而那件事**永远得等一个人**。
+    /// </remarks>
+    Conflict = 1,
+}
+
 /// <summary>
 /// 「这一条发到归档层没成功」的一笔账。
 /// </summary>
@@ -26,12 +50,14 @@ public enum ArchiveFailureState
 /// <param name="Reason">为什么没成（给人看的一句话）。撤掉的那一行是空的。</param>
 /// <param name="At">这一行是什么时候写的。</param>
 /// <param name="State">没成，还是后面补上了。</param>
+/// <param name="Kind">没成的**种类**（决定还要不要再试）。老账本里的行没有这一格 ⇒ 一律 <see cref="ArchiveFailureKind.Ordinary"/>。</param>
 public sealed record ArchiveFailureRecord(
     string EvidenceId,
     string? Location,
     string? Reason,
     DateTimeOffset At,
-    ArchiveFailureState State);
+    ArchiveFailureState State,
+    ArchiveFailureKind Kind = ArchiveFailureKind.Ordinary);
 
 /// <summary>
 /// 「哪几条没发到归档层」的落盘账（T23-A）。

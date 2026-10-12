@@ -1,5 +1,6 @@
 using System.Text;
 using System.Text.Json;
+using VidLog.Desktop.Core.Diagnostics;
 
 namespace VidLog.Desktop.Core.Index;
 
@@ -78,6 +79,61 @@ public interface IRecordingIndex
 
     /// <summary>读出全部记录。用于验证落盘确实成功、以及后续的检索。</summary>
     Task<IReadOnlyList<RecordingEntry>> LoadAllAsync(CancellationToken cancellationToken = default);
+}
+
+/// <summary>
+/// 索引里**已经用掉的那些相对路径**（§四 撞名判定的一半）。
+/// </summary>
+/// <remarks>
+/// <para>
+/// <b>为什么需要它。</b>2026-10-12 起名字里**没有会话号**（`&lt;单号&gt;.mp4`），
+/// 于是「同一个单号、同一天」的第二场**必然**撞名，靠 `_2` / `_3` 区分。
+/// 而 `File.Move(overwrite: false)` 那种「本机盘上有没有」的探法**只看得见盘**：
+/// </para>
+/// <list type="bullet">
+/// <item>第二场换了块盘（设计图 `_43` 满了自动换）⇒ 那块盘上没有，名字照旧取
+/// <c>&lt;单号&gt;.mp4</c>，而索引里的**第一场**已经指着这个名字了；</item>
+/// <item>本机那份被人工删掉 / 换了机器 ⇒ 盘上没有，名字照旧，而归档层上第一场那份还在。</item>
+/// </list>
+/// <para>
+/// 两种走法的后果同一个：**索引里两条记录共用一个 `Location`**，而这正是
+/// 回查（只问在不在）、清理（按 `Location` 删本机那份）、`StorageLocations.Locate`
+/// （返回第一个有它的根）**全都指望它唯一**的那条前提。
+/// </para>
+/// <para>
+/// ⚠️ <b>读不动时返回空集，是**故意**朝「当作没人占」那头落。</b>判错的后果不是
+/// 丢证据，而是**一次响亮的撞名**：第二场会落到一个已被占用的名字上，发布时
+/// 比内容 ⇒ 不同 ⇒ `Conflict` ⇒ 界面上要人处理（本机那份绝不被自动删）。
+/// 反过来朝「当作都占了」落的话，索引一旦读不出来，每场录像的名字都会往后挪
+/// 一格、盘上凭空多出一堆 `_2`/`_3`，而**没有任何东西会告诉用户**。
+/// </para>
+/// </remarks>
+public static class RecordingIndexLocations
+{
+    /// <summary>索引里所有已经用掉的相对路径（原样比较，区分大小写）。</summary>
+    public static async Task<IReadOnlySet<string>> UsedLocationsAsync(
+        this IRecordingIndex index,
+        IAppLogger? logger = null,
+        CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var entries = await index.LoadAllAsync(cancellationToken);
+
+            return entries.Select(entry => entry.Location.Value).ToHashSet(StringComparer.Ordinal);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            // ⚠️ 留痕（§6.1 判据表「catch 块」那一行），并说清**下一步会怎样** ——
+            // 「当作没人占」这个选择的结果是「可能撞名」，不写出来就成了神秘现象。
+            logger?.Log(LogLevel.Warn, "落盘",
+                $"索引读不出来（{ex.Message}）—— 这次落盘不按索引判撞名。"
+                + "如果同一个单号今天已经录过，这一场会落到已被占用的名字上，"
+                + "发布时会被判成撞名（界面会提示要人工处理，本机这一份不会被自动删）。");
+
+            return new HashSet<string>(StringComparer.Ordinal);
+        }
+    }
 }
 
 /// <summary>

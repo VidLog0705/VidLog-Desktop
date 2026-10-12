@@ -374,6 +374,18 @@ public sealed class SessionFinalizer
         // 3.5 定名落盘：从 `<单号>.mp4` 起试，撞名就 `_2`、`_3`…（需求方 2026-10-12 裁定）。
         // 原子性来自 `File.Move(overwrite: false)` —— 判「撞没撞」与「占住」是同一步，
         // 中间没有缝（见上面为什么不能先探再写）。
+        //
+        // ⚠️ **「撞没撞」不能只看本机活动根上有没有那个文件**（§四，2026-10-12 实测复现）：
+        // 名字里没有会话号 ⇒ 同一个单号同一天的第二场必然同名，而它落在哪儿是「现挑一次盘」
+        // 的结果 —— 换了块盘就是「那块盘上没有 ⇒ 名字照旧」，本机那份被人工删掉了也是
+        // 「盘上没有 ⇒ 名字照旧」。两种情况下**索引里第一场已经指着这个名字**（前者是另一块盘、
+        // 后者是归档层），而 `File.Move` 谁也拦不住 —— 于是索引里两条记录共用一个 `Location`，
+        // 回查／清理／`Locate` 全都指望它唯一。
+        //
+        // 所以判据要**三个来源都看**：本机所有落盘位置（`Resolve` 挨个根找）、索引里已用掉的
+        // 名字、以及最后那道 `File.Move` 的原子占位（并发收尾的挡板，不能省）。
+        var used = await _index.UsedLocationsAsync(_logger, cancellationToken);
+
         var location = relative;
         string? destination = null;
         for (var ordinal = 0; ordinal <= ArchiveLayout.MaxDuplicates; ordinal++)
@@ -381,6 +393,14 @@ public sealed class SessionFinalizer
             // ⚠️ 后缀只进**文件名**，不进索引里的 EvidenceId（那个仍是 `{会话}-000`）：
             // 同单号的两场因此是两条**互相独立**的证据，各自可回查、各自可清理。
             location = ArchiveLayout.Deduplicated(relative, ordinal);
+
+            // 换个后缀继续试（不是错误）—— 三种情况共用这一条路：
+            // 本机某块盘上有、索引里有、以及下面 `File.Move` 撞上并发的那一场。
+            if (used.Contains(location.Value) || _storage.Resolve(location.Value) is not null)
+            {
+                continue;
+            }
+
             var candidate = Path.Combine(root, location.Value);
 
             try

@@ -1,6 +1,7 @@
 using System.Text.Json.Serialization;
 using VidLog.Desktop.Core.Configuration;
 using VidLog.Desktop.Core.Diagnostics;
+using VidLog.Desktop.Core.Index;
 
 namespace VidLog.Desktop.Core.Cleanup;
 
@@ -118,11 +119,29 @@ public sealed record ArchiveTarget(ArchiveBackendKind Kind, string? DirectoryPat
 /// <summary>一次「把本机这一份发布到归档层」的结果。</summary>
 /// <param name="Published">归档层上现在有没有这一份。</param>
 /// <param name="FailureReason">没成的原因（给人看的）。</param>
-public sealed record ArchivePublishResult(bool Published, string? FailureReason)
+/// <param name="Kind">
+/// 没成的**种类** —— 决定这笔欠账还要不要再试（<see cref="ArchiveFailureKind"/>）。
+/// 不传就是「普通的没发上去」（照旧会重试）。
+/// </param>
+public sealed record ArchivePublishResult(
+    bool Published,
+    string? FailureReason,
+    ArchiveFailureKind Kind = ArchiveFailureKind.Ordinary)
 {
     public static ArchivePublishResult Ok { get; } = new(true, null);
 
     public static ArchivePublishResult Failed(string reason) => new(false, reason);
+
+    /// <summary>
+    /// 归档层上**已经有这个名字，但内容不是这一份**（§四）。
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ <b>这不是「已经传过了」，是「两份都要、而名字只有一个」</b>——
+    /// 重试解决不了，得人来决定（改名 / 删掉多余的那一份）。所以它带上
+    /// <see cref="ArchiveFailureKind.Conflict"/>，补发那一路会跳过它。
+    /// </remarks>
+    public static ArchivePublishResult Conflict(string reason) =>
+        new(false, reason, ArchiveFailureKind.Conflict);
 }
 
 /// <summary>
@@ -290,9 +309,31 @@ public sealed class DirectoryArchiveBackend : IArchiveBackend, IArchivePublisher
 
                 if (File.Exists(destination))
                 {
-                    // 已经有一份了。**名字就是内容的身份**（归档路径由单号 + 会话 +
-                    // 序号 + 时间推出来），所以同名 = 同一条录像，不必重发。
-                    return ArchivePublishResult.Ok;
+                    // ⚠️ **同名 ≠ 同一条录像**（§四）。
+                    //
+                    // 这里从前直接回 `Ok`，理由是「名字就是内容的身份」。那个前提
+                    // 在 2026-10-12 换路径形状时**作废了**：新名字里没有会话号
+                    // （`<单号>.mp4`），所以「同一个单号、同一天」的第二场**必然**同名。
+                    // 那时回 `Ok` 的意思是「已经传上去了」—— 而盘上那一份是**第一场的**。
+                    // 于是：账上记着「已发布」（用户以为双份了），回查（只问在不在）
+                    // 也说「有」⇒ 清理把第二场本机那一份删掉 ⇒ **第二场只剩一个错的副本**。
+                    //
+                    // 所以判据只能是**内容**（需求方 2026-10-12 裁定：大小 + SHA-256）。
+                    // 先比大小短路（份数不同必然不同），一样再比哈希 —— 撞名是罕见路径，
+                    // 而这条路上做错的代价是丢证据，值得多读一遍盘。
+                    if (await IsSameContentAsync(localPath, destination, cancellationToken))
+                    {
+                        // 真的是同一份（重发 / 补传）⇒ 复用归档层上那份，不重写。
+                        return ArchivePublishResult.Ok;
+                    }
+
+                    // ⚠️ 这句话会**原样上屏**（设置页那行提示就是拿它拼的），所以不带
+                    // 任何标记符号 —— `TextBlock` 不认 Markdown，`**` 会照字面显示出来。
+                    return ArchivePublishResult.Conflict(
+                        $"{Label}上已经有同名的一份，但内容和这一份不一样："
+                        + $"归档层那份是 {destination}，本机这份是 {localPath}。"
+                        + "两份都要、而这个名字只能占一个 —— 需要人工处理："
+                        + "要么把它改名留档、要么删掉多余的那一份。本机这一份不会被自动删掉。");
                 }
 
                 // 先写临时名再改名：发到一半断网/掉盘时，归档层上留下的是一个
@@ -318,6 +359,37 @@ public sealed class DirectoryArchiveBackend : IArchiveBackend, IArchivePublisher
             failures.Count == 0
                 ? $"{Label}没有配置可写的目录。"
                 : $"{Label}上都没写成功 —— {string.Join("；", failures)}");
+    }
+
+    /// <summary>
+    /// 这两份是不是**同一个文件的内容**（§四 的判据：先比大小，再比 SHA-256）。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// ⚠️ <b>先比大小</b>：不同的两场录像时长不同，字节数几乎必然不同 —— 一次
+    /// <c>FileInfo</c> 就把绝大多数撞名挡掉了，不必读两遍盘。一样大才落到哈希
+    /// （两场录像碰巧字节数相同是可能的，短片段尤其；而**比错方向**的代价是
+    /// 「把别人的录像当成自己的」⇒ 丢证据，所以这一层不能只看大小）。
+    /// </para>
+    /// <para>
+    /// ⚠️ <b>读不动时**不**返回 false，而是让它抛</b>：抛出去会被
+    /// <see cref="PublishAsync"/> 那个 <c>catch</c> 接住，落成「这一档写不进去 ⇒
+    /// 试下一个根 ⇒ 都没成就是一次普通失败（下次照旧重试）」。若在这里吞掉并返回
+    /// false，网络抖一下就会被判成**撞名**——那是一笔**永远等不到人**的账。
+    /// </para>
+    /// </remarks>
+    private static async Task<bool> IsSameContentAsync(
+        string left, string right, CancellationToken cancellationToken)
+    {
+        if (new FileInfo(left).Length != new FileInfo(right).Length)
+        {
+            return false;
+        }
+
+        var leftHash = await ContentHasher.ComputeFileHashAsync(left, cancellationToken);
+        var rightHash = await ContentHasher.ComputeFileHashAsync(right, cancellationToken);
+
+        return string.Equals(leftHash.Value, rightHash.Value, StringComparison.Ordinal);
     }
 
     /// <summary>把写了一半的 <c>.part</c> 清掉。清不掉也不影响别的（它不算一条录像）。</summary>
@@ -419,6 +491,15 @@ public sealed class ArchiveRelay
     /// </remarks>
     public string? LastFailure { get; private set; }
 
+    /// <summary>
+    /// 最近那次失败是**哪一种**（<see cref="LastFailure"/> 的伴侣）。
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ 界面必须看它：撞名那一档「修好之后下次会自动再发」那句话**是假的**
+    /// —— 它不是在等网络，是在等**一个人**做决定。说错方向就把用户支去查网络。
+    /// </remarks>
+    public ArchiveFailureKind LastFailureKind { get; private set; } = ArchiveFailureKind.Ordinary;
+
     /// <summary>最近一次成功发布是哪一条。</summary>
     public string? LastPublished { get; private set; }
 
@@ -451,6 +532,7 @@ public sealed class ArchiveRelay
         }
 
         LastFailure = result.FailureReason ?? "归档层那一份没发上去（没给出原因）";
+        LastFailureKind = result.Kind;
 
         // 留痕：这个失败**不影响**本机那一份与索引，但要能回答
         // 「这条为什么还没上归档层」。
@@ -465,7 +547,7 @@ public sealed class ArchiveRelay
             () => _failures.NoteFailedAsync(
                 new ArchiveFailureRecord(
                     evidenceId, location.Value, LastFailure, DateTimeOffset.Now,
-                    ArchiveFailureState.Failed)),
+                    ArchiveFailureState.Failed, result.Kind)),
             $"发布到{Label}失败，而且这笔欠账没落盘 —— "
             + "重启之后设置页不会提示这一条（盘上它仍然只有一份）");
 
@@ -525,10 +607,21 @@ public sealed class ArchiveRelay
 
         var attempted = 0;
         var skipped = 0;
+        var conflicts = 0;
 
         foreach (var record in outstanding)
         {
             cancellationToken.ThrowIfCancellationRequested();
+
+            // ⚠️ **撞名的不试**（§四）：那两份内容都要，而名字只有一个 ——
+            // 再发一百次也是同一个结果。试下去只会每次启动多一条 Warn，而这件事
+            // **永远得等一个人**（界面上那句话说清楚了该干什么）。它们**留在账上**
+            // 不划掉：划掉就等于宣布「这条已经双份了」，而它并没有。
+            if (record.Kind == ArchiveFailureKind.Conflict)
+            {
+                conflicts++;
+                continue;
+            }
 
             try
             {
@@ -566,7 +659,11 @@ public sealed class ArchiveRelay
             remaining == 0 ? LogLevel.Info : LogLevel.Warn,
             "归档",
             $"补发完了：试了 {attempted} 条，{Label}上还有 {remaining} 条没上去"
-            + (skipped > 0 ? $"，另有 {skipped} 条本机那一份已经不在了（跳过）。" : "。"));
+            + (skipped > 0 ? $"，另有 {skipped} 条本机那一份已经不在了（跳过）" : string.Empty)
+            // ⚠️ 撞名的单独说一句 —— 它们**试都不会试**，只看上面那个数会以为
+            // 「补发过了但还是没上去」，从而去查网络。
+            + (conflicts > 0 ? $"，另有 {conflicts} 条与{Label}上同名但内容不同（要人工处理，跳过）" : string.Empty)
+            + "。");
 
         return attempted;
     }

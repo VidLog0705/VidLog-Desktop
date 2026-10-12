@@ -160,6 +160,29 @@ public class ArchiveFailureLogTests
         var entry = Assert.Single(log.Reopen().Outstanding);
         Assert.Equal("e-000", entry.EvidenceId);
         Assert.Equal(At, entry.At);
+
+        // ⚠️ 上面那一行**没有 `kind`** —— 它就是 §四 之前写下来的老账本的样子。
+        // 落到 `Ordinary`（= 照旧会重试）正是它们当年的行为，所以加这一格是
+        // **纯追加、不用迁移**（这条断言钉住的就是「不用迁移」这句话）。
+        Assert.Equal(ArchiveFailureKind.Ordinary, entry.Kind);
+    }
+
+    [Fact]
+    public async Task 撞名那一档也落盘_重启之后仍然是撞名而不是普通失败()
+    {
+        // 那条「补发时跳过撞名」的判据读的就是这一格 ⇒ 它必须能往返。
+        // 丢了的话，重启后撞名会被当成普通失败去重试：每次都失败、每次都记一条
+        // Warn，而这件事**永远得等一个人**（§四）。
+        using var log = new TempLog();
+
+        Directory.CreateDirectory(System.IO.Path.GetDirectoryName(log.Path_)!);
+        await File.AppendAllTextAsync(
+            log.Path_,
+            "{\"evidenceId\":\"e-000\",\"location\":\"a.mp4\",\"reason\":\"同名不同内容\","
+            + "\"at\":\"2026-10-06T12:00:00+08:00\",\"state\":0,\"kind\":1}\n");
+
+        var entry = Assert.Single(log.Reopen().Outstanding);
+        Assert.Equal(ArchiveFailureKind.Conflict, entry.Kind);
     }
 
     [Fact]
