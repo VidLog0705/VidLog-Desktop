@@ -231,7 +231,7 @@ public partial class SettingsWindow : Window
             target.AllowsCleanup ? Visibility.Collapsed : Visibility.Visible;
         RetentionAbsentNote.Text =
             "盘上这份现在是唯一副本，所以不提供保留期设置与清理入口。"
-            + "在下面的「录像备份位置」里加一个网络位置，或者去「百度网盘上传」那一页"
+            + "在上面的「录像备份位置」里加一个网络位置，或者去「百度网盘上传」那一页"
             + "登录并打开【启用自动上传】，这里才会出现。";
 
         // 「能不能跨网」要如实说（规格 §2.3：**不得承诺做不到的事**）。
