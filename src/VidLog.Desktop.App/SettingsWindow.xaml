@@ -216,7 +216,7 @@
                              免得这里写一份、结果卡上又写另一份。 -->
                         <TextBlock Style="{StaticResource SectionTitle}" Text="电脑用途"/>
                         <TextBlock Style="{StaticResource Caption}" Margin="0,0,0,8"
-                                   Text="选择这台电脑在 VidLog 中承担的职责。这一项要重启软件才生效。"/>
+                                   Text="选择这台电脑在 VidLog 中承担的职责。这一项改了会自动重启软件。"/>
                         <ComboBox x:Name="RoleCombo" Width="300"
                                   SelectionChanged="OnRoleChanged"/>
 

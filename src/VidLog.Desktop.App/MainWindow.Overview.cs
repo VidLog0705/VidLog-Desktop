@@ -286,13 +286,19 @@ public partial class MainWindow : Window
     }
 
     /// <summary>
-    /// 【⇄ 切换用途】—— 弹出选择窗，选了就存下来。
+    /// 【⇄ 切换用途】—— 弹出选择窗，选了就存下来，**然后自动重启**。
     /// </summary>
     /// <remarks>
-    /// ⚠️ 存完之后**只提示重启，不当场换这一屏**：新用途要等下次启动
-    /// 重新装配（装不装摄像头、起不起回放）才成立，当场把新形态画出来
-    /// 就是在展示一个还没生效的状态。<see cref="AppHost.SwitchRoleAsync"/>
-    /// 里那个弹窗已经说了「要重启软件才生效」。
+    /// <para>
+    /// ⚠️ 当场**不换这一屏**：新用途要等下次启动重新装配（装不装摄像头、起不起回放）
+    /// 才成立，当场把新形态画出来就是在展示一个还没生效的状态。
+    /// </para>
+    /// <para>
+    /// ⚠️ <b>T31（2026-10-13）：现在不用用户自己重启了</b> —— 存完当场由
+    /// <see cref="AppHost.RestartForRole"/> 收掉自己再起一个新进程
+    /// （有在录的先收尾）。所以这一屏从按下按钮到进程消失之间**一直**是老的形态，
+    /// 那是刻意的，不是没反应。
+    /// </para>
     /// </remarks>
     private async void OnSwitchRole(object sender, RoutedEventArgs e) =>
         await _host.SwitchRoleAsync(this);

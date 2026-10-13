@@ -137,9 +137,36 @@ public partial class App : System.Windows.Application
 
         try
         {
-            // ⚠️ 必须在 `AppHost.StartAsync` **之前**：用途决定装不装摄像头与麦克风、
-            // 探不探录制规格，而那些全发生在装配期。装配完再问等于没问。
-            await AskStationRoleAsync(logger);
+            // ── T31：这一份是不是「换完用途自动重启」起来的 ──────────────
+            //
+            // ⚠️ 要**等旧进程退干净**才能往下走：相机在 dshow 上是独占的、
+            // 回放端口（8720）也是，而旧进程是**最后**才把它们放掉的
+            // （见 `AppHost.ReleaseAsync`）。抢先去拿 = 启动失败，
+            // 而用户刚点的正是【切换用途】。
+            //
+            // ⚠️ 顺带把「还问不问用途」一起定在这上面：**不问**。
+            // 用户刚刚才在用途对话框里选过，结果已经落在设置文件里了，
+            // 再弹一次只是让他在启动窗前面多点一下。
+            var previousPid = StartupCommand.WaitForPid(e.Args);
+
+            if (previousPid is { } pid)
+            {
+                if (!await WaitForPreviousProcessAsync(pid, logger))
+                {
+                    // 旧进程没退（多半卡在放资源那一步）。**这一份不起** ——
+                    // 相机与端口还在它手里，硬起只会得到个半坏的，
+                    // 而用户手上那一份还好好地开着。
+                    splash.Close();
+                    Shutdown();
+                    return;
+                }
+            }
+            else
+            {
+                // ⚠️ 必须在 `AppHost.StartAsync` **之前**：用途决定装不装摄像头与麦克风、
+                // 探不探录制规格，而那些全发生在装配期。装配完再问等于没问。
+                await AskStationRoleAsync(logger);
+            }
 
             _host = await AppHost.StartAsync(logger);
 
@@ -152,6 +179,10 @@ public partial class App : System.Windows.Application
             // 「关闭窗口时」那三档里的两档（直接退出 / 每次询问里选的那一下）
             // 要走**同一条**退出路：托盘菜单那一条（见 `AppHost.RequestExit`）。
             _host.RequestExit = () => _ = ExitAsync();
+
+            // T31：换完用途由**应用自己**收掉再起来（落点在 `RestartAsync`），
+            // 不再只弹一句让用户手动关掉重开。
+            _host.RequestRestart = () => _ = RestartAsync(logger);
 
             _host.AttachTray(
                 showWindow: ShowWindow,
@@ -445,13 +476,200 @@ public partial class App : System.Windows.Application
 
         _exiting = true;
 
-        // ShutdownAsync 会先问一句（有在录的段时），用户说不退就什么都不做。
-        if (!await _host.ShutdownAsync())
+        bool shutdown;
+
+        try
+        {
+            // ShutdownAsync 会先问一句（有在录的段时），用户说不退就什么都不做。
+            shutdown = await _host.ShutdownAsync();
+        }
+        catch (Exception ex)
+        {
+            // ⚠️ 必须在这里收住（2026-10-13，与 `RestartAsync` 同一处坑）：
+            // 这个方法一进来就是个 fire-and-forget 的 task，抛出去没人接，
+            // 而 `_exiting` 已经置上了 —— 那之后连托盘那颗【退出】都会被它挡掉，
+            // 用户只能去任务管理器杀进程。放回去，至少还能再试一次。
+            _host.Log(LogLevel.Error, "退出", $"退出流程没走到头：{ex.Message}");
+            _exiting = false;
+            return;
+        }
+
+        if (!shutdown)
         {
             _exiting = false;
             return;
         }
 
         Shutdown();
+    }
+
+    /// <summary>
+    /// T31：换完用途之后，把这一份收掉、起一个新进程接着跑。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// ⚠️ <b>三步的顺序是「先收尾、再起新的、最后放自己」</b>，一步都不能挪：
+    /// </para>
+    /// <list type="number">
+    /// <item><description>
+    /// <b>先收尾</b>：可能要几分钟（封装、算哈希、往归档目标搬一份），
+    /// 而新进程等不了那么久 —— 它要是先起来了，就得在这儿干等，
+    /// 等到超时退出就会**一个应用都不剩**。
+    /// </description></item>
+    /// <item><description>
+    /// <b>再起新的</b>：它带着 <c>--wait-for-pid &lt;本进程&gt;</c>，
+    /// 会自己等到我们退干净为止，所以先起它不会抢相机。
+    /// 起不来时**什么都还没放掉**，这一份还能照常跑（只是没在录了）。
+    /// </description></item>
+    /// <item><description>
+    /// <b>最后放自己</b>：托盘、回放服务（8720）、日志器全在这里放掉，
+    /// 紧接着退出 —— 新进程正是在等这一刻。
+    /// </description></item>
+    /// </list>
+    /// <para>
+    /// ⚠️ 起不来**不退出**：按老用途继续跑着，并把话说给用户听。
+    /// 静默关掉自己是最坏的一种 —— 用户手上的窗口没了，而盘上已经存着新用途，
+    /// 下次开机才会按它起来，中间这段时间他什么都不知道。
+    /// </para>
+    /// </remarks>
+    private async Task RestartAsync(FileLogger logger)
+    {
+        if (_exiting || _host is null)
+        {
+            return;
+        }
+
+        _exiting = true;
+
+        var role = StationRoles.Describe(_host.Settings.StationRole).Title;
+
+        // ⚠️ 「为什么要重启」不在这里记：那一条在 `AppHost.RestartForRole`
+        // 的「用途已切换」里（带 `生效时机`）。这条记的是**动作本身**。
+        logger.Log(LogLevel.Info, "用途", $"正在按「{role}」重新启动进程");
+
+        // ⚠️ 收尾期间要说一句话：那几分钟里窗**看着像没反应** ——
+        // 用户在用途对话框上刚按过确认，这正是最容易以为「点了没用」的时候。
+        // 说在这里（不是收尾之后）才盖得住那一段。
+        _host.Tray?.Notify("VidLog", $"正在按「{role}」重新启动…");
+
+        // ① 收尾（有在录的先收掉）。
+        try
+        {
+            await _host.FinalizeForRestartAsync();
+
+            // ② 起新进程。失败时下面什么都没放掉，这一份还能跑。
+            if (!StartReplacementProcess(logger))
+            {
+                _exiting = false;
+
+                // I3：不许静默 —— 盘上已经存着新用途了，不说明白的话用户会以为
+                // 换好了，而它照旧按老用途录（下一次打开才会变）。
+                _host.Tray?.Notify(
+                    "VidLog", "换用途之后没能自动重启，请手动关掉再打开。");
+                return;
+            }
+
+            // ③ 放掉独占资源（相机、回放端口、托盘），随后退出。
+            await _host.ReleaseAsync();
+        }
+        catch (Exception ex)
+        {
+            // ⚠️ 必须在这里收住：这是个 fire-and-forget 的 task，抛出去没人接，
+            // 而 `_exiting` 已经置上了 —— 那之后连托盘那颗【退出】都会被它挡掉，
+            // 用户只能去任务管理器杀进程。收住并把它放回去，至少还能用。
+            logger.Log(LogLevel.Error, "用途", $"重启没走到头：{ex.Message}");
+            _exiting = false;
+            return;
+        }
+
+        Shutdown();
+    }
+
+    /// <summary>起一个新进程（T31）；起不来返回 false，且**什么都还没放掉**。</summary>
+    private static bool StartReplacementProcess(FileLogger logger)
+    {
+        var exe = Environment.ProcessPath;
+
+        if (string.IsNullOrWhiteSpace(exe))
+        {
+            // ⚠️ 单文件发布等形态下这个可以是 null。不知道自己在哪就**不起** ——
+            // 猜一个路径起来的会是别的东西。
+            logger.Log(LogLevel.Error, "用途", "拿不到自己的 exe 路径，没法自动重启");
+            return false;
+        }
+
+        try
+        {
+            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+            {
+                FileName = exe,
+                Arguments = StartupCommand.RestartArguments(Environment.ProcessId),
+
+                // ⚠️ 工作目录必须钉在自己的目录上：托盘图标那些相对路径按它算。
+                WorkingDirectory = AppContext.BaseDirectory,
+
+                // ⚠️ `false`：`true` 的话参数会被 Shell 按它自己的规矩再切一遍，
+                // 而 `--wait-for-pid 1234` 是靠空格分的（与 `StartupCommand`
+                // 那头是同一个坑）。
+                UseShellExecute = false,
+            });
+
+            logger.Log(LogLevel.Info, "用途", "已起新进程（它先等这一份退出）");
+            return true;
+        }
+        catch (Exception ex)
+        {
+            logger.Log(LogLevel.Error, "用途", $"起新进程失败：{ex.Message}");
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// T31：等上一个进程退干净。超时返回 false（由调用方决定**不起**这一份）。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// ⚠️ 正常情况下**它几乎立刻就退了**：调用方是**先收完尾再起我们**的
+    /// （见 <see cref="RestartAsync"/>），所以轮到我们时它只剩「放掉资源」那一下。
+    /// 60 秒是给那一下留的富余，不是给收尾留的 —— 判据不是「它退得多快」，
+    /// 是「别抢它手里的相机」。
+    /// </para>
+    /// <para>
+    /// ⚠️ 等待放在线程池上：`WaitForExit` 是同步阻塞的，直接 await 会把
+    /// UI 线程占住 —— 那时启动窗**画不出来**，用户看到的正是他最讨厌的
+    /// 「点了没反应」。
+    /// </para>
+    /// </remarks>
+    private static async Task<bool> WaitForPreviousProcessAsync(int pid, FileLogger logger)
+    {
+        System.Diagnostics.Process previous;
+
+        try
+        {
+            previous = System.Diagnostics.Process.GetProcessById(pid);
+        }
+        catch (ArgumentException)
+        {
+            // 已经退了（pid 早就不作数）—— 这正是我们想要的。
+            logger.Log(LogLevel.Info, "启动", $"自动重启：上一个进程（{pid}）已经退出");
+            return true;
+        }
+
+        var exited = await Task.Run(() => previous.WaitForExit(60_000));
+
+        if (exited)
+        {
+            logger.Log(LogLevel.Info, "启动", $"自动重启：上一个进程（{pid}）已退出");
+            return true;
+        }
+
+        // I3：不许静默 —— 这一份马上要关掉自己，日志是唯一能解释「刚才那次重启
+        // 为什么没成」的地方。
+        logger.Log(
+            LogLevel.Error, "启动",
+            $"自动重启：上一个进程（{pid}）60 秒没退，这一次不启动了。"
+            + "它多半还在收尾一场录像 —— 收完那一份就能照常用，"
+            + "要换的用途下次打开生效。");
+        return false;
     }
 }

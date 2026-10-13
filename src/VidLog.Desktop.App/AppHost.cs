@@ -310,6 +310,22 @@ public sealed class AppHost : IAsyncDisposable
     public Action? RequestExit { get; set; }
 
     /// <summary>
+    /// 「把这一份自己收掉、换一个新进程起来」的钩子 —— 由 <c>App</c> 提供（T31）。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// 建新进程是 <c>Application</c> 的事（同样是装配层不该知道进程怎么活），
+    /// 与 <see cref="RequestExit"/> 同一个理由。
+    /// </para>
+    /// <para>
+    /// ⚠️ 为 <see langword="null"/> 时（测试里、或将来别的主机）退回**老行为**：
+    /// 弹一句「要重启软件才生效」，让用户自己关掉再打开 —— 静默不重启
+    /// 会让用户以为换成功了（I3）。
+    /// </para>
+    /// </remarks>
+    public Action? RequestRestart { get; set; }
+
+    /// <summary>
     /// 建托盘并接上「显示窗口 / 退出」。
     /// </summary>
     /// <remarks>
@@ -344,11 +360,68 @@ public sealed class AppHost : IAsyncDisposable
         // 下次启动的孤儿恢复能接上，但当场收掉对用户更清楚。
         await Coordinator.StopWorkAsync();
 
+        await ReleaseAsync();
+        return true;
+    }
+
+    /// <summary>
+    /// 换完用途之后的重启，第一半：把在录的收掉（T31 原话「如果有，主动收尾」）。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// ⚠️ <b>这一步跑在「起新进程」之前</b>：收尾可能要几分钟（封装、算哈希、
+    /// 往归档目标搬一份），而新进程等不了那么久。顺序反过来的话，
+    /// 要么新进程超时退出、要么把等待上限拉到几分钟 —— 前者丢掉整个软件，
+    /// 后者是个看着像死掉的启动窗。
+    /// </para>
+    /// <para>
+    /// ⚠️ 与 <see cref="ShutdownAsync"/> 的差别只有一处：**不问**。
+    /// 用户刚在用途对话框里按过确认，而 T31 要求的就是「主动」收尾 ——
+    /// 再弹一个「还在录，要停吗」等于把同一个问题问第二遍，
+    /// 那一下的代价是他正等着软件换过去。
+    /// </para>
+    /// <para>
+    /// ⚠️ 只收尾、**不释放**：相机与回放端口（8720）还留着，所以这一步失败或
+    /// 之后起新进程失败时，这一份仍然是个完好的应用（只是没在录了）。
+    /// </para>
+    /// </remarks>
+    public async Task FinalizeForRestartAsync()
+    {
+        var wasWorking = Coordinator.IsWorking;
+        var outcome = wasWorking ? await Coordinator.StopWorkAsync() : null;
+
+        // §6.1：①「为什么要重启」在上一条（`RestartForRole` 的「用途已切换」里
+        // 写着生效时机），这里补上剩下两条 —— ②重启前有没有在录、③收尾结果。
+        //
+        // ⚠️ 没在录时要 `null` 而不是 `false`：这两个在日志里**不是同一件事**，
+        // 「没录过」不需要收尾，查日志的人不必再去翻下一条。
+        _logger.Log(
+            LogLevel.Info, "用途",
+            wasWorking ? "重启前正在录制，已先收尾" : "重启前没有在录的，直接重启",
+            new Dictionary<string, object?>
+            {
+                ["是否有录制"] = wasWorking,
+                ["收尾结果"] = outcome is null
+                    ? null
+                    : outcome.Succeeded ? "成功" : "失败",
+                // ⚠️ 失败原因照记：收尾失败时录像**没丢**（源 MKV 还在，
+                // 下次启动的孤儿恢复会重试），但用户必须能查出来是这一场。
+                ["失败原因"] = outcome?.FailureReason,
+            });
+    }
+
+    /// <summary>放下所有独占资源：托盘、回放服务、协调器、日志器。</summary>
+    /// <remarks>
+    /// 抽出来是因为退出与重启要放的东西**一模一样** ——
+    /// 少放一样时，退出的表现是「进程还挂着」，而重启的表现是
+    /// 「新进程起不来」，两种毛病都不好查。
+    /// </remarks>
+    public async Task ReleaseAsync()
+    {
         Tray?.Dispose();
         Tray = null;
 
         await DisposeAsync();
-        return true;
     }
 
     public IReadOnlyList<string> Warnings { get; private set; } = [];
@@ -869,14 +942,23 @@ public sealed class AppHost : IAsyncDisposable
     /// </summary>
     /// <remarks>
     /// <para>
-    /// 两个入口（设置窗的「设备与外观」、主窗口备份主机态的【切换用途】）
-    /// **共用这一个方法** —— 否则「确认之后谁来存、谁来提示重启」会在两处各写一遍，
+    /// 主窗口那两颗按钮（录制工作态、备份主机态）**共用这一个方法** ——
+    /// 否则「确认之后谁来存、谁来重启」会在两处各写一遍，
     /// 而漏掉的那一处表现是「点完没反应」。
     /// </para>
     /// <para>
+    /// ⚠️ <b>设置窗那条路不经过这里</b>：它上面是个下拉（改完只置脏），
+    /// 由「确定 / 应用」走 <c>SaveAsync</c> → <see cref="RestartForRole"/>。
+    /// 两条路在 <see cref="RestartForRole"/> 那头合成一条，**不许各写一份**。
+    /// </para>
+    /// <para>
     /// ⚠️ 换完用途**必须重启才生效**：录不录像是在 <c>StartAsync</c> 的装配期定死的
-    /// （摄像头、麦克风、取景识码全在那里），当场改不了。所以这里**明说**
-    /// （I3：不允许静默失效），而不是让用户自己去发现「换了还是照录」。
+    /// （摄像头、麦克风、取景识码全在那里），当场改不了。
+    /// </para>
+    /// <para>
+    /// ⚠️ <b>T31（2026-10-13）：存完当场自动重启</b>，不再只弹一句让用户自己动手。
+    /// 用户原话是「重启之前要主动检查当前是否有录制，如果有，主动收尾，然后再重启进程」，
+    /// 落点见 <see cref="FinalizeForRestartAsync"/> 与 <see cref="ReleaseAsync"/>。
     /// </para>
     /// </remarks>
     /// <param name="owner">对话框的属主窗口；<see langword="null"/> 时用主窗口。</param>
@@ -895,25 +977,57 @@ public sealed class AppHost : IAsyncDisposable
             return false;
         }
 
-        var before = StationRoles.Describe(Settings.StationRole).Title;
-        var after = StationRoles.Describe(dialog.SelectedRole);
+        var beforeRole = Settings.StationRole;
 
         await SaveSettingsAsync(Settings with { StationRole = dialog.SelectedRole });
 
-        _logger.Log(LogLevel.Info, "用途", $"用途已切换：{before} → {after.Title}",
+        RestartForRole(beforeRole, dialog.SelectedRole);
+        return true;
+    }
+
+    /// <summary>
+    /// 用途**存下去之后**该做的事：记一条「为什么要重启」，然后让 App 重启（T31）。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// ⚠️ <b>两个改用途的入口都要走这里</b>（主窗口那颗按钮、设置窗的用途下拉）——
+    /// 各写一遍的话，漏掉的那一处表现是「改完没反应」，而那正是 T31 要治的病。
+    /// </para>
+    /// <para>
+    /// ⚠️ 调用方必须**已经把新用途存下去了**：这里读的是 <see cref="Settings"/>，
+    /// 存之前读到的还是老的那一份。
+    /// </para>
+    /// </remarks>
+    /// <param name="before">改之前那一档。</param>
+    /// <param name="after">改之后那一档。</param>
+    public void RestartForRole(StationRole before, StationRole after)
+    {
+        // ⚠️ 这是 §6.1 要的那条「为什么重启」：用户看到的是软件自己关了又开，
+        // 日志里必须有东西解释这一下。`生效时机` 写的是**真会发生的事** ——
+        // 没接线时（退回弹窗）就照实写「重启软件」。
+        _logger.Log(
+            LogLevel.Info, "用途",
+            $"用途已切换：{StationRoles.Describe(before).Title} → {StationRoles.Describe(after).Title}",
             new Dictionary<string, object?>
             {
                 ["是否录像"] = Settings.Role.Records,
                 ["是否长期保存"] = Settings.Role.Keeps,
-                ["生效时机"] = "重启软件",
+                ["生效时机"] = RequestRestart is null ? "重启软件" : "自动重启",
             });
 
-        MessageBox.Show(
-            $"用途已切换成「{after.Title}」。\n\n"
-            + "⚠️ 要重启软件才生效 —— 录不录像、装不装摄像头与麦克风，都是在启动时定下的。",
-            "用途已切换", MessageBoxButton.OK, MessageBoxImage.Information);
+        if (RequestRestart is null)
+        {
+            // 没有重启钩子 ⇒ 退回老行为。静默不重启是最坏的一种：
+            // 用户以为换好了，而它照旧按老用途录（I3：不允许静默失效）。
+            MessageBox.Show(
+                $"用途已切换成「{StationRoles.Describe(after).Title}」。\n\n"
+                + "⚠️ 要重启软件才生效 —— 录不录像、装不装摄像头与麦克风，都是在启动时定下的。",
+                "用途已切换", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
 
-        return true;
+        // 收尾与释放都在 App 那一头（它才知道进程怎么活），这里只管把话递过去。
+        RequestRestart();
     }
 
     public async Task SaveSettingsAsync(AppSettings next)

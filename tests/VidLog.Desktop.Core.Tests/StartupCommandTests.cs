@@ -32,4 +32,35 @@ public class StartupCommandTests
         // 如实回 null，由 `StartupRegistration.Apply` 把那句「没法登记」说给用户。
         Assert.Null(StartupCommand.Build(exePath));
     }
+
+    // ── 自动重启的参数（T31）───────────────────────────────────────
+
+    [Fact]
+    public void 自动重启的参数自己解得上()
+    {
+        // ⚠️ 造参数与解参数**必须成对**：只改一边的话，新进程不会去等旧进程 ——
+        // 于是相机（dshow 独占）与回放端口抢不到，而表现只是「重启之后打不开」。
+        // 这条就是那一对的闸。
+        Assert.Equal(4321, StartupCommand.WaitForPid(StartupCommand.RestartArguments(4321).Split(' ')));
+    }
+
+    [Fact]
+    public void 开关夹在别的参数中间也认得出来()
+    {
+        Assert.Equal(4321, StartupCommand.WaitForPid(["--别的", "--wait-for-pid", "4321", "--再一个"]));
+    }
+
+    [Theory]
+    [InlineData]                                   // 一个参数都没有
+    [InlineData("--别的", "1")]                    // 压根不是自动重启
+    [InlineData("--wait-for-pid")]                 // 开关后面没数
+    [InlineData("--wait-for-pid", "abc")]          // 不是个数
+    [InlineData("--wait-for-pid", "0")]            // 0 不是能被等的进程
+    [InlineData("--wait-for-pid", "-3")]
+    public void 读不出等哪个进程时按普通启动走(params string[] args)
+    {
+        // 回 null = 按普通启动启动，**不抛异常**：这是启动路径的第一行代码，
+        // 为一个坏参数把应用拦在门外比忽略它更糟。
+        Assert.Null(StartupCommand.WaitForPid(args));
+    }
 }

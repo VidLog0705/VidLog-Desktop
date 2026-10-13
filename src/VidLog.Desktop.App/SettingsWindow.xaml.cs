@@ -441,11 +441,18 @@ public partial class SettingsWindow : Window
 
     /// <summary>用途变了 —— 只置脏，**不**弹「选择用途」那个窗口。</summary>
     /// <remarks>
+    /// <para>
     /// ⚠️ 这一档与别的不一样：它改了要**重启**才生效，而且改动幅度最大
     /// （要不要录像、装不装摄像头）。但它仍然走这个窗口的
     /// 「确定 / 应用 / 取消」—— 在这里弹一个模态窗口问一次，等于把
     /// 【取消】变成骗人的（用户点了取消，用途却已经被问过一遍了）。
     /// 想逐步回答那两个问题的走主窗口那颗【切换用途】。
+    /// </para>
+    /// <para>
+    /// ⚠️ <b>T31：真正动手在 <see cref="SaveAsync"/> 的最后</b> ——
+    /// 只有【确定 / 应用】把新用途存下去之后才重启；点【取消】什么都不发生
+    /// （这条规矩没变）。
+    /// </para>
     /// </remarks>
     private void OnRoleChanged(object sender, SelectionChangedEventArgs e) => MarkDirty();
 
@@ -523,6 +530,10 @@ public partial class SettingsWindow : Window
             return false;
         }
 
+        // ⚠️ 必须在 `SaveSettingsAsync` **之前**取：那个方法一跑完，`_host.Settings`
+        // 里已经是新用途了，两种「变没变」的判断都会恒为假。
+        var roleBefore = _host.Settings.StationRole;
+
         try
         {
             await _host.SaveSettingsAsync(next);
@@ -568,6 +579,20 @@ public partial class SettingsWindow : Window
         // 网盘那一页也要刷：刚勾上的「启用自动上传」与刚存下的补传范围都在这上面，
         // 而这一页的判断（能不能用、已停用那句）读的是**已保存**的那一份。
         await RefreshCloudPageAsync();
+
+        // ── 用途变了 ⇒ 当场重启（T31）─────────────────────────────────
+        //
+        // ⚠️ 走的是**和主窗口那颗【切换用途】同一条**路（`AppHost.RestartForRole`）：
+        // 两个入口各写一遍的话，漏掉的那一处表现是「改完没反应」—— 而这一处
+        // 原来正是那样（下拉改完只置脏，存下去之后要用户自己去关掉重开）。
+        //
+        // ⚠️ 放在最后：这一下会把这个窗口连自己一起收掉，前面那些「刷状态文字」
+        // 就没有第二次机会了。
+        if (next.StationRole != roleBefore)
+        {
+            _host.RestartForRole(roleBefore, next.StationRole);
+        }
+
         return true;
     }
 
