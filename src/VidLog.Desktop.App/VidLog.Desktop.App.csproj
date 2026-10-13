@@ -264,7 +264,7 @@
          ⇒ 日志里「正常关机」与「定时器压根没起来 / 挂了」长得**一模一样**。
          现在起、停各记一条。
     -->
-    <Version>0.11.2</Version>
+    <Version>0.11.3</Version>
     <OutputType>WinExe</OutputType>
     <TargetFramework>net9.0-windows</TargetFramework>
     <Nullable>enable</Nullable>
