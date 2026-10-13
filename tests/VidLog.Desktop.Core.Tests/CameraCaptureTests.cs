@@ -357,6 +357,49 @@ public class CameraCaptureTests
         }
     }
 
+    [Fact]
+    public void 静音那一路_占住音频输入位_参数与麦克风那路逐字相同()
+    {
+        // 2026-10-12 真机实测的缺陷：预录段（收尾合并的**第一个输入**）没有音轨，
+        // 而 `-f concat -c copy` 的流布局取自第一个文件 ⇒ 整场成品的音轨被吃掉，
+        // 退出码 0、零警告。修法 = 预录段补一条**静音音轨**（`silentAudio: true`）。
+        var args = FfmpegCameraCapture.BuildArguments(
+            CameraSource.Local("Cam"), @"C:\out\pre-%03d.mkv", "libx264",
+            microphone: null, silentAudio: true).ToList();
+
+        // 静音那一路同样是**排在画面之前**的输入（与麦克风那一路同一个位置），
+        // 所以画面是 input 1 —— 数字要算出来，不能写死（改了顺序就是静默指错输入）。
+        var inputs = Inputs(args);
+        var audioIndex = inputs.FindIndex(a => a.Contains("anullsrc", StringComparison.Ordinal));
+        Assert.Equal(0, audioIndex);
+        Assert.Contains("1:v:0", Maps(args));
+        Assert.Contains($"{audioIndex}:a:0", Maps(args));
+
+        // 不许有 -an：「不要音频」那一条只在**真的不要**时才写。
+        Assert.DoesNotContain("-an", args);
+
+        // ⚠️ 与麦克风那一路**逐字同参**（规格 §3.1.8 那四个数）。
+        // ⚠️ ffmpeg **不会**替我们挡这个：静音段 48000 配正片 44100 实测也出得来、
+        // 一个字都不报（2026-10-12）—— 所以只能在这一层钉住。
+        Assert.Equal("aac", args[args.IndexOf("-c:a") + 1]);
+        Assert.Equal("1", args[args.IndexOf("-ac") + 1]);
+        Assert.Equal("44100", args[args.IndexOf("-ar") + 1]);
+        Assert.Equal("64k", args[args.IndexOf("-b:a") + 1]);
+    }
+
+    [Fact]
+    public void 没有麦克风也没开静音时_还要显式不要音频()
+    {
+        // ⚠️ 静音那一路是**要才给**的：不传 `silentAudio` 时行为与从前**逐字一致**。
+        // 无条件补一条静音的，会让「用户关掉了声音」变成「成品里躺着一条静音音轨」。
+        var args = FfmpegCameraCapture.BuildArguments(
+            CameraSource.Local("Cam"), @"C:\out\seg.mkv", "libx264").ToList();
+
+        Assert.DoesNotContain(args, a => a.Contains("anullsrc", StringComparison.Ordinal));
+        Assert.Contains("-an", args);
+        Assert.DoesNotContain(Maps(args), m => m.Contains(":a:", StringComparison.Ordinal));
+    }
+
     // ─────────────────────────────────────────────
     // 显式映射（2026-09-29：网络摄像头自带音轨被偷偷录进去）
     // ─────────────────────────────────────────────

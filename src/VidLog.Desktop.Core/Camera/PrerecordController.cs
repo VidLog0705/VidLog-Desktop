@@ -24,7 +24,8 @@ public sealed record PrerecordSetup(
     TimeSpan Buffer,
     string? Encoder = null,
     RecordingSpec? Spec = null,
-    string? Directory = null)
+    string? Directory = null,
+    bool WithAudio = false)
 {
     /// <summary>这一次待扫要不要真的录一路文件。</summary>
     /// <remarks>
@@ -426,7 +427,12 @@ public sealed class PrerecordController : IAsyncDisposable
             durationSeconds: null,
             preview: false,
             segmentSeconds: ChunkSeconds,
-            frameTap: NeedsFrames);
+            frameTap: NeedsFrames,
+            // ⚠️ <b>不接麦克风 ≠ 不要音轨</b>（2026-10-12）：预录段是收尾合并的**第一个输入**，
+            // 而 `-f concat -c copy` 的流布局取自第一个文件 —— 它没有音轨就会把整场成品
+            // 的音轨一起吃掉（退出码 0、零警告）。所以这一场会带麦克风时，这里要补一条
+            // **静音音轨**占住位置（内容仍是静音，规格 §3.1.3 要的就是画面）。
+            silentAudio: setup.WithAudio);
     }
 
     /// <summary>

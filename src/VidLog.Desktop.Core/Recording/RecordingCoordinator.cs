@@ -561,7 +561,12 @@ public sealed class RecordingCoordinator : IAsyncDisposable
         }
 
         return prerecord.StartAsync(new Camera.PrerecordSetup(
-            PrerecordBuffer, Encoder, SessionOptions.Spec, _workspace.PrerecordDirectory));
+            PrerecordBuffer, Encoder, SessionOptions.Spec, _workspace.PrerecordDirectory,
+            // ⚠️ **只在这一场确实会带麦克风时**才让预录段补静音音轨：
+            //    用不到音轨时补一条，成品会凭空多出一条音轨（与用户「关掉声音」相反）。
+            //    判据与正片**同源**（同一个 `SessionOptions.Microphone`）——
+            //    各判各的迟早会一边有音轨一边没有，那正是这次要修的那个布局不一致。
+            WithAudio: SessionOptions.Microphone is not null));
     }
 
     /// <summary>
@@ -969,8 +974,19 @@ public sealed class RecordingCoordinator : IAsyncDisposable
 
         await PunchAsync(session, waybill, source, cancellationToken);
 
+        // ⚠️ §6.1（2026-10-12 补）：**这一场到底带不带音轨**必须能在日志里读到。
+        //    起因是当天修的那个缺陷 —— 预录段没有音轨时收尾 concat 会把整场成品的
+        //    音轨吃掉，而 `SystemProcessRunner` **只在失败时**记 argv、采集进程的
+        //    argv 又从不落盘 ⇒ 一场**正常**录制结束后，日志里没有任何一行答得上
+        //    「这一场本来就该有声音吗」。少了这个字段，用户报「录出来没声音」
+        //    时只能靠推断。只记有无、不记设备名（设备名会跟着诊断包外发）。
         _logger.Log(LogLevel.Info, "录制", $"开录 {waybill.Value}",
-            new Dictionary<string, object?> { ["会话"] = session.SessionId, ["来源"] = source });
+            new Dictionary<string, object?>
+            {
+                ["会话"] = session.SessionId,
+                ["来源"] = source,
+                ["麦克风"] = SessionOptions.Microphone is null ? "无（这一场没有音轨）" : "已接（这一场带音轨）",
+            });
 
         Raise(CoordinatorNoticeKind.SegmentStarted, waybill, $"开始录制 {waybill.Value}。");
 

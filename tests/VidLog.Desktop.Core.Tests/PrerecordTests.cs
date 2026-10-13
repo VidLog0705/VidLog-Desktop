@@ -173,6 +173,68 @@ public class PrerecordTests
             + " —— 关键帧间隔没钉住（`-g`），或者 `-sseof` 没生效");
     }
 
+    /// <summary>
+    /// 预录段**带不带音轨**，跟着 <see cref="PrerecordSetup.WithAudio"/> 走。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// ⚠️ 2026-10-12 真机实测的缺陷：预录段是收尾合并的**第一个输入**，而
+    /// <c>-f concat -c copy</c> 的流布局取自**第一个文件** —— 它没有音轨就会把
+    /// **整场成品的音轨一起吃掉**（退出码 0、零警告、解码校验也照样通过）。
+    /// 修法是这一路补一条静音音轨（见 <see cref="FfmpegCameraCapture.SilentAudioInputArguments"/>）。
+    /// </para>
+    /// <para>
+    /// ⚠️ <b>这条必须真起一次进程</b>：那个开关是
+    /// <c>RecordingCoordinator → PrerecordSetup → PrerecordController → BuildArguments</c>
+    /// 一路传下来的，中间**任何一环**掉了，只在 <c>BuildArguments</c> 那一层钉住是看不出来的。
+    /// 而且它同时把「网络源 ＋ 这条路的两路输出 ＋ 多一个 lavfi 输入」跑一遍 ——
+    /// 那正是 ffmpeg 9.x 上锁死过的那条路（见 `PrerecordProcess.FrameFilters`）。
+    /// </para>
+    /// </remarks>
+    [RequiresRtspFact]
+    public async Task 预录段带不带音轨跟着开关走()
+    {
+        foreach (var withAudio in new[] { true, false })
+        {
+            using var dir = new TempDir();
+            var logger = new CapturingLogger();
+            var runner = new SystemProcessRunner(logger);
+            var encoder = await PickEncoderAsync(runner);
+
+            await using var controller = new PrerecordController(
+                Ffmpeg, CameraSource.Network(Source), decoder: null, logger, runner,
+                preview: new SingleSlotPreviewSink());
+
+            await controller.StartAsync(new PrerecordSetup(
+                TimeSpan.FromSeconds(5), encoder, RecordingSpec.Default, dir.Path,
+                WithAudio: withAudio));
+
+            Assert.True(controller.IsActive, $"待扫进程没起来：{Text(logger)}");
+
+            string? chunk = null;
+            var start = Stopwatch.StartNew();
+
+            while (start.Elapsed < TimeSpan.FromSeconds(20) && chunk is null)
+            {
+                await Task.Delay(200);
+
+                chunk = Directory.EnumerateFiles(dir.Path, "pre-*.mkv")
+                    .FirstOrDefault(path => new FileInfo(path).Length > 0);
+            }
+
+            Assert.NotNull(chunk);
+
+            // 判据：`-map 0:a:0` 在没有音频流时直接失败 —— 与别处同一个探法。
+            var audio = await runner.RunAsync(Ffmpeg,
+                ["-v", "error", "-i", chunk!, "-map", "0:a:0", "-f", "null", "-"]);
+
+            Assert.True(
+                audio.Succeeded == withAudio,
+                $"WithAudio={withAudio} 时分片里音轨的有无不对（ffmpeg 退出码 {audio.ExitCode}）："
+                + audio.StandardError);
+        }
+    }
+
     // ─────────────────────────────────────────────
     // 场景 ②：**故意不读**的对照 —— 证明上面那条测得出「堵」
     // ─────────────────────────────────────────────
@@ -618,7 +680,14 @@ public class PrerecordTests
             : Array.Empty<Exception>();
     }
 
-    /// <summary>按**生产那一条 argv** 起一个预录进程（不经过控制器）。</summary>
+    /// <summary>按**接近生产**的那一条 argv 起一个预录进程（不经过控制器）。</summary>
+    /// <remarks>
+    /// ⚠️ 它**不逐字等于**生产那一条了（2026-10-12 起）：生产会按
+    /// <c>PrerecordSetup.WithAudio</c> 决定要不要多接一路静音（见
+    /// <c>FfmpegCameraCapture.SilentAudioInputArguments</c>），这里始终不接 ——
+    /// 这一组量的是**分片长度与两路输出的速率**，音轨的有无跟那些数无关。
+    /// 「音轨的有无跟着开关走」另有一条专测（本文件里那条同名的）。
+    /// </remarks>
     private static Process StartPrerecord(
         string pattern, string encoder, bool frameTap, int? durationSeconds)
     {

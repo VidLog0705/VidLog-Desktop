@@ -270,6 +270,115 @@ public class FfmpegIntegrationTests
             + double.Parse(match.Groups[3].Value, System.Globalization.CultureInfo.InvariantCulture);
     }
 
+    /// <summary>造一段**只有画面、没有音轨**的 1 秒片段（＝ 预录开场段修复**之前**的样子）。</summary>
+    private static async Task<string> EncodeClipWithoutAudioAsync(TempDir dir, string fileName)
+    {
+        var path = dir.File(fileName);
+        var result = await new SystemProcessRunner().RunAsync(Ffmpeg, [
+            "-hide_banner", "-v", "error",
+            "-f", "lavfi", "-i", "testsrc=size=160x120:rate=10:duration=1",
+            "-c:v", "libx264", "-an",
+            "-y", path,
+        ]);
+
+        Assert.True(result.Succeeded, $"测试素材编码失败：{result.StandardError}");
+        return path;
+    }
+
+    /// <summary>造一段**画面 ＋ 静音音轨**的 1 秒片段（＝ 2026-10-12 之后预录开场段的样子）。</summary>
+    /// <remarks>
+    /// 输入顺序、参数照抄生产（<see cref="VidLog.Desktop.Core.Recording.FfmpegCameraCapture.SilentAudioInputArguments"/>
+    /// ＋ 那四个 <c>-c:a/-ac/-ar/-b:a</c>）—— 两处参数一旦走岔，接缝就不是生产那条了。
+    /// </remarks>
+    private static async Task<string> EncodeClipWithSilentAudioAsync(TempDir dir, string fileName)
+    {
+        var path = dir.File(fileName);
+        var result = await new SystemProcessRunner().RunAsync(Ffmpeg, [
+            "-hide_banner", "-v", "error",
+            "-f", "lavfi", "-i", "anullsrc=channel_layout=mono:sample_rate=44100",
+            "-f", "lavfi", "-i", "testsrc=size=160x120:rate=10:duration=1",
+            "-c:v", "libx264",
+            "-c:a", "aac", "-ac", "1", "-ar", "44100", "-b:a", "64k",
+            "-shortest",
+            "-y", path,
+        ]);
+
+        Assert.True(result.Succeeded, $"测试素材编码失败：{result.StandardError}");
+        return path;
+    }
+
+    /// <summary>造一段**画面 ＋ 440Hz**的 1 秒片段，音频参数与生产逐字一致。</summary>
+    private static async Task<string> EncodeClipWithToneAsync(TempDir dir, string fileName)
+    {
+        var path = dir.File(fileName);
+        var result = await new SystemProcessRunner().RunAsync(Ffmpeg, [
+            "-hide_banner", "-v", "error",
+            "-f", "lavfi", "-i", "testsrc=size=160x120:rate=10:duration=1",
+            "-f", "lavfi", "-i", "sine=frequency=440:duration=1",
+            "-c:v", "libx264",
+            "-c:a", "aac", "-ac", "1", "-ar", "44100", "-b:a", "64k",
+            "-shortest",
+            "-y", path,
+        ]);
+
+        Assert.True(result.Succeeded, $"测试素材编码失败：{result.StandardError}");
+        return path;
+    }
+
+    /// <summary>成品里到底有没有音轨 —— `-map 0:a:0` 在没有音频流时直接失败。</summary>
+    private static async Task<bool> HasAudioAsync(IProcessRunner runner, string path)
+    {
+        var audio = await runner.RunAsync(Ffmpeg,
+            ["-v", "error", "-i", path, "-map", "0:a:0", "-f", "null", "-"]);
+
+        return audio.Succeeded;
+    }
+
+    [RequiresFfmpegFact]
+    public async Task 开场段没有音轨时_合并会把整条音轨吃掉_这就是那个缺陷()
+    {
+        // ⚠️ 这条**钉的是 ffmpeg 的行为**（concat 的流布局取自列表里第一个文件），
+        // 它是绿的 = 「只要开场段没有音轨，成品就必然是哑的」——2026-10-12 真机实测到的
+        // 那个缺陷的最小复现。留着它是为了挡住「也许合并本来就没问题」这种猜测。
+        using var dir = new TempDir();
+
+        var opening = await EncodeClipWithoutAudioAsync(dir, "segment-000.mkv");
+        var body = await EncodeClipWithToneAsync(dir, "segment-001.mkv");
+        var output = dir.File("merged.mp4");
+
+        var runner = new SystemProcessRunner();
+        var merge = await new RemuxPipeline(Ffmpeg, runner).MergeAsync([opening, body], output);
+        Assert.True(merge.Succeeded, merge.FailureReason);
+
+        Assert.False(await HasAudioAsync(runner, output));
+    }
+
+    [RequiresFfmpegFact]
+    public async Task 预录段带上静音音轨之后_成品的音轨保住了()
+    {
+        // ★ 2026-10-12 那个缺陷的**修法**跑一遍：预录开场段带一条**静音**音轨
+        // （`FfmpegCameraCapture.SilentAudioInputArguments`），与正片流布局一致 ⇒
+        // concat 的 `copy` 不再把音轨整条丢掉。开场那 1 秒是静音，正片是有声的。
+        using var dir = new TempDir();
+
+        var opening = await EncodeClipWithSilentAudioAsync(dir, "segment-000.mkv");
+        var body = await EncodeClipWithToneAsync(dir, "segment-001.mkv");
+        var output = dir.File("merged.mp4");
+
+        var runner = new SystemProcessRunner();
+        var merge = await new RemuxPipeline(Ffmpeg, runner).MergeAsync([opening, body], output);
+        Assert.True(merge.Succeeded, merge.FailureReason);
+
+        Assert.True(await HasAudioAsync(runner, output), "成品必须有音轨 —— 开场段那条静音要把它占住");
+
+        // 时长仍是两段之和 ⇒ 静音那一路上来没有把画面顶掉。
+        var probe = await runner.RunAsync(Ffmpeg, ["-hide_banner", "-i", output]);
+        var said = probe.StandardError + probe.StandardOutput;
+        Assert.True(
+            Math.Abs(DurationSeconds(said) - 2.0) < 0.35,
+            $"合并后的时长不是两段之和：{DurationSeconds(said)} 秒\n{said}");
+    }
+
     [RequiresFfmpegFact]
     public async Task 两段带音轨的片段合并成一条_音轨与时长都在()
     {

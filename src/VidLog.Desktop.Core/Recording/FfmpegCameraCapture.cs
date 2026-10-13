@@ -483,6 +483,35 @@ public sealed class FfmpegCameraCapture : ICameraCapture
         "-i", $"audio={microphone}",
     ];
 
+    /// <summary>
+    /// **不接麦克风时用来占住音频那一路输入位置的静音**（<c>-f lavfi</c>，无限长）。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// ⚠️ <b>它存在的唯一理由是让**预录段**的流布局与正片一致</b>（2026-10-12 真机实测的缺陷）：
+    /// 收尾合并是 <c>-f concat -c copy</c>，而 concat 解复用器的流布局**取自列表里第一个文件**
+    /// —— 预录段是开场段、永远排第一（见 <c>PrerecordController</c>），它没有音轨就会把
+    /// **整场成品的音轨一起吃掉**，而且退出码 0、零警告、连解码校验都照样通过。
+    /// </para>
+    /// <para>
+    /// ⚠️ <b>它是静音，不是现场声</b>：待扫期间（预录缓冲）只要画面（规格 §3.1.3），
+    /// 这一段因此是静音的 —— 与「缓冲期内的画面」那句一致。要那段有现场声就必须接麦克风，
+    /// 而那是另一条路（接了麦克风时 <c>audio=</c> 那一路走 <c>dshow</c>）。
+    /// </para>
+    /// <para>
+    /// ⚠️ <b>参数与麦克风那一路逐字同参</b>（规格 §3.1.8 那四个数，都在
+    /// <see cref="BuildArguments"/> 同一处写）。⚠️ 别指望 ffmpeg 兜底：
+    /// concat 的 <c>-c copy</c> 只取**第一个文件**的流参数，后面那些段是被
+    /// **按前段的参数解释**的 —— 2026-10-12 实测，静音段 48000 配正片 44100
+    /// 也照样出得来、**一个字都不报**。一致性只能由我们自己保证。
+    /// </para>
+    /// </remarks>
+    public static IReadOnlyList<string> SilentAudioInputArguments =>
+    [
+        "-f", "lavfi",
+        "-i", "anullsrc=channel_layout=mono:sample_rate=44100",
+    ];
+
     /// <summary>把管道读干。读到流结束为止，异常吞掉（进程退了就是结束，不是错误）。</summary>
     private static async Task DrainAsync(
         StreamReader reader, BoundedTextTail? sink,
@@ -571,6 +600,17 @@ public sealed class FfmpegCameraCapture : ICameraCapture
     /// 要不要多出一路**彩色裸帧**（640×480，待扫的取景框与识码共用）。
     /// 与 <paramref name="preview"/> **不能同时为真**（都要 stdout），同时给会抛异常。
     /// </param>
+    /// <param name="silentAudio">
+    /// <paramref name="microphone"/> 为空时，要不要**仍然占住音频那一路**，用一条无限静音
+    /// （<see cref="SilentAudioInputArguments"/>）顶上，音频参数与带麦克风时逐字一致。
+    /// **只有预录那一路要它**（见 <see cref="SilentAudioInputArguments"/> 的说明）——
+    /// 少了它，带预录开场的每一场成品都会**整条音轨丢掉**。
+    /// <para>
+    /// ⚠️ 它**不能无条件开**：用户关了声（或麦克风没解析出来）时正片本就没有音轨，
+    /// 这里再补一条静音的，成品会**凭空多出一条音轨** —— 与用户的「关掉声音」正好相反。
+    /// 调用方必须按「这一场到底会不会带麦克风」来给。
+    /// </para>
+    /// </param>
     /// <remarks>
     /// <para>
     /// ⚠️ <b>方向不用单独传</b>：它在 <paramref name="spec"/> 里
@@ -595,7 +635,7 @@ public sealed class FfmpegCameraCapture : ICameraCapture
         CameraSource source, string outputPath, string encoder, RecordingSpec? spec = null,
         string? watermarkAssPath = null, string? microphone = null, int? durationSeconds = null,
         bool preview = false, int? segmentSeconds = null, bool frameTap = false,
-        int segmentStartNumber = 0)
+        int segmentStartNumber = 0, bool silentAudio = false)
     {
         // ⚠️ 两路都要 `pipe:1` —— 而**一个 Process 只有一条 stdout**
         // （2026-10-02 定下的架构）。放过去的话不是报错，是两条输出互相咬：
@@ -619,11 +659,21 @@ public sealed class FfmpegCameraCapture : ICameraCapture
         //
         // ⚠️ 正因为顺序是这样，画面是第几个输入要**在这里算**（见下面的 -map）。
         // 两处各写一个数字的话，改了顺序就会静默指错输入。
+        //
+        // ⚠️ <b>没有麦克风也**不一定**就不要音频</b>（2026-10-12）：预录那一路要一条
+        // **静音音轨**占住位置，否则收尾 concat 会把整场成品的音轨吃掉（见
+        // <see cref="SilentAudioInputArguments"/>）。所以这两件事分开判：
+        // 「有没有音频那一路输入」看 <c>hasAudio</c>，「那一路是什么」才是麦克风的有无。
+        var hasAudio = !string.IsNullOrWhiteSpace(microphone) || silentAudio;
+
         var videoInput = 0;
 
-        if (!string.IsNullOrWhiteSpace(microphone))
+        if (hasAudio)
         {
-            arguments.AddRange(AudioInputArguments(microphone, BufferSize));
+            arguments.AddRange(
+                string.IsNullOrWhiteSpace(microphone)
+                    ? SilentAudioInputArguments
+                    : AudioInputArguments(microphone, BufferSize));
 
             videoInput = 1;
         }
@@ -644,9 +694,9 @@ public sealed class FfmpegCameraCapture : ICameraCapture
         // 那是与用户的选择相反、而他完全不知道的一件事。
         arguments.AddRange(["-map", $"{videoInput}:v:0"]);
 
-        if (!string.IsNullOrWhiteSpace(microphone))
+        if (hasAudio)
         {
-            // 只取**本地麦克风**那一路（input 0）。对端自带的音轨不映射 ⇒ 丢掉。
+            // 只取**本地麦克风**（或静音）那一路（input 0）。对端自带的音轨不映射 ⇒ 丢掉。
             arguments.AddRange(["-map", "0:a:0"]);
         }
         else
@@ -710,11 +760,14 @@ public sealed class FfmpegCameraCapture : ICameraCapture
             arguments.Add(RecordingSpec.FrameRate.ToString(System.Globalization.CultureInfo.InvariantCulture));
         }
 
-        if (!string.IsNullOrWhiteSpace(microphone))
+        if (hasAudio)
         {
             // ⚠️ 规格 §3.1.8 **逐字**：AAC、单声道、44.1 kHz、64 kbps。
             // 两端必须一致 —— 一边一套参数的话，同一段素材在两个端上
             // 转出来是两个体积，而「按空间清理」是按体积算的。
+            // ⚠️ 静音那一路（`silentAudio`）也走**同一份**参数：预录段与正片必须是
+            // 同一种流。concat 的 `copy` 不一致时**不报错**（实测），所以对不上就是
+            // 悄悄转错，没有兜底（2026-10-12）。
             arguments.AddRange(
             [
                 "-c:a", "aac",
