@@ -156,12 +156,13 @@ public class SettingsStoreTests
     }
 
     [Fact]
-    public async Task 老设置文件里只有归档层没有目录_算不出第二份就落到本机()
+    public async Task 老设置文件里只有归档层没有目录_没有网络位置就按规则自动传网盘()
     {
         // 2026-09-27 之前的 settings.json 里没有 ArchiveDirectory 这个键；
         // 2026-10-13 之前归档层还是用户**手选**的，所以老文件里那个值可能是 NAS（1）。
-        // ⚠️ 现在归档层是**推算**的：没位置、也没开自动上传 ⇒ 就是没有第二份
-        // ⇒ 落回本机（那才不给清理入口，规格 §3.5.1）。
+        // ⚠️ 现在归档层是**推算**的：选了 NAS 却没目录 ⇒ 根本算不出网络位置 ⇒
+        // 按需求方的规则「存本机就自动传网盘」，而自动上传**出厂就是开的**
+        // ⇒ 第二份落到网盘（不在本机，所以清理入口照开，规格 §3.5.1）。
         using var dir = new TempDir();
         var path = dir.File("settings.json");
         await File.WriteAllTextAsync(path, """{"ArchiveBackend":1}""");
@@ -171,8 +172,8 @@ public class SettingsStoreTests
         Assert.Equal(ArchiveBackendKind.Directory, result.Settings.ArchiveBackend);
         Assert.Null(result.Settings.ArchiveDirectory);
 
-        Assert.Equal(ArchiveBackendKind.LocalDisk, result.Settings.Archive.Kind);
-        Assert.False(result.Settings.Archive.AllowsCleanup);
+        Assert.Equal(ArchiveBackendKind.Cloud, result.Settings.Archive.Kind);
+        Assert.True(result.Settings.Archive.AllowsCleanup);
     }
 
     [Fact]
@@ -393,7 +394,12 @@ public class SettingsStoreTests
         // 于是「开关开着却一直没传」与「章压根没盖上」在日志上一模一样 ——
         // 而后者是真实发生过的一个缺陷（拿自己的值喂给自己，
         // 见 `SettingsSavePlan.WithAutoUploadStamp`）：它没被任何测试或日志发现。
-        var before = AppSettings.Default;
+        // ⚠️ 起点要**关着**（出厂默认现在是开的）—— 不然「拨开」这一步压根没发生，
+        // 留痕里当然也就没有那枚章，这条会永远绿在一个错的前提上。
+        var before = AppSettings.Default with
+        {
+            Cloud = CloudUploadSettings.Default with { AutoUpload = false },
+        };
         var after = SettingsSavePlan.WithAutoUploadStamp(
             before,
             before with { Cloud = before.Cloud with { AutoUpload = true } },

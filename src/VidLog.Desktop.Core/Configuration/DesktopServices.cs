@@ -355,9 +355,8 @@ public sealed class DesktopServices : IAsyncDisposable
         // 于是配了 NAS 的机器上，本机那份**唯一副本**会被当成「已经有备份了」删掉。
         var locations = storage ?? StorageLocations.Single(layout.ArchiveRoot);
 
-        // ⚠️ 不传 = 一个开关都不开的那一组（设计图 `_45` 的「已停用」那一态）。
-        // 默认值必须是它：打开「启用自动上传」意味着这台机器上的录像会开始
-        // 往公网上传，而那是用户必须自己做的决定。
+        // ⚠️ 不传 = 出厂那一组：自动上传**开着**（需求方的规则 —— 存本机就传网盘）。
+        // 唯一不传的情形是配了网络位置，那由归档目标推出来、不经过这里。
         var cloudSettings = cloud ?? CloudUploadSettings.Default;
 
         var warnings = new List<string>();

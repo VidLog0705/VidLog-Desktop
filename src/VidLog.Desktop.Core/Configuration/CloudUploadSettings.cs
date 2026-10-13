@@ -26,14 +26,15 @@ public enum BackfillScope
 /// 所以它一个秘密都不许装。
 /// </para>
 /// <para>
-/// ⚠️ <b>默认一个开关都不开。</b>打开就意味着「这台机器上的录像会开始往公网上传」，
-/// 而那是一个用户必须**自己**做的决定 —— 装完就默默传起来是绝对不能接受的。
+/// ⚠️ <b>「启用自动上传」默认开着</b>（需求方定的规则）：录像存到本机的同时就自动传网盘。
+/// 唯一不传的情形是配了网络位置（网络硬盘 / NAS）—— 那种情况由存储位置推出来、
+/// 不看这个开关。「装完不许默默传」是我早先自己加的顾虑，与需求方的规则相反，已收回。
 /// </para>
 /// </remarks>
 public sealed record CloudUploadSettings
 {
-    /// <summary>启用自动上传（设计图 `_45` 那个开关）。</summary>
-    public bool AutoUpload { get; init; }
+    /// <summary>启用自动上传（设计图 `_45` 那个开关）。**默认开**。</summary>
+    public bool AutoUpload { get; init; } = true;
 
     /// <summary>
     /// 这个开关是**哪一刻**打开的。

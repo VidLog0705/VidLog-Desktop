@@ -37,7 +37,12 @@ public class SettingsSavePlanTests
     [Fact]
     public void 拨开自动上传要盖章()
     {
-        var current = AppSettings.Default;
+        // ⚠️「拨开」= 从**关**到开。出厂默认现在是开的（需求方的规则），
+        // 所以起点必须显式造一个关着的，否则这条测的就不是「拨开」了。
+        var current = AppSettings.Default with
+        {
+            Cloud = CloudUploadSettings.Default with { AutoUpload = false },
+        };
 
         var next = SettingsSavePlan.WithAutoUploadStamp(
             current, 表单存成这样(current, autoUpload: true), 拨开这一刻);

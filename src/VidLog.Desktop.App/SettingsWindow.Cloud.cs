@@ -344,18 +344,22 @@ public partial class SettingsWindow : Window
         }
     }
 
-    /// <summary>这一页现在为什么不能用（**两句不同的话，别混**）。</summary>
+    /// <summary>这一页现在为什么不能用（**三种情况，各说各的真话**）。</summary>
     private string CloudUnavailableReason(ArchiveTarget target) =>
-        target.Kind != ArchiveBackendKind.Cloud
-            ? "百度网盘这一页只在「没有配网络备份位置」时才算第二份 —— 现在"
-              + $"「存储与备份」里有「{target.Label}」那一份，录像不会往网盘上传。"
+        target.Kind == ArchiveBackendKind.Directory
+            // 配了网络位置 ⇒ 按规则第二份走它、本来就不走网盘。
+            ? $"「存储与备份」里配了「{target.Label}」，录像的第二份走它、不走百度网盘。"
               + "想改用百度网盘的话，把那张备份位置表清空、保存并重启。"
-            // 推算是「网盘」，服务却没起来，只有两个可能：还没重启，或者压根没配凭据。
-            // ⚠️ 这一句落在 `CloudDisabledNote`（TextBlock）上，**不认 Markdown** ——
-            // 加了 `**` 会连星号一起显示出来（与 `ArchivePublishResult.Conflict` 同一条）。
-            : _host.Settings.Archive.Kind != ArchiveBackendKind.Cloud
-                ? "备份位置刚改成走百度网盘，保存并重启之后这一页才会起来。"
-                : BaiduPanCredentials.MissingMessage;
+            // 没网络位置、也不是网盘 ⇒ 只剩一种可能：【启用自动上传】被关掉了。
+            : target.Kind == ArchiveBackendKind.LocalDisk
+                ? "【启用自动上传】现在关着，录像不会往网盘传。把它打开，"
+                  + "录像存到本机的同时就会自动传到百度网盘。"
+                // 推算是「网盘」，服务却没起来，只有两个可能：还没重启，或者压根没配凭据。
+                // ⚠️ 这一句落在 `CloudDisabledNote`（TextBlock）上，**不认 Markdown** ——
+                // 加了 `**` 会连星号一起显示出来（与 `ArchivePublishResult.Conflict` 同一条）。
+                : _host.Settings.Archive.Kind != ArchiveBackendKind.Cloud
+                    ? "备份位置刚改成走百度网盘，保存并重启之后这一页才会起来。"
+                    : BaiduPanCredentials.MissingMessage;
 
     /// <summary>
     /// 「账号与上传状态」那张卡上的一段话。

@@ -34,7 +34,7 @@ public class CloudUploadTests
     {
         // ⚠️ 这条是这一批里**后果最大**的一条判据。写成「没开就当传过了」的话，
         // 回查归档层（I8）会以为云端有一份，于是本机**唯一**的那一份被清理删掉。
-        using var harness = new Harness(CloudUploadSettings.Default); // AutoUpload = false
+        using var harness = new Harness(Closed());
         var location = await harness.AddRecordingAsync("e1");
 
         var result = await harness.Service.PublishAsync(
@@ -835,6 +835,9 @@ public class CloudUploadTests
     }
 
     private static CloudUploadSettings Open() => CloudUploadSettings.Default with { AutoUpload = true };
+
+    /// <summary>开关关掉那一组（出厂默认现在是开的，所以这里要显式关）。</summary>
+    private static CloudUploadSettings Closed() => CloudUploadSettings.Default with { AutoUpload = false };
 
     // ─────────────────────────────────────────────
     // 夹具
