@@ -61,7 +61,7 @@ public class CleanupFlowTests
     };
 
     /// <summary>归档层不是本机（那才允许清理，规格 §3.5.1）。</summary>
-    private const ArchiveBackendKind Nas = ArchiveBackendKind.Nas;
+    private const ArchiveBackendKind Network = ArchiveBackendKind.Directory;
 
     private static CleanupFlow Build(
         CleanupFlowFixture fixture,
@@ -83,7 +83,7 @@ public class CleanupFlowTests
 
         var executor = new CleanupExecutor(
             new DirectoryArchiveBackend(
-                archiveRoot ?? System.IO.Path.Combine(fixture.Root, "nas"), kind ?? Nas),
+                archiveRoot ?? System.IO.Path.Combine(fixture.Root, "nas"), kind ?? Network),
             fixture.ArchiveRoot,
             new CleanupAuditLog(System.IO.Path.Combine(fixture.Root, "cleanup-audit.jsonl")),
             VidLog.Desktop.Core.Diagnostics.NullLogger.Instance);

@@ -208,7 +208,7 @@ public partial class SettingsWindow : Window
     // ─────────────────────────────────────────────
 
     /// <summary>
-    /// 归档层是本地时，保留期这块**根本不出现**。
+    /// 没有第二份时，保留期这块**根本不出现**。
     /// </summary>
     /// <remarks>
     /// 规格 §3.5.1：那时盘上这份是唯一副本，不允许开启清理。
@@ -217,7 +217,7 @@ public partial class SettingsWindow : Window
     /// </remarks>
     private void ShowRetention()
     {
-        var target = SelectedArchiveTarget();
+        var target = CurrentArchiveTarget();
 
         RetentionPanel.Visibility =
             target.AllowsCleanup ? Visibility.Visible : Visibility.Collapsed;
@@ -230,19 +230,38 @@ public partial class SettingsWindow : Window
         RetentionAbsentNote.Visibility =
             target.AllowsCleanup ? Visibility.Collapsed : Visibility.Visible;
         RetentionAbsentNote.Text =
-            "归档层是本机磁盘 —— 盘上这份就是唯一副本，所以不提供保留期设置与清理入口。"
-            + "改成 NAS、挂载网络驱动器或百度网盘之后，这里才会出现。";
-
-        // 目录型（NAS / 挂载盘）才要那张备份位置表。⚠️ 这两档**共用一份实现**
-        // （规格 §3.4.6），所以界面上也是同一张表。
-        ArchivePathPanel.Visibility =
-            target.IsDirectoryType ? Visibility.Visible : Visibility.Collapsed;
+            "盘上这份现在是唯一副本，所以不提供保留期设置与清理入口。"
+            + "在下面的「录像备份位置」里加一个网络位置，或者去「百度网盘上传」那一页"
+            + "登录并打开【启用自动上传】，这里才会出现。";
 
         // 「能不能跨网」要如实说（规格 §2.3：**不得承诺做不到的事**）。
         ArchiveReachNote.Text = target.Reachability;
 
         ShowArchiveRelayFailure();
     }
+
+    /// <summary>
+    /// 现在这一刻的归档层 —— **把界面上还没保存的改动算进去**。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// 2026-10-13 起归档层不再由那个下拉选了，而是从「备份位置表 + 网盘开关」推算
+    /// （见 <see cref="ArchiveTarget.FromConfig"/>）。而这两样在界面上都是**可以先改、
+    /// 后按【应用】**的 —— 直接读 <c>_host.Settings</c> 会让「刚加了一行备份位置」
+    /// 这一下看着毫无反应（要等保存）。
+    /// </para>
+    /// <para>
+    /// ⚠️ 只推算**这一处要用到的两件事**（能不能跨网、要不要摆清理入口），
+    /// 不自己去拼一个 <see cref="AppSettings"/> —— 那会把「界面上的草稿」与
+    /// 「已保存的设置」搅在一起，迟早有一处读错。
+    /// </para>
+    /// </remarks>
+    private ArchiveTarget CurrentArchiveTarget() => ArchiveTarget.FromConfig(
+        _host.Settings.ArchiveBackend,
+        _backupDiskRows.Count > 0
+            ? _backupDiskRows[0].Folder
+            : _host.Settings.ArchiveDirectories.FirstOrDefault(),
+        CloudAutoUploadToggle.IsChecked == true);
 
     /// <summary>
     /// 「归档层那一份没发上去」——**必须说出来**。
@@ -313,31 +332,6 @@ public partial class SettingsWindow : Window
             + "在发上去之前别删。"
             + (conflicts == 0 ? "修好之后下次收尾会自动再发。" : string.Empty);
     }
-
-    /// <summary>界面上当前选中的归档层。</summary>
-    /// <remarks>
-    /// <para>
-    /// 认不出的 Tag 一律回落到本机磁盘 —— 与
-    /// <see cref="ArchiveTarget.FromConfig"/> 同一个方向（朝**少删**的那头落）。
-    /// </para>
-    /// <para>
-    /// ⚠️ 目录取**表里第一行**：`ArchiveTarget` 只有一个路径字段，而多出来的那几行
-    /// 是给归档层用的（<c>AppSettings.ArchiveDirectories</c> 一次给全）。
-    /// 这一处在界面上只用来判「能不能跨网 / 要不要摆清理入口」，
-    /// 而那两件事只看第一行就够 —— 真正的多位置发布在 Core 里。
-    /// </para>
-    /// </remarks>
-    private ArchiveTarget SelectedArchiveTarget() =>
-        TagOf(ArchiveCombo) switch
-        {
-            "Nas" => new ArchiveTarget(ArchiveBackendKind.Nas, FirstBackupPath),
-            "MountedDrive" => new ArchiveTarget(ArchiveBackendKind.MountedDrive, FirstBackupPath),
-            "Cloud" => new ArchiveTarget(ArchiveBackendKind.Cloud),
-            _ => ArchiveTarget.Default,
-        };
-
-    /// <summary>备份位置表里的第一条路径（没有就给 <see langword="null"/>）。</summary>
-    private string? FirstBackupPath => _backupDiskRows.FirstOrDefault()?.Folder;
 
     /// <summary>
     /// 下拉里的项就是 <see cref="RetentionSetting.Standard"/>（8 档）。

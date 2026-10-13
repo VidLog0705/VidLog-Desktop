@@ -245,7 +245,6 @@ public partial class SettingsWindow : Window
             SelectByTag(IdleCombo, _host.Settings.IdleReminder.ToString());
             IdleMinutesBox.Text = _host.Settings.IdleReminderMinutes.ToString();
             SelectByTag(DurationCombo, _host.Settings.DurationFallback.ToString());
-            SelectByTag(ArchiveCombo, _host.Settings.ArchiveBackend.ToString());
             SelectRadio(CodecButtons, _host.Settings.Codec.ToString());
             SelectRadio(ResolutionButtons, _host.Settings.Resolution.ToString());
             SegmentBox.Text = _host.Settings.SegmentMinutes.ToString();
@@ -450,17 +449,6 @@ public partial class SettingsWindow : Window
     /// </remarks>
     private void OnRoleChanged(object sender, SelectionChangedEventArgs e) => MarkDirty();
 
-    /// <summary>归档层变了：保留期那一块的可见性跟着变（与存盘无关的那一半）。</summary>
-    private void OnArchiveChanged(object sender, SelectionChangedEventArgs e)
-    {
-        MarkDirty();
-        ShowRetention();
-
-        // 「百度网盘上传」那一页整个挂在归档层选的是哪一档上（批次 5）——
-        // 换档之后它是不是还能用，这里就得跟着重算。
-        _ = RefreshCloudPageAsync();
-    }
-
     private void MarkDirty()
     {
         if (_suppressSettingsEvents)
@@ -610,7 +598,6 @@ public partial class SettingsWindow : Window
         DurationFallbackTag = TagOf(DurationCombo),
         CloseActionTag = TagOf(CloseActionCombo),
         ThemeTag = TagOf(ThemeCombo),
-        ArchiveBackendTag = TagOf(ArchiveCombo),
         CloudBackfillScopeTag = TagOf(CloudScopeCombo),
         LogLevelTag = TagOf(LogLevelCombo),
 

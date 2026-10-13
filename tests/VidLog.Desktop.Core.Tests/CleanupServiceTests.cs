@@ -127,7 +127,7 @@ public class CleanupServiceTests
         using var fixture = new Fixture();
 
         var service = Build(
-            fixture, ArchiveBackendKind.Nas,
+            fixture, ArchiveBackendKind.Directory,
             entries: [Entry("e1", Now.AddDays(-40))],
             labels: [Outbound("e1")],
             receipts: [Receipt("e1", Now.AddDays(-39))]);
@@ -148,7 +148,7 @@ public class CleanupServiceTests
         var (entries, labels, receipts) = ThreeClearable();
 
         var service = Build(
-            fixture, ArchiveBackendKind.Nas,
+            fixture, ArchiveBackendKind.Directory,
             entries: entries, labels: labels, receipts: receipts);
 
         var plan = await service.PreviewBySpaceAsync(minFreeBytes: 1, freeBytes: 0, Now);
@@ -167,7 +167,7 @@ public class CleanupServiceTests
         var (entries, labels, receipts) = ThreeClearable();
 
         var service = Build(
-            fixture, ArchiveBackendKind.Nas,
+            fixture, ArchiveBackendKind.Directory,
             entries: entries, labels: labels, receipts: receipts);
 
         var plan = await service.PreviewBySpaceAsync(minFreeBytes: Gb(1024), freeBytes: 0, Now);
@@ -185,7 +185,7 @@ public class CleanupServiceTests
         using var fixture = new Fixture();
 
         var service = Build(
-            fixture, ArchiveBackendKind.Nas,
+            fixture, ArchiveBackendKind.Directory,
             entries: [Entry("no-label", Now.AddDays(-40))],
             labels: [],                                    // ← 故意没有业务类型标签
             receipts: [Receipt("no-label", Now.AddDays(-39))]);
@@ -222,7 +222,7 @@ public class CleanupServiceTests
         using var fixture = new Fixture();
 
         var service = Build(
-            fixture, ArchiveBackendKind.Nas,
+            fixture, ArchiveBackendKind.Directory,
             entries:
             [
                 Entry("unarchived", Now.AddDays(-40)),   // 没有回执 ⇒ 未归档 ⇒ 唯一副本
@@ -266,7 +266,7 @@ public class CleanupServiceTests
         using var fixture = new Fixture();
 
         var service = Build(
-            fixture, ArchiveBackendKind.Nas,
+            fixture, ArchiveBackendKind.Directory,
             entries: [Entry("self-rec", Now.AddDays(-40))],
             labels: [Outbound("self-rec")],
             published: [Published("self-rec", Now.AddDays(-39))]);
@@ -286,7 +286,7 @@ public class CleanupServiceTests
         using var fixture = new Fixture();
 
         var service = Build(
-            fixture, ArchiveBackendKind.Nas,
+            fixture, ArchiveBackendKind.Directory,
             entries: [Entry("never-published", Now.AddDays(-40))],
             labels: [Outbound("never-published")],
             published: []);                                  // ← 没记上账 = 没发上去
@@ -310,7 +310,7 @@ public class CleanupServiceTests
         using var fixture = new Fixture();
 
         var service = Build(
-            fixture, ArchiveBackendKind.Nas,
+            fixture, ArchiveBackendKind.Directory,
             entries: [Entry("from-phone", Now.AddDays(-40))],
             labels: [Outbound("from-phone")],
             receipts: [Receipt("from-phone", Now.AddDays(-39))],
@@ -341,7 +341,7 @@ public class CleanupServiceTests
 
         var service = Build(
             fixture,
-            ArchiveBackendKind.Nas,
+            ArchiveBackendKind.Directory,
             entries: [Entry("e1", old)],
             labels: [Outbound("e1")],
             receipts: [Receipt("e1", Now.AddDays(-30))]);
@@ -370,7 +370,7 @@ public class CleanupServiceTests
 
         var service = Build(
             fixture,
-            ArchiveBackendKind.Nas,
+            ArchiveBackendKind.Directory,
             entries: [Entry("e1", Now.AddDays(-40))],
             labels: [Outbound("e1")],
             // 一小时前才归档成功 —— 保留期 7 天，所以**不该**清。
@@ -389,7 +389,7 @@ public class CleanupServiceTests
 
         var service = Build(
             fixture,
-            ArchiveBackendKind.Nas,
+            ArchiveBackendKind.Directory,
             entries: [Entry("e1", Now.AddDays(-40))],
             labels: [Outbound("e1")],
             receipts: []);   // 没归档
@@ -409,7 +409,7 @@ public class CleanupServiceTests
 
         var service = Build(
             fixture,
-            ArchiveBackendKind.Nas,
+            ArchiveBackendKind.Directory,
             archiveRoot: Path.Combine(fixture.Root, "nas"),   // 归档层上什么都没有
             entries: [Entry("e1", old)],
             labels: [Outbound("e1")],
@@ -441,7 +441,7 @@ public class CleanupServiceTests
 
         var service = Build(
             fixture,
-            ArchiveBackendKind.Nas,
+            ArchiveBackendKind.Directory,
             archiveRoot: nas,
             entries: [Entry("e1", old)],
             labels: [Outbound("e1")],

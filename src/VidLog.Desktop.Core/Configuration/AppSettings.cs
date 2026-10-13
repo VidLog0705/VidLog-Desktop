@@ -317,22 +317,25 @@ public sealed record AppSettings
     public bool CheckForUpdates { get; init; } = true;
 
     /// <summary>
-    /// 归档层是本机磁盘、NAS、挂载盘、还是网盘（规格 §3.4.6 / §3.5.1）。
+    /// 归档层是哪儿 —— 2026-10-13 之前是用户手选的那一档，**现在只剩兼容读懂老配置**。
     /// </summary>
     /// <remarks>
-    /// 默认<see cref="ArchiveBackendKind.LocalDisk"/> = 盘上这份是**唯一副本**，
-    /// 于是规格 §3.5.1 不允许开启清理、界面上**不给保留期设置入口**。
-    /// 这个默认值就是「什么都没配过」时的真实处境，不是保守起见。
     /// <para>
-    /// ⚠️ 这一项**沿用老的 JSON 键名与数字值**（老配置里写的就是它），
-    /// 所以它的类型从枚举窄化成「枚举 + 目录」那个记录时**没有动落盘形状** ——
-    /// 只是多了一个兄弟字段 <see cref="ArchiveDirectory"/>。
+    /// ⚠️ <b>新代码不再写它、也不再拿它当准</b>：真正的归档层由
+    /// <see cref="Archive"/> 从「备份位置表 + 百度网盘那一页的开关」推算出来
+    /// （规格 §3.5.1 的判据没变，变的是它从哪儿来）。
+    /// </para>
+    /// <para>
+    /// ⚠️ <b>但它不能删</b>：老设置文件里写着它，而其中有一个值没法从别处推出来 ——
+    /// <see cref="ArchiveBackendKind.Cloud"/>。那时**还没有**「启用自动上传」这个开关，
+    /// 选到网盘那一档就等于第二份在网盘上。老的本机 / NAS / 挂载盘三个值不用翻译，
+    /// 由表与开关重新算出来即可。
     /// </para>
     /// </remarks>
     public ArchiveBackendKind ArchiveBackend { get; init; } = ArchiveBackendKind.LocalDisk;
 
     /// <summary>
-    /// 目录型归档层的根（NAS 或挂载盘的路径）。
+    /// 目录型归档层的根（老配置里的单个路径）。
     /// </summary>
     /// <remarks>
     /// ⚠️ 这是**配置里的根**，不进索引：索引里存的永远是相对路径
@@ -341,9 +344,13 @@ public sealed record AppSettings
     /// </remarks>
     public string? ArchiveDirectory { get; init; }
 
-    /// <summary>归档层配置（枚举 + 目录合成一个）。**不落盘**，它是由那两个字段算出来的。</summary>
+    /// <summary>归档层在哪儿。**不落盘**，它是由「备份位置表 + 网盘开关」算出来的。</summary>
+    /// <remarks>
+    /// 推算规则见 <see cref="ArchiveTarget.FromConfig"/>。
+    /// </remarks>
     [JsonIgnore]
-    public ArchiveTarget Archive => ArchiveTarget.FromConfig(ArchiveBackend, ArchiveDirectories.FirstOrDefault());
+    public ArchiveTarget Archive => ArchiveTarget.FromConfig(
+        ArchiveBackend, ArchiveDirectories.FirstOrDefault(), Cloud.AutoUpload);
 
     /// <summary>
     /// 归档层要落的那几个目录，**有序**（设计图 `_43` 的「录像备份位置」表）。

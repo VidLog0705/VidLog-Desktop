@@ -660,33 +660,25 @@
 
                         <Separator Margin="0,18,0,16"/>
 
-                        <!-- ── ③ 录像备份位置（归档层那一份落在哪儿）────── -->
+                        <!-- ── ③ 录像备份位置（第二份落在哪儿）──────
+                             ⚠️ 2026-10-13 删掉了原来那个「归档层」下拉（需求方裁定）：
+                             它让用户**声明**后端，而声明与路径之间一个字都不校验 ——
+                             声明成 NAS、路径填本机目录，程序照认。现在这一档由这张表
+                             推算：表里有路径 ⇒ 第二份就是这个网络位置；表空着 ⇒
+                             第二份是百度网盘（那一页登录 + 打开【启用自动上传】才作数）。
+                             ⚠️ 表**永远可见** —— 它不再是「某一档才要填」的东西，
+                             它就是「第二份放哪儿」这唯一一个输入。 -->
                         <TextBlock Style="{StaticResource SectionTitle}"
                                    Text="录像备份位置" Margin="0,0,0,4"/>
                         <TextBlock Style="{StaticResource Caption}"
-                                   Text="录像会按列表顺序备份到当前可用的位置；NAS 满时自动切换到下一个，NAS 中已备份的文件不会被程序删除"/>
+                                   Text="录像会按列表顺序备份到当前可用的位置；NAS 满时自动切换到下一个，NAS 中已备份的文件不会被程序删除。留空则备份到百度网盘。"/>
 
-                        <StackPanel Orientation="Horizontal" Margin="0,12,0,0">
-                            <TextBlock Text="归档层" Style="{StaticResource FieldLabel}"/>
-                            <ComboBox x:Name="ArchiveCombo" Width="200"
-                                      SelectionChanged="OnArchiveChanged">
-                                <ComboBoxItem Tag="LocalDisk">本机磁盘</ComboBoxItem>
-                                <ComboBoxItem Tag="Nas">NAS</ComboBoxItem>
-                                <ComboBoxItem Tag="MountedDrive">挂载网络驱动器</ComboBoxItem>
-                                <ComboBoxItem Tag="Cloud">百度网盘</ComboBoxItem>
-                            </ComboBox>
-                            <local:HelpTip Margin="8,0,0,0"
-                                           Text="录像备份到哪儿去了。只有在别处还有一份时，清掉盘上这份才是安全的。"/>
-                        </StackPanel>
                         <TextBlock x:Name="ArchiveReachNote" Style="{StaticResource Caption}"
-                                   Margin="0,6,0,0"/>
+                                   Margin="0,10,0,0"/>
 
-                        <!-- 目录型的路径（NAS / 挂载盘）。这两档**共用一份实现**（规格 §3.4.6），
-                             所以界面上也是同一张表 —— 再拆一张只会让两条路慢慢走岔。
-                             ⚠️ 表里的路径与原来那个单行输入框是同一份配置
-                             （`ArchiveDirectory`），老配置读进来就是一行。 -->
-                        <StackPanel x:Name="ArchivePathPanel" Margin="0,10,0,0"
-                                    Visibility="Collapsed">
+                        <!-- ⚠️ 这一块**永远可见**：它不再是「某一档才要填」的东西，
+                             它就是「第二份放哪儿」这唯一一个输入。 -->
+                        <StackPanel Margin="0,10,0,0">
                             <Border Background="{DynamicResource SurfaceAlt}"
                                     CornerRadius="{StaticResource RadiusTab}" Padding="12,7">
                                 <Grid>
@@ -705,7 +697,7 @@
                                      SelectionChanged="OnDiskSelectionChanged"/>
                             <TextBlock x:Name="BackupDiskEmptyNote"
                                        Style="{StaticResource Caption}" Margin="12,8,0,0"
-                                       Text="还没有配置 —— 先在【添加磁盘】里选一个可读写的目录，例如 \\nas\vidlog 或 Z:\vidlog。"/>
+                                       Text="还没有配置 —— 用【添加磁盘】选一个可读写的网络位置（例如 \\nas\vidlog 或 Z:\vidlog）；留空则备份到百度网盘，见「百度网盘上传」那一页。"/>
 
                             <TextBlock Style="{StaticResource Caption}" Margin="0,10,0,0"
                                        Text="网络那一层（登录、凭据）由你在系统里挂好，我们只当成一个目录用。"/>

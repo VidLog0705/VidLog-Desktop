@@ -61,7 +61,7 @@ public class ArchiveNameCollisionTests : IDisposable
 
         var index = new IndexSpy();
         var runner = new StubRunner();
-        var backend = new DirectoryArchiveBackend(nas, ArchiveBackendKind.Nas);
+        var backend = new DirectoryArchiveBackend(nas, ArchiveBackendKind.Directory);
         var failures = NewFailureLog(root);
         var relay = NewRelay(backend, failures, root);
         var finalizer = NewFinalizer(StorageLocations.Single(save), runner, index, relay);
@@ -139,7 +139,7 @@ public class ArchiveNameCollisionTests : IDisposable
 
         var index = new IndexSpy();
         var runner = new StubRunner();
-        var backend = new DirectoryArchiveBackend(nas, ArchiveBackendKind.Nas);
+        var backend = new DirectoryArchiveBackend(nas, ArchiveBackendKind.Directory);
         var failures = NewFailureLog(root);
         var relay = NewRelay(backend, failures, root);
 
@@ -208,7 +208,7 @@ public class ArchiveNameCollisionTests : IDisposable
 
         var index = new IndexSpy();
         var runner = new StubRunner { Payload = "本场的字节" };
-        var backend = new DirectoryArchiveBackend(nas, ArchiveBackendKind.Nas);
+        var backend = new DirectoryArchiveBackend(nas, ArchiveBackendKind.Directory);
         var failures = NewFailureLog(root);
         var relay = NewRelay(backend, failures, root);
         var finalizer = NewFinalizer(StorageLocations.Single(save), runner, index, relay);

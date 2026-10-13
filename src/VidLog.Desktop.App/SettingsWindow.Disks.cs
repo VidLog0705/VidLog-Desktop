@@ -163,6 +163,16 @@ public partial class SettingsWindow : Window
 
         SyncDiskButtons(SaveDiskList, SaveRemoveButton, SaveUpButton, SaveDownButton);
         SyncDiskButtons(BackupDiskList, BackupRemoveButton, BackupUpButton, BackupDownButton);
+
+        // ⚠️ 备份位置表动了 ⇒ **归档层跟着动** ⇒ 保留期那一块的可见性要重算。
+        // 2026-10-13 之前这件事挂在那个人工选的「归档层」下拉上（`OnArchiveChanged`），
+        // 下拉删掉之后改挂在这里 —— 这是备份表每次变动都要走的**唯一**一处。
+        // 装载期间（`_suppressSettingsEvents`）不调：那会儿 `LoadSettingsIntoUi`
+        // 末尾自己会调一次，而这之前的控件还没填好（会读到过期的开关状态）。
+        if (!_suppressSettingsEvents)
+        {
+            ShowRetention();
+        }
     }
 
     /// <summary>「移除选中 / 上移 / 下移」能不能点 —— 只看选中在哪。</summary>
@@ -244,6 +254,15 @@ public partial class SettingsWindow : Window
             return;
         }
 
+        // ⚠️ **备份位置那一张表要判卷**（2026-10-13 需求方裁定）。
+        // 归档层不再由用户手选之后，「这个位置到底在不在别处」就只剩这一道闸了 ——
+        // 放一块本机盘进去，清理时程序会以为「别处已经有一份」，把唯一那份删掉。
+        // 判据见 `StorageVolumeClassifier`（盘符背后的内核设备名）。
+        if (!save && !ConfirmBackupLocation(path))
+        {
+            return;
+        }
+
         rows.Add(save
             ? new DiskSlotRow(path, DefaultReserveText(path), true, null, list, MarkDirty)
             : new DiskSlotRow(path, BackupReserveText, false, BackupReserveHint, list, MarkDirty));
@@ -251,6 +270,65 @@ public partial class SettingsWindow : Window
         BindDisks();
         list.SelectedIndex = rows.Count - 1;
         MarkDirty();
+    }
+
+    /// <summary>
+    /// 【添加磁盘】挑备份位置时的那道闸：**本机物理盘不许当备份**。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// 2026-10-13 需求方裁定：「加进去时判卷、本机物理盘拒收」——照前身产品
+    /// <c>PackingProof</c> 的 <c>BackupStorageLocationPolicy</c>。网络位置（UNC、
+    /// 映射盘）直接收；看着像网盘挂载出来的虚拟盘、以及判不出来的一律**问一句**；
+    /// 明确是本机物理盘的**拒**。
+    /// </para>
+    /// <para>
+    /// ⚠️ <b>为什么拒的是「本机物理盘」而不是「本机」</b>：规格 §3.5.1 的那条闸
+    /// （归档层在别处才允许清理）要的是「两份不会坏在同一个地方」。把这条路径放进
+    /// 备份位置，等于对程序**声明**「这就是别处那一份」—— 而它其实还在本机上。
+    /// 这与前身产品那句「本地磁盘不能作为备份位置」是同一条规矩。
+    /// </para>
+    /// </remarks>
+    /// <returns>收不收这一条。</returns>
+    private bool ConfirmBackupLocation(string path)
+    {
+        var kind = StorageVolumeClassifier.Classify(path);
+        var decision = StorageVolumeClassifier.DecideForBackup(kind);
+
+        switch (decision)
+        {
+            case BackupPathDecision.Accept:
+                return true;
+
+            case BackupPathDecision.RejectLocalPhysical:
+                // ⚠️ 先把话说全再拒 —— 用户此刻正看着「添加磁盘」那个框，
+                // 光弹一个「不行」他会换个路径再试，而原因一个字都没进脑子。
+                MessageBox.Show(
+                    this,
+                    StorageVolumeClassifier.Explain(decision, path),
+                    "这个位置不能当备份",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Warning);
+                SettingsStatus.Text = $"{path} 没有加进来 —— 它是本机的一块盘。";
+
+                // ⚠️ **拒了也要留痕**（§6.1 的「不可逆动作」那一行反过来用）：
+                // 这一次什么都没改，所以设置文件里一个字都不会有 ——
+                // 事后「我明明加过这个位置的备份」在日志上会是**完全空白**。
+                // 与设置校验不过时那一行同一个口径（`SaveAsync` 里那条 Warn）。
+                _host.Log(
+                    LogLevel.Warn, "设置",
+                    $"备份位置没收下：{path} 是本机的一块物理盘，"
+                    + "拿它当第二份会把唯一那一份删掉。本次未加入。");
+                return false;
+
+            default:
+                return MessageBox.Show(
+                    this,
+                    StorageVolumeClassifier.Explain(decision, path) + "\n\n要拿它当备份位置吗？",
+                    "确认备份位置",
+                    MessageBoxButton.YesNo,
+                    MessageBoxImage.Question) == MessageBoxResult.Yes;
+        }
     }
 
     /// <summary>这一格新加进来时预填的预留空间（与挑盘时判的是同一个数）。</summary>

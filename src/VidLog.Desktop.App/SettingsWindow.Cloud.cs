@@ -139,7 +139,17 @@ public partial class SettingsWindow : Window
     private void SyncCloudScopeControls() =>
         CloudFromDatePicker.IsEnabled = TagOf(CloudScopeCombo) == "FromDate";
 
-    private void OnCloudAutoUploadChanged(object sender, RoutedEventArgs e) => MarkDirty();
+    /// <summary>
+    /// 自动上传开关拨了 —— 它**同时是「有没有第二份」的一个判据**（见
+    /// <see cref="ArchiveTarget.FromConfig"/>：备份位置表空着时，第二份就是网盘，
+    /// 而这个开关管着网盘到底传不传），所以保留期那一块要跟着重算。
+    /// </summary>
+    private void OnCloudAutoUploadChanged(object sender, RoutedEventArgs e)
+    {
+        MarkDirty();
+        ShowRetention();
+    }
+
     private void OnCloudCompareChanged(object sender, RoutedEventArgs e) => MarkDirty();
     private void OnCloudFromDateChanged(object sender, SelectionChangedEventArgs e) => MarkDirty();
 
@@ -205,7 +215,7 @@ public partial class SettingsWindow : Window
 
     private async Task RefreshCloudCoreAsync()
     {
-        var target = SelectedArchiveTarget();
+        var target = CurrentArchiveTarget();
         var service = _host.Services.CloudUploads;
 
         if (target.Kind != ArchiveBackendKind.Cloud || service is null)
@@ -337,11 +347,14 @@ public partial class SettingsWindow : Window
     /// <summary>这一页现在为什么不能用（**两句不同的话，别混**）。</summary>
     private string CloudUnavailableReason(ArchiveTarget target) =>
         target.Kind != ArchiveBackendKind.Cloud
-            ? "这一页只在「存储与备份」里的归档层选成**百度网盘**时才有用 —— 现在选的是"
-              + $"「{target.Label}」。换过去并保存、重启之后，这里的登录与上传才会真的跑起来。"
-            // 档位对了，服务却没起来，只有两个可能：还没重启，或者压根没配凭据。
-            : _host.Settings.ArchiveBackend != ArchiveBackendKind.Cloud
-                ? "归档层刚改成百度网盘，**保存并重启**之后这一页才会起来。"
+            ? "百度网盘这一页只在「没有配网络备份位置」时才算第二份 —— 现在"
+              + $"「存储与备份」里有「{target.Label}」那一份，录像不会往网盘上传。"
+              + "想改用百度网盘的话，把那张备份位置表清空、保存并重启。"
+            // 推算是「网盘」，服务却没起来，只有两个可能：还没重启，或者压根没配凭据。
+            // ⚠️ 这一句落在 `CloudDisabledNote`（TextBlock）上，**不认 Markdown** ——
+            // 加了 `**` 会连星号一起显示出来（与 `ArchivePublishResult.Conflict` 同一条）。
+            : _host.Settings.Archive.Kind != ArchiveBackendKind.Cloud
+                ? "备份位置刚改成走百度网盘，保存并重启之后这一页才会起来。"
                 : BaiduPanCredentials.MissingMessage;
 
     /// <summary>
@@ -583,7 +596,8 @@ public partial class SettingsWindow : Window
 
         var answer = MessageBox.Show(
             this,
-            "退出登录只会删掉本机记着的登录信息，**不会**删除百度网盘上的任何文件。\n\n要继续吗？",
+            // ⚠️ 不写 `**`：MessageBox 不认 Markdown，会连星号一起显示。
+            "退出登录只会删掉本机记着的登录信息，不会删除百度网盘上的任何文件。\n\n要继续吗？",
             "退出百度网盘",
             MessageBoxButton.YesNo,
             MessageBoxImage.Question);

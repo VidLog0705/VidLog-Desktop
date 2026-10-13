@@ -30,11 +30,11 @@ public class ArchiveBackendTests
     // ─────────────────────────────────────────────
 
     [Fact]
-    public void 目录型只认_NAS_与挂载盘()
+    public void 只有网络位置那一档算目录型()
     {
-        // 规格 §3.4.6：「NAS 与挂载盘的差别只在要不要输凭据，实现上是两档」。
-        Assert.True(new ArchiveTarget(ArchiveBackendKind.Nas).IsDirectoryType);
-        Assert.True(new ArchiveTarget(ArchiveBackendKind.MountedDrive).IsDirectoryType);
+        // ⚠️ 2026-10-13 之前这里是**两档**（NAS 与挂载盘各一个枚举值），
+        // 而它们走的是同一份实现、同一张配置表 —— 合并成「网络位置」一档。
+        Assert.True(new ArchiveTarget(ArchiveBackendKind.Directory).IsDirectoryType);
 
         Assert.False(new ArchiveTarget(ArchiveBackendKind.LocalDisk).IsDirectoryType);
         Assert.False(new ArchiveTarget(ArchiveBackendKind.Cloud).IsDirectoryType);
@@ -44,32 +44,77 @@ public class ArchiveBackendTests
     public void 只有本机磁盘那一档不给清理()
     {
         // 规格 §3.5.1：判据是「归档层是不是**就在这台电脑上**」——
-        // NAS 与挂载盘都算「在别处」（哪怕挂载成 Z:\ 看着就是个本地盘）。
+        // 网络位置（哪怕挂载成 Z:\ 看着就是个本地盘）算「在别处」。
         Assert.False(new ArchiveTarget(ArchiveBackendKind.LocalDisk).AllowsCleanup);
 
-        Assert.True(new ArchiveTarget(ArchiveBackendKind.Nas, @"\\nas\vidlog").AllowsCleanup);
-        Assert.True(new ArchiveTarget(ArchiveBackendKind.MountedDrive, @"Z:\vidlog").AllowsCleanup);
+        Assert.True(new ArchiveTarget(ArchiveBackendKind.Directory, @"\\nas\vidlog").AllowsCleanup);
+        Assert.True(new ArchiveTarget(ArchiveBackendKind.Directory, @"Z:\vidlog").AllowsCleanup);
         Assert.True(new ArchiveTarget(ArchiveBackendKind.Cloud).AllowsCleanup);
     }
 
     [Fact]
     public void 目录型没填路径或填了相对路径都算没配好()
     {
-        Assert.NotNull(new ArchiveTarget(ArchiveBackendKind.Nas).ConfigurationProblem);
-        Assert.NotNull(new ArchiveTarget(ArchiveBackendKind.Nas, "   ").ConfigurationProblem);
-        Assert.NotNull(new ArchiveTarget(ArchiveBackendKind.MountedDrive, "vidlog").ConfigurationProblem);
+        Assert.NotNull(new ArchiveTarget(ArchiveBackendKind.Directory).ConfigurationProblem);
+        Assert.NotNull(new ArchiveTarget(ArchiveBackendKind.Directory, "   ").ConfigurationProblem);
+        Assert.NotNull(new ArchiveTarget(ArchiveBackendKind.Directory, "vidlog").ConfigurationProblem);
 
-        Assert.Null(new ArchiveTarget(ArchiveBackendKind.Nas, @"\\nas\vidlog").ConfigurationProblem);
-        Assert.Null(new ArchiveTarget(ArchiveBackendKind.MountedDrive, @"Z:\vidlog").ConfigurationProblem);
+        Assert.Null(new ArchiveTarget(ArchiveBackendKind.Directory, @"\\nas\vidlog").ConfigurationProblem);
+        Assert.Null(new ArchiveTarget(ArchiveBackendKind.Directory, @"Z:\vidlog").ConfigurationProblem);
 
         // 本机磁盘不需要配路径 —— 它就在本机。
         Assert.Null(new ArchiveTarget(ArchiveBackendKind.LocalDisk).ConfigurationProblem);
     }
 
+    // ─────────────────────────────────────────────
+    // 归档层是**推算**出来的（2026-10-13 需求方裁定）
+    // ─────────────────────────────────────────────
+
     [Fact]
-    public void 认不出的档位回落到本机磁盘_朝少删的那头落()
+    public void 备份位置表里有路径_就是那个网络位置()
     {
-        var target = ArchiveTarget.FromConfig((ArchiveBackendKind)99, @"Z:\vidlog");
+        // 需求方原话：「如果是网络硬盘或者NAS，则不需要上传到百度网盘」——
+        // 表里那条路径**就是**第二份在哪儿。
+        var target = ArchiveTarget.FromConfig(
+            ArchiveBackendKind.LocalDisk, @"\\nas\vidlog", cloudAutoUpload: true);
+
+        Assert.Equal(ArchiveBackendKind.Directory, target.Kind);
+        Assert.Equal(@"\\nas\vidlog", target.DirectoryPath);
+
+        // ⚠️ 开关开着也**不算网盘**：表里有位置，第二份就是它。
+        // 算成「两个第二份都有」的话，清理会把「网盘那份其实没传上去」当成功。
+        Assert.True(target.AllowsCleanup);
+    }
+
+    [Fact]
+    public void 表空着而自动上传开着_第二份就是百度网盘()
+    {
+        var target = ArchiveTarget.FromConfig(
+            ArchiveBackendKind.LocalDisk, null, cloudAutoUpload: true);
+
+        Assert.Equal(ArchiveBackendKind.Cloud, target.Kind);
+        Assert.True(target.AllowsCleanup);
+    }
+
+    [Fact]
+    public void 老配置里手选过网盘那一档的_自动上传关着也照认()
+    {
+        // ⚠️ 这条挡的是「升级之后网盘那份再也算不出来」：2026-10-13 之前
+        // **没有**「自动上传」这个开关，用户是靠老下拉框声明网盘的。只认表与开关
+        // 的话，那些人的归档层会当场掉回本机 ⇒ 清理入口消失、录像永远清不掉。
+        var target = ArchiveTarget.FromConfig(
+            ArchiveBackendKind.Cloud, null, cloudAutoUpload: false);
+
+        Assert.Equal(ArchiveBackendKind.Cloud, target.Kind);
+    }
+
+    [Fact]
+    public void 表空着开关也关着_就没有第二份_朝少删的那头落到本机()
+    {
+        // 与前一条刻意不同：**不认识的**老值不翻译，只认表与开关。
+        // 与 `RetentionSetting.FromConfig` 解析失败回落「全部保留」是同一条规矩。
+        var target = ArchiveTarget.FromConfig(
+            (ArchiveBackendKind)99, null, cloudAutoUpload: false);
 
         Assert.Equal(ArchiveBackendKind.LocalDisk, target.Kind);
         Assert.False(target.AllowsCleanup);
@@ -80,8 +125,9 @@ public class ArchiveBackendTests
     {
         // 规格 §2.3：产品**不得承诺做不到的事**。
         Assert.Contains("跨网", new ArchiveTarget(ArchiveBackendKind.Cloud).Reachability);
-        Assert.Contains("只能内网", new ArchiveTarget(ArchiveBackendKind.LocalDisk).Reachability);
-        Assert.Contains("只能内网", new ArchiveTarget(ArchiveBackendKind.MountedDrive, @"Z:\v").Reachability);
+        Assert.Contains("只有本机这一份", new ArchiveTarget(ArchiveBackendKind.LocalDisk).Reachability);
+        Assert.Contains(
+            "同一个网络", new ArchiveTarget(ArchiveBackendKind.Directory, @"Z:\v").Reachability);
     }
 
     // ─────────────────────────────────────────────
@@ -106,7 +152,7 @@ public class ArchiveBackendTests
     {
         using var dir = new TempDir();
         var nas = System.IO.Path.Combine(dir.Path, "nas");
-        var backend = new DirectoryArchiveBackend(nas, ArchiveBackendKind.Nas);
+        var backend = new DirectoryArchiveBackend(nas, ArchiveBackendKind.Directory);
 
         var local = System.IO.Path.Combine(dir.Path, "local.mp4");
         await File.WriteAllBytesAsync(local, [1, 2, 3, 4, 5]);
@@ -129,7 +175,7 @@ public class ArchiveBackendTests
     {
         using var dir = new TempDir();
         var nas = System.IO.Path.Combine(dir.Path, "nas");
-        var backend = new DirectoryArchiveBackend(nas, ArchiveBackendKind.Nas);
+        var backend = new DirectoryArchiveBackend(nas, ArchiveBackendKind.Directory);
 
         var local = System.IO.Path.Combine(dir.Path, "local.mp4");
         await File.WriteAllBytesAsync(local, [1, 2, 3]);
@@ -149,7 +195,7 @@ public class ArchiveBackendTests
     {
         using var dir = new TempDir();
         var nas = System.IO.Path.Combine(dir.Path, "nas");
-        var backend = new DirectoryArchiveBackend(nas, ArchiveBackendKind.Nas);
+        var backend = new DirectoryArchiveBackend(nas, ArchiveBackendKind.Directory);
 
         var local = System.IO.Path.Combine(dir.Path, "local.mp4");
         await File.WriteAllBytesAsync(local, [1, 2, 3]);
@@ -184,7 +230,7 @@ public class ArchiveBackendTests
         await File.WriteAllTextAsync(blocker, "x");
 
         var backend = new DirectoryArchiveBackend(
-            System.IO.Path.Combine(blocker, "nas"), ArchiveBackendKind.Nas);
+            System.IO.Path.Combine(blocker, "nas"), ArchiveBackendKind.Directory);
 
         var local = System.IO.Path.Combine(dir.Path, "local.mp4");
         await File.WriteAllBytesAsync(local, [1, 2, 3]);
@@ -203,7 +249,7 @@ public class ArchiveBackendTests
         // 那条判据就在这里：staging 用 .part 后缀。
         using var dir = new TempDir();
         var nas = System.IO.Path.Combine(dir.Path, "nas");
-        var backend = new DirectoryArchiveBackend(nas, ArchiveBackendKind.Nas);
+        var backend = new DirectoryArchiveBackend(nas, ArchiveBackendKind.Directory);
 
         var local = System.IO.Path.Combine(dir.Path, "local.mp4");
         await File.WriteAllBytesAsync(local, [1, 2, 3]);
@@ -227,7 +273,7 @@ public class ArchiveBackendTests
         var nas = System.IO.Path.Combine(dir.Path, "nas");
         Directory.CreateDirectory(nas); // 归档层建好了、只是这一条没发上去
 
-        var backend = new DirectoryArchiveBackend(nas, ArchiveBackendKind.Nas);
+        var backend = new DirectoryArchiveBackend(nas, ArchiveBackendKind.Directory);
 
         var missing = await backend.VerifyAsync(Where("nope.mp4"));
         Assert.False(missing.Exists);
@@ -237,7 +283,7 @@ public class ArchiveBackendTests
         // 归档根整个是空的/不在了 → 「查不了」，不是「不存在」。
         var unreachable = await new DirectoryArchiveBackend(
             System.IO.Path.Combine(dir.Path, "不存在的盘", "nas"),
-            ArchiveBackendKind.Nas).VerifyAsync(Where("e.mp4"));
+            ArchiveBackendKind.Directory).VerifyAsync(Where("e.mp4"));
 
         Assert.False(unreachable.Exists);
         Assert.True(unreachable.CouldNotVerify, "目录都摸不到，那时**不能**说「这份不存在」");
@@ -248,7 +294,7 @@ public class ArchiveBackendTests
     {
         using var dir = new TempDir();
         var nas = System.IO.Path.Combine(dir.Path, "nas");
-        var backend = new DirectoryArchiveBackend(nas, ArchiveBackendKind.Nas);
+        var backend = new DirectoryArchiveBackend(nas, ArchiveBackendKind.Directory);
 
         var local = System.IO.Path.Combine(dir.Path, "local.mp4");
         await File.WriteAllBytesAsync(local, [1, 2, 3]);
@@ -306,7 +352,7 @@ public class ArchiveBackendTests
         Directory.CreateDirectory(System.IO.Path.GetDirectoryName(onOld)!);
         await File.WriteAllBytesAsync(onOld, [1, 2, 3]);
 
-        var backend = new DirectoryArchiveBackend([current, old], ArchiveBackendKind.Nas);
+        var backend = new DirectoryArchiveBackend([current, old], ArchiveBackendKind.Directory);
 
         var verify = await backend.VerifyAsync(location);
 
@@ -328,7 +374,7 @@ public class ArchiveBackendTests
         var location = Where("2026/09/30/e-000.mp4");
 
         // 有一个根摸得到、只是那一份不在 ⇒ 「不存在」（可以走「唯一副本」那段判定）。
-        var partial = await new DirectoryArchiveBackend([gone, reachable], ArchiveBackendKind.Nas)
+        var partial = await new DirectoryArchiveBackend([gone, reachable], ArchiveBackendKind.Directory)
             .VerifyAsync(location);
 
         Assert.False(partial.Exists);
@@ -337,7 +383,7 @@ public class ArchiveBackendTests
         // 一个根都摸不到 ⇒ 「查不了」。把这种情况当成「不存在」会删掉唯一一份。
         var none = await new DirectoryArchiveBackend(
             [gone, System.IO.Path.Combine(dir.Path, "也没有", "nas")],
-            ArchiveBackendKind.Nas).VerifyAsync(location);
+            ArchiveBackendKind.Directory).VerifyAsync(location);
 
         Assert.False(none.Exists);
         Assert.True(none.CouldNotVerify);
@@ -360,7 +406,7 @@ public class ArchiveBackendTests
         await File.WriteAllTextAsync(blocked, "这里不是目录");
 
         var location = Where("2026/09/30/e-000.mp4");
-        var result = await new DirectoryArchiveBackend([blocked, ok], ArchiveBackendKind.Nas)
+        var result = await new DirectoryArchiveBackend([blocked, ok], ArchiveBackendKind.Directory)
             .PublishAsync(location, local);
 
         Assert.True(result.Published, result.FailureReason);
@@ -379,7 +425,7 @@ public class ArchiveBackendTests
         await File.WriteAllTextAsync(a, "x");
         await File.WriteAllTextAsync(b, "x");
 
-        var result = await new DirectoryArchiveBackend([a, b], ArchiveBackendKind.Nas)
+        var result = await new DirectoryArchiveBackend([a, b], ArchiveBackendKind.Directory)
             .PublishAsync(Where("2026/09/30/e-000.mp4"), local);
 
         Assert.False(result.Published);
@@ -419,7 +465,7 @@ public class ArchiveBackendTests
         await File.WriteAllBytesAsync(local, [1]);
 
         // 设置页每敲一个字符都会重算一次后端对象 —— 那时可能一个路径都还没有。
-        var result = await new DirectoryArchiveBackend(Array.Empty<string>(), ArchiveBackendKind.Nas)
+        var result = await new DirectoryArchiveBackend(Array.Empty<string>(), ArchiveBackendKind.Directory)
             .PublishAsync(Where("2026/09/30/e-000.mp4"), local);
 
         Assert.False(result.Published);
@@ -429,7 +475,7 @@ public class ArchiveBackendTests
         // 抛的话界面还没画出来就先没了。
         Assert.Equal(
             string.Empty,
-            new DirectoryArchiveBackend(Array.Empty<string>(), ArchiveBackendKind.Nas).Root);
+            new DirectoryArchiveBackend(Array.Empty<string>(), ArchiveBackendKind.Directory).Root);
     }
 
     /// <summary>把日志收进内存，供断言。</summary>

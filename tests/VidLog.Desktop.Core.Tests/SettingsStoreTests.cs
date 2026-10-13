@@ -135,7 +135,7 @@ public class SettingsStoreTests
         var path = dir.File("settings.json");
         var want = AppSettings.Default with
         {
-            ArchiveBackend = ArchiveBackendKind.MountedDrive,
+            ArchiveBackend = ArchiveBackendKind.Directory,
             ArchiveDirectory = @"Z:\vidlog",
         };
 
@@ -143,12 +143,12 @@ public class SettingsStoreTests
         var result = await new SettingsStore(path).LoadAsync();
 
         Assert.Empty(result.Warnings);
-        Assert.Equal(ArchiveBackendKind.MountedDrive, result.Settings.ArchiveBackend);
+        Assert.Equal(ArchiveBackendKind.Directory, result.Settings.ArchiveBackend);
         Assert.Equal(@"Z:\vidlog", result.Settings.ArchiveDirectory);
 
         var archive = result.Settings.Archive;
         Assert.True(archive.IsDirectoryType);
-        Assert.True(archive.AllowsCleanup, "挂载盘算「在别处」，所以允许开清理（§3.5.1）");
+        Assert.True(archive.AllowsCleanup, "网络位置算「在别处」，所以允许开清理（§3.5.1）");
         Assert.Null(archive.ConfigurationProblem);
 
         // 那个合成的属性本身**不写进文件** —— 写了就会出现两份真相。
@@ -156,22 +156,23 @@ public class SettingsStoreTests
     }
 
     [Fact]
-    public async Task 老设置文件里只有归档层没有目录_照样读得出来()
+    public async Task 老设置文件里只有归档层没有目录_算不出第二份就落到本机()
     {
-        // 2026-09-27 之前的 settings.json 里没有 ArchiveDirectory 这个键。
+        // 2026-09-27 之前的 settings.json 里没有 ArchiveDirectory 这个键；
+        // 2026-10-13 之前归档层还是用户**手选**的，所以老文件里那个值可能是 NAS（1）。
+        // ⚠️ 现在归档层是**推算**的：没位置、也没开自动上传 ⇒ 就是没有第二份
+        // ⇒ 落回本机（那才不给清理入口，规格 §3.5.1）。
         using var dir = new TempDir();
         var path = dir.File("settings.json");
         await File.WriteAllTextAsync(path, """{"ArchiveBackend":1}""");
 
         var result = await new SettingsStore(path).LoadAsync();
 
-        Assert.Equal(ArchiveBackendKind.Nas, result.Settings.ArchiveBackend);
+        Assert.Equal(ArchiveBackendKind.Directory, result.Settings.ArchiveBackend);
         Assert.Null(result.Settings.ArchiveDirectory);
 
-        // 老文件里的 NAS **没有路径** —— 那是「没配好」，不是「配好了没生效」。
-        var problem = result.Settings.Archive.ConfigurationProblem;
-        Assert.NotNull(problem);
-        Assert.Contains("还没填归档目录", problem);
+        Assert.Equal(ArchiveBackendKind.LocalDisk, result.Settings.Archive.Kind);
+        Assert.False(result.Settings.Archive.AllowsCleanup);
     }
 
     [Fact]
@@ -181,7 +182,7 @@ public class SettingsStoreTests
         var path = dir.File("settings.json");
         var want = AppSettings.Default with
         {
-            ArchiveBackend = ArchiveBackendKind.Nas,
+            ArchiveBackend = ArchiveBackendKind.Directory,
             ArchiveDirectory = @"\\nas\vidlog",
             Retention = new RetentionSettings(
                 new RetentionSetting(7), new RetentionSetting(30),

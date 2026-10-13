@@ -445,7 +445,6 @@ public class SettingsFormTests
                  DurationFallbackTag = nameof(DurationFallbackOption.Six),
                  CloseActionTag = nameof(CloseWindowAction.MinimizeToTray),
                  ThemeTag = nameof(AppThemeMode.Dark),
-                 ArchiveBackendTag = nameof(ArchiveBackendKind.Nas),
                  CloudBackfillScopeTag = nameof(BackfillScope.All),
                  LogLevelTag = nameof(LogLevel.Warn),
                  RunAtStartup = true, CheckForUpdates = true, RecordAudio = true,

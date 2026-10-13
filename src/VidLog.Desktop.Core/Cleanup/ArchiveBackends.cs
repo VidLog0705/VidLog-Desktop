@@ -10,14 +10,19 @@ namespace VidLog.Desktop.Core.Cleanup;
 /// </summary>
 /// <remarks>
 /// <para>
-/// 规格原话（2026-09-24 需求变更）：「NAS 和百度网盘同时做，加一项，
-/// 用户可挂载网络驱动器存储盘。」四种后端：**电脑端本地 / NAS / 百度网盘 /
-/// 挂载网络驱动器**，对上层表现一致。
+/// ⚠️ <b>它现在是**推算出来的**，不是用户选出来的</b>（2026-10-13 需求方裁定）。
+/// 在此之前界面上有一个「归档层」下拉把后端拆成四项让用户**声明**，而声明与路径
+/// 之间一个字都不校验 —— 声明成 NAS、路径填本机的目录，程序照认，清理入口照开，
+/// 于是「两份都在本机」被当成「别处还有一份」。
 /// </para>
 /// <para>
-/// ⚠️ <b>实现上是两档</b>（规格点名的）：「目录型」= NAS + 挂载盘，
-/// <b>一份代码</b>；「网盘型」= 百度网盘，走它的接口。两者对上层都是
-/// 「一个可读写的目录」，差别只在要不要输凭据 —— 为它们各写一套就是三份要维护的重复。
+/// 现在的规则（需求方的原话）：**存到电脑本地就自动上传百度网盘；存到网络位置
+/// （NAS / 映射盘）就不上传**。翻译成 <see cref="FromConfig"/> 就是三句话。
+/// </para>
+/// <para>
+/// ⚠️ <b>实现上只有两档</b>：「目录型」= 备份位置表里的路径，<b>一份代码</b>；
+/// 「网盘型」= 百度网盘，走它的接口。两者对上层都是「一个可读写的目录」，
+/// 差别只在要不要输凭据 —— 为它们各写一套就是三份要维护的重复。
 /// </para>
 /// <para>
 /// ⚠️ <b>挂载盘那个路径绝不能进索引。</b> 它（<c>Z:\</c> 或 <c>\\nas\vidlog</c>）
@@ -31,10 +36,9 @@ public sealed record ArchiveTarget(ArchiveBackendKind Kind, string? DirectoryPat
     /// <summary>出厂默认：归档层就是本机磁盘（规格 §3.5.1 的保守那一头）。</summary>
     public static ArchiveTarget Default { get; } = new(ArchiveBackendKind.LocalDisk);
 
-    /// <summary>目录型（NAS + 挂载网络驱动器）—— 共用一份实现。</summary>
+    /// <summary>目录型（备份位置表里的那些路径）—— 走「一个可读写的目录」那一份实现。</summary>
     [JsonIgnore]
-    public bool IsDirectoryType =>
-        Kind is ArchiveBackendKind.Nas or ArchiveBackendKind.MountedDrive;
+    public bool IsDirectoryType => Kind == ArchiveBackendKind.Directory;
 
     /// <summary>
     /// 归档层是不是**就在这台电脑上**（规格 §3.5.1 的判据）。
@@ -55,8 +59,7 @@ public sealed record ArchiveTarget(ArchiveBackendKind Kind, string? DirectoryPat
     [JsonIgnore]
     public string Label => Kind switch
     {
-        ArchiveBackendKind.Nas => "NAS",
-        ArchiveBackendKind.MountedDrive => "挂载网络驱动器",
+        ArchiveBackendKind.Directory => "网络位置",
         ArchiveBackendKind.Cloud => "百度网盘",
         _ => "本机磁盘",
     };
@@ -67,13 +70,18 @@ public sealed record ArchiveTarget(ArchiveBackendKind Kind, string? DirectoryPat
     /// <remarks>
     /// 规格原话：「百度网盘能跨网、NAS 看用户自己的网络配置、**本机与挂载盘只能内网**」。
     /// 产品**不得承诺做不到的事** —— 所以这句话要出现在界面上。
+    /// <para>
+    /// ⚠️ NAS 与挂载盘合并成「网络位置」之后，那一句「取决于你自己怎么配」就**没法只按类
+    /// 型说**了：同一档里可能是一个只在内网通的 NAS，也可能是一个配了 VPN 的映射盘。
+    /// 所以它改说**两档都成立**的那半句。
+    /// </para>
     /// </remarks>
     [JsonIgnore]
     public string Reachability => Kind switch
     {
         ArchiveBackendKind.Cloud => "能跨网：换了网络也能取回。",
-        ArchiveBackendKind.Nas => "能不能跨网取决于你自己的网络怎么配的。",
-        _ => "只能内网：不在同一个网络里就取不回。",
+        ArchiveBackendKind.Directory => "必须和你在同一个网络里才取得到 —— 能不能跨网取决于你自己的网络怎么配。",
+        _ => "只有本机这一份：这台电脑坏了就没了。",
     };
 
     /// <summary>
@@ -88,12 +96,10 @@ public sealed record ArchiveTarget(ArchiveBackendKind Kind, string? DirectoryPat
     [JsonIgnore]
     public string? ConfigurationProblem => Kind switch
     {
-        ArchiveBackendKind.Nas or ArchiveBackendKind.MountedDrive
-            when string.IsNullOrWhiteSpace(DirectoryPath) =>
-            "还没填归档目录 —— 这一档要一个可读写的目录（如 \\\\nas\\vidlog 或 Z:\\）。",
-        ArchiveBackendKind.Nas or ArchiveBackendKind.MountedDrive
-            when !Path.IsPathFullyQualified(DirectoryPath!) =>
-            $"归档目录要写完整路径（如 \\\\nas\\vidlog 或 Z:\\vidlog），现在这个是相对的：{DirectoryPath}",
+        ArchiveBackendKind.Directory when string.IsNullOrWhiteSpace(DirectoryPath) =>
+            "还没填网络位置 —— 这一档要一个可读写的目录（如 \\\\nas\\vidlog 或 Z:\\）。",
+        ArchiveBackendKind.Directory when !Path.IsPathFullyQualified(DirectoryPath!) =>
+            $"网络位置要写完整路径（如 \\\\nas\\vidlog 或 Z:\\vidlog），现在这个是相对的：{DirectoryPath}",
         ArchiveBackendKind.Cloud => "百度网盘这一档要授权（应用凭据走环境变量，不写进配置文件）。",
         _ => null,
     };
@@ -103,17 +109,53 @@ public sealed record ArchiveTarget(ArchiveBackendKind Kind, string? DirectoryPat
     public bool IsConfigured => ConfigurationProblem is null;
 
     /// <summary>
-    /// 认不出的档位一律回落到**本机磁盘**。
+    /// 归档层在哪儿 —— **推算出来的**（2026-10-13 需求方裁定）。
     /// </summary>
     /// <remarks>
-    /// 回落到本机是刻意的：它是不给清理选项的那一档（规格 §3.5.1）——
-    /// 解析失败时朝**少删**的那头落，与 <c>RetentionSetting.fromConfig</c>
-    /// 解析失败回落「全部保留」是同一条规矩。
+    /// <para>
+    /// 规则（需求方原话）：「电脑端录制视频或者手机端录制视频备份存储到电脑本地，
+    /// 会在保存到电脑本地的同时自动上传到百度网盘；如果是网络硬盘或者NAS，
+    /// 则不需要上传到百度网盘。」翻译成三句话：
+    /// </para>
+    /// <list type="number">
+    /// <item><b>备份位置表里有路径</b> ⇒ 第二份就在那个网络位置，网盘那一档不参与。
+    /// 这与界面上那张表本来就是「第二份落在哪儿」是同一件事。</item>
+    /// <item><b>备份位置表空着</b> ⇒ 第二份是百度网盘 —— 但只有那一页的
+    /// 【启用自动上传】开着才算数；关着的时候 `CloudUploadService` 一条都不会传
+    /// （它把「开关没开」如实回报成**失败**，见那边的说明）。</item>
+    /// <item><b>两样都没有</b> ⇒ 没有第二份，回落 <see cref="Default"/>（本机、唯一副本）
+    /// ⇒ 不给清理入口。</item>
+    /// </list>
+    /// <para>
+    /// ⚠️ <b>落不到任何一档时朝「少删」的那头落</b>：与
+    /// <c>RetentionSetting.fromConfig</c> 解析失败回落「全部保留」是同一条规矩。
+    /// </para>
+    /// <para>
+    /// ⚠️ <b>老配置里的 <paramref name="legacyKind"/> 仍然要认</b>：它记着
+    /// 2026-10-13 之前用户手选的那一档，而那时**还没有**「自动上传」这个开关。
+    /// 只认 <see cref="ArchiveBackendKind.Cloud"/> 一个值 —— 老的本机 / NAS / 挂载盘
+    /// 一律由上面那张表和开关重新算出来，不需要翻译：
+    /// 备份位置表非空就是目录型，表空且开关关着就是本机。
+    /// </para>
     /// </remarks>
-    public static ArchiveTarget FromConfig(ArchiveBackendKind kind, string? directoryPath) =>
-        Enum.IsDefined(kind)
-            ? new ArchiveTarget(kind, string.IsNullOrWhiteSpace(directoryPath) ? null : directoryPath.Trim())
-            : Default;
+    /// <param name="legacyKind">设置文件里那个老字段（只剩兼容读懂这一个作用）。</param>
+    /// <param name="directoryPath">备份位置表的第一条路径（没有就是空）。</param>
+    /// <param name="cloudAutoUpload">百度网盘那一页的【启用自动上传】开着没有。</param>
+    public static ArchiveTarget FromConfig(
+        ArchiveBackendKind legacyKind, string? directoryPath, bool cloudAutoUpload)
+    {
+        if (!string.IsNullOrWhiteSpace(directoryPath))
+        {
+            return new ArchiveTarget(ArchiveBackendKind.Directory, directoryPath.Trim());
+        }
+
+        if (cloudAutoUpload || legacyKind == ArchiveBackendKind.Cloud)
+        {
+            return new ArchiveTarget(ArchiveBackendKind.Cloud);
+        }
+
+        return Default;
+    }
 }
 
 /// <summary>一次「把本机这一份发布到归档层」的结果。</summary>
@@ -412,9 +454,8 @@ public sealed class DirectoryArchiveBackend : IArchiveBackend, IArchivePublisher
 
     private string Label => Kind switch
     {
-        ArchiveBackendKind.Nas => "NAS",
-        ArchiveBackendKind.MountedDrive => "挂载盘",
-        _ => "归档层",
+        ArchiveBackendKind.Directory => "网络位置",
+        _ => "本机磁盘",
     };
 
     private static async Task CopyAsync(string from, string to, CancellationToken cancellationToken)

@@ -398,7 +398,7 @@ public class DiskSlotConfigTests
         // 而看到自己的 NAS 凭空消失（那会让他重新配一遍）。
         var legacy = AppSettings.Default with
         {
-            ArchiveBackend = ArchiveBackendKind.Nas,
+            ArchiveBackend = ArchiveBackendKind.Directory,
             ArchiveDirectory = @"\\nas\vidlog",
         };
 

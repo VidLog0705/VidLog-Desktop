@@ -147,7 +147,7 @@ public class DesktopServicesTests
         await using var services = DesktopServices.Create(
             layout,
             playbackPort: null,
-            archive: new ArchiveTarget(ArchiveBackendKind.Nas, nas));
+            archive: new ArchiveTarget(ArchiveBackendKind.Directory, nas));
 
         Assert.NotNull(services.ArchiveRelay);
 
@@ -201,7 +201,7 @@ public class DesktopServicesTests
         // ── 第一趟：发布失败 ───────────────────────────────────────
         await using (var first = DesktopServices.Create(
             layout, playbackPort: null,
-            archive: new ArchiveTarget(ArchiveBackendKind.Nas, blocker)))
+            archive: new ArchiveTarget(ArchiveBackendKind.Directory, blocker)))
         {
             Assert.NotNull(first.ArchiveRelay);
 
@@ -217,7 +217,7 @@ public class DesktopServicesTests
 
         await using var second = DesktopServices.Create(
             layout, playbackPort: null,
-            archive: new ArchiveTarget(ArchiveBackendKind.Nas, nas));
+            archive: new ArchiveTarget(ArchiveBackendKind.Directory, nas));
 
         // ⚠️ 这一句就是「重启后设置页仍显示」在 Core 那一层的等价物。
         var carried = Assert.Single(second.ArchiveFailures.Outstanding);
@@ -235,7 +235,7 @@ public class DesktopServicesTests
         // ── 再重启一次：不能再冒出来 ────────────────────────────────
         await using var third = DesktopServices.Create(
             layout, playbackPort: null,
-            archive: new ArchiveTarget(ArchiveBackendKind.Nas, nas));
+            archive: new ArchiveTarget(ArchiveBackendKind.Directory, nas));
 
         Assert.Empty(third.ArchiveFailures.Outstanding);
     }
@@ -265,7 +265,7 @@ public class DesktopServicesTests
         // ── 第一趟：发布失败，欠账落盘 ──────────────────────────────
         await using (var first = DesktopServices.Create(
             layout, playbackPort: null,
-            archive: new ArchiveTarget(ArchiveBackendKind.Nas, blocker)))
+            archive: new ArchiveTarget(ArchiveBackendKind.Directory, blocker)))
         {
             var published = await first.ArchiveRelay!.PublishAsync("e-000", relative, local);
             Assert.False(published.Published);
@@ -278,7 +278,7 @@ public class DesktopServicesTests
 
         await using var second = DesktopServices.Create(
             layout, playbackPort: null,
-            archive: new ArchiveTarget(ArchiveBackendKind.Nas, nas));
+            archive: new ArchiveTarget(ArchiveBackendKind.Directory, nas));
 
         await second.StartAsync();
 
@@ -321,7 +321,7 @@ public class DesktopServicesTests
         var services = DesktopServices.Create(
             layout, playbackPort: null,
             logger: logger,
-            archive: new ArchiveTarget(ArchiveBackendKind.Nas, nas),
+            archive: new ArchiveTarget(ArchiveBackendKind.Directory, nas),
             // ⚠️ 出厂值是 60 秒，测试里等不起 ⇒ 注入一个 100 毫秒的。
             // 它只改**两趟之间隔多久**，退避那部分照旧走真刻度（见 `ArchiveRetryBackoffTests`）。
             archiveRetryInterval: TimeSpan.FromMilliseconds(100));
@@ -418,7 +418,7 @@ public class DesktopServicesTests
         var services = DesktopServices.Create(
             layout, playbackPort: null,
             logger: logger,
-            archive: new ArchiveTarget(ArchiveBackendKind.Nas, nas),
+            archive: new ArchiveTarget(ArchiveBackendKind.Directory, nas),
             archiveRetryInterval: TimeSpan.FromMilliseconds(100));
 
         try

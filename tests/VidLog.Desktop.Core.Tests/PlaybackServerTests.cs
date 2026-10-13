@@ -393,7 +393,7 @@ public class PlaybackServerTests
         await using var fixture = await StartAsync(
             dir,
             archiveBackend: new DirectoryArchiveBackend(
-                System.IO.Path.Combine(dir.Path, "够不着的-NAS"), ArchiveBackendKind.Nas));
+                System.IO.Path.Combine(dir.Path, "够不着的-NAS"), ArchiveBackendKind.Directory));
 
         var search = await fixture.Client.GetAsync("/api/search");
         Assert.Equal(HttpStatusCode.OK, search.StatusCode);

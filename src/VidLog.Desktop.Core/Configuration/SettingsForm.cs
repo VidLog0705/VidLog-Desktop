@@ -44,7 +44,6 @@ public sealed record SettingsFormInput
     public string? DurationFallbackTag { get; init; }
     public string? CloseActionTag { get; init; }
     public string? ThemeTag { get; init; }
-    public string? ArchiveBackendTag { get; init; }
     public string? CloudBackfillScopeTag { get; init; }
     public string? LogLevelTag { get; init; }
 
@@ -227,10 +226,12 @@ public static class SettingsForm
             RecordAudio = input.RecordAudio,
             MicrophoneDevice = input.MicrophoneDevice ?? current.MicrophoneDevice,
 
-            ArchiveBackend = ParseOr(input.ArchiveBackendTag, current.ArchiveBackend),
+            // ⚠️ 归档层**不再由用户选**（2026-10-13）：界面上那个下拉已经删了，
+            // 归档层由 `AppSettings.Archive` 从「备份位置表 + 网盘开关」推算。
+            // 这个老字段原样带过去（不再有输入源）—— 它只剩兼容读懂老配置的作用，
+            // 不能因为表单里没有它就把用户老配置里那个值抹掉。
 
-            // 目录型那两档的根，现在是一张表（批次 4）。别的档位下那张表是藏着的，
-            // 但行仍然记着 —— 用户在 NAS 与挂载盘之间来回切时不必重填一遍。
+            // 目录型那一档的根，现在是一张表（批次 4）。
             //
             // ⚠️ 老的单个 `ArchiveDirectory` 在这里**清掉**：留着它的话，
             // `AppSettings.ArchiveDirectories` 会在表被清空时回落到它 ——

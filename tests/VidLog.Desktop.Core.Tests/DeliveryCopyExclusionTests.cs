@@ -177,7 +177,7 @@ public class DeliveryCopyExclusionTests
             receipts,
             new PublishedStore(System.IO.Path.Combine(f.Root, "published.jsonl")),
             new CleanupExecutor(
-                new DirectoryArchiveBackend(f.NasRoot, ArchiveBackendKind.Nas),
+                new DirectoryArchiveBackend(f.NasRoot, ArchiveBackendKind.Directory),
                 f.ArchiveRoot,
                 new CleanupAuditLog(System.IO.Path.Combine(f.Root, "cleanup-audit.jsonl")),
                 NullLogger.Instance));
