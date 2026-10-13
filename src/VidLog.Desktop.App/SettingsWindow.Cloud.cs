@@ -218,11 +218,16 @@ public partial class SettingsWindow : Window
         var target = CurrentArchiveTarget();
         var service = _host.Services.CloudUploads;
 
-        if (target.Kind != ArchiveBackendKind.Cloud || service is null)
+        // ⚠️ 只有一种情况**整页禁用**：配了网络位置（网络硬盘 / NAS）——
+        // 那时第二份走它、按规则不传网盘，这一页本来就不该拿来当第二份。
+        //
+        // ⚠️ 「【启用自动上传】关着」**不是**禁用理由，恰恰相反：界面正叫用户去
+        // 把它打开。把开关自己也灰掉，用户关一次就再也打不开了 ——
+        // 而服务是**启动那一刻**按当时的归档目标装配的（`DesktopServices.Create`），
+        // 关着启动 ⇒ 服务压根不建 ⇒ 又落回「禁用」这一支，闭成一个死环。
+        // （踩坑 #13「不许渲染一个按下去没反应的开关」的反面。）
+        if (target.Kind == ArchiveBackendKind.Directory)
         {
-            // 整页禁用 + 说清为什么（踩坑 #13：绝不渲染一个按下去没反应的开关）。
-            // ⚠️ 队列那张卡**不禁用**：它只是显示，而「队列里积了多少」正是
-            // 用户想看的 —— 灰掉它并不能让任何东西更安全。
             CloudAccountCard.IsEnabled = false;
             CloudUploadCard.IsEnabled = false;
             CloudDisabledNote.Visibility = Visibility.Visible;
@@ -235,14 +240,37 @@ public partial class SettingsWindow : Window
             CloudQueuePrevButton.IsEnabled = false;
             CloudQueueNextButton.IsEnabled = false;
 
-            // 归档层不是网盘（或服务没起来）时这一页整页不工作 —— 那张码也一并收起：
+            // 归档层不是网盘时这一页整页不工作 —— 那张码也一并收起：
             // 一边写着「这一页不工作」、一边摆一张扫码就能授权的图，是自己打自己。
             ShowCloudLoginQr(null);
             return;
         }
 
-        CloudAccountCard.IsEnabled = true;
+        // 服务没起来（刚打开开关还没重启、或者压根没配凭据）：**上传设置那几张卡
+        // 照样得能用** —— 改设置、按【应用】是唯一条出路，灰掉它等于把人锁在门外。
+        // ⚠️ 队列那张卡同样不禁用：它只是显示，而「队列里积了多少」正是
+        // 用户想看的 —— 灰掉它并不能让任何东西更安全。
         CloudUploadCard.IsEnabled = true;
+
+        if (service is null)
+        {
+            // ⚠️ 只有账号卡要真服务（登录 / 同步 / 重试都走它），没服务时必须灰。
+            CloudAccountCard.IsEnabled = false;
+            CloudDisabledNote.Visibility = Visibility.Visible;
+            CloudDisabledNote.Text = CloudUnavailableReason(target);
+
+            CloudAccountNote.Text = string.Empty;
+            CloudQueueNote.Text = "这一页现在不工作";
+            CloudQueueList.Items.Clear();
+            CloudQueuePageText.Text = string.Empty;
+            CloudQueuePrevButton.IsEnabled = false;
+            CloudQueueNextButton.IsEnabled = false;
+
+            ShowCloudLoginQr(null);
+            return;
+        }
+
+        CloudAccountCard.IsEnabled = true;
         CloudDisabledNote.Visibility = Visibility.Collapsed;
 
         var session = service.Session;
@@ -344,7 +372,7 @@ public partial class SettingsWindow : Window
         }
     }
 
-    /// <summary>这一页现在为什么不能用（**三种情况，各说各的真话**）。</summary>
+    /// <summary>这一页为什么不全工作（**三种情况，各说各的真话**）。</summary>
     private string CloudUnavailableReason(ArchiveTarget target) =>
         target.Kind == ArchiveBackendKind.Directory
             // 配了网络位置 ⇒ 按规则第二份走它、本来就不走网盘。
