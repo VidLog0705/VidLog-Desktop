@@ -287,6 +287,14 @@ public sealed class PrerecordController : IAsyncDisposable
 
         await StopAsync(cancellationToken).ConfigureAwait(false);
 
+        // ⚠️ <b>停完之后**立刻**再读一次</b>（必须在下面那次裁切之前读）：
+        // 分片的**最后一个画面**就写在这个时刻附近 —— 停这一下期间 ffmpeg 还在往片子里写，
+        // 而那几秒**真的在产物里**（下面的 `-sseof` 是从片尾往回数的）。
+        // 它是采纳段的**结束时刻**；上面那个 `window` 是「往回裁多久」。
+        // 两回事、必须在两个不同的时刻读：window 在停**之前**（否则把停进程那几秒
+        // 也算成「已经录了多久」），这个在停**之后**（否则漏掉那几秒真录下来的画面）。
+        var buffered = recording is null ? TimeSpan.Zero : Stopwatch.GetElapsedTime(_bufferStartedTick);
+
         if (recording is null || startedAt is not { } bufferStart)
         {
             return null;
@@ -337,10 +345,75 @@ public sealed class PrerecordController : IAsyncDisposable
             return null;
         }
 
-        _logger.Log(LogLevel.Info, "预录",
-            $"采纳了 {window.TotalSeconds:0.0} 秒缓冲作为开场（分片 {Path.GetFileName(newest)}）");
+        var duration = await MeasuredDurationAsync(destination, window, cancellationToken)
+            .ConfigureAwait(false);
 
-        return new AdoptedClip(destination, bufferStart, window);
+        // ⚠️ <b>起点是**算出来的**，不是「待扫起点」</b>（2026-10-13 修）：
+        // 产物是分片**尾巴**上那一段，而分片从开工起一直在长 —— 待扫起点只有
+        // 「缓冲还没滚满」时才**碰巧**等于它。两者的差 = 已经等了多久 − 往回裁了多久
+        //（还要算上停进程那一下真录下来的画面）。
+        // 记错的话，`RecordingSession` 会把这个偏差**平移到整场**上（`_startedAt`
+        // 派生的每一个时间戳），索引里的起录时刻与画面里烧的钟就对不上（T33）。
+        var clipStart = bufferStart + buffered - duration;
+
+        _logger.Log(LogLevel.Info, "预录",
+            $"采纳了 {duration.TotalSeconds:0.0} 秒缓冲作为开场（分片 {Path.GetFileName(newest)}，起点 {clipStart:yyyy-MM-dd HH:mm:ss.fff}）");
+
+        return new AdoptedClip(destination, clipStart, duration);
+    }
+
+    /// <summary>
+    /// 量一下裁出来的这一片**真实有几秒**。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// ⚠️ <b>请求的窗口与产物长度不是一回事</b>：`-sseof` 配 `-c copy` 只能从**关键帧**切，
+    /// 产物因此比窗口长一点（最多一个关键帧间隔 = 1 秒，见 <c>FfmpegCameraCapture</c> 的 `-g`）。
+    /// 按窗口记的话，起录时刻会晚那一点、`Elapsed` 也会少算那一点。
+    /// </para>
+    /// <para>
+    /// ⚠️ 复用 <see cref="FfmpegSpecProbe.ReadBackArguments"/> 与
+    /// <see cref="FfmpegNetworkCameraProbe.ParseStreams"/>：那是本仓**唯一一处**
+    /// 「读回一个文件、问它是什么」的 argv，也是**唯一一处**解析 ffmpeg 输出的代码
+    /// （各写一份的话，格式一变就要改两处，而漏掉的那一处**静默读不到**）。
+    /// </para>
+    /// <para>
+    /// ⚠️ 量不出来**不退化成「没有开场画面」**，只是退回按窗口记 —— 那一段画面是真的，
+    /// 不该因为「量不到它多长」就丢掉。落一条日志说明差在哪（§6.1）。
+    /// </para>
+    /// </remarks>
+    private async Task<TimeSpan> MeasuredDurationAsync(
+        string path, TimeSpan window, CancellationToken cancellationToken)
+    {
+        var reason = "ffmpeg 没印出时长";
+
+        try
+        {
+            var result = await _runner.RunAsync(
+                _ffmpegPath, FfmpegSpecProbe.ReadBackArguments(path), cancellationToken)
+                .ConfigureAwait(false);
+
+            if (FfmpegNetworkCameraProbe.ParseStreams(result.StandardError).Duration is { } real
+                && real > TimeSpan.Zero)
+            {
+                return real;
+            }
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            // 调用方取消的（关窗 / 收尾）—— 那是取消，不是「量不到」。
+            throw;
+        }
+        catch (Exception ex)
+        {
+            reason = ex.Message;
+        }
+
+        _logger.Log(LogLevel.Warn, "预录",
+            $"量不出采纳段的真实时长（{reason}），按请求的 {window.TotalSeconds:0.0} 秒记"
+            + " —— 起录时刻会差最多一个关键帧间隔");
+
+        return window;
     }
 
     /// <summary>停下待扫，释放相机。幂等。</summary>

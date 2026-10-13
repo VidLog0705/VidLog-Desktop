@@ -143,10 +143,14 @@ public class PrerecordTests
         Assert.True(File.Exists(clip!.Path), "取回的缓冲必须是一份**落在盘上**的文件");
         Assert.True(new FileInfo(clip.Path).Length > 0, "取回的缓冲是空文件");
 
-        // 窗口就是「缓冲时长」与「已经录了多久」里小的那个（这里两边都约等于 5 秒）。
+        // ⚠️ 这里从前断言 `clip.Duration <= buffer` —— 那是把 `Duration` 当**请求的窗口**。
+        // 2026-10-13 起它是**产物真实多长**（量出来的，T33 的修）：裁切只能从关键帧切，
+        // 产物因此会比窗口长最多一个关键帧间隔（`-g 30` = 1 秒）。
+        // 窗口仍由 `Min(缓冲时长, 已经录了多久)` 决定（这里两边都约等于 5 秒），
+        // 但它是**请求**，不再等于产物长度 —— 所以上界要放开一个关键帧间隔。
         Assert.True(
-            clip.Duration > TimeSpan.Zero && clip.Duration <= buffer,
-            $"取回的窗口 {clip.Duration} 不在 (0, {buffer}] 里");
+            clip.Duration > TimeSpan.Zero && clip.Duration <= buffer + TimeSpan.FromSeconds(2),
+            $"取回的片段 {clip.Duration} 不在 (0, {buffer} + 关键帧余量] 里");
 
         var verification = await new DecodeVerifier(Ffmpeg, runner).VerifyAsync(clip.Path);
         Assert.True(verification.IsPlayable, verification.FailureReason);
@@ -157,7 +161,7 @@ public class PrerecordTests
         var chunkLength = await MeasureAsync(runner, chunk!);
 
         _output.WriteLine(
-            $"取回 {clip.Duration.TotalSeconds:0.0} 秒（窗口）／实量 {length?.TotalSeconds:0.0} 秒；"
+            $"取回 {clip.Duration.TotalSeconds:0.0} 秒（记账用）／实量 {length?.TotalSeconds:0.0} 秒；"
             + $"分片 {Path.GetFileName(chunk)} 已录 {chunkLength.GetValueOrDefault().TotalSeconds:0.0} 秒");
 
         Assert.True(length is not null, "裁出来的那一段读不出时长");
@@ -479,6 +483,71 @@ public class PrerecordTests
 
         // ★ 「取的是哪一片」写在日志里 —— 那是**按序号取**唯一看得见的落点。
         Assert.Contains("pre-000.mkv", Text(logger), StringComparison.Ordinal);
+    }
+
+    // ─────────────────────────────────────────────
+    // 场景 ⑤：采纳段的时间轴（T33 —— 索引时间与画面里烧的钟对不上）
+    // ─────────────────────────────────────────────
+
+    /// <summary>
+    /// **等待远长于缓冲窗口**时，采纳段的结束时刻仍必须紧贴「取缓冲那一刻」。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// ⚠️ <b>这一条挑的就是真机出事那个形状</b>（2026-10-13 现场量到：开工后等 11.9 秒 /
+    /// 41 秒才扫到单号，而缓冲窗口只有 5 秒）。老实现把起录时刻记成「**待扫起点**」，
+    /// 而产物是分片**尾巴**上那几秒 ⇒ 整场时间轴平移「等待 − 窗口」那么多，
+    /// 索引里的起录时刻与画面里烧的钟就对不上（隔离到分钟都可能跨天，归档目录跟着错）。
+    /// </para>
+    /// <para>
+    /// ⚠️ <b>为什么钉「结束时刻」而不是起点</b>：它是整场时间轴的**锚** ——
+    /// `RecordingSession` 拿 `StartedAt + Duration` 往后排每一段（`_startedAt` 派生的一切）。
+    /// 锚钉住了，起点就只剩「时长量得准不准」这一个变量。
+    /// </para>
+    /// <para>
+    /// ⚠️ 窗口取 1 秒、等 8 秒（差 7 秒）：差值必须**远大于**测量噪声，
+    /// 否则这条闸会变成「碰巧绿」—— 老实现在这里必然越界好几秒。
+    /// </para>
+    /// </remarks>
+    [RequiresRtspFact]
+    public async Task 等待远长于缓冲窗口时_采纳段的结束时刻紧贴取缓冲那一刻()
+    {
+        using var dir = new TempDir();
+        var logger = new CapturingLogger();
+        var runner = new SystemProcessRunner(logger);
+        var encoder = await PickEncoderAsync(runner);
+
+        await using var controller = new PrerecordController(
+            Ffmpeg, CameraSource.Network(Source), decoder: null, logger, runner);
+
+        await controller.StartAsync(new PrerecordSetup(
+            TimeSpan.FromSeconds(1), encoder, RecordingSpec.Default, dir.Path));
+
+        Assert.True(controller.IsActive, $"待扫进程没起来：{Text(logger)}");
+
+        await Task.Delay(TimeSpan.FromSeconds(8));
+
+        var before = DateTimeOffset.Now;
+        var clip = await controller.TakeBufferedAsync();
+        var after = DateTimeOffset.Now;
+
+        Assert.True(clip is not null, $"缓冲取不回来。日志：{Text(logger)}");
+
+        // ★ 结束时刻 = 分片**最后一个画面**写下的时刻 = 就在取缓冲这一下里。
+        Assert.InRange(
+            clip!.StartedAt + clip.Duration,
+            before.AddSeconds(-1),
+            after.AddSeconds(1));
+
+        // ★ 起点必须从结束时刻**倒推**（老实现记的是待扫起点，在这里会早整整 7 秒）。
+        Assert.True(
+            clip.StartedAt >= before.AddSeconds(-5),
+            $"采纳段的起点记成了 {clip.StartedAt:O}，而取缓冲是 {before:O} —— "
+            + "起点不可能比它自己的结束时刻早了 7 秒，除非记的是「待扫起点」");
+
+        // ★ 时长是**量出来的真实长度**（不是请求的 1 秒）：`-sseof` 配 `-c copy`
+        // 只能从关键帧切，产物只会更长。上界给到 5 秒是防「量出一个离谱的数」。
+        Assert.InRange(clip.Duration, TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(5));
     }
 
     // ─────────────────────────────────────────────
