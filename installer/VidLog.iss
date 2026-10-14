@@ -1,7 +1,7 @@
 ﻿; ═══════════════════════════════════════════════════════════════════════════
 ; VidLog 电脑端 —— 安装程序（Inno Setup 6）
 ;
-; 编译入口是 scripts\package.ps1 -Installer，它把下面几个量用 /D 传进来：
+; 编译入口是 scripts\package.ps1，它把下面几个量用 /D 传进来：
 ;
 ;   /DAppVersion=<版本>       ← 唯一来源：VidLog.Desktop.App.csproj 的 <Version>
 ;   /DAppVersion4=<4 段>      ← 同一个数，补成 4 段（VersionInfoVersion 只认 4 段）
@@ -12,7 +12,7 @@
 ;    有绊线测试钉着（DesktopServicesTests.安装脚本只认传进来的版本号）。
 ;    改版本就改 csproj 那一行，别的什么都别改。
 ;
-; ── 为什么需要安装程序（而不是继续只发 zip）────────────────────────────
+; ── 为什么需要安装程序（而不是发一个解压即用的绿色包）──────────────────
 ; 有两件事**只能提权做**，而两件少了都会让「手机连不上这台电脑」：
 ;
 ;   ① urlacl —— 绑 `http://+:8720/`（局域网可达的那个前缀）需要一次性注册。
@@ -39,13 +39,13 @@
   #error 缺 /DAppVersion4=… —— 版本号只能从 csproj 读，见 AGENTS.md §10
 #endif
 #ifndef StageDir
-  #error 缺 /DStageDir=…（scripts\package.ps1 -Installer 会传）
+  #error 缺 /DStageDir=…（scripts\package.ps1 会传）
 #endif
 #ifndef OutputDir
-  #error 缺 /DOutputDir=…（scripts\package.ps1 -Installer 会传）
+  #error 缺 /DOutputDir=…（scripts\package.ps1 会传）
 #endif
 #ifndef WebView2Runtime
-  #error 缺 /DWebView2Runtime=…（scripts\package.ps1 -Installer 会传；见 [Code] 那一段）
+  #error 缺 /DWebView2Runtime=…（scripts\package.ps1 会传；见 [Code] 那一段）
 #endif
 
 [Setup]

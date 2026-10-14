@@ -1,7 +1,8 @@
 name: 电脑端安装包
 
 # ─────────────────────────────────────────────────────────────
-# 手动触发，产出自包含的 win-x64 安装包（zip）。
+# 手动触发，产出自包含的 win-x64 **安装程序**（setup.exe）。
+# ⚠️ 0.14.1 起**不出 zip 了**（需求方 2026-10-14：「以后出包只出安装程序」）。
 #
 # ⚠️ 不要改成 push 触发。Windows runner 是 2× 计费（见 ci.yml 顶上那段），
 #    每次推送都打一次包会迅速烧光额度。本地也能打：scripts/package.ps1。
@@ -136,7 +137,7 @@ jobs:
           "ISCC_EXE=$iscc" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
 
       - name: 打包
-        run: ./scripts/package.ps1 -Installer
+        run: ./scripts/package.ps1
 
       - name: 发到 Release
         env:
@@ -149,24 +150,23 @@ jobs:
           # 也当异常抛，所以先关掉那个行为，下面按退出码自己判。
           $PSNativeCommandUseErrorActionPreference = $false
 
-          $zip = Get-ChildItem dist/*.zip | Select-Object -First 1
-          if (-not $zip) { throw 'scripts/package.ps1 没产出 zip' }
-          Write-Host "包：$($zip.Name)"
-
-          # 安装程序是**要发出去的那一份**（它会注册回放地址的许可，手机才连得上）。
-          # 缺了它不许往下走：只发 zip 等于回到「解压即用、但局域网回放静默失效」。
+          # ⚠️ 0.14.1 起**只发安装程序**（需求方 2026-10-14：「以后出包只出安装程序，
+          #    zip 不出」）。绿色包装不到 Program Files、也注册不了那条回放许可 ——
+          #    而那正是「手机连不上这台电脑」的两个成因，现场还分不清是没装对还是坏了。
           $setup = Get-ChildItem dist/*-setup.exe | Select-Object -First 1
-          if (-not $setup) { throw '没产出安装程序 —— scripts/package.ps1 该带 -Installer 跑' }
+          if (-not $setup) { throw '没产出安装程序 —— scripts/package.ps1 没跑成' }
           Write-Host "安装程序：$($setup.Name)"
 
           # ⚠️ 标签**必须是版本号本身**，不能是一个固定的名字。
           # 客户端「关于」页的更新检查读的就是 `tag_name`（`ReleaseFeed.cs`），
           # 固定 `desktop-package` 时那一栏印出来的是「已是最新（desktop-package）」
           # —— 一句没有任何版本信息的废话（2026-10-02 实测报上来的）。
-          # 版本号从 zip 名里取（`scripts/package.ps1` 按 `<名>-<版本>-win-x64` 命名），
+          # 版本号从**安装程序的名字**里取（`installer\VidLog.iss` 的
+          # `OutputBaseFilename=VidLog-Desktop-{#AppVersion}-win-x64-setup`，
+          # 而那个 `{#AppVersion}` 的唯一来源仍是 csproj），
           # 取不到就**当场失败**：宁可不出包，也不出一个版本号是假的的包。
-          $version = if ($zip.BaseName -match '\d+\.\d+\.\d+') { $Matches[0] } else { $null }
-          if (-not $version) { throw "从 $($zip.Name) 里取不到版本号，包名不合规" }
+          $version = if ($setup.BaseName -match '\d+\.\d+\.\d+') { $Matches[0] } else { $null }
+          if (-not $version) { throw "从 $($setup.Name) 里取不到版本号，包名不合规" }
 
           # 同一个版本号重复打包就**覆盖**（标签已存在时走 upload --clobber）。
           # 每次覆盖 —— Release 页永远只有最新那一份。历史版本靠本地 dist\ 留档。
@@ -176,7 +176,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) {
             gh release create $tag --prerelease `
               --title '电脑端安装包' `
-              --notes '两份：`…-setup.exe` 是安装程序，**推荐用它** —— 它会装到 Program Files 并注册回放地址的访问许可（手机才连得上这台电脑），要管理员权限；`…win-x64.zip` 是解压即用的绿色包，不注册那条许可。都不需要先装 .NET 运行时。同一个版本号重复打包会覆盖这一份。'
+              --notes '安装程序：装到 Program Files，**并注册回放地址的访问许可**（手机才连得上这台电脑），要管理员权限。自包含，不需要先装 .NET 运行时。同一个版本号重复打包会覆盖这一份。'
           }
-          gh release upload $tag $zip.FullName $setup.FullName --clobber
+          gh release upload $tag $setup.FullName --clobber
           Write-Host "下载页：${{ github.server_url }}/${{ github.repository }}/releases/tag/$tag"

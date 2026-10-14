@@ -1842,11 +1842,15 @@ public class DesktopServicesTests
         // ① 版本号的来源是那个 csproj（不是脚本里另写的一份）。
         Assert.Contains("VidLog.Desktop.App.csproj", script, StringComparison.Ordinal);
 
-        // ② 包名是拼出来的。
-        Assert.Contains("VidLog-Desktop-$version-$Runtime.zip", script, StringComparison.Ordinal);
+        // ② 那个数被 `/D` 传给了 ISCC —— 安装程序的名字与 exe 属性都是从它来的。
+        //    ⚠️ 0.14.1 起**不再出 zip**（需求方 2026-10-14：「以后出包只出安装程序」），
+        //    所以这里钉的从「zip 名是拼出来的」换成了「传参是拼出来的」。
+        Assert.Contains("/DAppVersion=$version", script, StringComparison.Ordinal);
+        Assert.Contains("/DAppVersion4=$version4", script, StringComparison.Ordinal);
 
-        // ③ 任何地方都不许再出现一个「VidLog-Desktop-<数字>」的字面量 ——
+        // ③ 脚本里不许再出现一个「VidLog-Desktop-<数字>」的字面量 ——
         //    写死版本号必然同时踩红 ② 与 ③。
+        //    （脚本里剩下的 `VidLog-Desktop-stage` 是工作目录名，不带版本号，不犯这条。）
         Assert.DoesNotMatch(@"VidLog-Desktop-\d", script);
     }
 
@@ -1882,7 +1886,8 @@ public class DesktopServicesTests
     /// </summary>
     /// <remarks>
     /// 与 <see cref="打包脚本的版本号只从_csproj_读"/> 同一个靶子，只是多了一层：
-    /// 版本号现在是 zip 名、exe 属性、安装程序属性**三处**印出来，走岔了更难对。
+    /// 版本号现在从**两处**印出来（exe 属性、安装程序属性），都源自同一个 csproj。
+    /// ⚠️ 2026-10-14 起不再有第三处 —— zip 那条路整个去掉了。
     /// </remarks>
     [Fact]
     public void 安装脚本只认传进来的版本号()

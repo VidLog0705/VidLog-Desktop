@@ -1,7 +1,9 @@
 ﻿<#
 .SYNOPSIS
-    打电脑端的安装包：自包含的 win-x64 目录 + 随包 FFmpeg → 一个 zip；
-    加 -Installer 再编出一个真正的安装程序（Inno Setup）。
+    打电脑端的**安装程序**：自包含的 win-x64 目录 + 随包 FFmpeg
+    + 随包 WebView2 运行时 → 一个 setup.exe（Inno Setup）。
+
+    ⚠️ **没有 zip 那条路了**（需求方 2026-10-14：「以后出包只出安装程序，zip 不出」）。
 
 .DESCRIPTION
     在本脚本之前，本仓**没有出包这条路** —— 只有 `dotnet build`，产物落在
@@ -25,6 +27,13 @@
     AGENTS.md §9.1）。⚠️ 这里**不许**再写一个版本号常量 —— 两处版本必然会走岔，
     而走岔的表现是「包名写着 0.2.0、exe 属性里是 0.1.0」，事后没人对得出来。
 
+    出包**只出安装程序**，没有「解压即用的绿色包」那条路了（需求方 2026-10-14
+    拍板）。理由：安装程序多做两件**只能提权做**的事，缺哪一件都是「手机连不上
+    这台电脑」—— ① 注册回放地址的 urlacl（少了它局域网回放会**静默**退到
+    localhost）② 放行防火墙的 8720 入站（少了它请求在防火墙这一层就被丢掉，
+    而电脑端**一个字都不显示**，见 `AGENTS.md` §11.1）。绿色包那两种「连不上」
+    都会碰上，现场又分不清是没装对还是坏了 —— 索性只发那条不会踩坑的路。
+
 .PARAMETER Configuration
     默认 Release。这个脚本**故意不接受 Debug** —— 出包给谁都不该是调试版。
 
@@ -36,15 +45,6 @@
 
 .PARAMETER OutputDir
     产出目录，默认仓库根的 `dist\`（已在 .gitignore 里）。
-
-.PARAMETER Installer
-    额外编出真正的安装程序（`installer\VidLog.iss`，Inno Setup）。
-    ⚠️ **它比 zip 多做两件只能提权做的事**，缺哪一件都是「手机连不上这台电脑」：
-    ① 注册回放地址的 urlacl（少了它局域网回放会**静默**退到 localhost）；
-    ② 放行防火墙的 8720 入站（少了它请求会在防火墙这一层被丢掉，
-       而电脑端**一个字都不显示** —— 详见 `AGENTS.md` §11.1）。
-    zip 那条路照旧：解压即用，但这两种「连不上」都会碰上
-    （② 现在会在报名窗里**看得见**地提示该敲哪一行）。
 
 .PARAMETER IsccPath
     Inno Setup 的编译器 `ISCC.exe`。不给就按 `ISCC_EXE` 环境变量、
@@ -61,11 +61,11 @@
 
     ⚠️ 用的是**离线**那一版而不是 ~2MB 的引导器（bootstrapper）：引导器要目标机
     **当场能上网**才装得上，而这些工位机正是那种「装个浏览器都要人帮忙」的电脑。
-    代价是安装包大约从 95MB 涨到 300MB —— 值，因为另一条路的失败现场
-    （连不上微软的下载站）在现场根本说不清。
+    代价（2026-10-14 实测）：装机包 **95.4 MB → 299.5 MB** —— 值，因为另一条路
+    的失败现场（连不上微软的下载站）在现场根本说不清。
 
 .EXAMPLE
-    pwsh -NoProfile -File scripts/package.ps1 -Installer
+    pwsh -NoProfile -File scripts/package.ps1
 #>
 [CmdletBinding()]
 param(
@@ -73,7 +73,6 @@ param(
     [string]$Runtime = 'win-x64',
     [string]$FfmpegPath,
     [string]$OutputDir,
-    [switch]$Installer,
     [string]$IsccPath,
     [string]$WebView2Runtime
 )
@@ -136,7 +135,7 @@ $ffmpeg = Resolve-Ffmpeg $FfmpegPath
 Write-Host "FFmpeg：$ffmpeg"
 
 # ─────────────────────────────────────────────
-# Inno Setup：只有 -Installer 才需要
+# Inno Setup：编译器
 # ─────────────────────────────────────────────
 function Resolve-Iscc([string]$explicit) {
     if ($explicit) {
@@ -159,7 +158,7 @@ function Resolve-Iscc([string]$explicit) {
     }
 
     throw @'
-找不到 Inno Setup 的编译器 ISCC.exe（-Installer 需要它）。
+找不到 Inno Setup 的编译器 ISCC.exe（出包要它）。
 ⚠️ 必须是 **6.4.3 或更早**：6.5.0 起 Inno Setup 引入商业许可，未授权的副本编译时
 会印一行「Non-commercial use only」，而本产品是商业软件（理由与出处见 AGENTS.md §11）。
 6.4.3：https://github.com/jrsoftware/issrc/releases/download/is-6_4_3/innosetup-6.4.3.exe
@@ -169,7 +168,7 @@ function Resolve-Iscc([string]$explicit) {
 }
 
 # ─────────────────────────────────────────────
-# WebView2 离线运行时：只有 -Installer 才需要
+# WebView2 离线运行时：随包的那一份
 # ─────────────────────────────────────────────
 # ⚠️ **不降级**，与 FFmpeg 同一条理由：少装它的那个包在**没有运行时的那台机器上**
 #    表现是「百度网盘登录窗打不开」，而那正是要防的那件事。宁可不出包。
@@ -184,7 +183,7 @@ function Resolve-WebView2Runtime([string]$explicit) {
     }
 
     throw @'
-找不到 WebView2 的离线运行时安装器（-Installer 要随包，见 .PARAMETER WebView2Runtime）。
+找不到 WebView2 的离线运行时安装器（要随包，见 .PARAMETER WebView2Runtime）。
 用 -WebView2Runtime 指一个，或设 WEBVIEW2_RUNTIME_EXE 环境变量。
 
 拿法（微软的常青版离线安装器，约 200MB）：
@@ -198,15 +197,13 @@ function Resolve-WebView2Runtime([string]$explicit) {
 
 # ⚠️ 和 FFmpeg 一个道理：**先找齐再动手**。等两分钟的发布 + 打包跑完才报
 #    「找不到编译器」是在浪费人的时间，也容易让人以为是打包坏了。
-$iscc = if ($Installer) { Resolve-Iscc $IsccPath } else { $null }
-if ($iscc) { Write-Host "Inno Setup：$iscc" }
+$iscc = Resolve-Iscc $IsccPath
+Write-Host "Inno Setup：$iscc"
 
-$webView2 = if ($Installer) { Resolve-WebView2Runtime $WebView2Runtime } else { $null }
-if ($webView2) {
-    $webView2Item = Get-Item $webView2
-    Write-Host ("WebView2 运行时：{0}（{1}，{2:N1} MB，会随包走）" -f `
-        $webView2Item.FullName, $webView2Item.VersionInfo.FileVersion, ($webView2Item.Length / 1MB))
-}
+$webView2 = Resolve-WebView2Runtime $WebView2Runtime
+$webView2Item = Get-Item $webView2
+Write-Host ("WebView2 运行时：{0}（{1}，{2:N1} MB，会随包走）" -f `
+    $webView2Item.FullName, $webView2Item.VersionInfo.FileVersion, ($webView2Item.Length / 1MB))
 
 # ─────────────────────────────────────────────
 # 发布
@@ -227,7 +224,7 @@ New-Item -ItemType Directory -Force $stage | Out-Null
 if ($LASTEXITCODE -ne 0) { throw "dotnet publish 失败（退出码 $LASTEXITCODE）" }
 
 $exe = Join-Path $stage 'VidLog.Desktop.App.exe'
-if (-not (Test-Path $exe)) { throw "发布完了却没有 $exe —— 产物形状变了，下面的 zip 名与说明都要跟着改" }
+if (-not (Test-Path $exe)) { throw "发布完了却没有 $exe —— 产物形状变了，下面的安装程序名与说明都要跟着改" }
 
 # ─────────────────────────────────────────────
 # 随包 FFmpeg：tools\ 那一层是 FfmpegLocator 认的路径
@@ -265,77 +262,53 @@ shim），不是真的 ffmpeg.exe。那份转发器拷到别的机器上什么�
 }
 
 # ─────────────────────────────────────────────
-# 打 zip
+# 安装程序（Inno Setup）—— 本脚本唯一的产品
 # ─────────────────────────────────────────────
-# ⚠️ 用 ZipFile 而不是 Compress-Archive：后者在这体积上慢一个数量级，
-#    而且它会先把整个目录读进内存。
-Add-Type -AssemblyName System.IO.Compression.FileSystem -ErrorAction SilentlyContinue
+$iss = Join-Path $root 'installer\VidLog.iss'
+if (-not (Test-Path $iss)) { throw "找不到 $iss" }
 
-$zip = Join-Path $OutputDir "VidLog-Desktop-$version-$Runtime.zip"
-if (Test-Path $zip) { Remove-Item $zip -Force }
-[System.IO.Compression.ZipFile]::CreateFromDirectory(
-    $stage, $zip, [System.IO.Compression.CompressionLevel]::Optimal, $false)
+# ⚠️ ISCC 的 /D 传参处理不了带空格的路径 —— 与其在编译期报一句看不懂的错，
+#    不如在这儿说清楚。
+if ($stage -match ' ' -or $OutputDir -match ' ' -or $webView2 -match ' ') {
+    throw "路径里有空格（stage=$stage / OutputDir=$OutputDir / WebView2=$webView2）—— ISCC 的 /D 传不了，换个不带空格的位置"
+}
 
-$zipItem = Get-Item $zip
-$zipHash = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLower()
-
-Write-Host ''
-Write-Host "zip：$($zipItem.FullName)"
-Write-Host ("     大小 {0:N1} MB   sha256 {1}" -f ($zipItem.Length / 1MB), $zipHash)
-Write-Host '     装法：解压到任意目录 → 运行 VidLog.Desktop.App.exe（自包含，不用先装 .NET）。'
-Write-Host '     ⚠️ 别把 exe 单独拖出来 —— 旁边那一堆 dll 与 tools\ffmpeg.exe 都是它的。'
-Write-Host '     ⚠️ 这条路**不注册**回放地址的访问许可，于是手机连不上这台电脑。'
-
-# ─────────────────────────────────────────────
-# 安装程序（Inno Setup）—— 只有 -Installer 才编
-# ─────────────────────────────────────────────
-if ($Installer) {
-    $iss = Join-Path $root 'installer\VidLog.iss'
-    if (-not (Test-Path $iss)) { throw "找不到 $iss" }
-
-    # ⚠️ ISCC 的 /D 传参处理不了带空格的路径 —— 与其在编译期报一句看不懂的错，
-    #    不如在这儿说清楚。
-    if ($stage -match ' ' -or $OutputDir -match ' ' -or $webView2 -match ' ') {
-        throw "路径里有空格（stage=$stage / OutputDir=$OutputDir / WebView2=$webView2）—— ISCC 的 /D 传不了，换个不带空格的位置"
-    }
-
-    # ⚠️ Inno 认不出没有 BOM 的 UTF-8，会把中文按 ANSI 读 —— 装出来的向导与
-    #    快捷方式名字全花，而**编译器一个字都不说**。
-    #    ⚠️ 这里**不替人补 BOM**：打包脚本偷偷改一个受版本控制的工作区文件，
-    #    是那种「跑完一遍 git status 里多出一处不认识改动」的坑。
-    #    改成**当场失败**并说清怎么修。配套的绊线在
-    #    DesktopServicesTests.安装脚本是带_BOM_的_UTF8，正常轮不到这里报。
-    $issBytes = [System.IO.File]::ReadAllBytes($iss)
-    if (-not ($issBytes.Length -ge 3 -and $issBytes[0] -eq 0xEF -and
-              $issBytes[1] -eq 0xBB -and $issBytes[2] -eq 0xBF)) {
-        throw @"
+# ⚠️ Inno 认不出没有 BOM 的 UTF-8，会把中文按 ANSI 读 —— 装出来的向导与
+#    快捷方式名字全花，而**编译器一个字都不说**。
+#    ⚠️ 这里**不替人补 BOM**：打包脚本偷偷改一个受版本控制的工作区文件，
+#    是那种「跑完一遍 git status 里多出一处不认识改动」的坑。
+#    改成**当场失败**并说清怎么修。配套的绊线在
+#    DesktopServicesTests.安装脚本是带_BOM_的_UTF8，正常轮不到这里报。
+$issBytes = [System.IO.File]::ReadAllBytes($iss)
+if (-not ($issBytes.Length -ge 3 -and $issBytes[0] -eq 0xEF -and
+          $issBytes[1] -eq 0xBB -and $issBytes[2] -eq 0xBF)) {
+    throw @"
 $iss 少了 UTF-8 BOM —— Inno 会把里面的中文按 ANSI 读，编出来的向导全花。
 用编辑器把它另存为「UTF-8 with BOM / 带 BOM」，别用「UTF-8」。
 （不要在这里自动补：那会让一次打包悄悄改动工作区里的受控文件。）
 "@
-    }
-
-    Write-Host ''
-    Write-Host "编安装程序：$iscc"
-
-    # ⚠️ 先清掉旧的：下面按 `*-setup.exe` 取产物，留一个旧的在那儿会**假装成功**。
-    Get-ChildItem $OutputDir -Filter '*-setup.exe' -ErrorAction SilentlyContinue | Remove-Item -Force
-
-    & $iscc "/DAppVersion=$version" "/DAppVersion4=$version4" `
-        "/DStageDir=$stage" "/DOutputDir=$OutputDir" `
-        "/DWebView2Runtime=$webView2" $iss
-    if ($LASTEXITCODE -ne 0) { throw "ISCC 编译失败（退出码 $LASTEXITCODE）" }
-
-    $setup = Get-ChildItem $OutputDir -Filter '*-setup.exe' | Select-Object -First 1
-    if (-not $setup) { throw "ISCC 说编好了，$OutputDir 里却没有 *-setup.exe" }
-
-    $setupHash = (Get-FileHash $setup.FullName -Algorithm SHA256).Hash.ToLower()
-    Write-Host ''
-    Write-Host "安装程序：$($setup.FullName)"
-    Write-Host ("     大小 {0:N1} MB   sha256 {1}" -f ($setup.Length / 1MB), $setupHash)
-    Write-Host '     装到 Program Files，顺手注册 8720 端口的访问许可（所以会要提权）。'
-    Write-Host '     ⚠️ 卸载**不删**录像：数据在 %LOCALAPPDATA%\VidLog，不在安装目录里。'
 }
+
+Write-Host ''
+Write-Host "编安装程序：$iscc"
+
+# ⚠️ 先清掉旧的：下面按 `*-setup.exe` 取产物，留一个旧的在那儿会**假装成功**。
+Get-ChildItem $OutputDir -Filter '*-setup.exe' -ErrorAction SilentlyContinue | Remove-Item -Force
+
+& $iscc "/DAppVersion=$version" "/DAppVersion4=$version4" `
+    "/DStageDir=$stage" "/DOutputDir=$OutputDir" `
+    "/DWebView2Runtime=$webView2" $iss
+if ($LASTEXITCODE -ne 0) { throw "ISCC 编译失败（退出码 $LASTEXITCODE）" }
+
+$setup = Get-ChildItem $OutputDir -Filter '*-setup.exe' | Select-Object -First 1
+if (-not $setup) { throw "ISCC 说编好了，$OutputDir 里却没有 *-setup.exe" }
+
+$setupHash = (Get-FileHash $setup.FullName -Algorithm SHA256).Hash.ToLower()
+Write-Host ''
+Write-Host "安装程序：$($setup.FullName)"
+Write-Host ("     大小 {0:N1} MB   sha256 {1}" -f ($setup.Length / 1MB), $setupHash)
+Write-Host '     装到 Program Files，顺手注册 8720 端口的访问许可（所以会要提权）。'
+Write-Host '     ⚠️ 卸载**不删**录像：数据在 %LOCALAPPDATA%\VidLog，不在安装目录里。'
 
 # ⚠️ stage 到这里才能删 —— 安装程序就是拿它当素材的。
 Remove-Item $stage -Recurse -Force

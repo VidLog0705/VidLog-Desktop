@@ -256,26 +256,32 @@ ProductVersion = 0.1.0+<git sha>    （`+` 那截是 SDK 加的构建元数据�
 
 ---
 
-## 11. 出包（2026-10-01 补，2026-10-02 加安装程序）
+## 11. 出包（2026-10-01 补，2026-10-02 加安装程序，2026-10-14 起只出安装程序）
 
 ```
-pwsh -NoProfile -File scripts/package.ps1 -Installer   # 本地（两份都出）
+pwsh -NoProfile -File scripts/package.ps1             # 本地
 gh workflow run package.yml --ref main                 # CI 手动派单，产物发 Release
 ```
 
-产出两份：
+只产出一个文件：
 
 | 文件 | 是什么 |
 |---|---|
 | `dist\VidLog-Desktop-<版本>-win-x64-setup.exe` | **安装程序**（Inno Setup）。装到 Program Files，**并注册回放地址的访问许可** |
-| `dist\VidLog-Desktop-<版本>-win-x64.zip` | 解压即用的绿色包，**不注册**那条许可 |
 
-两份都是**自包含**发布（目标机器不用先装 .NET 9 桌面运行时）+ 随包
-`tools\ffmpeg.exe`（`FfmpegLocator` 认的第三条路径）。
+⚠️ **2026-10-14 起不再出 zip**（需求方：「以后出包只出安装程序，zip不出」）。
+绿色包装不到 Program Files、也注册不了那条许可 —— 而那正是「手机连不上这台电脑」
+的两个成因，现场还分不清是没装对还是坏了，索性只发那条不会踩坑的路。
+`package.ps1` 的 `-Installer` 开关随之**整个去掉**：没有 zip 之后它已无处可关
+（留着只会得到一个「跑完发布、查完 FFmpeg、删掉 stage、什么都没产出」的模式）。
 
-⚠️ **两件都不能省** —— 少了 FFmpeg 的包**能开、界面能点**，只是采集、网络摄像头
-探测、实时多画面全都报「没有可用的 FFmpeg」；这种「装上了但半残」比装不上更难查。
-所以脚本找不到 FFmpeg 时**当场失败**，不降级出一份半残的包。
+包是**自包含**发布（目标机器不用先装 .NET 9 桌面运行时），并随包 `tools\ffmpeg.exe`
+（`FfmpegLocator` 认的第三条路径）与 **WebView2 离线运行时**（2026-10-14 起，见 §11.1）。
+
+⚠️ **少一样都是「装上了但半残」** —— 少了 FFmpeg 的包**能开、界面能点**，只是
+采集、网络摄像头探测、实时多画面全都报「没有可用的 FFmpeg」；少了 WebView2 的包
+**能开、能录**，只是【登录百度网盘】点了没反应（客户机完全可能没装过 WebView2）。
+这种「装上了但半残」比装不上更难查，所以脚本找不到它们时**当场失败**，不降级出包。
 
 ⚠️⚠️ **FFmpeg 必须是真的那份，不是转发器**。`choco install ffmpeg` 往
 `C:\ProgramData\chocolatey\bin` 放的是 **392 KB 的 shim**（里面按相对路径找
@@ -294,13 +300,13 @@ gh workflow run package.yml --ref main                 # CI 手动派单，产�
 
 ### 11.1 安装程序（2026-10-02 加，2026-10-03 由一件事扩到两件）
 
-脚本 `installer\VidLog.iss`，由 `scripts/package.ps1 -Installer` 编译。
+脚本 `installer\VidLog.iss`，由 `scripts/package.ps1` 编译。
 
 **它存在的理由是那两件只能提权做的事 —— 缺哪一件，都是「手机连不上这台电脑」：**
 
 1. **urlacl** —— 绑 `http://+:8720/`（局域网可达的那个前缀）需要一次性注册，
    那要管理员权限；安装程序本来就是提权的，顺手做掉。
-   在这之前只发 zip，于是回放服务**静默**退到 `localhost`
+   早先只发 zip 的那些版本就是栽在这里：回放服务**静默**退到 `localhost`
    （2026-10-02 报上来的缺陷就是这个）。
 2. **防火墙入站放行（2026-10-03 补）** —— 回放服务绑的是 **http.sys**，
    Windows 那个「允许访问」的弹窗**不会出现**（监听的是 System 进程，
@@ -324,10 +330,23 @@ gh workflow run package.yml --ref main                 # CI 手动派单，产�
     remoteip=localsubnet profile=any`。只放行本网段，不给整个人网开门；
     `profile=any` 是因为这台机器的网卡常常被归到「公用网络」（本机实测就是），
     只给「专用」放行等于没放。装的时候先 `delete` 再 `add`，卸的时候删掉。
-  - **绿色包（zip）没有这一步** ⇒ 报名窗会**看得见**地提示该敲哪一行
-    （`EnrollWindow.WarnIfFirewallBlockedAsync`）。⚠️ **只有问得出「确实不在」
+  - **规则不在的机器**（0.14.1 之前发的绿色包从没建过它）⇒ 报名窗会**看得见**地
+    提示该敲哪一行（`EnrollWindow.WarnIfFirewallBlockedAsync`）。⚠️ **只有问得出「确实不在」
     才提示**：`netsh` 起不来 / 退出码不是 0/1 时**什么都不说** ——
     在那种机器上平白吓人一跳比不说更坏。
+- **WebView2 运行时随包**（2026-10-14 加）—— 百度网盘登录窗是内嵌的 WebView2，
+  而 **Win11 才自带，Win10 要装过 Edge 或别的带它的软件之后才有**，客户机完全可能
+  没有。`[Files]` 只落 `{tmp}` 并 `deleteafterinstall`（**不进 `{app}`** —— 常驻等于
+  每台机器白占 200 MB），`[Run]` 跑它 `/silent /install`；两条**共用同一个
+  `IsWebView2RuntimeInstalled`**，机器上已经有了就连拷都不拷。
+  - 判断查**两处**：`HKLM32` 与 `HKCU`（用户级安装完全合法，Edge 自己就那么装）；
+    用 `HKLM32` 是因为 Edge Update 是 32 位的，64 位系统上它写在 `WOW6432Node` 下。
+  - 版本串**全零算没装**：Edge Update 在「项在、但没真装上」时写的就是 `0.0.0.0`。
+  - 随包的必须是**离线独立安装器**（fwlink `2124701`，204 MB），**不是** `2124703`
+    那个 2 MB 的引导器 —— 后者要目标机**当场能上网**才装得上。⚠️ 两个 fwlink
+    下回来**同名**，只差体积 ⇒ 本地与 CI 都按**体积 + Authenticode 签名
+    （必须是 `O=Microsoft Corporation`）**验，不只看 HTTP 200。
+  - 代价：装机包 **95.4 MB（0.14.0）→ 299.5 MB（0.14.1）**，两处都是实测值。
 - **`.iss` 必须存成 UTF-8 带 BOM**（Inno 认不出没有 BOM 的 UTF-8，中文常量会全花，
   而编译器**一个字都不说**）。少了 BOM 时 `package.ps1` **当场失败**，不替人改文件
   （打包脚本偷偷改受控文件是个坑）；有绊线钉着。
