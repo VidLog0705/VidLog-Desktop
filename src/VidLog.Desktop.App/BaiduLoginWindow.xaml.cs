@@ -21,7 +21,8 @@ namespace VidLog.Desktop.App;
 /// ⚠️ <b>它不是模态对话框那种「等用户点按钮」</b>，所以那两个属性是**结果**
 /// 而不是「用户选了什么」：<see cref="Callback"/> 是空 = 没等到（超时，
 /// 或者用户自己按了取消），<see cref="Failure"/> 非空 = 这个窗压根没起来
-/// （最典型的是机器上没装 WebView2 运行时）。
+/// （常见的是缺 WebView2 运行时，或者浏览器数据目录建不起来 —— 后者 2026-10-14 真发生过，
+/// 见 <see cref="OnLoaded"/> 里那段）。
 /// </para>
 /// <para>
 /// ⚠️ <b>窗里不碰授权码</b>：接住它的是 <see cref="BaiduLoopbackListener"/>，
