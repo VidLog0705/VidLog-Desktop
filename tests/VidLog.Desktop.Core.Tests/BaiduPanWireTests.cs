@@ -2,6 +2,7 @@ using System.Net;
 using System.Net.Http.Headers;
 using System.Text;
 using VidLog.Desktop.Core.Cloud;
+using VidLog.Desktop.Core.Diagnostics;
 
 namespace VidLog.Desktop.Core.Tests;
 
@@ -415,6 +416,76 @@ public class BaiduPanWireTests
     }
 
     // ─────────────────────────────────────────────
+    // 日志里记什么
+    // ─────────────────────────────────────────────
+
+    [Fact]
+    public async Task 日志里看得出是网盘哪一步_而且不泄漏令牌()
+    {
+        // ⚠️ `https://pan.baidu.com/rest/2.0/xpan/file` 这**一个**路径同时盖着
+        // precreate / create / list / filemetas 好几步。2026-10-14 真机上出现了一条
+        //   `网盘请求 https://pan.baidu.com/rest/2.0/xpan/file 失败`
+        //     {"耗时ms":232,"错误":"The operation was canceled."}
+        // —— 光看这一行，**看不出它当时在干哪一步**，于是那件事查不下去。
+        // 现在路径后面缀一个白名单参数 `method`。
+        //
+        // ⚠️ 同时钉住另一半：查询串里有 `access_token`，**绝不能跟着出去**。
+        // 只留 `method` 是**白名单**（将来多一个凭据也漏不了），
+        // 不是「把令牌遮掉」那种黑名单（那种会静默漏）。
+        var logger = new CapturingLogger();
+        var stub = new Stub("""{"errno":0,"uploadid":"u1","block_list":[0]}""");
+
+        await new BaiduPanClient(Credentials, new HttpClient(stub), logger)
+            .PrecreateAsync("the-secret-token", "/apps/VidLog/a.mp4", 10, ["a"]);
+
+        Assert.Contains(
+            logger.Entries,
+            e => e.Message.Contains("method=precreate", StringComparison.Ordinal));
+
+        Assert.DoesNotContain(
+            logger.Entries, e => e.Message.Contains("the-secret-token", StringComparison.Ordinal));
+        Assert.DoesNotContain(
+            logger.Entries, e => e.Message.Contains("access_token", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task 目录不存在只是记Debug_不是Warn()
+    {
+        // ⚠️ `-9`「文件或目录不存在」是**正常状态**：没传过的日期目录本来就不存在，
+        // `BaiduPanUploader` 会去建目录再试一次，`CompareAsync` / `CloudArchiveBackend`
+        // 也把它当成「云端还没有这一条」吞掉。
+        // 记成 WARN 的代价是：一轮 tick 刷三条**长得像故障**的红字，
+        // 把真正要看的故障埋掉（2026-10-14 实测一次同步刷了 4 条）。
+        var logger = new CapturingLogger();
+        var stub = new Stub("""{"errno":-9}""");
+
+        await Assert.ThrowsAsync<BaiduPanException>(
+            () => new BaiduPanClient(Credentials, new HttpClient(stub), logger)
+                .PrecreateAsync("t", "/apps/VidLog/2026-10-14/发货/a.mp4", 10, ["a"]));
+
+        Assert.Contains(logger.Entries, e => e.Message.Contains("errno=-9", StringComparison.Ordinal));
+        Assert.DoesNotContain(logger.Entries, e => e.Level == LogLevel.Warn);
+    }
+
+    [Fact]
+    public async Task 别的errno照样记Warn()
+    {
+        // ⚠️ 降级的**只有** `-9` 那一个。别的 errno 没人预期过，
+        // 跟着一起降下去的话，「令牌失效」这种要人管的事就没人看见了。
+        var logger = new CapturingLogger();
+        var stub = new Stub("""{"errno":31045}""");
+
+        await Assert.ThrowsAsync<BaiduPanException>(
+            () => new BaiduPanClient(Credentials, new HttpClient(stub), logger)
+                .PrecreateAsync("t", "/apps/VidLog/a.mp4", 10, ["a"]));
+
+        Assert.Contains(
+            logger.Entries,
+            e => e.Level == LogLevel.Warn
+                && e.Message.Contains("errno=31045", StringComparison.Ordinal));
+    }
+
+    // ─────────────────────────────────────────────
     // 响应体怎么解
     // ─────────────────────────────────────────────
 
@@ -520,6 +591,19 @@ public class BaiduPanWireTests
 
             return _respond(request);
         }
+    }
+
+    /// <summary>把日志原样收下来的假 logger（本仓每个相关测试文件各有一份，照抄）。</summary>
+    private sealed class CapturingLogger : IAppLogger
+    {
+        public List<(LogLevel Level, string Message)> Entries { get; } = [];
+
+        public void Log(LogLevel level, string category, string message) =>
+            Entries.Add((level, message));
+
+        public void Log(
+            LogLevel level, string category, string message, IReadOnlyDictionary<string, object?> data) =>
+            Entries.Add((level, message));
     }
 
     /// <summary>

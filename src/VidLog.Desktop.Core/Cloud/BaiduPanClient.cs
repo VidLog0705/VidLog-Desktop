@@ -734,7 +734,18 @@ public sealed class BaiduPanClient : IBaiduPanApi
         {
             var code = errno.GetInt32();
 
-            _logger.Log(LogLevel.Warn, "网盘", $"百度网盘返回 errno={code}（{Path(url)}）");
+            // ⚠️ `-9`「文件或目录不存在」**不是故障，是正常状态**：没传过的日期目录
+            // 本来就不存在，`BaiduPanUploader` 会按 020 把目录补出来再试一次
+            //（`IsPathProblem` 那一族，只发生一次），`CompareAsync` 与 `CloudArchiveBackend`
+            // 也直接把它当成「云端还没有这一条」吞掉。
+            //
+            // 记成 WARN 的代价不是「日志多几行」：一轮 tick 能刷三条**长得像故障**的红字，
+            // 而真正要看的故障就埋在它们中间（2026-10-14 实测：一次同步刷了 4 条）。
+            // 剩下那几个 errno 仍然记 WARN —— 它们没被谁预期过。
+            _logger.Log(
+                code == -9 ? LogLevel.Debug : LogLevel.Warn,
+                "网盘",
+                $"百度网盘返回 errno={code}（{Path(url)}）");
 
             throw new BaiduPanException(
                 code,
@@ -864,12 +875,40 @@ public sealed class BaiduPanClient : IBaiduPanApi
     private static long ElapsedMs(long startedTimestamp) =>
         (long)Stopwatch.GetElapsedTime(startedTimestamp).TotalMilliseconds;
 
-    /// <summary>日志里只留路径，**查询串一律丢掉**（令牌在里面）。</summary>
+    /// <summary>
+    /// 日志里只留路径，外加查询串里**白名单**的那一个 <c>method</c>；
+    /// 其余一律丢掉（令牌在里面）。
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ 为什么要留 <c>method</c>：<c>xpan/file</c> 这**一个**路径同时盖着
+    /// <c>precreate</c> / <c>create</c> / <c>list</c> 好几步 —— 光看路径，
+    /// 出事时看不出它当时在干哪一步。2026-10-14 那一条
+    /// 「`xpan/file` 失败 / The operation was canceled.」就是卡在这上面查不下去的。
+    /// </remarks>
+    /// <remarks>
+    /// ⚠️ 是**白名单**（只挑出 `method` 这一个名字），不是「把令牌遮掉」那种黑名单：
+    /// 后者在查询串里将来多出**别的**凭据时会静默漏出去，而这里漏不了。
+    /// </remarks>
     private static string Path(string url)
     {
         var question = url.IndexOf('?');
 
-        return question < 0 ? url : url[..question];
+        if (question < 0)
+        {
+            return url;
+        }
+
+        foreach (var pair in url[(question + 1)..].Split('&'))
+        {
+            var equals = pair.IndexOf('=');
+
+            if (equals > 0 && pair[..equals] == "method")
+            {
+                return $"{url[..question]}?{pair}";
+            }
+        }
+
+        return url[..question];
     }
 
     private static string Trim(string text) =>
