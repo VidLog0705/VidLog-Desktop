@@ -128,11 +128,36 @@ jobs:
 
           # ⚠️ 这条断言才是「钉住」的落点：镜像上换了包、或者哪天有人图省事改成
           #    choco 装最新版，这里会**当场红**，而不是悄悄出一个带商业许可横幅的包。
-          $ver = (Get-Item $iscc).VersionInfo.FileVersion
-          if ($ver -notlike '6.4.*') {
-            throw "ISCC 是 $ver，不是钉住的 6.4.x —— 6.5+ 带商业许可要求（AGENTS.md §11）"
+          #
+          # ⚠️ 判法只能靠「让它真编一次、读 banner」—— 读文件属性是读不出来的：
+          #    `ISCC.exe` **自己不带版本信息**，FileVersion / ProductVersion 恒为
+          #    `0.0.0.0`（2026-10-14 本机把 6.4.3 与 6.7.3 各编一次实测，两版读数
+          #    一模一样；同目录唯一有版本的 `isscint.dll`、`Setup.e32` 也不是产品版本）。
+          #    旧断言正是读了 `FileVersion -notlike '6.4.*'` ⇒ **从写下那天起就没通过过**
+          #    （package.yml 在那之后一次都没跑成，所以一直没露头）。
+          #
+          #    2026-10-14 实测 banner：6.4.3 印
+          #    `Compiler engine version: Inno Setup 6.4.3`；6.7.3 印 `… 6.7.3`，
+          #    并在**下一行多印 `Non-commercial use only`** —— 而且**照样 exit=0**
+          #    （`Successful compile (0.719 sec)`）⇒ 靠退出码判不出来，只能读输出。
+          # ⚠️ here-string 的内容行**也要跟代码同样缩进** —— 块标量里出现 0 缩进的行
+          #    会直接把 YAML 结构打断（`[Setup]` 会被当成 flow sequence）。GitHub 解析时
+          #    会按块内最小缩进统一 dedent，所以这里缩进多少、pwsh 收到的就是多少去掉了。
+          $probe = Join-Path $env:RUNNER_TEMP 'iscc-version-probe.iss'
+          @"
+          [Setup]
+          AppName=probe
+          AppVersion=1.0
+          DefaultDirName={tmp}\vlogprobe
+          OutputBaseFilename=vlogprobe
+          "@ | Set-Content -Path $probe -Encoding ASCII
+
+          $banner = (& $iscc $probe 2>&1) -join "`n"
+          Remove-Item (Join-Path $env:RUNNER_TEMP 'vlogprobe.exe') -ErrorAction SilentlyContinue
+          if ($banner -notmatch 'Compiler engine version: Inno Setup (6\.4\.\d+)') {
+            throw "ISCC 不是钉住的 6.4.x —— 6.5+ 带商业许可要求（AGENTS.md §11）。banner：`n$banner"
           }
-          Write-Host "ISCC：$iscc（$ver）"
+          Write-Host "ISCC：$iscc（引擎 $($Matches[1])）"
 
           "ISCC_EXE=$iscc" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
 
