@@ -682,7 +682,26 @@ public sealed class BaiduPanClient : IBaiduPanApi
     private async Task<JsonElement> ReadAsync(
         HttpResponseMessage response, string url, CancellationToken cancellationToken)
     {
-        var text = await response.Content.ReadAsStringAsync(cancellationToken);
+        // ⚠️ **不要用 `ReadAsStringAsync`** —— 它信服务器声明的 charset，而百度 PCS
+        // 回的响应头是 `text/html; charset=utf8`：`utf8` **不是合法的 IANA 名字**
+        //（合法的只有 `utf-8`），.NET 不认，于是**一个字都还没读到就先抛**：
+        //
+        //   The character set provided in ContentType is invalid. Cannot read content
+        //   as string using an invalid character set.
+        //
+        // 而那个正文往往是一段完全合法的 JSON（2026-10-14 实测抓到的是
+        // `HTTP 400` + `Content-Length: 83` + `{"error_code":31024,...}`）——
+        // 服务器说的话全被这一句丢掉。
+        //
+        // 更贵的是它抛的 `InvalidOperationException` **既不是 `BaiduPanException`
+        // 也不是 `HttpRequestException`**，云端那一层到处写的 `catch ... when` 一个都拦不住
+        // ⇒ 它穿到上层，把整轮上传打断（线上表现：队列 16 条一条都传不上去，
+        // 界面上只剩这一句「最近一次出错」）。
+        //
+        // JSON 按 RFC 8259 本来就是 UTF-8 ⇒ 自己按字节读、自己按 UTF-8 解，
+        // **不信服务器声明的 charset**。
+        var bytes = await response.Content.ReadAsByteArrayAsync(cancellationToken);
+        var text = Encoding.UTF8.GetString(bytes);
 
         JsonElement json;
         try

@@ -1,4 +1,5 @@
 using System.Net.Http;
+using System.Text;
 using VidLog.Desktop.Core.Update;
 
 namespace VidLog.Desktop.App.Platform;
@@ -46,7 +47,12 @@ internal static class ReleaseFeed
         // ⚠️ 怎么读这一段在 Core 的 `ReleaseFeedJson.ReadLatestTag` 里
         // （T27② 第 4 批）—— 那边还管着「空数组」与「被限流的那个对象」
         // 怎么分开，这一层只管把文本取回来。
-        var json = await response.Content.ReadAsStringAsync(cancellationToken);
+        // ⚠️ 与 `BaiduPanClient.ReadAsync` 同一个理由（2026-10-14）：`ReadAsStringAsync`
+        // 信服务器声明的 charset，撞上一个非法名字就**在读到正文之前抛**
+        // （`InvalidOperationException`），连 4xx 的正文都拿不到。
+        // 这里目前没坏（GitHub 回的是合法的 `charset=utf-8`），但同一个坑不该留两口井。
+        var bytes = await response.Content.ReadAsByteArrayAsync(cancellationToken);
+        var json = Encoding.UTF8.GetString(bytes);
 
         return ReleaseFeedJson.ReadLatestTag(json);
     }

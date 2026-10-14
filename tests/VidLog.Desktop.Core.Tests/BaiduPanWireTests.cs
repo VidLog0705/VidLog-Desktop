@@ -1,4 +1,5 @@
 using System.Net;
+using System.Net.Http.Headers;
 using System.Text;
 using VidLog.Desktop.Core.Cloud;
 
@@ -411,6 +412,46 @@ public class BaiduPanWireTests
 
         Assert.Equal(2, stub.UserAgents.Count);
         Assert.All(stub.UserAgents, agent => Assert.Equal("pan.baidu.com", agent));
+    }
+
+    // ─────────────────────────────────────────────
+    // 响应体怎么解
+    // ─────────────────────────────────────────────
+
+    [Fact]
+    public async Task 百度回charset等于utf8时也要读得懂正文()
+    {
+        // ⚠️ 这条是 2026-10-14 那次「队列 16 条一条都传不上去」的第二个根因。
+        //
+        // 百度 PCS（`Server: POMS/CloudUI`）回的响应头是
+        // `Content-Type: text/html; charset=utf8` —— `utf8` **不是合法的 IANA 名字**
+        //（合法的只有 `utf-8`，那个连字符不能省）。于是 `ReadAsStringAsync` 拿不到
+        // 任何编码，**在读到正文之前就抛**：
+        //   The character set provided in ContentType is invalid. Cannot read content
+        //   as string using an invalid character set.
+        // 而正文是一段完全合法的 JSON —— 服务器真正要说的话就这么没了。
+        //
+        // 它抛的是 `InvalidOperationException`，不在云端任何 `catch ... when` 的名单里
+        // ⇒ 一路穿到顶层，把整轮上传打断。
+        //
+        // ⇒ 夹具刻意**照抄那个头**。
+        // ⚠️ 不能用 `new StringContent(body, Encoding.UTF8, "text/html; charset=utf8")`：
+        // 那个构造器把整串当**媒体类型**校验，撞上 `;` 直接抛
+        // `FormatException: The format of value ... is invalid`（试过）。
+        // 手工拼 `ByteArrayContent` + `CharSet`，拿到的就是线上那份字节。
+        var body = new ByteArrayContent(
+            Encoding.UTF8.GetBytes("""{"errno":0,"uploadid":"u1","block_list":[0]}"""));
+        body.Headers.ContentType = new MediaTypeHeaderValue("text/html") { CharSet = "utf8" };
+
+        var stub = new Stub(request => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = body,
+        });
+
+        var pre = await Client(stub)
+            .PrecreateAsync("t", "/apps/VidLog/a.mp4", 10, ["a"]);
+
+        Assert.Equal("u1", pre.UploadId);
     }
 
     // ─────────────────────────────────────────────

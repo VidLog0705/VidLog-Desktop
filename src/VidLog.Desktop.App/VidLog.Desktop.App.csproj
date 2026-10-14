@@ -349,10 +349,32 @@
          （4MB，一次一片），交给 `StreamContent`。
          ⚠️ 给子件**显式设** `Content-Length` 是没用的 —— 探针量过，`form.Headers.ContentLength`
          照样是 null。
-         ⚠️ **这条修完从没在真服务器上验过**：闸只证明请求不再走 chunked，
-         证明不了 `create` 合并出来的文件是好的。
+         ✅ 2026-10-14 装机后真机验过：`31211` 在日志里**一次都没再出现**（闸加实测都过了）。
+         ⚠️ 但 `create` 合并出来的文件到不到底，**仍未验**（因为撞上了 0.14.4 那个缺陷，
+            整轮上传在合并之前就被打断了）。
+      0.14.4（2026-10-14）：修缺陷 ⇒ 0.14.4（不加功能、不动界面）。
+      ① **`ReadAsync` 不再信服务器声明的 charset**。百度 PCS（`Server: POMS/CloudUI`）
+         回的响应头是 `Content-Type: text/html; charset=utf8` —— `utf8` **不是合法的
+         IANA 名字**（合法的只有 `utf-8`），`.NET` 的 `Encoding.GetEncoding("utf8")`
+         不认 ⇒ `ReadAsStringAsync` **在读到正文之前就抛**：
+           The character set provided in ContentType is invalid. Cannot read content
+           as string using an invalid character set.
+         而那正文是一段**完全合法的 JSON**（实测抓到的：HTTP 400 / `Content-Length: 83` /
+         `{"error_code":31024,...}`）—— 服务器真正说的话全被这一句丢掉。
+         ⚠️ 真正贵的是它抛的 `InvalidOperationException` 既不是 `BaiduPanException`
+         也不是 `HttpRequestException` ⇒ 云端那一层到处写的 `catch ... when` **一个都拦不住**
+         ⇒ 穿到顶层打断整轮；而 `DrainAsync` 用的是 `Parallel.ForEachAsync`
+         （默认 2 路并发），**一个并发体抛异常会立刻取消其余在飞的并发体**
+         （实测坐实）⇒ 日志里那条 `第 0 片没送出去 / The operation was canceled.`
+         **是它的连坐，不是独立故障**。
+         修法：`ReadAsByteArrayAsync` + 自己 `Encoding.UTF8.GetString`（JSON 按 RFC 8259
+         本来就是 UTF-8）—— **不信服务器声明的 charset**。
+         ⚠️ 顺带按 §6.1 收了全仓**唯一**另一处 `ReadAsStringAsync`：`Platform/ReleaseFeed.cs`
+         （读 GitHub 发布页）。它目前没坏（GitHub 回的是合法的 `charset=utf-8`）。
+         ⚠️ **修完不等于传得上去**：这一版只是止住了「服务器说的话被吞掉」，
+            网盘真正回了什么，要看这一版的日志才知道。
     -->
-    <Version>0.14.3</Version>
+    <Version>0.14.4</Version>
     <OutputType>WinExe</OutputType>
     <TargetFramework>net9.0-windows</TargetFramework>
     <Nullable>enable</Nullable>
