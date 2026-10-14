@@ -115,9 +115,6 @@ public partial class SettingsWindow : Window
     /// <summary>「立即对比同步 / 立即重试失败上传」正在跑。</summary>
     private bool _cloudBusy;
 
-    /// <summary>正跑着的那件事叫什么（那一截进度条上写的就是它）。没在跑时是空串。</summary>
-    private string _cloudActionTitle = string.Empty;
-
     /// <summary>刷新正在跑（定时器与「切到这一页」会同时触发）。</summary>
     private bool _cloudRefreshing;
 

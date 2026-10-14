@@ -844,38 +844,36 @@
                                             Style="{StaticResource SecondaryButton}"
                                             Margin="10,0,0,0"
                                             Content="立即重试失败上传" Click="OnCloudRetry"/>
-                                </Grid>
 
-                                <!-- 【立即对比同步】/【立即重试失败上传】跑起来的时候，
-                                     点下去那颗按钮换成一截进度条就地摆在这儿（C14）。
-                                     只是禁用是不够的：一次同步要跑好几分钟，一颗灰掉的按钮
-                                     没有任何「还在动」的迹象。跑完由 code-behind 收起。 -->
-                                <StackPanel x:Name="CloudActionProgressPanel" Orientation="Horizontal"
-                                            Visibility="Collapsed" Margin="0,14,0,0">
-                                    <ProgressBar x:Name="CloudActionProgressBar" Width="260" Height="10"
-                                                 VerticalAlignment="Center"
-                                                 Minimum="0" Maximum="1" Value="0"
-                                                 Foreground="{DynamicResource ProgressFill}"
-                                                 Background="{DynamicResource SurfaceAlt}"
-                                                 BorderThickness="0">
-                                        <ProgressBar.Template>
-                                            <ControlTemplate TargetType="ProgressBar">
-                                                <Border Background="{TemplateBinding Background}"
-                                                        CornerRadius="5" SnapsToDevicePixels="True">
-                                                    <Grid>
-                                                        <Border x:Name="PART_Track"/>
-                                                        <Border x:Name="PART_Indicator"
-                                                                HorizontalAlignment="Left"
-                                                                CornerRadius="5"
-                                                                Background="{TemplateBinding Foreground}"/>
-                                                    </Grid>
-                                                </Border>
-                                            </ControlTemplate>
-                                        </ProgressBar.Template>
-                                    </ProgressBar>
-                                    <TextBlock x:Name="CloudActionProgressText" Style="{StaticResource Caption}"
-                                               VerticalAlignment="Center" Margin="10,0,0,0"/>
-                                </StackPanel>
+                                    <!-- 【立即对比同步】/【立即重试失败上传】跑起来的时候，
+                                         点下去那颗**原地变成一根蓝色进度条**（C14，2026-10-14 改版）。
+                                         只是禁用是不够的：一次同步要跑好几分钟，一颗灰掉的按钮
+                                         没有任何「还在动」的迹象。
+                                         跑完由 code-behind 收起。
+
+                                         ⚠️ 是**压上去**，不是把按钮换掉：这一层和那颗按钮占同一个格子
+                                         ⇒ 一样大、一样位置。若改成收起按钮、另摆一个控件，列是 Auto 的，
+                                         宽度会跟着新控件变 —— 旁边那颗按钮要侧跳一下。
+                                         ⚠️ 摆到哪一列由 code-behind `Grid.SetColumn` 说了算（点的是哪颗
+                                         就摆哪颗），所以这一份只写一遍。
+                                         ⚠️ 白字百分比**在填充里**，不是压在整块上：条往右长、字跟着走
+                                         （需求方 2026-10-14 点名要的）。
+                                         填充带 `MinWidth`：不留的话 0% 时字被挤没，用户只看见一片灰。
+                                         ⚠️ 宽度由 code-behind 按这一层**实测**宽度乘出来，不写死 ——
+                                         两颗按钮不一样宽（6 字 vs 8 字），窗口也拉得动。 -->
+                                    <Grid x:Name="CloudActionOverlay" Grid.Column="2" Visibility="Collapsed">
+                                        <Border Background="{DynamicResource SurfaceAlt}"
+                                                CornerRadius="{StaticResource RadiusControl}"/>
+                                        <Border x:Name="CloudActionFill" HorizontalAlignment="Left"
+                                                MinWidth="48"
+                                                Background="{DynamicResource AccentSolid}"
+                                                CornerRadius="{StaticResource RadiusControl}">
+                                            <TextBlock x:Name="CloudActionProgressText" FontSize="12"
+                                                       Foreground="White" TextTrimming="CharacterEllipsis"
+                                                       HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                                        </Border>
+                                    </Grid>
+                                </Grid>
                             </StackPanel>
                         </Border>
 
@@ -1175,23 +1173,72 @@
                                     </ListBox.ItemTemplate>
                                 </ListBox>
 
-                                <StackPanel Orientation="Horizontal" Margin="0,12,0,0">
-                                    <TextBlock Text="筛选" Style="{StaticResource FieldLabel}"
+                                <!-- 队列下面这一行（筛选 / 每页 / 翻页）。2026-10-14 需求方点了三处，根因如下：
+
+                                     ⚠️ **原来是横排 `StackPanel`** —— 它从左往右一件件摆，摆不下就直接被
+                                     容器裁掉，最后那颗「▶」首当其冲（需求方：「不放大窗口就看不全」）。
+                                     换成 `Grid` 之后，多出来的宽度由那个 `*` 列吃掉，右边那截永远贴得住。
+                                     ⚠️ 「筛选」「每页」原来用的是 `FieldLabel`，那个样式自带 `Width="76"`
+                                     —— 两个标签白占 152 像素，是挤爆的主因。这里改用 `Body`（只是字号底色），
+                                     宽度交给文字自己。
+                                     ⚠️ 字号原来**两边不一样**：标签是 `Body` 的 13 号，而下拉框 / 文本框
+                                     全仓没有隐式样式、走 WPF 默认的 12 号。这里给控件显式写上 13。
+                                     ⚠️ 对齐：标签原来写了 `VerticalAlignment="Center"`，控件没写（默认
+                                     `Stretch`）⇒ 两者不在一条中线上。这里每一件都写死 `Center`。
+                                     ⚠️ 翻页那两颗原来是 `SecondaryButton` 的 18,8 内边距，撑得很宽；它们只装
+                                     一个三角，改成 12,4。
+                                     ⚠️ **宽度是有预算的**：这一行最窄要能塞进**窗口最小宽度**（`MinWidth="780"`）
+                                     里那一卡的内侧 —— 实测 477（780 − 导航 180 − 页面留白 − 卡片内边距 17×2）。
+                                     这一行全部 `Auto` 列加起来必须 ≤ 477，否则 `Grid` 溢出、最右那颗 ▶ 被裁
+                                     （原来 523 就是这么被裁掉的）。现在合计 461，留 16 的余量。
+                                     ⚠️ 两个下拉的宽度是**按里面最长的一项**定的，不是拍脑袋：筛选那档最长是
+                                     「已放弃」三个字（13 号 ≈39px）＋箭头，110 够；每页那档最长两位数字，64 够。
+                                     这两个数再往下砍就是在赌字号不变 —— 改了字号或加长了选项就回来重算。 -->
+                                <Grid Margin="0,12,0,0">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="Auto"/>
+                                        <ColumnDefinition Width="Auto"/>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="Auto"/>
+                                        <ColumnDefinition Width="Auto"/>
+                                        <ColumnDefinition Width="Auto"/>
+                                        <ColumnDefinition Width="Auto"/>
+                                        <ColumnDefinition Width="Auto"/>
+                                    </Grid.ColumnDefinitions>
+
+                                    <TextBlock Grid.Column="0" Text="筛选" Style="{StaticResource Body}"
                                                VerticalAlignment="Center"/>
-                                    <ComboBox x:Name="CloudQueueFilterCombo" Width="140"
-                                              Margin="8,0,0,0"
+                                    <ComboBox Grid.Column="1" x:Name="CloudQueueFilterCombo" Width="110"
+                                              Margin="8,0,0,0" FontSize="13" VerticalAlignment="Center"
                                               SelectionChanged="OnCloudQueueFilterChanged"/>
-                                    <TextBlock Text="每页" Style="{StaticResource FieldLabel}"
-                                               VerticalAlignment="Center" Margin="20,0,0,0"/>
-                                    <TextBox x:Name="CloudQueuePageSizeBox" Width="60"
-                                             Margin="8,0,0,0" Text="10"/>
-                                    <Button x:Name="CloudQueuePrevButton" Style="{StaticResource SecondaryButton}"
-                                            Margin="16,0,0,0" Content="◀" Click="OnCloudQueuePrev"/>
-                                    <TextBlock x:Name="CloudQueuePageText" Style="{StaticResource Caption}"
+
+                                    <TextBlock Grid.Column="3" Text="每页" Style="{StaticResource Body}"
                                                VerticalAlignment="Center" Margin="12,0,0,0"/>
-                                    <Button x:Name="CloudQueueNextButton" Style="{StaticResource SecondaryButton}"
-                                            Margin="12,0,0,0" Content="▶" Click="OnCloudQueueNext"/>
-                                </StackPanel>
+                                    <!-- ⚠️ `Tag` 就是那个数字（`TagOf` 读的就是它）——
+                                         与「筛选」下拉同一套约定：**在 XAML 里加一档就多一个可选值**，
+                                         数字本身同时是显示内容和取值，不用再对一张表。 -->
+                                    <ComboBox Grid.Column="4" x:Name="CloudQueuePageSizeCombo" Width="64"
+                                              Margin="8,0,0,0" FontSize="13" VerticalAlignment="Center"
+                                              SelectedIndex="1"
+                                              SelectionChanged="OnCloudQueuePageSizeChanged">
+                                        <ComboBoxItem Content="5" Tag="5"/>
+                                        <ComboBoxItem Content="10" Tag="10"/>
+                                        <ComboBoxItem Content="15" Tag="15"/>
+                                        <ComboBoxItem Content="20" Tag="20"/>
+                                    </ComboBox>
+
+                                    <Button Grid.Column="5" x:Name="CloudQueuePrevButton"
+                                            Style="{StaticResource SecondaryButton}"
+                                            Padding="12,4" VerticalAlignment="Center"
+                                            Margin="12,0,0,0" Content="◀" Click="OnCloudQueuePrev"/>
+                                    <TextBlock Grid.Column="6" x:Name="CloudQueuePageText"
+                                               Style="{StaticResource Caption}"
+                                               VerticalAlignment="Center" Margin="8,0,0,0"/>
+                                    <Button Grid.Column="7" x:Name="CloudQueueNextButton"
+                                            Style="{StaticResource SecondaryButton}"
+                                            Padding="12,4" VerticalAlignment="Center"
+                                            Margin="8,0,0,0" Content="▶" Click="OnCloudQueueNext"/>
+                                </Grid>
                             </StackPanel>
                         </Border>
                     </StackPanel>

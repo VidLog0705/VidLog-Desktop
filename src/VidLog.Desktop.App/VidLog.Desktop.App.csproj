@@ -395,8 +395,15 @@
          闸：`BaiduPanWireTests.目录不存在只是记Debug_不是Warn` +
          `别的errno照样记Warn`（后半条是防「降过头」的那一半）。
       ⚠️ 这一版**没有出安装包** —— 改动只在日志层，上面那些行为一条没动。
+
+      0.14.6（2026-10-14）：需求方点的三处界面 —— ① 登录窗 520x760 → 1120x880
+      （百度那页是固定桌面排版，980 宽、登录框钉在 x=564，原窗口里它整块在视口外）
+      ＋ 按屏幕可用区夹一下上限；② 跑同步/重试时那颗按钮**原地变蓝条 + 白字百分比**
+      （白字在填充里、跟着条走）；③ 队列下面那一行重排（横排 StackPanel 摆不下就被裁，
+      最后一颗 ▶ 首当其冲）＋「每页」改成 5/10/15/20 下拉。
+      ⚠️ 这一版同样没走 CI 发 Release，只在本机出安装程序。
     -->
-    <Version>0.14.5</Version>
+    <Version>0.14.6</Version>
     <OutputType>WinExe</OutputType>
     <TargetFramework>net9.0-windows</TargetFramework>
     <Nullable>enable</Nullable>

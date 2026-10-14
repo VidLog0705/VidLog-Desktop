@@ -18,6 +18,7 @@ using Button = System.Windows.Controls.Button;
 using Brush = System.Windows.Media.Brush;
 using ComboBox = System.Windows.Controls.ComboBox;
 using ComboBoxItem = System.Windows.Controls.ComboBoxItem;
+using Grid = System.Windows.Controls.Grid;
 using ListBox = System.Windows.Controls.ListBox;
 using MessageBox = System.Windows.MessageBox;
 using MessageBoxImage = System.Windows.MessageBoxImage;
@@ -557,7 +558,6 @@ public partial class SettingsWindow : Window
         }
 
         _cloudBusy = true;
-        _cloudActionTitle = title;
         _cloudNote = $"{title}：正在跑。";
         ShowCloudActionProgress(trigger);
 
@@ -584,28 +584,37 @@ public partial class SettingsWindow : Window
         }
     }
 
-    /// <summary>把那一截进度条摆出来，顺手把点下去那颗按钮收掉。</summary>
+    /// <summary>把进度条那一层摆到点下去那颗按钮上（同一格 ⇒ 同一个矩形）。</summary>
     private void ShowCloudActionProgress(Button? trigger)
     {
-        CloudActionProgressPanel.Visibility = Visibility.Visible;
-
-        if (trigger is not null)
+        if (trigger is null)
         {
-            trigger.Visibility = Visibility.Collapsed;
+            return;
         }
+
+        // ⚠️ 连 `Margin` 一起搬：【立即重试失败上传】左边有 10 的外边距（见 XAML），
+        // 不搬的话这一层会往左探出 10 个像素，看着就是没对齐。
+        Grid.SetColumn(CloudActionOverlay, Grid.GetColumn(trigger));
+        CloudActionOverlay.Margin = trigger.Margin;
+
+        CloudActionProgressText.Text = string.Empty;
+        CloudActionFill.Width = double.NaN;
+        CloudActionOverlay.Visibility = Visibility.Visible;
     }
 
-    /// <summary>收起进度条、把两颗按钮都摆回来（跑完、以及整页不工作时都走它）。</summary>
+    /// <summary>收起进度条（跑完、以及整页不工作时都走它）。</summary>
+    /// <remarks>
+    /// ⚠️ 现在**不需要**把两颗按钮摆回来：改版之后按钮一直是显示着的，进度条只是压在上面
+    /// （见 XAML 那段）。以前要摆回来，是因为那一版把点下去那颗 `Collapsed` 掉了。
+    /// </remarks>
     private void HideCloudActionProgress()
     {
-        CloudActionProgressPanel.Visibility = Visibility.Collapsed;
-        CloudSyncButton.Visibility = Visibility.Visible;
-        CloudRetryButton.Visibility = Visibility.Visible;
-        _cloudActionTitle = string.Empty;
+        CloudActionOverlay.Visibility = Visibility.Collapsed;
+        CloudActionFill.Width = double.NaN;
     }
 
     /// <summary>
-    /// 刷新那一截进度条（这一页每两秒喊一次）。
+    /// 刷新那一根进度条（这一页每两秒喊一次）。
     /// </summary>
     /// <remarks>
     /// ⚠️ <b>没在跑的时候什么也不做。</b>这一页的节拍也兼着别的事，
@@ -624,15 +633,21 @@ public partial class SettingsWindow : Window
         // ⚠️ `Total == 0` 是「还没数出总数」而不是「完成了 100%」——
         // `CloudSyncProgress.Fraction` 在这种情况下返回 1（空集就是全做完），
         // 拿它去填条会画出一根满格的、其实什么都没干的条。
+        // 这一档**不给宽度**：让蓝色那块自己贴住四个字，看着就是「还没开始量的一个小块」。
         if (progress is null || progress.Total <= 0)
         {
-            CloudActionProgressText.Text = $"{_cloudActionTitle}：正在数这一轮要处理几条…";
+            CloudActionProgressText.Text = "统计中…";
+            CloudActionFill.Width = double.NaN;
             return;
         }
 
-        CloudActionProgressBar.Value = progress.Fraction;
-        CloudActionProgressText.Text =
-            $"{_cloudActionTitle}：已处理 {progress.Done}/{progress.Total}（{progress.Fraction:P0}）";
+        // ⚠️ 宽度按这一层**实测**的宽度乘出来，不写死：两颗按钮不一样宽（6 字 vs 8 字），
+        // 窗口也拉得动。第一次刷到时还没排过版（`ActualWidth` 是 0），退回不设宽度那一档，
+        // 两秒后的下一拍就准了。
+        var width = CloudActionOverlay.ActualWidth;
+        CloudActionFill.Width = width > 0 ? width * progress.Fraction : double.NaN;
+
+        CloudActionProgressText.Text = progress.Fraction.ToString("P0");
     }
 
     // ─────────────────────────────────────────────

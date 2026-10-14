@@ -53,6 +53,13 @@ public partial class BaiduLoginWindow : Window
 
         InitializeComponent();
 
+        // ⚠️ 这个窗要 1120×880 才装得下百度那一页（理由写在 XAML 顶上那段），
+        // 但客户机上完全可能是 1366×768 —— 880 高会伸到屏幕外、按钮够不着。
+        // 夹进可用区：小屏上退化成「纵向要滚一点」，总好过一个够不到取消键的窗。
+        // ⚠️ 两边都走 `Math.Max`：`MinWidth` 比可用区还大的话，直接把 Max 设小会抛。
+        MaxWidth = Math.Max(SystemParameters.WorkArea.Width, MinWidth);
+        MaxHeight = Math.Max(SystemParameters.WorkArea.Height, MinHeight);
+
         StatusNote.Text = $"等你在这一页登录并同意（最多 {Patience.TotalMinutes:F0} 分钟）。";
         BrowserNote.Text = "正在打开登录页…";
 

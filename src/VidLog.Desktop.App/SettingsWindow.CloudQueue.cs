@@ -126,6 +126,34 @@ public partial class SettingsWindow : Window
         _ = RefreshCloudPageAsync();
     }
 
+    /// <summary>
+    /// 换了「每页几条」。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// ⚠️ 同样回第一页，理由和换筛选一样：每页从 5 改成 20，原来那一页多半已经不存在了。
+    /// </para>
+    /// <para>
+    /// ⚠️ <b>`!IsLoaded` 那道挡必须有。</b>下拉在 XAML 里写着 `SelectedIndex="1"`（默认 10 条），
+    /// 而 `SelectedIndex` 在 `InitializeComponent` 解析到那一行时**就会发一次**
+    /// `SelectionChanged` —— 那时排在它后面的控件（`CloudQueuePageText`、两颗翻页按钮）
+    /// **一个都还没建出来**，可刷新会去写它们。这与 `OnSectionChanged` 撞的是同一堵墙
+    /// （它那份注释写了「构造期间就会触发」），挡法也一样。
+    /// 挡掉的只是这一发：显示上那个「10」照样在（选中状态与处理器无关），
+    /// 而构造器末尾自己会刷一次，那一次是齐的。
+    /// </para>
+    /// </remarks>
+    private void OnCloudQueuePageSizeChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (!IsLoaded)
+        {
+            return;
+        }
+
+        _cloudQueuePage = 1;
+        _ = RefreshCloudPageAsync();
+    }
+
     private void OnCloudQueuePrev(object sender, RoutedEventArgs e)
     {
         _cloudQueuePage--;
@@ -154,7 +182,10 @@ public partial class SettingsWindow : Window
             .OrderByDescending(i => i.UpdatedAt)
             .ToList();
 
-        var pageSize = int.TryParse(CloudQueuePageSizeBox.Text, out var size)
+        // ⚠️ 从下拉的 `Tag` 里取（与「筛选」同一套约定），不再是自由输入的文本框 ——
+        // 需求方 2026-10-14：每页数量只给 5 / 10 / 15 / 20 四档。
+        // 取不到时（还没选中）回退 10，与 XAML 里的 `SelectedIndex="1"` 对齐。
+        var pageSize = int.TryParse(TagOf(CloudQueuePageSizeCombo), out var size)
             ? Math.Clamp(size, 1, 200) : 10;
 
         var pages = Math.Max(1, (filtered.Count + pageSize - 1) / pageSize);

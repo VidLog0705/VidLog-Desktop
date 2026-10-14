@@ -5,7 +5,7 @@
         xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
         xmlns:wv2="clr-namespace:Microsoft.Web.WebView2.Wpf;assembly=Microsoft.Web.WebView2.Wpf"
         mc:Ignorable="d"
-        Title="登录百度网盘" Height="760" Width="520" MinWidth="420" MinHeight="520"
+        Title="登录百度网盘" Height="880" Width="1120" MinWidth="1100" MinHeight="620"
         FontFamily="{StaticResource UiFont}"
         Background="{DynamicResource PageBackground}"
         WindowStartupLocation="CenterOwner">
@@ -24,6 +24,26 @@
         ⚠️ 只有一件事是假的不了：**授权码**由 `BaiduLoopbackListener` 在
         本机端口上接住，这个窗一行都不碰它 —— 它只负责把页面显示出来、
         然后在等到（或等不到）的时候把窗关掉。判断全在 Core 那边，那边有测试。
+
+        ⚠️ **1120×880 是量出来的，不是拍的**（2026-10-14 探针，`H:\_scratch\wcprobe`）。
+        百度通行证页是**固定桌面排版**：内容 980 宽、登录框恒定钉在 x=564~920。
+        原来这个窗只有 520 宽 ⇒ 内嵌视口 489 ⇒ **登录框整块在视口右边外面**，
+        用户看到的只有左边那张宣传图，得**横向拖**才能看见扫码。
+        实测（同一份页面，只改窗宽）：
+
+            窗宽  视口  横向滚动条  登录框
+            520   489   有          在 x=564，视口外
+            1000  969   有          部分
+            1060  1029  有          是（差 20px 才收掉滚动条）
+            1120  1104  无          是
+
+        ⇒ 取 1120。`MinWidth` 定 1100（视口 ~1050 是「收掉横向滚动条」那条线，
+        再窄就退回原样）—— **不是**为了好看。
+        纵向同理：整页 721 高，880 的窗减去标题栏与两行说明，内嵌区正好够。
+        **不改 URL、不改 UA、不改 ZoomFactor**：那三条都要重验一遍登录链路，
+        而这一页是「登录→同意→回环」三步的关键，能不碰就不碰。
+        ⚠️ 客户机若是 1366×768 这类小屏，880 高会伸到屏幕外 —— code-behind 里
+        夹了 `SystemParameters.WorkArea`。
         ════════════════════════════════════════════════════════════════
     -->
     <Grid Margin="16,14,16,14">
