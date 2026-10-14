@@ -551,8 +551,25 @@ public sealed class BaiduPanClient : IBaiduPanApi
             + $"&uploadid={Uri.EscapeDataString(uploadId)}"
             + $"&partseq={partSeq.ToString(CultureInfo.InvariantCulture)}";
 
+        // ⚠️ **先把这一片收进内存，换一个可寻址的件。**
+        // `MultipartFormDataContent` 算整条请求长度时**只认子件的 `CanSeek`** ——
+        // 而传进来的分片流（`BaiduPanUploader.SliceStream`）报的是 `CanSeek = false`，
+        // 于是整条长度算不出来，`HttpClient` 退到 `Transfer-Encoding: chunked`，
+        // 网盘当场拒收：**HTTP 403 / error_code 31211**
+        //（「superfile2 upload request, transfer-encoding can't be chunked!」）。
+        //
+        // 2026-10-14 实测：16 条录像一条都传不上去，每片都撞满自动重试次数。
+        // ⚠️ **给子件显式设一个 `Content-Length` 是没用的** —— 那一天试过，
+        // 探针量出来 `form.Headers.ContentLength` 照样是 null（它压根不看那个头）。
+        // 唯一管用的事就是让子件真的可寻址。
+        //
+        // 代价：一片 4MB 过一手内存（`BaiduPanBlocks.SliceSize`），一次一片。
+        using var buffer = new MemoryStream();
+        await content.CopyToAsync(buffer, cancellationToken);
+        buffer.Position = 0;
+
         using var form = new MultipartFormDataContent();
-        using var part = new StreamContent(content);
+        using var part = new StreamContent(buffer);
         part.Headers.ContentType = new MediaTypeHeaderValue("application/octet-stream");
         form.Add(part, "file", "slice");
 

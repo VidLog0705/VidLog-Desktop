@@ -298,6 +298,25 @@ public class BaiduPanWireTests
         Assert.Contains("分片缺失", error.Message);
     }
 
+    [Fact]
+    public async Task 分片请求必须带ContentLength_否则网盘拒收chunked()
+    {
+        // ⚠️ 这条是 2026-10-14 那次「16 条录像一条都传不上去」的闸。
+        // 请求长度不知道时 `HttpClient` 会退成 `Transfer-Encoding: chunked`，
+        // 而百度 superfile2 直接 **403 / error_code 31211**
+        //（「superfile2 upload request, transfer-encoding can't be chunked!」）。
+        // 根因：分片流（`SliceStream`）的 `CanSeek` 是 false。
+        // ⇒ 拿一个**同样 CanSeek=false** 的流打这里，就等于把线上那条路复刻了一遍。
+        var stub = new Stub("""{"errno":0,"md5":"d41d8cd98f00b204e9800998ecf8427e"}""");
+
+        await Client(stub).UploadSliceAsync(
+            "t", "https://c3.pcs.baidu.com", "/apps/VidLog/a.mp4", "u1", 0,
+            new NonSeekable(new byte[4]));
+
+        // ⚠️ 读的就是传输层读的那个值：它是 null 就说明这条请求会走分块传输。
+        Assert.NotNull(Assert.Single(stub.ContentLengths));
+    }
+
     // ─────────────────────────────────────────────
     // 建目录（020）
     // ─────────────────────────────────────────────
@@ -422,6 +441,16 @@ public class BaiduPanWireTests
         public List<string> FormBodies { get; } = [];
 
         /// <summary>
+        /// 每个请求体的长度（**传输层读的就是它**）。
+        /// </summary>
+        /// <remarks>
+        /// ⚠️ 它是 <see langword="null"/> 就等于这条请求会走
+        /// `Transfer-Encoding: chunked` —— 见
+        /// <see cref="分片请求必须带ContentLength_否则网盘拒收chunked"/>。
+        /// </remarks>
+        public List<long?> ContentLengths { get; } = [];
+
+        /// <summary>
         /// 每个请求的地址（**含查询串**）。
         /// </summary>
         /// <remarks>
@@ -434,6 +463,7 @@ public class BaiduPanWireTests
             HttpRequestMessage request, CancellationToken cancellationToken)
         {
             Urls.Add(request.RequestUri?.ToString() ?? string.Empty);
+            ContentLengths.Add(request.Content?.Headers.ContentLength);
 
             // 读原始值而不是 `Headers.UserAgent`：后者要能被解析成
             // ProductInfoHeaderValue 才有内容，解析不了时是空的 ——
@@ -449,5 +479,36 @@ public class BaiduPanWireTests
 
             return _respond(request);
         }
+    }
+
+    /// <summary>
+    /// 一个 <c>CanSeek=false</c> 的只读流 —— 复刻 `BaiduPanUploader.SliceStream` 的那个性质。
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ 用 <see cref="MemoryStream"/> 测不出这条：它是可寻址的，长度算得出来，
+    /// 于是「忘了明说长度」这个毛病在测试里根本不露头（线上才露）。
+    /// </remarks>
+    private sealed class NonSeekable(byte[] bytes) : Stream
+    {
+        private int _at;
+
+        public override bool CanRead => true;
+        public override bool CanSeek => false;
+        public override bool CanWrite => false;
+        public override long Length => bytes.Length;
+        public override long Position { get => _at; set => throw new NotSupportedException(); }
+
+        public override int Read(byte[] buffer, int offset, int count)
+        {
+            var n = Math.Min(count, bytes.Length - _at);
+            Array.Copy(bytes, _at, buffer, offset, n);
+            _at += n;
+            return n;
+        }
+
+        public override void Flush() { }
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+        public override void SetLength(long value) => throw new NotSupportedException();
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
     }
 }

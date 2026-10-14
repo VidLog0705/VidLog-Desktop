@@ -340,8 +340,19 @@
          改成显式指到 `%LOCALAPPDATA%\VidLog\WebView2`。
       ② 顺手把那句「这台机器可能没装 WebView2 运行时」的**断言**降级成「常见原因」——
          它当天就猜错过一次（运行时明明装着，155.0.4283.45，真实原因是数据目录写不进去）。
+      0.14.3（2026-10-14）：修缺陷 ⇒ 0.14.3（不加功能、不动界面）。
+      ① **分片上传发不出去**。`MultipartFormDataContent` 算整条请求长度时只认子件的
+         `CanSeek`，而分片流 `SliceStream` 报 `CanSeek = false` ⇒ 长度算不出来 ⇒
+         `HttpClient` 退成 `Transfer-Encoding: chunked` ⇒ 网盘当场拒收
+         （HTTP 403 / `error_code 31211`）。2026-10-14 实测：16 条录像一条都传不上去。
+         改法：在 `BaiduPanClient.UploadSliceAsync` 里先把这一片收进 `MemoryStream`
+         （4MB，一次一片），交给 `StreamContent`。
+         ⚠️ 给子件**显式设** `Content-Length` 是没用的 —— 探针量过，`form.Headers.ContentLength`
+         照样是 null。
+         ⚠️ **这条修完从没在真服务器上验过**：闸只证明请求不再走 chunked，
+         证明不了 `create` 合并出来的文件是好的。
     -->
-    <Version>0.14.2</Version>
+    <Version>0.14.3</Version>
     <OutputType>WinExe</OutputType>
     <TargetFramework>net9.0-windows</TargetFramework>
     <Nullable>enable</Nullable>
