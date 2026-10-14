@@ -67,6 +67,41 @@ jobs:
       # package.ps1 末尾还会**在包内**再验一次「换个位置跑不跑得起来」——
       # 上面这段是按路径猜，那一段是拿要发出去的东西实测。两道都要有。
 
+      # 与上面 FFmpeg 同一段理由：包要「装完就能用」。百度网盘登录窗是内嵌的
+      # WebView2 —— Windows 11 自带，**Windows 10 只在装过 Edge 或别的带 WebView2
+      # 的软件之后才有**，客户机完全可能没有。0.14.1 起把运行时打进安装程序
+      # （需求方 2026-10-14 拍板）。
+      #
+      # ⚠️ 用 **2124701（离线独立安装器，约 200MB）**，不是 2124703 那个 2MB 的
+      #    bootstrapper：后者装的时候要联网，客户机断网/限速时那一步就挂着 ——
+      #    正是这个包要避免的场面。代价是装机包从约 95MB 涨到约 300MB。
+      #
+      # ⚠️ 两个 fwlink 下回来的**是同一个文件名**，只差体积 ⇒ 不能只看 HTTP 200：
+      #    拿到 bootstrapper 的话包照样打得出来，只在客户机断网时才露馅。
+      #    所以按**体积 + 签名**验（与本地 H:\_installers 下那份实测一致：
+      #    204.2 MB，`CN=Microsoft Corporation, O=Microsoft Corporation, …`）。
+      - name: 下载 WebView2 离线运行时
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          $exe = Join-Path $env:RUNNER_TEMP 'MicrosoftEdgeWebView2RuntimeInstallerX64.exe'
+          Invoke-WebRequest -Uri 'https://go.microsoft.com/fwlink/?linkid=2124701' `
+              -OutFile $exe -UseBasicParsing
+
+          $size = (Get-Item $exe).Length
+          if ($size -lt 100MB) {
+            throw "下到的才 $([math]::Round($size / 1MB)) MB —— 那是 bootstrapper（2124703），不是离线包（2124701）"
+          }
+
+          $sig = Get-AuthenticodeSignature $exe
+          if ($sig.Status -ne 'Valid') { throw "签名状态是 $($sig.Status)，不是 Valid" }
+          if ($sig.SignerCertificate.Subject -notmatch 'O=Microsoft Corporation') {
+            throw "签名者不是 Microsoft：$($sig.SignerCertificate.Subject)"
+          }
+
+          "WEBVIEW2_RUNTIME_EXE=$exe" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+          Write-Host "随包的 WebView2 运行时：$([math]::Round($size / 1MB)) MB，签名 $($sig.SignerCertificate.Subject)"
+
       # ⚠️ **版本必须钉在 6.4.3，不许用「装最新版」**：
       #    Inno Setup 自 6.5.0（2025-08-12）起引入商业许可，未授权的副本编译时
       #    会印一行 `Non-commercial use only`；而本产品是商业软件。

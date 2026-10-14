@@ -50,6 +50,20 @@
     Inno Setup 的编译器 `ISCC.exe`。不给就按 `ISCC_EXE` 环境变量、
     再按 PATH、再按两个默认安装位置找。
 
+.PARAMETER WebView2Runtime
+    随包的 **WebView2 常青版离线运行时安装器**
+    （`MicrosoftEdgeWebView2RuntimeInstallerX64.exe`，约 200MB）。
+    不给就按 `WEBVIEW2_RUNTIME_EXE` 环境变量找；**找不到就当场失败**。
+
+    ⚠️ **为什么必须随包**（需求方 2026-10-14）：百度网盘登录窗是内嵌的 WebView2，
+    而**客户机完全可能没有这个运行时**（Windows 11 自带，Windows 10 要在装完
+    系统之后另外装过才有）。缺了它的表现是「登录窗打不开」，用户自己没法修。
+
+    ⚠️ 用的是**离线**那一版而不是 ~2MB 的引导器（bootstrapper）：引导器要目标机
+    **当场能上网**才装得上，而这些工位机正是那种「装个浏览器都要人帮忙」的电脑。
+    代价是安装包大约从 95MB 涨到 300MB —— 值，因为另一条路的失败现场
+    （连不上微软的下载站）在现场根本说不清。
+
 .EXAMPLE
     pwsh -NoProfile -File scripts/package.ps1 -Installer
 #>
@@ -60,7 +74,8 @@ param(
     [string]$FfmpegPath,
     [string]$OutputDir,
     [switch]$Installer,
-    [string]$IsccPath
+    [string]$IsccPath,
+    [string]$WebView2Runtime
 )
 
 $ErrorActionPreference = 'Stop'
@@ -153,10 +168,45 @@ function Resolve-Iscc([string]$explicit) {
 '@
 }
 
+# ─────────────────────────────────────────────
+# WebView2 离线运行时：只有 -Installer 才需要
+# ─────────────────────────────────────────────
+# ⚠️ **不降级**，与 FFmpeg 同一条理由：少装它的那个包在**没有运行时的那台机器上**
+#    表现是「百度网盘登录窗打不开」，而那正是要防的那件事。宁可不出包。
+function Resolve-WebView2Runtime([string]$explicit) {
+    if ($explicit) {
+        if (-not (Test-Path $explicit)) { throw "指定的 WebView2 运行时安装器不存在：$explicit" }
+        return (Resolve-Path $explicit).Path
+    }
+
+    if ($env:WEBVIEW2_RUNTIME_EXE -and (Test-Path $env:WEBVIEW2_RUNTIME_EXE)) {
+        return (Resolve-Path $env:WEBVIEW2_RUNTIME_EXE).Path
+    }
+
+    throw @'
+找不到 WebView2 的离线运行时安装器（-Installer 要随包，见 .PARAMETER WebView2Runtime）。
+用 -WebView2Runtime 指一个，或设 WEBVIEW2_RUNTIME_EXE 环境变量。
+
+拿法（微软的常青版离线安装器，约 200MB）：
+    curl.exe -L -o MicrosoftEdgeWebView2RuntimeInstallerX64.exe https://go.microsoft.com/fwlink/?linkid=2124701
+⚠️ linkid=2124701 是 **x64 离线版**；2124703 那个 ~2MB 的是**引导器**，它要目标机当场
+   能上网 —— 那不是这里要的那一个。
+⚠️ 它是从网上下来的可执行文件，用之前核一下签名（应当是 Microsoft Corporation）：
+    Get-AuthenticodeSignature .\MicrosoftEdgeWebView2RuntimeInstallerX64.exe
+'@
+}
+
 # ⚠️ 和 FFmpeg 一个道理：**先找齐再动手**。等两分钟的发布 + 打包跑完才报
 #    「找不到编译器」是在浪费人的时间，也容易让人以为是打包坏了。
 $iscc = if ($Installer) { Resolve-Iscc $IsccPath } else { $null }
 if ($iscc) { Write-Host "Inno Setup：$iscc" }
+
+$webView2 = if ($Installer) { Resolve-WebView2Runtime $WebView2Runtime } else { $null }
+if ($webView2) {
+    $webView2Item = Get-Item $webView2
+    Write-Host ("WebView2 运行时：{0}（{1}，{2:N1} MB，会随包走）" -f `
+        $webView2Item.FullName, $webView2Item.VersionInfo.FileVersion, ($webView2Item.Length / 1MB))
+}
 
 # ─────────────────────────────────────────────
 # 发布
@@ -245,8 +295,8 @@ if ($Installer) {
 
     # ⚠️ ISCC 的 /D 传参处理不了带空格的路径 —— 与其在编译期报一句看不懂的错，
     #    不如在这儿说清楚。
-    if ($stage -match ' ' -or $OutputDir -match ' ') {
-        throw "路径里有空格（stage=$stage / OutputDir=$OutputDir）—— ISCC 的 /D 传不了，换个不带空格的位置"
+    if ($stage -match ' ' -or $OutputDir -match ' ' -or $webView2 -match ' ') {
+        throw "路径里有空格（stage=$stage / OutputDir=$OutputDir / WebView2=$webView2）—— ISCC 的 /D 传不了，换个不带空格的位置"
     }
 
     # ⚠️ Inno 认不出没有 BOM 的 UTF-8，会把中文按 ANSI 读 —— 装出来的向导与
@@ -272,7 +322,8 @@ $iss 少了 UTF-8 BOM —— Inno 会把里面的中文按 ANSI 读，编出来�
     Get-ChildItem $OutputDir -Filter '*-setup.exe' -ErrorAction SilentlyContinue | Remove-Item -Force
 
     & $iscc "/DAppVersion=$version" "/DAppVersion4=$version4" `
-        "/DStageDir=$stage" "/DOutputDir=$OutputDir" $iss
+        "/DStageDir=$stage" "/DOutputDir=$OutputDir" `
+        "/DWebView2Runtime=$webView2" $iss
     if ($LASTEXITCODE -ne 0) { throw "ISCC 编译失败（退出码 $LASTEXITCODE）" }
 
     $setup = Get-ChildItem $OutputDir -Filter '*-setup.exe' | Select-Object -First 1

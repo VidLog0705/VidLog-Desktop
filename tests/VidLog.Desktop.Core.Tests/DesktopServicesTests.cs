@@ -1979,6 +1979,55 @@ public class DesktopServicesTests
     }
 
     /// <summary>
+    /// 安装程序自带的 WebView2 运行时检测：查的是**微软文档里那一个**客户端 ID，
+    /// 而且**机器级与用户级两处都查**。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// ⚠️ 这是 0.14.1「装完就能用」那条的闸。`.iss` **只有出包那一次才被编译**
+    /// （`package.yml`），测试作业碰不到它 ⇒ 函数名写错、GUID 写错，测试全绿，
+    /// 直到出包那一刻才红 —— 或者更糟：编过了，但在客户机上那个判断**恒为假**，
+    /// 每次都白拷 200MB 再跑一遍安装器，而**别的什么症状都没有**。
+    /// </para>
+    /// <para>
+    /// ⚠️ GUID 写错与「只查了 HKLM」栽的是同一个坑（判断恒为假，不报错）：
+    /// 前者是不认识装着的那个版本，后者是看不见用户级安装 —— Edge 自己就是用户级装的。
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public void 安装脚本判断_WebView2_运行时装没装()
+    {
+        // ⚠️ 这条读的是**原文**（`InstallerScript`）不是剥过注释的 `InstallerCode` ——
+        //    后者按「行内第一个 `;`」截断，而 `[Files]`/`[Run]` 里那两条的
+        //    `Check:` 恰恰排在 `DestName: …;` / `Flags: …;` **后面**，一截就没了。
+        //    （这不是推理：拿 `InstallerCode` 写的第一版当场红了，数字是 0。）
+        //    本文件里带 `Check: not IsWebView2RuntimeInstalled` 的散文注释一句都没有，
+        //    所以数原文的次数 == 数真正生效的那两条。
+        var iss = InstallerScript();
+
+        // ① 那一个客户端 ID **正好出现两次**：HKLM32 一次、HKCU 一次。
+        //    连次数一起钉住 —— 只查一处正是这条要挡的错法。
+        Assert.Equal(
+            2,
+            Regex.Matches(iss, Regex.Escape("{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}")).Count);
+        Assert.Contains("HKLM32", iss, StringComparison.Ordinal);
+        Assert.Contains("HKCU", iss, StringComparison.Ordinal);
+
+        // ② 那个函数得真的在 [Code] 里定义出来 —— 只被 [Files]/[Run] 引用的话，
+        //    ISCC 要到出包那一刻才说「未知标识符」。
+        Assert.Contains("[Code]", iss, StringComparison.Ordinal);
+        Assert.Contains("function IsWebView2RuntimeInstalled", iss, StringComparison.Ordinal);
+
+        // ③ 拷贝与安装两条**共用**同一个判断：机器上已经有了就一步都不做。
+        //    拷贝那条少挂 = 每台机器白写 200MB；安装那条少挂 = 白跑一遍。
+        Assert.Equal(2, Regex.Matches(iss, @"Check: not IsWebView2RuntimeInstalled").Count);
+
+        // ④ 那个安装器是**一次性**的：落 {tmp}、装完就删，不许进 {app} 常驻
+        //    （常驻等于每台机器白占 200MB）。
+        Assert.Contains("deleteafterinstall", iss, StringComparison.Ordinal);
+    }
+
+    /// <summary>
     /// 安装脚本加的那条**防火墙放行**，与 Core 里那份（<see cref="PlaybackFirewall"/>）
     /// 必须是同一个名字、同一个端口，而且**装上 / 卸下成对**。
     /// </summary>

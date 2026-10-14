@@ -44,6 +44,9 @@
 #ifndef OutputDir
   #error 缺 /DOutputDir=…（scripts\package.ps1 -Installer 会传）
 #endif
+#ifndef WebView2Runtime
+  #error 缺 /DWebView2Runtime=…（scripts\package.ps1 -Installer 会传；见 [Code] 那一段）
+#endif
 
 [Setup]
 ; ⚠️ AppId 一旦发布就**再也不许改** —— 它是「同一个软件」的身份证。
@@ -93,6 +96,16 @@ Name: "desktopicon"; Description: "在桌面上放一个快捷方式"; \
 Source: "{#StageDir}\*"; DestDir: "{app}"; \
     Flags: ignoreversion recursesubdirs createallsubdirs
 
+; ── WebView2 离线运行时（需求方 2026-10-14 要求随包）────────────────────
+; ⚠️ **不进 {app} 常驻、也不进 {#StageDir}**（stage 那一行会整个目录递归拷过去）：
+;    它是个一次性的安装器，装完就没用了 —— 常驻的话等于每台机器白占 200MB。
+;    所以 From 指编译期那一个绝对路径，装完 `deleteafterinstall` 删掉。
+;
+; ⚠️ `Check` 与下面 [Run] 那条用的是**同一个**判断：这台机器上已经有了的话，
+;    连拷都不拷（省一次 200MB 的磁盘写），更不会去跑它的安装器。
+Source: "{#WebView2Runtime}"; DestDir: "{tmp}"; DestName: "MicrosoftEdgeWebView2RuntimeInstallerX64.exe"; \
+    Flags: deleteafterinstall; Check: not IsWebView2RuntimeInstalled
+
 [Icons]
 Name: "{group}\VidLog 工位录像"; Filename: "{app}\VidLog.Desktop.App.exe"
 Name: "{group}\卸载 VidLog"; Filename: "{uninstallexe}"
@@ -134,6 +147,22 @@ Filename: "{cmd}"; \
     Flags: runhidden; \
     StatusMsg: "正在放行防火墙上的 8720 端口（少了这一步也连不上）…"
 
+; ── WebView2 运行时（内嵌浏览器登录窗要它）────────────────────────────
+; ⚠️ **这是「装完就能用」的那一步**：没有它，设置页里的【登录百度网盘】会弹出一句
+;    「这台机器可能没装 WebView2 运行时」—— 用户自己修不了，得回来找我们。
+;    Windows 11 自带；Windows 10 只在装过 Edge 或者别的带 WebView2 的软件之后才有。
+;
+; ⚠️ `/silent /install` 是微软给这个安装器的静默参数。它自己判断装没装、
+;    装到哪一级（per-machine），**不需要我们再判一次** —— 上面那条 Check
+;    只是为了省掉一次没必要的 200MB 拷贝。
+; ⚠️ 不加 `nowait`：要等它装完再往下走（下面那条才是启动主程序）。
+;    它自己的退出码非 0 不代表装坏了（比如「已经是最新的」），所以这里不看退出码 ——
+;    真装不上时，登录窗那一刻会说出人话。
+Filename: "{tmp}\MicrosoftEdgeWebView2RuntimeInstallerX64.exe"; \
+    Parameters: "/silent /install"; \
+    Flags: runhidden; Check: not IsWebView2RuntimeInstalled; \
+    StatusMsg: "正在装内置浏览器运行时（百度网盘登录窗要它，约一分钟）…"
+
 Filename: "{app}\VidLog.Desktop.App.exe"; Description: "现在启动 VidLog"; \
     Flags: nowait postinstall skipifsilent
 
@@ -158,3 +187,48 @@ Filename: "{cmd}"; \
 ; 这是母仓 AGENTS.md §3「卸载**不清用户数据**」那一条，也是本产品
 ; 「证据不丢」那个承诺的一部分：**卸载重装是排查故障的常规手段，
 ; 它绝不能变成一次数据灭失。**
+
+[Code]
+// ── 这台机器上有没有 WebView2 运行时 ────────────────────────────────────────
+//
+// 上面 [Files] 与 [Run] 两条都挂在这个判断上：已经有了就一步都不做。
+//
+// ⚠️ **必须看两个地方**：per-machine（HKLM）与 **per-user**（HKCU）。
+//    用户级安装完全合法（Edge 自己就是这么装的），只查 HKLM 会把
+//    「他早就装过了」判成没装 —— 白白拷 200MB 再跑一遍安装器。
+//    ⚠️ HKLM 那一支走 **HKLM32**：Edge Update 是 32 位的，在 64 位系统上
+//    它写的是 `SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\...`，而 Inno 的
+//    `HKLM32` 指的正是那一支（本安装程序是 x64compatible，不必再兜 32 位系统）。
+//
+// ⚠️ 那个 GUID 是 **WebView2 运行时**在 Edge Update 里的客户端 ID，不是本程序的
+//    （本程序的 AppId 在最上面）。它写错的表现是「判断恒为假」= 每次都白装一遍，
+//    而**别的什么都不会发生** —— 所以它有个测试钉着，别手改。
+function HasRealVersion(const Value: String): Boolean;
+var
+  Rest: String;
+begin
+  // ⚠️ 判据是「这个版本串里**还有非零的数字**」，不是「不等于某个占位值」：
+  //    Edge Update 在「项在、但没真装上」时会写一个全是 0 的版本。
+  //    那种情况要算**没装**（算成装了的后果正是这次要防的那件事 —— 装完还是打不开登录窗）。
+  //    去掉所有的 0 与点之后还剩东西，才算真有一个版本。
+  //    ⚠️ 用 `StringChangeEx` 而不是 `StringReplace` —— 后者这个版本的 Inno
+  //    根本没有（试过，编译报 Unknown identifier）。
+  Rest := Value;
+  StringChangeEx(Rest, '0', '', True);
+  StringChangeEx(Rest, '.', '', True);
+  Result := Rest <> '';
+end;
+
+function IsWebView2RuntimeInstalled: Boolean;
+var
+  Pv: String;
+begin
+  Result :=
+    (RegQueryStringValue(HKLM32,
+      'SOFTWARE\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}',
+      'pv', Pv) and HasRealVersion(Pv))
+    or
+    (RegQueryStringValue(HKCU,
+      'SOFTWARE\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}',
+      'pv', Pv) and HasRealVersion(Pv));
+end;
