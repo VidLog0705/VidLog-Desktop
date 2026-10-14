@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using VidLog.Desktop.Core.Camera;
 using VidLog.Desktop.Core.Clock;
 using VidLog.Desktop.Core.Diagnostics;
@@ -48,8 +49,8 @@ public class RecordingCoordinatorTests
             dir, WorkMode.StopOnSameWaybill, punches,
             trustedClock: new FakeTrustedClock(calibrated: false));
 
-        var notices = new List<CoordinatorNotice>();
-        coordinator.Notice += notices.Add;
+        var notices = new ConcurrentQueue<CoordinatorNotice>();
+        coordinator.Notice += notices.Enqueue;
 
         coordinator.StartWork();
 
@@ -137,8 +138,10 @@ public class RecordingCoordinatorTests
                 dir, WorkMode.StopOnSameWaybill, new FakePunchLog());
             coordinator.Recognition = recognition;
 
-            var seen = new List<WaybillNumber>();
-            recognition.Scanned += seen.Add;
+            // ⚠️ `Scanned` 也是**另一个线程**发过来的（`RecordingRecognition` 那个
+            // `_ = Task.Run(...)` 的循环），所以同样不拿 `List<T>` 接。
+            var seen = new ConcurrentQueue<WaybillNumber>();
+            recognition.Scanned += seen.Enqueue;
 
             coordinator.StartWork();
             await coordinator.SubmitAsync(A, PunchSource.KeyboardScanner);
@@ -260,9 +263,9 @@ public class RecordingCoordinatorTests
     public async Task 同码停下扫到异码只提示不停录()
     {
         using var dir = new TempDir();
-        var notices = new List<CoordinatorNotice>();
+        var notices = new ConcurrentQueue<CoordinatorNotice>();
         await using var coordinator = Build(dir, WorkMode.StopOnSameWaybill, new FakePunchLog());
-        coordinator.Notice += notices.Add;
+        coordinator.Notice += notices.Enqueue;
 
         await coordinator.SubmitAsync(A, PunchSource.KeyboardScanner);
         await coordinator.SubmitAsync(B, PunchSource.KeyboardScanner);
@@ -308,8 +311,8 @@ public class RecordingCoordinatorTests
         var punches = new FakePunchLog();
         await using var coordinator = Build(dir, WorkMode.Continuous, punches, new RecordingIndexSpy());
 
-        var notices = new List<CoordinatorNotice>();
-        coordinator.Notice += notices.Add;
+        var notices = new ConcurrentQueue<CoordinatorNotice>();
+        coordinator.Notice += notices.Enqueue;
 
         await coordinator.SubmitAsync(A, PunchSource.KeyboardScanner);
         await coordinator.SubmitAsync(B, PunchSource.KeyboardScanner);
@@ -402,8 +405,8 @@ public class RecordingCoordinatorTests
             delay: ticker.WaitAsync);
 
         var first = CountIdle(coordinator, 1);
-        var seen = new List<CoordinatorNotice>();
-        coordinator.Notice += seen.Add;
+        var seen = new ConcurrentQueue<CoordinatorNotice>();
+        coordinator.Notice += seen.Enqueue;
 
         coordinator.StartWork();
         await coordinator.SubmitAsync(A, PunchSource.KeyboardScanner);
@@ -562,12 +565,12 @@ public class RecordingCoordinatorTests
         // 那一刻扫到了什么」的那件事。所以这里同时盯两件事：提示还在，
         // 而且日志里**查得到扫到的那个码**（只记「发生过错码」不够用）。
         using var dir = new TempDir();
-        var notices = new List<CoordinatorNotice>();
+        var notices = new ConcurrentQueue<CoordinatorNotice>();
         var logger = new CapturingLogger();
 
         await using var coordinator = Build(
             dir, WorkMode.StopOnSameWaybill, new FakePunchLog(), logger: logger);
-        coordinator.Notice += notices.Add;
+        coordinator.Notice += notices.Enqueue;
 
         await coordinator.SubmitAsync(A, PunchSource.KeyboardScanner);
         await coordinator.SubmitAsync(B, PunchSource.KeyboardScanner);
@@ -584,9 +587,9 @@ public class RecordingCoordinatorTests
     public async Task 连续扫下复扫同码不停也不提示()
     {
         using var dir = new TempDir();
-        var notices = new List<CoordinatorNotice>();
+        var notices = new ConcurrentQueue<CoordinatorNotice>();
         await using var coordinator = Build(dir, WorkMode.Continuous, new FakePunchLog());
-        coordinator.Notice += notices.Add;
+        coordinator.Notice += notices.Enqueue;
 
         await coordinator.SubmitAsync(A, PunchSource.KeyboardScanner);
         await coordinator.SubmitAsync(A, PunchSource.KeyboardScanner);
@@ -631,12 +634,12 @@ public class RecordingCoordinatorTests
     public async Task 收尾失败时给出可见的提示()
     {
         using var dir = new TempDir();
-        var notices = new List<CoordinatorNotice>();
+        var notices = new ConcurrentQueue<CoordinatorNotice>();
 
         // 让收尾器失败。
         await using var coordinator = Build(
             dir, WorkMode.StopOnSameWaybill, new FakePunchLog(), index: null, runner: new FailingRunner());
-        coordinator.Notice += notices.Add;
+        coordinator.Notice += notices.Enqueue;
 
         await coordinator.SubmitAsync(A, PunchSource.KeyboardScanner);
         await coordinator.StopWorkAsync();
@@ -691,21 +694,22 @@ public class RecordingCoordinatorTests
         using var dir = new TempDir();
         var before = new SpyCapture();
         var after = new SpyCapture();
-        var order = new List<string>();
+        // ⚠️ `OnStart` 是采集启动路径上回调过来的，别用没锁的 `List<T>` 接。
+        var order = new ConcurrentQueue<string>();
 
         await using var coordinator = Build(
             dir, WorkMode.StopOnSameWaybill, new FakePunchLog(), capture: before);
 
         coordinator.PrepareCaptureAsync = _ =>
         {
-            order.Add("prepare");
+            order.Enqueue("prepare");
             coordinator.Capture = after;
             coordinator.Encoder = "hevc_nvenc";
             return Task.CompletedTask;
         };
 
-        before.OnStart = () => order.Add("use-before");
-        after.OnStart = () => order.Add("use-after");
+        before.OnStart = () => order.Enqueue("use-before");
+        after.OnStart = () => order.Enqueue("use-after");
 
         await coordinator.SubmitAsync(A, PunchSource.KeyboardScanner);
 
@@ -801,10 +805,12 @@ public class RecordingCoordinatorTests
         // 界面显示「录制中」，用户会一直等一个永远不会发生的停录。
         using var dir = new TempDir();
         var index = new RecordingIndexSpy();
-        var notices = new List<CoordinatorNotice>();
+        var notices = new ConcurrentQueue<CoordinatorNotice>();
 
-        // ⚠️ 通知是**另一个线程**发过来的，而 `List<T>` 不是线程安全的。
-        // 所以「等条件」这一步不看那个列表，看一个 `Interlocked` 的旗子。
+        // ⚠️ 通知是**另一个线程**发过来的（`PendingFinalization` 那个 `Task.Run`
+        // 里调的 `Raise`）。所以这本账是 `ConcurrentQueue` —— 枚举是快照，
+        // 边收边读不会炸（2026-10-14 之前是 `List<T>` + 只有一处加锁，CI 上真炸过）。
+        // 「等条件」这一步用 `Interlocked` 的旗子，比轮询那个队列直接。
         var prompted = 0;
 
         await using var coordinator = Build(
@@ -818,10 +824,7 @@ public class RecordingCoordinatorTests
                 Interlocked.Exchange(ref prompted, 1);
             }
 
-            lock (notices)
-            {
-                notices.Add(n);
-            }
+            notices.Enqueue(n);
         };
 
         await coordinator.SubmitAsync(A, PunchSource.KeyboardScanner);
@@ -871,7 +874,7 @@ public class RecordingCoordinatorTests
 
     /// <summary>检测是**异步**的（规格要求），所以不能立刻断言 —— 等它出现。</summary>
     private static async Task WaitForNoticeAsync(
-        List<CoordinatorNotice> notices, CoordinatorNoticeKind kind, int timeoutMs = 5000)
+        ConcurrentQueue<CoordinatorNotice> notices, CoordinatorNoticeKind kind, int timeoutMs = 5000)
     {
         var deadline = Environment.TickCount64 + timeoutMs;
 
@@ -890,20 +893,21 @@ public class RecordingCoordinatorTests
     public async Task 近N天录过就提示_而且没有挡住开录()
     {
         using var dir = new TempDir();
-        var notices = new List<CoordinatorNotice>();
-        var queried = new List<string>();
+        var notices = new ConcurrentQueue<CoordinatorNotice>();
+        // ⚠️ 重复单号那三项按规格是**异步**跑的，这个回调不在测试线程上。
+        var queried = new ConcurrentQueue<string>();
         var logger = new CapturingLogger();
 
         await using var coordinator = Build(
             dir, WorkMode.StopOnSameWaybill, new FakePunchLog(),
             duplicateProbe: (waybill, _) =>
             {
-                queried.Add(waybill.Value);
+                queried.Enqueue(waybill.Value);
                 return Task.FromResult<IReadOnlyList<RecordingEntry>>([OldEntryFor(waybill, 3)]);
             },
             duplicateCheckDays: 7,
             logger: logger);
-        coordinator.Notice += notices.Add;
+        coordinator.Notice += notices.Enqueue;
 
         await coordinator.SubmitAsync(A, PunchSource.KeyboardScanner);
         await WaitForNoticeAsync(notices, CoordinatorNoticeKind.DuplicateWaybill);
@@ -930,7 +934,7 @@ public class RecordingCoordinatorTests
     public async Task N天以外的不提示_但检测确实跑过了()
     {
         using var dir = new TempDir();
-        var notices = new List<CoordinatorNotice>();
+        var notices = new ConcurrentQueue<CoordinatorNotice>();
         var queried = false;
 
         await using var coordinator = Build(
@@ -942,7 +946,7 @@ public class RecordingCoordinatorTests
                 return Task.FromResult<IReadOnlyList<RecordingEntry>>([OldEntryFor(waybill, 30)]);
             },
             duplicateCheckDays: 7);
-        coordinator.Notice += notices.Add;
+        coordinator.Notice += notices.Enqueue;
 
         await coordinator.SubmitAsync(A, PunchSource.KeyboardScanner);
 
@@ -961,7 +965,7 @@ public class RecordingCoordinatorTests
         // 而界面那句话正是用户拿来判断是不是重复录件的（D2，2026-10-10）。
         // 反证：去掉 `.GroupBy(e => e.SessionId, …)` ⇒ 这条红（会说「4 次」）。
         using var dir = new TempDir();
-        var notices = new List<CoordinatorNotice>();
+        var notices = new ConcurrentQueue<CoordinatorNotice>();
         var logger = new CapturingLogger();
 
         var first = OldEntryFor(A, 3);
@@ -975,7 +979,7 @@ public class RecordingCoordinatorTests
                 [first, second, third, other]),
             duplicateCheckDays: 7,
             logger: logger);
-        coordinator.Notice += notices.Add;
+        coordinator.Notice += notices.Enqueue;
 
         await coordinator.SubmitAsync(A, PunchSource.KeyboardScanner);
         await WaitForNoticeAsync(notices, CoordinatorNoticeKind.DuplicateWaybill);
@@ -1034,8 +1038,8 @@ public class RecordingCoordinatorTests
                 return Task.FromResult<IReadOnlyList<RecordingEntry>>([OldEntryFor(waybill, 1)]);
             },
             duplicateCheckDays: 0);
-        var notices = new List<CoordinatorNotice>();
-        coordinator.Notice += notices.Add;
+        var notices = new ConcurrentQueue<CoordinatorNotice>();
+        coordinator.Notice += notices.Enqueue;
 
         await coordinator.SubmitAsync(A, PunchSource.KeyboardScanner);
         await Task.Delay(150);   // 给「假如它要跑」留出时间
@@ -1104,9 +1108,9 @@ public class RecordingCoordinatorTests
         // 连着扫两次同一张码是很自然的动作（没看清扫上没有）。
         // 每次都说一遍「已切到退货」会让人以为它真的切了两下。
         using var dir = new TempDir();
-        var notices = new List<CoordinatorNotice>();
+        var notices = new ConcurrentQueue<CoordinatorNotice>();
         await using var coordinator = Build(dir, WorkMode.StopOnSameWaybill, new FakePunchLog());
-        coordinator.Notice += notices.Add;
+        coordinator.Notice += notices.Enqueue;
 
         await coordinator.SubmitAsync(WaybillNumber.Parse(ScanCommand.SwitchToReturn),
             PunchSource.KeyboardScanner);
@@ -1406,11 +1410,10 @@ public class RecordingCoordinatorTests
 
         var scanner = new FixedScanner(A.Value);
         var recognition = new RecordingRecognition(scanner, NullLogger.Instance);
-        var reported = new List<string>();
-        recognition.Scanned += waybill =>
-        {
-            lock (reported) { reported.Add(waybill.Value); }
-        };
+        // ⚠️ `Scanned` 从那个 `_ = Task.Run(...)` 的循环里发；这本账要**两边都安全**
+        // —— 光给 Add 加锁、断言不拿锁，等于没加（这就是它 2026-10-14 之前的写法）。
+        var reported = new ConcurrentQueue<string>();
+        recognition.Scanned += waybill => reported.Enqueue(waybill.Value);
         recognition.Start();
 
         await using var coordinator = Build(
