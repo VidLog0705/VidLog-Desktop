@@ -329,8 +329,19 @@
          ⚠️ 版本串是**全零**的要算**没装**（Edge Update 在「项在、没真装上」时写的就是
          那么一个占位值）—— 判据取「去掉 0 与点之后还剩东西」，连 `0.0.0` 也一并挡住。
          代价（实测，不是估的）：装机包 **95.4 MB（0.14.0）→ 299.5 MB（0.14.1）**。
+      0.14.2（2026-10-14）：修缺陷 ⇒ 0.14.2（不加功能、不动界面）。
+      ① **百度网盘登录窗的 WebView2 数据目录换个地方**。`EnsureCoreWebView2Async` 不给
+         环境对象时，WebView2 按默认规则把数据目录建在 **exe 旁边**
+         （`<exe 全路径>.WebView2\EBWebView`）。装到 `C:\Program Files` 之后那里是只读区，
+         普通令牌建不出来 ⇒ E_ACCESSDENIED（0x80070005），点【登录百度网盘】必失败，
+         WebView2 自己还会先弹一个「无法创建数据目录」的原生框。
+         实测：2026-10-14 安装版连点 12 次全红，**同一台机器**的 dev 构建（`bin\Release`）
+         却能登录成功 —— 差别就在那目录写不写得进去 ⇒ **本机开发试不出来，只在装完后露头**。
+         改成显式指到 `%LOCALAPPDATA%\VidLog\WebView2`。
+      ② 顺手把那句「这台机器可能没装 WebView2 运行时」的**断言**降级成「常见原因」——
+         它当天就猜错过一次（运行时明明装着，155.0.4283.45，真实原因是数据目录写不进去）。
     -->
-    <Version>0.14.1</Version>
+    <Version>0.14.2</Version>
     <OutputType>WinExe</OutputType>
     <TargetFramework>net9.0-windows</TargetFramework>
     <Nullable>enable</Nullable>

@@ -1,4 +1,7 @@
+using System.IO;
 using System.Windows;
+
+using Microsoft.Web.WebView2.Core;
 
 using VidLog.Desktop.Core.Cloud;
 
@@ -69,7 +72,17 @@ public partial class BaiduLoginWindow : Window
     {
         try
         {
-            await Browser.EnsureCoreWebView2Async();
+            // ⚠️ **必须显式给用户数据目录**。不给的话 WebView2 按默认规则把它建在
+            // **exe 旁边**（`<exe 全路径>.WebView2\EBWebView`）。装到 `C:\Program Files`
+            // 之后那里是只读区：普通令牌建不出来 ⇒ `EnsureCoreWebView2Async` 抛
+            // E_ACCESSDENIED（0x80070005），WebView2 自己还会先弹一个「无法创建数据目录」的原生框。
+            // 开发时跑 `bin\Release`，那目录是自己建的、写得进去 ⇒ **这个坑在本机试不出来**，
+            // 只在装完之后露头（2026-10-14 实测：安装版连点 12 次全红，而 dev 构建能登录成功）。
+            var userDataFolder = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "VidLog", "WebView2");
+            await Browser.EnsureCoreWebView2Async(
+                await CoreWebView2Environment.CreateAsync(null, userDataFolder));
 
             // 百度那一页上的「微信 / 微博 / QQ 登录」是开**新窗**的。
             // 不接住它的话，点了那几颗按钮会什么都不发生（没注册 NewWindowRequested
@@ -90,9 +103,12 @@ public partial class BaiduLoginWindow : Window
         {
             // ⚠️ **不带 URL**：那个 URL 的查询串里有 client_id（= AppKey）与 state。
             // 它只能出现在浏览器控件里，不许进任何给人看的句子、也不许进日志。
+            // ⚠️ 这句以前断言「这台机器可能没装 WebView2 运行时」—— 那是**猜**，而且猜错过：
+            //    2026-10-14 那次运行时明明装着（155.0.4283.45），真实原因是数据目录写不进去。
+            //    所以现在只把**常见**原因摆在那儿，不当结论。
             Failure = "内嵌的登录页打不开：" + ex.Message
-                + "。这台机器可能没装 WebView2 运行时（Windows 11 自带、Windows 10 要单独装）——"
-                + "装好之后再点一次【登录百度网盘】就行。";
+                + "。常见原因是没装 WebView2 运行时（Windows 11 自带、Windows 10 要单独装）；"
+                + "这句已记进日志，重试一次，还不行就把日志发给我们。";
 
             Close();
             return;
