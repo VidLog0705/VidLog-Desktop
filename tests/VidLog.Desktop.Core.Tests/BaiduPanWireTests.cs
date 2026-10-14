@@ -25,80 +25,130 @@ public class BaiduPanWireTests
     private static readonly BaiduPanCredentials Credentials = new("key-1", "secret-1", null);
 
     // ─────────────────────────────────────────────
-    // 设备码登录
+    // 授权码登录（2026-10-14 起；设备码那一套已经删了）
     // ─────────────────────────────────────────────
 
     [Fact]
-    public async Task 用户还没授权时_轮询回的是等一下而不是异常()
+    public void 授权链接里那几个参数一个都不能少_而且回调地址要编码过()
     {
-        // ⚠️ ★ 这一条是**打真服务器测出来的**（2026-09-30）：
-        // 还没授权时网盘回的是 HTTP 400 + {"error":"authorization_pending",...}。
-        //
-        // 那个 400 会先在 ReadAsync 里被当成「请求失败」抛出去 ——
-        // 于是 `PollDeviceTokenAsync` 里「还没批准就 return null」那句
-        // **永远执行不到**，设备码登录的第一次轮询必然炸。
-        // 而报出来的话是「HTTP 400」，看的人只会去查网络，查不到「其实只是还没点」。
-        var stub = new Stub(
-            """{"error":"authorization_pending","error_description":"User has not yet completed the authorization"}""",
-            HttpStatusCode.BadRequest);
+        var url = BaiduPanClient.BuildAuthorizeUrl(
+            "key-1", "http://127.0.0.1:17895/callback", "abc123");
 
-        Assert.Null(await Client(stub).PollDeviceTokenAsync("dev-1"));
+        Assert.StartsWith(
+            "https://openapi.baidu.com/oauth/2.0/authorize?", url, StringComparison.Ordinal);
+
+        Assert.Contains("response_type=code", url, StringComparison.Ordinal);
+        Assert.Contains("client_id=key-1", url, StringComparison.Ordinal);
+        Assert.Contains("scope=basic,netdisk", url, StringComparison.Ordinal);
+        Assert.Contains("state=abc123", url, StringComparison.Ordinal);
+
+        // ⚠️ 回调地址**必须编码过**：它自己带着 `:` 与 `/`。不编码的话
+        // 对端收到的是一个被截断的 `http://127.0.0.1:17895/callback`——
+        // 而报出来的错是「回调地址与控制台登记的对不上」，看的人会去后台改一个本来就对的地址。
+        Assert.Contains(
+            "redirect_uri=" + Uri.EscapeDataString("http://127.0.0.1:17895/callback"),
+            url,
+            StringComparison.Ordinal);
     }
 
     [Fact]
-    public async Task 轮询遇到真的错误_抛出来说的是原因()
+    public void 登录页开的是passport_不是直接把授权页丢给用户()
     {
-        // ⚠️ 与上一条**必须分开**：上一条是「等一等」，这一条是「别等了」。
+        // ⚠️ ★ 这一条是**探针实测出来的形状**（2026-10-14，53.2 秒拿到 32 位授权码）：
+        // 直接开 `openapi…/authorize` 的话，用户在那一页**没有密码登录的入口**
+        // （那一页只给已登录的人点「同意」）。走 passport 才把扫码 / 微信 / 微博 /
+        // QQ / 密码这些登录方式都摆出来。
+        var authorize = BaiduPanClient.BuildAuthorizeUrl(
+            "key-1", "http://127.0.0.1:17895/callback", "abc123");
+
+        var login = BaiduPanClient.BuildPassportLoginUrl(authorize);
+
+        const string Prefix = "https://passport.baidu.com/v2/?login&u=";
+
+        Assert.StartsWith(Prefix, login, StringComparison.Ordinal);
+
+        // ⚠️ 整个授权 URL 是**当成一个参数值**编码进去的。不编码的话，它自己那些
+        // `&` 会把 passport 页的查询串截断 —— 表现是登录完了跳回来少带几个参数，
+        // 而那一页不会报错。
+        Assert.Equal(authorize, Uri.UnescapeDataString(login[Prefix.Length..]));
+    }
+
+    [Fact]
+    public async Task 拼授权URL用的回调地址_与换令牌送出去的必须是同一个()
+    {
+        // ⚠️ 改造清单第 23 条。
+        //
+        // 两处各拼一份的后果不是「慢一点」：换令牌时百度会直接拒，报的是
+        // `redirect_uri` 不匹配 —— 一条**看起来要回开放平台后台查**、
+        // 实际一行代码就能修好的错（而那后台改完最长要等 1 小时才生效）。
+        //
+        // ⚠️ 这条钉子钉住的是 **Core 这一半**：两个方法都逐字用它收到的那一个值，
+        // 谁也没自己去拼一个。**界面那一半钉不住**（App 层没有测试工程）——
+        // 它靠的是「`BaiduLoopbackListener.RedirectUri` 是全仓唯一一处拼这个地址的地方，
+        // 两处调用都传它」，见 `SettingsWindow.OnCloudLogin` 里那段注释。
+        var listener = new BaiduLoopbackListener("state-1", port: 0);
+        var redirect = listener.RedirectUri;
+
+        var authorize = BaiduPanClient.BuildAuthorizeUrl("key-1", redirect, "state-1");
+        var encoded = "redirect_uri=" + Uri.EscapeDataString(redirect);
+
+        Assert.Contains(encoded, authorize, StringComparison.Ordinal);
+
+        var stub = new Stub("""{"access_token":"a1","refresh_token":"r1","expires_in":1}""");
+
+        await Client(stub).ExchangeCodeAsync("the-code", redirect);
+
+        Assert.Single(stub.Urls);
+        Assert.Contains(encoded, stub.Urls[0], StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task 拿授权码换令牌_成功()
+    {
         var stub = new Stub(
-            """{"error":"invalid_client","error_description":"app not exist"}""",
+            """{"access_token":"a1","refresh_token":"r1","expires_in":2592000}""");
+
+        var token = await Client(stub)
+            .ExchangeCodeAsync("the-code", "http://127.0.0.1:17895/callback");
+
+        Assert.Equal("a1", token.AccessToken);
+        Assert.Equal("r1", token.RefreshToken);
+        Assert.Equal(2592000, token.ExpiresInSeconds);
+    }
+
+    [Fact]
+    public async Task 拿授权码换令牌_百度回错误_要把原因翻成人话()
+    {
+        // ⚠️ 授权码模式下的失败**几乎都是这几个**：码用过了、码过期了、控制台里
+        // 那条回调地址对不上。而这几个错原文都是英文的 error 码 ——
+        // 照着显示的话，用户看到的是「invalid_grant」，查不出下一步该干什么。
+        var stub = new Stub(
+            """{"error":"invalid_grant","error_description":"code has been used"}""",
             HttpStatusCode.BadRequest);
 
         var error = await Assert.ThrowsAsync<BaiduPanException>(
-            () => Client(stub).PollDeviceTokenAsync("dev-1"));
+            () => Client(stub).ExchangeCodeAsync("the-code", "http://127.0.0.1:17895/callback"));
 
-        Assert.Contains("invalid_client", error.Message);
-
-        // 而且**不算**「凭据不管用了」：这是应用配错了，把用户丢去重新授权也修不好。
+        Assert.Contains("invalid_grant", error.Message);
+        // 「十分钟」「一次性」这两个事实要说出来 —— 它决定了「能不能再点一次」。
+        Assert.Contains("一次性", error.Message);
         Assert.False(error.IsCredentialProblem);
     }
 
     [Fact]
-    public async Task 设备码那一步的兜底时间照实测的来()
+    public async Task 拿授权码换令牌_回调地址对不上时要说清是回后台改()
     {
-        // ★ 实测：网盘回 interval=5、expires_in=300。界面会照这个数告诉用户
-        // 「这串码多久内有效」—— 兜底写成 1800 的话，用户按界面上的话去泡杯茶，
-        // 回来只看到「授权失败」。
+        // ⚠️ 这个错的**真实原因**十有八九是「换令牌时送的那一个地址，与拼授权 URL
+        // 时用的那一个不是同一个」—— 一行代码就能修。但不去说这一句的话，
+        // 看的人会跑回百度开放平台后台去改一个本来就对的地址（而且改完要等最长 1 小时生效）。
         var stub = new Stub(
-            """{"device_code":"d1","user_code":"USER01","verification_url":"https://openapi.baidu.com/device"}""");
+            """{"error":"redirect_uri_mismatch","error_description":"redirect uri not match"}""",
+            HttpStatusCode.BadRequest);
 
-        var code = await Client(stub).StartDeviceLoginAsync();
+        var error = await Assert.ThrowsAsync<BaiduPanException>(
+            () => Client(stub).ExchangeCodeAsync("the-code", "http://127.0.0.1:17895/callback"));
 
-        Assert.Equal(5, code.IntervalSeconds);
-        Assert.Equal(300, code.ExpiresInSeconds);
-    }
-
-    [Fact]
-    public void 二维码里放的是用户码_不是轮询用的那串设备码()
-    {
-        // ⚠️ 009《设备码模式授权》的注意事项逐字：
-        //   二维码内容拼接规则 https://openapi.baidu.com/device?display=mobile&code=u6rgnvp4
-        //   其中 code 为接口返回内容的 user_code 字段。
-        //
-        // 放反了的**第二个**后果比第一个严重：device_code 是拿去换 token 的凭据，
-        // 把它画在屏幕上等于摆给旁边任何人看 —— 拍到就能冒领这次登录。
-        var code = new BaiduDeviceCode(
-            "984c2459ec41415c9f5b0137a017fc49",
-            "8drp69hk",
-            "https://openapi.baidu.com/device",
-            "https://openapi.baidu.com/device/qrcode/a52610ef0eec30da5e45870872317478/8drp69hk",
-            5,
-            300);
-
-        Assert.Equal(
-            "https://openapi.baidu.com/device?display=mobile&code=8drp69hk",
-            code.QrPayload);
-
-        Assert.DoesNotContain(code.DeviceCode, code.QrPayload, StringComparison.Ordinal);
+        Assert.Contains("回调地址", error.Message);
     }
 
     // ─────────────────────────────────────────────
@@ -371,9 +421,20 @@ public class BaiduPanWireTests
         /// <summary>表单请求的**原文**（只抄表单那一类，分片是多部分体、不碰它）。</summary>
         public List<string> FormBodies { get; } = [];
 
+        /// <summary>
+        /// 每个请求的地址（**含查询串**）。
+        /// </summary>
+        /// <remarks>
+        /// ⚠️ 只在测试里比字符串用，**别往测试输出或日志里打**：授权那几条的查询串里
+        /// 带着 `client_id` 与授权码。
+        /// </remarks>
+        public List<string> Urls { get; } = [];
+
         protected override async Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request, CancellationToken cancellationToken)
         {
+            Urls.Add(request.RequestUri?.ToString() ?? string.Empty);
+
             // 读原始值而不是 `Headers.UserAgent`：后者要能被解析成
             // ProductInfoHeaderValue 才有内容，解析不了时是空的 ——
             // 那会让「忘了带这个头」和「带了但格式怪」看起来一样。

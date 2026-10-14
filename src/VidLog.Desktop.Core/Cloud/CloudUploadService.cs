@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using VidLog.Desktop.Core.Cleanup;
 using VidLog.Desktop.Core.Configuration;
 using VidLog.Desktop.Core.Diagnostics;
@@ -34,6 +35,23 @@ public sealed record UploadStatus(
 {
     /// <summary>队列里一共几条。</summary>
     public int Total => Pending + Uploading + Done + Failed + Abandoned;
+}
+
+/// <summary>
+/// 一次**手点的**对比同步 / 重试跑到哪了（设置页把那颗按钮原地换成进度条用）。
+/// </summary>
+/// <param name="Done">已经处理完几条。</param>
+/// <param name="Total">这一轮一共要处理几条。</param>
+/// <remarks>
+/// ⚠️ 它是**粗**的：<c>Total</c> 是开跑那一刻队列里「等着传 + 失败的」条数，
+/// 对比阶段直接标完成的和上传阶段真传上去的**都算 <paramref name="Done"/>**。
+/// 界面要的是「还在动、大概到哪儿了」，不是一条精确的进度账 ——
+/// 精确到字节的进度在每一条自己的进度条上（见 <see cref="CloudUploadService.ProgressOf"/>）。
+/// </remarks>
+public sealed record CloudSyncProgress(int Done, int Total)
+{
+    /// <summary>完成比例（0–1）。一条都不用处理时为 1。</summary>
+    public double Fraction => Total <= 0 ? 1 : Math.Min(1, (double)Done / Total);
 }
 
 /// <summary>
@@ -140,6 +158,32 @@ public sealed class CloudUploadService : IAsyncDisposable
     private int _active;
     private string? _lastError;
     private DateTimeOffset? _lastChecked;
+
+    /// <summary>
+    /// 手点的那一轮跑到哪了。
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ <c>_syncTotal == 0</c> 就是「没有手点的一轮在跑」，<see cref="SyncProgress"/>
+    /// 据此回 <see langword="null"/> —— 后台定时那一轮**不报**进度：它不占着按钮，
+    /// 报出来会让界面显示一条没人触发的进度条。
+    /// </remarks>
+    private int _syncDone;
+    private int _syncTotal;
+
+    /// <summary>
+    /// 正在传的那几条各自的进度（0–1），按 <c>EvidenceId</c>。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// ⚠️ <b>刻意只在内存里，不写进队列文件。</b>进度一变就落盘的话，
+    /// 一个 100MB 的文件（25 片）要往队列里追加 25 行 —— 那个文件是全量重读的，
+    /// 等于拿「一条能看懂的队列」去换「一根会动的条」。
+    /// </para>
+    /// <para>
+    /// 代价说清楚：**进程重启时正在传的那几条进度会归零**（条本身还在，会重新排）。
+    /// </para>
+    /// </remarks>
+    private readonly ConcurrentDictionary<string, double> _progress = new(StringComparer.Ordinal);
 
     public CloudUploadService(
         BaiduPanSession session,
@@ -304,11 +348,84 @@ public sealed class CloudUploadService : IAsyncDisposable
 
         await EnqueueEligibleAsync(settings.Floor, cancellationToken);
 
-        // 对比去重**手点的时候每次都做**：它就是「只补传网盘上没有的」这句承诺的落法。
-        // 省掉它能换来的只是「少一次列目录」，代价却是把已经传过的再传一遍。
-        await CompareAsync(cancellationToken);
+        return await CountedAsync(
+            async () =>
+            {
+                // 对比去重**手点的时候每次都做**：它就是「只补传网盘上没有的」这句承诺的落法。
+                // 省掉它能换来的只是「少一次列目录」，代价却是把已经传过的再传一遍。
+                await CompareAsync(cancellationToken);
 
-        return await DrainAsync(cancellationToken);
+                return await DrainAsync(cancellationToken);
+            },
+            cancellationToken);
+    }
+
+    /// <summary>
+    /// 跑一轮**手点的**重活，顺手把进度摊在 <see cref="SyncProgress"/> 上。
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ <c>finally</c> 里一定要清零：不清的话下一轮还没开始，
+    /// 界面就会拿着一根停在 100% 的条当「正在跑」。
+    /// </remarks>
+    private async Task<int> CountedAsync(Func<Task<int>> work, CancellationToken cancellationToken)
+    {
+        var total = (await _queue.LoadAsync(cancellationToken))
+            .Count(i => i.State is CloudUploadState.Pending or CloudUploadState.Failed);
+
+        Interlocked.Exchange(ref _syncDone, 0);
+        Interlocked.Exchange(ref _syncTotal, total);
+
+        try
+        {
+            return await work();
+        }
+        finally
+        {
+            Interlocked.Exchange(ref _syncDone, 0);
+            Interlocked.Exchange(ref _syncTotal, 0);
+        }
+    }
+
+    /// <summary>手点的那一轮跑到哪了；没有一轮在跑时是 <see langword="null"/>。</summary>
+    public CloudSyncProgress? SyncProgress =>
+        Volatile.Read(ref _syncTotal) is var total && total > 0
+            ? new CloudSyncProgress(Volatile.Read(ref _syncDone), total)
+            : null;
+
+    /// <summary>某一条现在传到百分之几（0–1）；它不在传就是 <see langword="null"/>。</summary>
+    public double? ProgressOf(string evidenceId) =>
+        _progress.TryGetValue(evidenceId, out var value) ? value : null;
+
+    /// <summary>这一轮又处理完一条（只有手点的那一轮才真的记账）。</summary>
+    /// <remarks>
+    /// ⚠️ 后台定时那一轮 <c>_syncTotal</c> 是 0，这里什么也不做 —— 见 <see cref="SyncProgress"/>。
+    /// </remarks>
+    private void BumpSyncDone()
+    {
+        if (Volatile.Read(ref _syncTotal) > 0)
+        {
+            Interlocked.Increment(ref _syncDone);
+        }
+    }
+
+    /// <summary>把上传进度写进 <see cref="_progress"/> 的那个小东西。</summary>
+    /// <remarks>
+    /// ⚠️ 刻意**不用 <c>Progress&lt;T&gt;</c>**：那个会把回调投到构造它时的
+    /// <c>SynchronizationContext</c>（这儿是线程池）上**异步**跑，于是落进去的顺序
+    /// 未必与报出来的顺序一致。一根进度条不需要这个不确定性。
+    /// </remarks>
+    private sealed class LiveProgress(ConcurrentDictionary<string, double> sink, string evidenceId)
+        : IProgress<UploadProgress>
+    {
+        public void Report(UploadProgress value) => sink[evidenceId] = value.Fraction;
+    }
+
+    /// <summary>开始传某一条：先把它标到 0，再把这个写进度的小东西交出去。</summary>
+    private IProgress<UploadProgress> SetProgress(string evidenceId)
+    {
+        _progress[evidenceId] = 0;
+
+        return new LiveProgress(_progress, evidenceId);
     }
 
     /// <summary>「立即重试失败上传」：把失败的那些翻回「等着传」，然后开传。</summary>
@@ -346,7 +463,67 @@ public sealed class CloudUploadService : IAsyncDisposable
                 new Dictionary<string, object?> { ["条数"] = revived.Count });
         }
 
-        return await DrainAsync(cancellationToken);
+        return await CountedAsync(() => DrainAsync(cancellationToken), cancellationToken);
+    }
+
+    /// <summary>
+    /// 队列里某一条【重试】：只把**这一条**翻回「等着传」，然后传它。
+    /// </summary>
+    /// <returns>真的翻动了返回 true；已经传完 / 已放弃 / 不在队列里的返回 false。</returns>
+    /// <remarks>
+    /// <para>
+    /// ⚠️ <b>它是「立即重试失败上传」那颗全局按钮的补充，不是替代。</b>
+    /// 那颗按钮会把**所有**失败的一起翻出来 —— 队列里失败十几条、只想救其中一条时，
+    /// 它就是错的工具（而且一起重试会一起撞那 10 次/小时的额度）。
+    /// </para>
+    /// <para>
+    /// ⚠️ 判据与【放弃】/【恢复】共用 <see cref="CloudUploadStates"/>：
+    /// 界面上两颗按钮的显隐与这里说的是同一句话，不会出现「按钮亮着、按下去说了不算」。
+    /// </para>
+    /// </remarks>
+    public async Task<bool> RetryAsync(string evidenceId, CancellationToken cancellationToken = default)
+    {
+        var item = await _queue.FindAsync(evidenceId, cancellationToken);
+
+        if (item is null)
+        {
+            _logger.Log(LogLevel.Warn, "网盘", $"重试失败：队列里没有这一条 {evidenceId}");
+            return false;
+        }
+
+        if (!CloudUploadStates.CanRetry(item.State))
+        {
+            // 已经传完的没什么可「重试」的；已放弃的是用户自己说「这条不传了」。
+            // 两种都如实说，别装作改过 —— 而判据与界面那颗按钮共用同一把尺子。
+            _logger.Log(
+                LogLevel.Warn, "网盘",
+                $"重试没做：这一条现在不能重试（{item.State}，{item.RemotePath}）");
+
+            return false;
+        }
+
+        await _queue.AppendAsync(
+            item with
+            {
+                State = CloudUploadState.Pending,
+                // ⚠️ 清掉错误与退避时刻：留着的话界面上那一行仍然写着「X 小时后自己再试」，
+                // 而它其实马上就会被这一轮传掉 —— 那句话就成了假话。
+                LastError = null,
+                UpdatedAt = _now(),
+                NextAttemptAt = null,
+            },
+            cancellationToken);
+
+        _logger.Log(LogLevel.Info, "网盘", $"手动重试一条：{BaiduPanLayout.FileNameOf(item.RemotePath)}",
+            new Dictionary<string, object?>
+            {
+                ["evidenceId"] = item.EvidenceId,
+                ["从"] = item.State.ToString(),
+            });
+
+        await CountedAsync(() => DrainAsync(cancellationToken), cancellationToken);
+
+        return true;
     }
 
     /// <summary>
@@ -655,6 +832,9 @@ public sealed class CloudUploadService : IAsyncDisposable
                         UpdatedAt = now,
                     },
                     cancellationToken);
+
+                // 这一条也在「这一轮要处理几条」里，标完了就记一笔（见 CountedAsync）。
+                BumpSyncDone();
             }
         }
     }
@@ -705,19 +885,27 @@ public sealed class CloudUploadService : IAsyncDisposable
                 },
                 async (item, ct) =>
                 {
-                    var local = _locations.Resolve(item.Location);
-
-                    if (local is null)
+                    try
                     {
-                        await FailAsync(item, "本机这一份不在了，传不了。", countAttempt: false, ct);
-                        return;
+                        var local = _locations.Resolve(item.Location);
+
+                        if (local is null)
+                        {
+                            await FailAsync(item, "本机这一份不在了，传不了。", countAttempt: false, ct);
+                            return;
+                        }
+
+                        var outcome = await UploadOneAsync(item, local, ct);
+
+                        if (outcome.Published)
+                        {
+                            Interlocked.Increment(ref done[0]);
+                        }
                     }
-
-                    var outcome = await UploadOneAsync(item, local, ct);
-
-                    if (outcome.Published)
+                    finally
                     {
-                        Interlocked.Increment(ref done[0]);
+                        // 传成了、传砸了、本机那份没了 —— 三种都算「这一轮处理过它了」。
+                        BumpSyncDone();
                     }
                 });
 
@@ -756,7 +944,13 @@ public sealed class CloudUploadService : IAsyncDisposable
         try
         {
             await _uploader.UploadAsync(
-                token, item.RemotePath, localPath, progress: null, cancellationToken);
+                token,
+                item.RemotePath,
+                localPath,
+                // 传之前先把这一条标到 0：不标的话，界面上那根条会**空着**（不是 0%），
+                // 与「还没开始」分不开。见 `ProgressOf`。
+                progress: SetProgress(item.EvidenceId),
+                cancellationToken);
 
             await _queue.AppendAsync(
                 item with
@@ -785,6 +979,10 @@ public sealed class CloudUploadService : IAsyncDisposable
         finally
         {
             Interlocked.Decrement(ref _active);
+
+            // ⚠️ 传完就把这一条从进度表里摘掉：留着的话，下一条**用同一个 EvidenceId** 的
+            // （重传同一场）会先看到上一轮停下的那个数，而那根条应该是从 0 起的。
+            _progress.TryRemove(item.EvidenceId, out _);
         }
     }
 

@@ -1,3 +1,4 @@
+using System.Collections.ObjectModel;
 using System.ComponentModel;
 // ⚠️ `System.IO` 要显式写：这台 SDK 一开 `UseWPF` 就不再把 `System.IO` 与
 // `System.Net.Http` 放进隐式 using 里了（`Path` 会与 `Shapes.Path` 撞名）——
@@ -98,30 +99,24 @@ public partial class SettingsWindow : Window
     private int _cloudQueuePage = 1;
 
     /// <summary>
-    /// 正等着用户去授权页点「同意」的那一串设备码（没有就是 <see langword="null"/>）。
+    /// 队列那一列现在显示着的行。
     /// </summary>
     /// <remarks>
-    /// ⚠️ <b>不留一个模态对话框去等。</b>那个框会挡住整个设置窗、而且用户
-    /// 去浏览器点同意时它还在那儿杵着 —— 而这件事本来就是「你去那边操作，
-    /// 这边自己会好」。所以状态记在这里，由那一页的刷新节拍去问。
+    /// ⚠️ <b>不是一个「每次刷新重建一遍」的列表。</b>2026-10-14 之前是
+    /// <c>Items.Clear()</c> + 逐条 <c>Add</c>，两秒一次 ⇒ 用户在队列里翻到中间，
+    /// 下一拍就被顶回顶部（队列有几千条时这条尤其难看）。现在这一列只增删改，
+    /// 内容没变的那一行**原对象不动**（行是 record，值相等就是没变）。
     /// </remarks>
-    private BaiduDeviceCode? _cloudLogin;
-
-    private DateTimeOffset _cloudNextPollAt;
-    private DateTimeOffset _cloudLoginExpiresAt;
-
-    /// <summary>屏幕上那张二维码画的是哪一个用户码 —— 没画、或画的是上一个，就重画。</summary>
-    /// <remarks>
-    /// ⚠️ 这个字段存在的唯一理由是**省掉每两秒一次的白重画**：刷新节拍还兼着轮询进度，
-    /// 每跑一次都重画一张一模一样的图，屏幕上那张会一闪一闪的。
-    /// </remarks>
-    private string? _cloudQrUserCode;
+    private readonly ObservableCollection<CloudQueueRow> _cloudQueueRows = [];
 
     /// <summary>这一页上要说的一句**临时**话（正在同步、上一步没成…）。空着就按状态自动写。</summary>
     private string? _cloudNote;
 
     /// <summary>「立即对比同步 / 立即重试失败上传」正在跑。</summary>
     private bool _cloudBusy;
+
+    /// <summary>正跑着的那件事叫什么（那一截进度条上写的就是它）。没在跑时是空串。</summary>
+    private string _cloudActionTitle = string.Empty;
 
     /// <summary>刷新正在跑（定时器与「切到这一页」会同时触发）。</summary>
     private bool _cloudRefreshing;
@@ -164,6 +159,10 @@ public partial class SettingsWindow : Window
         }
 
         _cloudTimer.Tick += (_, _) => _ = RefreshCloudPageAsync();
+
+        // 上传队列那一段的高度跟着窗口走（见 `FitCloudQueueHeight`）——
+        // XAML 里写不出「窗口高度的百分之几」，只能在这儿接一下。
+        SizeChanged += (_, _) => FitCloudQueueHeight();
 
         LoadSettingsIntoUi();
         ShowWarnings();

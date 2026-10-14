@@ -222,12 +222,9 @@ public class BaiduPanSessionTests
 
         public bool RefreshReturnsEmptyRefreshToken { get; init; }
 
-        public Task<BaiduDeviceCode> StartDeviceLoginAsync(CancellationToken cancellationToken = default) =>
-            Task.FromResult(new BaiduDeviceCode("dev-1", "USER01", "https://example.invalid/d", "", 5, 300));
-
-        public Task<BaiduToken?> PollDeviceTokenAsync(
-            string deviceCode, CancellationToken cancellationToken = default) =>
-            Task.FromResult<BaiduToken?>(null);
+        public Task<BaiduToken> ExchangeCodeAsync(
+            string code, string redirectUri, CancellationToken cancellationToken = default) =>
+            Task.FromResult(new BaiduToken("token-1", "r1", 3600));
 
         public async Task<BaiduToken> RefreshAsync(
             string refreshToken, CancellationToken cancellationToken = default)

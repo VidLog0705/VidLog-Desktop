@@ -34,6 +34,24 @@
     <PackageReference Include="System.Speech" Version="9.0.0" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!--
+      百度网盘的登录窗（内嵌浏览器，需求方 2026-10-14 拍板走这条路）。
+
+      ⚠️ **只用到 `Microsoft.Web.WebView2.Wpf` 那一支**：这个包同时带 WPF 与
+      WinForms 两个控件（本工程两个都开着），XAML 里要用
+      `clr-namespace:Microsoft.Web.WebView2.Wpf` 那一个，别用
+      `Microsoft.Web.WebView2.WinForms`（在 WPF 窗口里塞 WinForms 控件
+      得挂 `WindowsFormsHost`，那层是多余的）。
+
+      ⚠️ 它**不是**一个「装完就不用管」的包：真正的浏览器内核是机器上的
+      **WebView2 Runtime**（Windows 11 自带；Windows 10 要单独装）。
+      缺了它 `EnsureCoreWebView2Async` 会抛 —— 那一条在
+      `BaiduLoginWindow` 里翻译成一句人话，不是一句英文异常。
+    -->
+    <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.2903.40" />
+  </ItemGroup>
+
   <PropertyGroup>
     <!--
       安装包的版本号（母仓 AGENTS.md §9.1：语义化版本 或 四段式；这里是**语义化**）。
@@ -263,8 +281,41 @@
          `catch (OperationCanceledException)` 里只有一句注释「正常停止。」
          ⇒ 日志里「正常关机」与「定时器压根没起来 / 挂了」长得**一模一样**。
          现在起、停各记一条。
+      0.14.0（2026-10-14）：加功能 ⇒ 0.14.0。百度网盘这一块两件：
+      ① **登录换成内嵌浏览器**（需求方 2026-10-14 拍板）。原来是设备码那一路
+         （把码显示出来、让用户自己去手机上确认），实测在真机上要用户拿手机扫、
+         还要来回看两屏 —— 现在开一个内嵌 WebView2 窗直接打开百度的**登录页**
+         （`passport.baidu.com/v2/?login&u=<授权地址>`），用户在那**一页**登录之后
+         自动跳到 `openapi.baidu.com/oauth/2.0/authorize`，百度回跳到本机回环端口
+         `http://127.0.0.1:17895/callback?code=…`，我们把授权码换令牌。
+         ⚠️ **用 `TcpListener` 而不是 `HttpListener`**：后者在非管理员账户下要先
+         `netsh http add urlacl` 登记一条 URL ACL，那是一条要走管理员才能铺平的安装步骤。
+         ⚠️ 端口 `17895` 与 **PackingProof 是同一个** ⇒ 绑不上时必须报人话
+         （现在说的是「被别的程序占着了（PackingProof 用的是同一个端口）」，
+         而不是甩一个 `SocketException` 让人去查网络）。
+         ⚠️ 这一路要 **WebView2 运行时**：Windows 11 自带、Windows 10 要单独装；
+         装不上时登录窗说的是一句人话，不是崩。**装机包要不要一起带 bootstrapper 没定。**
+      ② **`state` 反登录 CSRF**：每次登录现生成 32 位十六进制 state 逐字比对。
+         ⚠️ 它的**位置是承重的**：校验排在 `error=access_denied` 那一支**前面** ——
+         那一支会当场结束这次等待，排在后面的话，本机随便一个进程发一次
+         `?error=access_denied`（**连码都不用猜**）就能把用户正在进行的登录顶掉。
+         对不上时回 400 但**继续听**（直接退出 = 拒绝服务），授权码与 state 都**原文不进日志**
+         （只记长度）。
+      ③ **上传队列界面照 PackingProof 那六条**（可抄清单第 14–21 条）：
+         手点那一轮**原地变进度条**；**队列每行自己一根条**；状态摘要**只列非零项**
+         （全零就说「队列里现在没有录像」）；行上有发货/退货**彩色徽章**、状态文字按状态着色；
+         行的错误挂 **ToolTip** 而不是摊在行面上；每行**重试 / 放弃 / 恢复**三颗。
+      ⚠️ **`ObservableCollection` 按索引换、不重建**：`Items.Clear()` 会把滚动位置一起
+         弹回顶部 —— 两秒一次刷新，用户根本没法看队列。
+      ⚠️ 排「还能不能重试」的那把尺子（`CloudUploadStates.CanRetry`）**放在 Core**，
+         界面那颗按钮的显隐与服务里的判断读的是同一句 —— 顺带修掉一处**代码与注释不符**：
+         `RetryAsync` 的注释写着「已放弃的返回 false」，代码其实只挡了「完成」。
+      ⚠️ 这一版新添一个 NuGet 依赖 `Microsoft.Web.WebView2`（真正干活的是机器上那个
+         **运行时**，这个包只是调它的门）。
+      ⚠️ **没验的**：客户机上有没有 WebView2 运行时；微信/微博/QQ 在窄内嵌窗里什么表现；
+         老用户升级后要不要重登（推理「不用」，**没实测**）。
     -->
-    <Version>0.12.0</Version>
+    <Version>0.14.0</Version>
     <OutputType>WinExe</OutputType>
     <TargetFramework>net9.0-windows</TargetFramework>
     <Nullable>enable</Nullable>

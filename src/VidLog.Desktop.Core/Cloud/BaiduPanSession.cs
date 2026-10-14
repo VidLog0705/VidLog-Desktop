@@ -235,22 +235,21 @@ public sealed class BaiduPanSession
         return _login;
     }
 
-    /// <summary>登录第一步：拿一串设备码给用户看。</summary>
-    public Task<BaiduDeviceCode> BeginLoginAsync(CancellationToken cancellationToken = default) =>
-        _api.StartDeviceLoginAsync(cancellationToken);
-
     /// <summary>
-    /// 登录第二步：问一次批没批。批准了就存下来。
+    /// 拿回环回调接住的授权码换令牌，换到了就落盘。
     /// </summary>
-    /// <returns>还没批准返回 <see langword="null"/>。</returns>
-    public async Task<BaiduLogin?> PollLoginAsync(
-        string deviceCode, CancellationToken cancellationToken = default)
+    /// <param name="code">授权码。**它是凭据，不许进日志。**</param>
+    /// <param name="redirectUri">
+    /// 必须与拼授权 URL 时用的那一个逐字相同（<c>BaiduLoopbackListener.RedirectUri</c>）。
+    /// </param>
+    /// <remarks>
+    /// ⚠️ 授权码**十分钟过期且一次性** ⇒ 换令牌失败要能就地重来（界面上的登录按钮一直在），
+    /// 所以这里**不吞异常**：失败原样抛给界面去说人话。
+    /// </remarks>
+    public async Task<BaiduLogin> LoginAsync(
+        string code, string redirectUri, CancellationToken cancellationToken = default)
     {
-        var token = await _api.PollDeviceTokenAsync(deviceCode, cancellationToken);
-        if (token is null)
-        {
-            return null;
-        }
+        var token = await _api.ExchangeCodeAsync(code, redirectUri, cancellationToken);
 
         // ⚠️ 昵称拿不到**不该让登录失败**：令牌已经到手了，那才是登录成功与否的判据。
         // 为一句昵称把用户挡在门外，他只会反复点「登录百度网盘」。

@@ -514,6 +514,14 @@ public class CloudUploadTests
         Assert.True(CloudUploadStates.CanResume(CloudUploadState.Abandoned));
         Assert.False(CloudUploadStates.CanResume(CloudUploadState.Failed));
 
+        // ⚠️ 【重试】只认「失败」：已放弃的是用户自己说「这条不传了」，
+        // 让它再传一次的入口是【恢复】，不是【重试】。
+        Assert.True(CloudUploadStates.CanRetry(CloudUploadState.Failed));
+        Assert.False(CloudUploadStates.CanRetry(CloudUploadState.Abandoned));
+        Assert.False(CloudUploadStates.CanRetry(CloudUploadState.Done));
+        Assert.False(CloudUploadStates.CanRetry(CloudUploadState.Pending));
+        Assert.False(CloudUploadStates.CanRetry(CloudUploadState.Uploading));
+
         Assert.True(CloudUploadStates.WillRetry(CloudUploadState.Failed, Now));
         Assert.False(CloudUploadStates.WillRetry(CloudUploadState.Failed, null));
         Assert.False(CloudUploadStates.WillRetry(CloudUploadState.Pending, Now));
@@ -536,6 +544,152 @@ public class CloudUploadTests
         Assert.Equal(1, status.Abandoned);
         Assert.Equal(0, status.Failed);
         Assert.Equal(1, status.Total);
+    }
+
+    // ─────────────────────────────────────────────
+    // 队列每一行那颗【重试】（2026-10-14，可抄清单第 20 条）
+    // ─────────────────────────────────────────────
+
+    [Fact]
+    public async Task 单条重试_只翻这一条_别的失败的原样不动()
+    {
+        // ⚠️ 这一条就是那颗按钮**存在的理由**：上面那颗「立即重试失败上传」是全局的，
+        // 一次把失败的全翻出来 —— 队列里失败十几条、只想救其中一条时它会把
+        // 那 10 次/小时的额度一次性喂掉。判据是「另一条还在失败」。
+        using var harness = new Harness(Open());
+        await harness.AddRecordingAsync("e1");
+        await harness.AddRecordingAsync("e2");
+
+        harness.Api.FailUploads = new HttpRequestException("网断了");
+        await harness.Service.SyncNowAsync();
+        harness.Api.FailUploads = null;
+
+        Assert.Equal(CloudUploadState.Failed, (await harness.Queue.FindAsync("e2"))!.State);
+
+        Assert.True(await harness.Service.RetryAsync("e1"));
+
+        Assert.Equal(CloudUploadState.Done, (await harness.Queue.FindAsync("e1"))!.State);
+        Assert.Equal(CloudUploadState.Failed, (await harness.Queue.FindAsync("e2"))!.State);
+    }
+
+    [Fact]
+    public async Task 单条重试_已放弃的那一条不认()
+    {
+        // ⚠️ 判据与界面那颗按钮的显隐共用 `CloudUploadStates.CanRetry`。
+        // 两边各写一份的话，就会出现「按钮亮着、按下去说了不算」——
+        // 而这里「说了不算」还额外冒犯：用户明确说过「这条不传了」。
+        using var harness = new Harness(Open());
+        await harness.AddRecordingAsync("e1");
+
+        harness.Api.FailUploads = new HttpRequestException("网断了");
+        await harness.Service.SyncNowAsync();
+        harness.Api.FailUploads = null;
+
+        Assert.True(await harness.Service.AbandonAsync("e1"));
+
+        Assert.False(await harness.Service.RetryAsync("e1"));
+        Assert.Equal(CloudUploadState.Abandoned, (await harness.Queue.FindAsync("e1"))!.State);
+    }
+
+    [Fact]
+    public async Task 单条重试_已经传完的不认()
+    {
+        using var harness = new Harness(Open());
+        var location = await harness.AddRecordingAsync("e1");
+
+        await harness.Service.PublishAsync(location, harness.LocalPathOf(location));
+        Assert.Equal(CloudUploadState.Done, (await harness.Queue.FindAsync("e1"))!.State);
+
+        Assert.False(await harness.Service.RetryAsync("e1"));
+        Assert.Equal(CloudUploadState.Done, (await harness.Queue.FindAsync("e1"))!.State);
+    }
+
+    [Fact]
+    public async Task 单条重试_队列里没有的说不算()
+    {
+        using var harness = new Harness(Open());
+
+        Assert.False(await harness.Service.RetryAsync("没有这一条"));
+    }
+
+    [Fact]
+    public async Task 单条重试_把退避时刻与上次的错一起清掉()
+    {
+        // ⚠️ 不清的话，界面那一行仍然写着「X 小时后自己再试」，
+        // 而它其实马上就被这一轮传掉了 —— 那句话就成了假话。
+        using var harness = new Harness(Open());
+        await harness.AddRecordingAsync("e1");
+
+        harness.Api.FailUploads = new HttpRequestException("网断了");
+        await harness.Service.SyncNowAsync();
+        harness.Api.FailUploads = null;
+
+        await harness.Service.RetryAsync("e1");
+
+        var item = await harness.Queue.FindAsync("e1");
+        Assert.Null(item!.LastError);
+        Assert.Null(item.NextAttemptAt);
+    }
+
+    // ─────────────────────────────────────────────
+    // 手点那一轮的进度 / 每一行自己的进度（第 14、15 条）
+    // ─────────────────────────────────────────────
+
+    [Fact]
+    public async Task 手点的那一轮_跑的时候报得出进度_跑完就收掉()
+    {
+        // ⚠️ 「跑完就收掉」是承重的：不清 `_syncTotal` 的话，下一轮还没开始，
+        // 界面就会拿着一根停在 100% 的条当「正在跑」。
+        using var harness = new Harness(Open());
+        await harness.AddRecordingAsync("e1");
+        await harness.AddRecordingAsync("e2");
+
+        CloudSyncProgress? mid = null;
+        harness.Api.OnSlice = () =>
+        {
+            mid ??= harness.Service.SyncProgress;
+
+            return Task.CompletedTask;
+        };
+
+        await harness.Service.SyncNowAsync();
+
+        Assert.NotNull(mid);
+        Assert.Equal(2, mid!.Total);
+        Assert.InRange(mid.Fraction, 0, 1);
+
+        Assert.Null(harness.Service.SyncProgress);
+    }
+
+    [Fact]
+    public async Task 每一行自己的进度_在传的时候读得到_传完就摘掉()
+    {
+        // ⚠️ 传完摘掉是承重的：不摘的话，下一条**用同一个 EvidenceId** 的
+        // （重传同一场）会先看到上一轮停下的那个数，而那根条应该从 0 起。
+        using var harness = new Harness(Open());
+
+        await harness.AddRecordingAsync("e1");
+
+        // 两片：传完第 1 片之后进度是 1/2 —— 用一个 4 字节的文件是读不到中间的数的。
+        var second = await harness.AddRecordingAsync("e2");
+        await File.WriteAllBytesAsync(
+            harness.LocalPathOf(second), new byte[BaiduPanBlocks.SliceSize + 10]);
+
+        Assert.Null(harness.Service.ProgressOf("e2"));
+
+        var samples = new List<double?>();
+        harness.Api.OnSlice = () =>
+        {
+            samples.Add(harness.Service.ProgressOf("e2"));
+
+            return Task.CompletedTask;
+        };
+
+        await harness.Service.SyncNowAsync();
+
+        Assert.Contains(0.5, samples);
+
+        Assert.Null(harness.Service.ProgressOf("e2"));
     }
 
     // ─────────────────────────────────────────────
@@ -1011,6 +1165,16 @@ public class CloudUploadTests
         public Exception? FailUploads { get; set; }
 
         /// <summary>
+        /// 每一片**传之前**跑一下。
+        /// </summary>
+        /// <remarks>
+        /// ⚠️ 它存在的理由只有一个：进度那两根条（<c>SyncProgress</c> /
+        /// <c>ProgressOf</c>）**只在传的过程中有值**，跑完就收掉了 ——
+        /// 不在这儿凿一个口子，用例只能看到「跑之前 null、跑之后 null」。
+        /// </remarks>
+        public Func<Task>? OnSlice { get; set; }
+
+        /// <summary>
         /// 预创建按顺序回这几个 <c>errno</c>（非 0 就抛），队列空了就正常回。
         /// </summary>
         /// <remarks>
@@ -1023,29 +1187,49 @@ public class CloudUploadTests
         /// <summary>真去建了哪些目录（按调用顺序，含重复）。</summary>
         public List<string> CreatedDirectories { get; } = [];
 
+        /// <summary>
+        /// 保护上面那几个可变集合的一把锁。
+        /// </summary>
+        /// <remarks>
+        /// ⚠️ <b>必需，不是保险</b>：生产里 <c>ParallelUploads</c> 默认就是 **2**
+        /// （见 <c>CloudUploadSettings</c>），所以两条录像会**同时**走到
+        /// <see cref="CreateAsync"/> / <see cref="UploadSliceAsync"/>，而底下那几个是
+        /// 普通的 <c>HashSet</c> / <c>List</c>。不加锁的表现是**偶发**的一条
+        /// <c>InvalidOperationException</c>「...a concurrent update was performed...
+        /// The collection's state is no longer correct」——
+        /// 只在机器忙的时候冒出来（2026-10-14 实测：同一段连跑 5 次红了 2 次，
+        /// 单跑必绿，所以光看「本机全绿」是发现不了的）。
+        /// </remarks>
+        private readonly object _gate = new();
+
         /// <summary>把某个远端路径上的文件摆上去（父目录会一起出现）。</summary>
-        public void Put(string remotePath)
+        public void Put(string remotePath) => Locked(() =>
         {
             var directory = DirectoryOf(remotePath);
             MakeDirectory(directory);
             Files[directory].Add(BaiduPanLayout.FileNameOf(remotePath));
-        }
+        });
 
-        public void MakeDirectory(string directory)
+        public void MakeDirectory(string directory) => Locked(() =>
         {
             if (Directories.Add(directory))
             {
                 Files[directory] = new HashSet<string>(StringComparer.Ordinal);
             }
+        });
+
+        /// <summary>跑一小段碰共享状态的活。</summary>
+        private void Locked(Action work)
+        {
+            lock (_gate)
+            {
+                work();
+            }
         }
 
-        public Task<BaiduDeviceCode> StartDeviceLoginAsync(CancellationToken cancellationToken = default) =>
-            Task.FromResult(new BaiduDeviceCode(
-                "dev-1", "USER01", "https://example.invalid/d", "", 5, 300));
-
-        public Task<BaiduToken?> PollDeviceTokenAsync(
-            string deviceCode, CancellationToken cancellationToken = default) =>
-            Task.FromResult<BaiduToken?>(null);
+        public Task<BaiduToken> ExchangeCodeAsync(
+            string code, string redirectUri, CancellationToken cancellationToken = default) =>
+            Task.FromResult(new BaiduToken("token-1", "r1", 3600));
 
         public Task<BaiduToken> RefreshAsync(
             string refreshToken, CancellationToken cancellationToken = default) =>
@@ -1064,7 +1248,7 @@ public class CloudUploadTests
         public Task<BaiduPanQuota?> GetQuotaAsync(
             string accessToken, CancellationToken cancellationToken = default)
         {
-            QuotaCalls++;
+            Locked(() => QuotaCalls++);
 
             return Task.FromResult(Quota);
         }
@@ -1076,24 +1260,34 @@ public class CloudUploadTests
             IReadOnlyList<string> blockList,
             CancellationToken cancellationToken = default)
         {
-            BlockListSizes.Add(blockList.Count);
+            BaiduPrecreate precreate = null!;
 
-            if (PrecreateErrnos.Count > 0)
+            Locked(() =>
             {
-                throw new BaiduPanException(PrecreateErrnos.Dequeue(), "网盘说这个路径不对。");
-            }
+                BlockListSizes.Add(blockList.Count);
 
-            var pending = PendingSlices
-                ?? new HashSet<int>(Enumerable.Range(0, blockList.Count));
+                if (PrecreateErrnos.Count > 0)
+                {
+                    throw new BaiduPanException(PrecreateErrnos.Dequeue(), "网盘说这个路径不对。");
+                }
 
-            return Task.FromResult(new BaiduPrecreate("upload-1", pending));
+                var pending = PendingSlices
+                    ?? new HashSet<int>(Enumerable.Range(0, blockList.Count));
+
+                precreate = new BaiduPrecreate("upload-1", pending);
+            });
+
+            return Task.FromResult(precreate);
         }
 
         public Task CreateDirectoryAsync(
             string accessToken, string directory, CancellationToken cancellationToken = default)
         {
-            CreatedDirectories.Add(directory);
-            MakeDirectory(directory);
+            Locked(() =>
+            {
+                CreatedDirectories.Add(directory);
+                MakeDirectory(directory);
+            });
 
             return Task.CompletedTask;
         }
@@ -1104,7 +1298,7 @@ public class CloudUploadTests
             string uploadId,
             CancellationToken cancellationToken = default)
         {
-            LocatedUploads++;
+            Locked(() => LocatedUploads++);
 
             return Task.FromResult("https://c3.pcs.baidu.com");
         }
@@ -1117,13 +1311,16 @@ public class CloudUploadTests
             string uploadId,
             CancellationToken cancellationToken = default)
         {
-            Created.Add(remotePath);
-            Put(remotePath);
+            Locked(() =>
+            {
+                Created.Add(remotePath);
+                Put(remotePath);
+            });
 
             return Task.CompletedTask;
         }
 
-        public Task<string?> UploadSliceAsync(
+        public async Task<string?> UploadSliceAsync(
             string accessToken,
             string uploadHost,
             string remotePath,
@@ -1137,10 +1334,18 @@ public class CloudUploadTests
                 throw problem;
             }
 
-            UploadedSlices.Add(partSeq);
-            UploadedHosts.Add(uploadHost);
+            if (OnSlice is { } hook)
+            {
+                await hook();
+            }
 
-            return Task.FromResult(EchoSliceMd5(partSeq));
+            Locked(() =>
+            {
+                UploadedSlices.Add(partSeq);
+                UploadedHosts.Add(uploadHost);
+            });
+
+            return EchoSliceMd5(partSeq);
         }
 
         public Task<IReadOnlySet<string>> ListFilesAsync(

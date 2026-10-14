@@ -54,6 +54,17 @@ public static class CloudUploadStates
     /// <summary>这一条还能不能【恢复】。</summary>
     public static bool CanResume(CloudUploadState state) => state == CloudUploadState.Abandoned;
 
+    /// <summary>
+    /// 这一条还能不能**立刻**再试一次（队列每一行那颗【重试】）。
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ 只有 <see cref="CloudUploadState.Failed"/>，<b>已放弃的不算</b> ——
+    /// 那是用户明确说过「这条我不传了」，把它跟失败揉成同一个动作的话，
+    /// 界面上就成了「一颗【重试】按在用户已经放弃的那条上」；
+    /// 想让它再传，对的入口是【恢复】。
+    /// </remarks>
+    public static bool CanRetry(CloudUploadState state) => state == CloudUploadState.Failed;
+
     /// <summary>这一条会不会被自动重试（界面上要把它说清楚）。</summary>
     public static bool WillRetry(CloudUploadState state, DateTimeOffset? nextAttemptAt) =>
         state == CloudUploadState.Failed && nextAttemptAt is not null;

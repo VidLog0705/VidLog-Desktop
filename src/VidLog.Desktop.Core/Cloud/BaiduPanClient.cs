@@ -159,62 +159,95 @@ public sealed class BaiduPanClient : IBaiduPanApi
         _logger = logger ?? NullLogger.Instance;
     }
 
-    public async Task<BaiduDeviceCode> StartDeviceLoginAsync(
-        CancellationToken cancellationToken = default)
-    {
-        var url = $"{OAuthBase}/device/code"
-            + $"?client_id={Uri.EscapeDataString(_credentials.AppKey)}"
-            + "&response_type=device_code"
-            + "&scope=basic,netdisk";
+    /// <summary>
+    /// 拼授权页地址 —— 用户要在这个页面上「登录 + 同意」。
+    /// </summary>
+    /// <param name="appKey">应用的 AppKey。</param>
+    /// <param name="redirectUri">
+    /// ⚠️ 与 <c>BaiduLoopbackListener.RedirectUri</c> 必须**逐字相同**，且在百度控制台
+    /// 登记的回调地址也要是它 —— 尾斜杠、换端口、换主机名全部 <c>redirect_uri_mismatch</c>。
+    /// </param>
+    /// <param name="state">
+    /// 防登录 CSRF 的随机串：授权页会原样带回来，回环那边逐字比对（见
+    /// <c>BaiduLoopbackListener</c>）。**它不是秘密**，但它必须是一次一换的随机值。
+    /// </param>
+    /// <remarks>
+    /// ⚠️ 是**纯静态函数**，不碰 HTTP、不碰凭据对象 —— 「拼出来的串对不对」是登录这一路
+    /// 最容易错又最难在真机上看出原因的一步，得能直接断言（<c>BaiduPanWireTests</c>）。
+    /// <para>
+    /// ⚠️ <b><c>qrcode=1</c> 不在参数表里</b>，它来自 2026-10-14 验通那条链路的**逐字记录**
+    /// （<c>H:\_scratch\webview2probe\outE\result.json</c>）。去掉它没验过，先照抄。
+    /// </para>
+    /// <para>
+    /// ⚠️ 这个地址**不能直接开**（在浏览器/内嵌窗里裸开授权页那是另一条路，没验过）。
+    /// 验通的那条是：WebView2 开 <see cref="BuildPassportLoginUrl"/>，
+    /// 用户在**那一页**上登录（扫码/微信/QQ/密码都在），它自己跳回本地址、再跳回环。
+    /// </para>
+    /// </remarks>
+    public static string BuildAuthorizeUrl(string appKey, string redirectUri, string state) =>
+        $"{OAuthBase}/authorize"
+        + "?response_type=code"
+        + $"&client_id={Uri.EscapeDataString(appKey)}"
+        + $"&redirect_uri={Uri.EscapeDataString(redirectUri)}"
+        + "&scope=basic,netdisk"
+        + "&qrcode=1"
+        + $"&state={Uri.EscapeDataString(state)}";
 
-        var json = await GetJsonAsync(url, cancellationToken);
+    /// <summary>
+    /// 把授权页地址套进百度通行证页 —— 用户在内嵌窗里实际看到的就是这一页。
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ <b>这一层是「一页走完」的关键</b>：授权页自己**只有**「登录」那半截，
+    /// 直接在它上面登录拿不到码；通行证页收 <c>&amp;u=</c> 之后会把用户领到授权页并
+    /// 带着登录态，于是「登录 → 同意 → 回环」三步变成用户眼里的两步。
+    /// 这条链 2026-10-14 用真账号跑通过一次，53.2 秒拿到 32 位 code。
+    /// </remarks>
+    public static string BuildPassportLoginUrl(string authorizeUrl) =>
+        $"https://passport.baidu.com/v2/?login&u={Uri.EscapeDataString(authorizeUrl)}";
 
-        // 兜底值照 2026-09-30 打真服务器实测的结果：那一刻网盘回的就是
-        // interval=5、expires_in=300（5 分钟）。写 1800 会让界面说「这串码半小时内有效」，
-        // 而它 5 分钟就作废了 —— 用户按界面上的话去泡杯茶，回来只看到「授权失败」。
-        return new BaiduDeviceCode(
-            Required(json, "device_code"),
-            Required(json, "user_code"),
-            Optional(json, "verification_url") ?? "https://openapi.baidu.com/device",
-            Optional(json, "qrcode_url") ?? string.Empty,
-            json.TryGetProperty("interval", out var interval) ? interval.GetInt32() : 5,
-            json.TryGetProperty("expires_in", out var expires) ? expires.GetInt32() : 300);
-    }
-
-    public async Task<BaiduToken?> PollDeviceTokenAsync(
-        string deviceCode, CancellationToken cancellationToken = default)
+    public async Task<BaiduToken> ExchangeCodeAsync(
+        string code, string redirectUri, CancellationToken cancellationToken = default)
     {
         var url = $"{OAuthBase}/token"
-            + "?grant_type=device_token"
-            + $"&code={Uri.EscapeDataString(deviceCode)}"
+            + "?grant_type=authorization_code"
+            + $"&code={Uri.EscapeDataString(code)}"
             + $"&client_id={Uri.EscapeDataString(_credentials.AppKey)}"
-            + $"&client_secret={Uri.EscapeDataString(_credentials.AppSecret)}";
+            + $"&client_secret={Uri.EscapeDataString(_credentials.AppSecret)}"
+            + $"&redirect_uri={Uri.EscapeDataString(redirectUri)}";
 
         var json = await GetJsonAsync(url, cancellationToken);
 
-        // 「人还没点」与「点得太快」都是**流程里正常的一步**，不是错误。
-        //
-        // ⚠️ 2026-09-30 拿真凭据打过真服务器，还没授权时它回的是
-        //     HTTP 400 + {"error":"authorization_pending","error_description":"..."}
-        // 也就是说这个「正常的一步」是**带着一个 4xx 状态码**回来的。所以
-        // ReadAsync 必须先把带 error 的响应体交回来（它也确实那么做了），
-        // 否则这里根本轮不到 —— 那句话会先被当成 HTTP 失败抛出去，
-        // 而设备码登录的第一次轮询就必然炸。
+        // ⚠️ 这个端点报错走的是 RFC 6749 那套 `error` / `error_description`（**不是** errno），
+        // 而且**带着 4xx 状态码回来**。所以 `ReadAsync` 先把带 error 的响应体交出来，
+        // 这里才轮得到把「授权码过期了 / 用户拒绝了 / redirect_uri 对不上」说成人话；
+        // 不这么走的话，调用方只会拿到一句「HTTP 400」。
         if (json.TryGetProperty("error", out var error))
         {
-            var code = error.GetString();
-
-            if (code is "authorization_pending" or "slow_down")
-            {
-                return null;
-            }
+            var errorCode = error.GetString() ?? string.Empty;
 
             throw new BaiduPanException(
-                0, $"百度网盘授权失败：{code} {Optional(json, "error_description")}");
+                0, $"百度网盘授权失败：{errorCode} {Optional(json, "error_description")}{AuthHint(errorCode)}");
         }
 
         return ReadToken(json);
     }
+
+    /// <summary>
+    /// 授权码换令牌失败时值得补的一句人话。
+    /// </summary>
+    /// <remarks>
+    /// 错误码照 RFC 6749 §5.2 那张表（百度这一族端点是照它实现的），
+    /// ⚠️ 但**这张表是给人看的**，不是判据 —— 没有任何自动重试读它。
+    /// </remarks>
+    private static string AuthHint(string code) => code switch
+    {
+        "invalid_grant" => "（授权码不对、过期了，或者已经用过一次 —— 授权码是一次性的，十分钟就作废）",
+        "invalid_client" => "（AppKey / AppSecret 配错了，在开放平台后台核对一下）",
+        "redirect_uri_mismatch" => "（回调地址与控制台里登记的那条对不上，得回后台改）",
+        "access_denied" => "（用户在这一步点了「拒绝」）",
+        "invalid_request" => "（请求本身不对，多半是少传了一个必填参数）",
+        _ => string.Empty,
+    };
 
     public async Task<BaiduToken> RefreshAsync(
         string refreshToken, CancellationToken cancellationToken = default)
@@ -647,11 +680,12 @@ public sealed class BaiduPanClient : IBaiduPanApi
 
         // ⚠️ 带 `error` 的响应体**先交回给调用方**，不在这里按 HTTP 状态码判死。
         //
-        // 理由是一条实测事实（2026-09-30，真凭据、真服务器）：设备码轮询在
-        // 「用户还没点授权」时回的就是 `HTTP 400 + {"error":"authorization_pending"}`。
-        // 那是**流程里正常的一步**。先按状态码抛的话，调用方永远看不到那个 error，
-        // 于是设备码登录的第一次轮询必然失败 —— 而且报出来的是「HTTP 400」，
-        // 看的人只会去查网络，查不到「其实只是还没点」。
+        // 理由：这一族 OAuth 端点（`/token` 换授权码、`/token` 续期）按 RFC 6749 §5.2
+        // 用 `error` / `error_description` 报错，而那是**带着 4xx 状态码回来的**。
+        // 先按状态码抛的话调用方永远看不到那个 error，只剩一句「HTTP 400」——
+        // 而「授权码过期了，再点一次登录」与「网断了」会变成同一句要用户去猜的话。
+        // 换令牌（`ExchangeCodeAsync`）与续期（`RefreshAsync`）各自靠这里
+        // 才分得清「这个错到底是哪一类」。
         if (json.ValueKind == JsonValueKind.Object
             && json.TryGetProperty("error", out var oauth) && oauth.ValueKind == JsonValueKind.String)
         {

@@ -1,53 +1,5 @@
 namespace VidLog.Desktop.Core.Cloud;
 
-/// <summary>
-/// 一次设备码登录的起点（OAuth 2.0 device code）。
-/// </summary>
-/// <param name="DeviceCode">程序拿去轮询的那串码（**不给用户看**）。</param>
-/// <param name="UserCode">用户要在授权页上确认的那串短码。</param>
-/// <param name="VerificationUrl">用户在浏览器里打开的授权页。</param>
-/// <param name="QrCodeUrl">授权页的二维码图片地址。</param>
-/// <param name="IntervalSeconds">两次轮询之间至少要隔多少秒。</param>
-/// <param name="ExpiresInSeconds">这串码多久作废。</param>
-public sealed record BaiduDeviceCode(
-    string DeviceCode,
-    string UserCode,
-    string VerificationUrl,
-    string QrCodeUrl,
-    int IntervalSeconds,
-    int ExpiresInSeconds)
-{
-    /// <summary>
-    /// 二维码里要放的那串内容 —— 用户拿手机扫的就是它。
-    /// </summary>
-    /// <remarks>
-    /// <para>
-    /// ⚠️ 拼接规则照 009《设备码模式授权》的注意事项**逐字**：
-    /// <c>https://openapi.baidu.com/device?display=mobile&amp;code=&lt;user_code&gt;</c>，
-    /// 「其中 code 为接口返回内容的 user_code 字段」。
-    /// </para>
-    /// <para>
-    /// ⚠️ <b>里面必须是 <see cref="UserCode"/>，不是 <see cref="DeviceCode"/>。</b>
-    /// 放错了有两个后果，而且第二个更糟：码扫了没用（授权页认的是 user_code），
-    /// 而**轮询用的那串密钥被画到了屏幕上** —— 站在旁边的人拍到就能冒领这次登录。
-    /// 这一条由 <c>BaiduPanWireTests</c> 钉着。
-    /// </para>
-    /// <para>
-    /// <b>为什么不用响应里那个 <see cref="QrCodeUrl"/></b>（百度渲染好的现成图片）：
-    /// 用它就得在用户登录的这一刻再去网上取一张图。而文档把**内容**规则也给全了 ——
-    /// 本地已经有二维码能力（<c>EnrollQr</c>，与非对称的一维码共用一套约定），
-    /// 自己画就不用为「显示一个码」多接一条网络依赖，登录出问题时也少一个环节要排查。
-    /// </para>
-    /// <para>
-    /// ⚠️ 这条规则**只在文档里**，真机没验过（扫码那条路要到有真手机时才知道通不通）。
-    /// 判定办法写在 <c>docs/实现决策.md</c> §87：拿手机扫这张码，
-    /// 手机上应当直接打开百度授权页**并已经把码填好**，只剩「登录 + 同意」两步。
-    /// </para>
-    /// </remarks>
-    public string QrPayload =>
-        $"https://openapi.baidu.com/device?display=mobile&code={Uri.EscapeDataString(UserCode)}";
-}
-
 /// <summary>一对令牌。</summary>
 /// <param name="AccessToken">访问令牌。</param>
 /// <param name="RefreshToken">刷新令牌（下一次免登录靠它）。</param>
@@ -225,20 +177,19 @@ public sealed class BaiduPanException : Exception
 /// </remarks>
 public interface IBaiduPanApi
 {
-    /// <summary>申请一串设备码（登录的第一步）。</summary>
-    Task<BaiduDeviceCode> StartDeviceLoginAsync(CancellationToken cancellationToken = default);
-
-    /// <summary>
-    /// 问一次「用户批准了没有」。
-    /// </summary>
-    /// <returns>批准了返回令牌；还没批准返回 <see langword="null"/>。</returns>
+    /// <summary>拿授权码换一对令牌（登录的第二步，也是最后一步）。</summary>
+    /// <param name="code">回环回调接住的那串授权码。**它是凭据，绝不许进日志。**</param>
+    /// <param name="redirectUri">
+    /// ⚠️ **必须与拼授权 URL 时用的那一个逐字相同**（<c>BaiduLoopbackListener.RedirectUri</c>）。
+    /// 两处不一致时百度直接拒，报的还是「redirect_uri 不匹配」那种要回控制台查的错。
+    /// </param>
     /// <remarks>
-    /// ⚠️ 「还没批准」**不是错误** —— 它是这个流程里正常的一步。
-    /// 抛异常的话调用方要拿异常当控制流，而那时「网络断了」与「人还没点」
-    /// 会走同一条 catch。
+    /// ⚠️ 这个流程**同样要 <c>client_secret</c>**（授权码模式与设备码模式在这一点上没有区别），
+    /// 所以它**不是**一处新增的秘密：<see cref="BaiduPanCredentials.FromEnvironment"/>
+    /// 本来就要求 AppKey 与 AppSecret 两个都配齐。
     /// </remarks>
-    Task<BaiduToken?> PollDeviceTokenAsync(
-        string deviceCode, CancellationToken cancellationToken = default);
+    Task<BaiduToken> ExchangeCodeAsync(
+        string code, string redirectUri, CancellationToken cancellationToken = default);
 
     /// <summary>用刷新令牌换一对新令牌（免登录）。</summary>
     Task<BaiduToken> RefreshAsync(string refreshToken, CancellationToken cancellationToken = default);

@@ -1,0 +1,77 @@
+<Window x:Class="VidLog.Desktop.App.BaiduLoginWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        xmlns:wv2="clr-namespace:Microsoft.Web.WebView2.Wpf;assembly=Microsoft.Web.WebView2.Wpf"
+        mc:Ignorable="d"
+        Title="登录百度网盘" Height="760" Width="520" MinWidth="420" MinHeight="520"
+        FontFamily="{StaticResource UiFont}"
+        Background="{DynamicResource PageBackground}"
+        WindowStartupLocation="CenterOwner">
+    <!--
+        ════════════════════════════════════════════════════════════════
+        百度网盘登录窗（需求方 2026-10-14 拍板：内嵌浏览器 + 本机回环回调）
+
+        为什么是**内嵌**而不是「开系统浏览器 + 一个等回调的进度窗」：
+        用户在百度那一页登录（扫码 / 微信 / 微博 / QQ / 密码全在那一页上），
+        跳回 `127.0.0.1` 也落在这个窗里 —— 整个过程不必离开 VidLog，
+        也就不会出现「浏览器开在另一个屏幕上、用户不知道要回去」。
+
+        ⚠️ 窗里**不显示授权 URL**：那个 URL 的查询串里带着 `client_id`
+        （= 应用的 AppKey）与 `state`。地址栏一律不给。
+
+        ⚠️ 只有一件事是假的不了：**授权码**由 `BaiduLoopbackListener` 在
+        本机端口上接住，这个窗一行都不碰它 —— 它只负责把页面显示出来、
+        然后在等到（或等不到）的时候把窗关掉。判断全在 Core 那边，那边有测试。
+        ════════════════════════════════════════════════════════════════
+    -->
+    <Grid Margin="16,14,16,14">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <TextBlock Grid.Row="0" Style="{StaticResource Caption}" TextWrapping="Wrap"
+                   Margin="0,0,0,10"
+                   Text="在这一页登录百度网盘并点「同意授权」。登录成功后这个窗会自己关掉。"/>
+
+        <Border Grid.Row="1" BorderBrush="{DynamicResource CardBorder}" BorderThickness="1"
+                CornerRadius="{StaticResource RadiusControl}" ClipToBounds="True">
+            <Grid>
+                <!-- ⚠️ 底色**硬写白**，与二维码那个 Border 同一条理由：底下要压的是
+                     百度的页面，而它按浅色画的。跟着 Theme 走的话，暗色主题下
+                     页面还没加载完的那一瞬间会是一片近黑，看着像加载失败。 -->
+                <Border Background="White"/>
+                <wv2:WebView2 x:Name="Browser"/>
+
+                <!-- 页还没出来、或者压根起不来时要说一句人话（默认收起）。
+                     它压在浏览器控件**上面**：起不来的时候底下没有内容，
+                     出来了就自己收起。 -->
+                <TextBlock x:Name="BrowserNote" Visibility="Collapsed"
+                           Margin="24" TextWrapping="Wrap" TextAlignment="Center"
+                           HorizontalAlignment="Center" VerticalAlignment="Center"
+                           Foreground="{DynamicResource TextSecondary}"/>
+            </Grid>
+        </Border>
+
+        <Grid Grid.Row="2" Margin="0,12,0,0">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="Auto"/>
+            </Grid.ColumnDefinitions>
+
+            <!-- ⚠️ 那句「还有几分钟」是**算出来的**，不是写死的：
+                 写死一个数，改了窗口里那个 Patience 之后两边就对不上了。 -->
+            <TextBlock Grid.Column="0" x:Name="StatusNote" Style="{StaticResource Caption}"
+                       TextWrapping="Wrap" VerticalAlignment="Center"
+                       Foreground="{DynamicResource TextSecondary}"/>
+
+            <!-- IsCancel：Esc 关得掉（`DesktopServicesTests.每个对话框都按_Esc_关得掉` 扫的就是它）。 -->
+            <Button Grid.Column="1" x:Name="CancelButton" Content="取消" MinWidth="88"
+                    IsCancel="True" Style="{StaticResource SecondaryButton}"
+                    Click="OnCancel"/>
+        </Grid>
+    </Grid>
+</Window>

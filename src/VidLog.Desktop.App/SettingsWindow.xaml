@@ -846,23 +846,35 @@
                                             Content="立即重试失败上传" Click="OnCloudRetry"/>
                                 </Grid>
 
-                                <!-- 扫码授权（设备码模式）：手机上扫这张码就直接打开百度授权页，
-                                     不用把上面那串验证码手抄过去。点了【登录百度网盘】才会出现。 -->
-                                <StackPanel x:Name="CloudQrPanel" Visibility="Collapsed" Margin="0,14,0,0">
-                                    <TextBlock Style="{StaticResource Caption}" TextWrapping="Wrap"
-                                               MaxWidth="520"
-                                               Text="用手机扫下面这张码：手机上会直接打开百度授权页，验证码也已经填好，登录并同意就行 —— 不用手抄那串码。"/>
-                                    <!-- ⚠️ 这个 Border 的 `Background="White"` 是硬写的、**跟着 Theme 走会出事**：
-                                         二维码要求高对比（码是黑的、底得是白的），
-                                         用 Surface 或 PageBackground 那种带灰的底色会降低对比度。理由同 EnrollWindow。 -->
-                                    <Border Margin="0,8,0,0" Padding="10" Background="White"
-                                            BorderBrush="{DynamicResource CardBorder}" BorderThickness="1"
-                                            CornerRadius="{StaticResource RadiusControl}" HorizontalAlignment="Left">
-                                        <!-- 一个模块一个像素，靠最近邻放大成方块。
-                                             换成插值会把模块边缘糊成灰边 —— 糊掉的码在屏幕上看着正常、扫不出来。 -->
-                                        <Image x:Name="CloudQrImage" Width="240" Height="240" Stretch="Uniform"
-                                               RenderOptions.BitmapScalingMode="NearestNeighbor"/>
-                                    </Border>
+                                <!-- 【立即对比同步】/【立即重试失败上传】跑起来的时候，
+                                     点下去那颗按钮换成一截进度条就地摆在这儿（C14）。
+                                     只是禁用是不够的：一次同步要跑好几分钟，一颗灰掉的按钮
+                                     没有任何「还在动」的迹象。跑完由 code-behind 收起。 -->
+                                <StackPanel x:Name="CloudActionProgressPanel" Orientation="Horizontal"
+                                            Visibility="Collapsed" Margin="0,14,0,0">
+                                    <ProgressBar x:Name="CloudActionProgressBar" Width="260" Height="10"
+                                                 VerticalAlignment="Center"
+                                                 Minimum="0" Maximum="1" Value="0"
+                                                 Foreground="{DynamicResource ProgressFill}"
+                                                 Background="{DynamicResource SurfaceAlt}"
+                                                 BorderThickness="0">
+                                        <ProgressBar.Template>
+                                            <ControlTemplate TargetType="ProgressBar">
+                                                <Border Background="{TemplateBinding Background}"
+                                                        CornerRadius="5" SnapsToDevicePixels="True">
+                                                    <Grid>
+                                                        <Border x:Name="PART_Track"/>
+                                                        <Border x:Name="PART_Indicator"
+                                                                HorizontalAlignment="Left"
+                                                                CornerRadius="5"
+                                                                Background="{TemplateBinding Foreground}"/>
+                                                    </Grid>
+                                                </Border>
+                                            </ControlTemplate>
+                                        </ProgressBar.Template>
+                                    </ProgressBar>
+                                    <TextBlock x:Name="CloudActionProgressText" Style="{StaticResource Caption}"
+                                               VerticalAlignment="Center" Margin="10,0,0,0"/>
                                 </StackPanel>
                             </StackPanel>
                         </Border>
@@ -999,32 +1011,159 @@
                                 </Grid>
 
                                 <!-- ⚠️ `HorizontalContentAlignment="Stretch"`：ListBoxItem 默认是
-                                     左对齐的，不写这一句右边那一列按钮会挤在文字尾巴上、离开右边界。 -->
-                                <ListBox x:Name="CloudQueueList" Margin="0,12,0,0" MaxHeight="280"
+                                     左对齐的，不写这一句右边那一列按钮会挤在文字尾巴上、离开右边界。
+
+                                     ⚠️ **没有 `MaxHeight`**：高度由 code-behind 的 `FitCloudQueueHeight`
+                                     按窗口高度算出来（XAML 里写不出「窗口的百分之几」）。
+                                     从前是写死的 280 —— 窗口拉大时它一寸不让，用户得在一巴掌
+                                     大的框里滚；窗口拉小时节内又不动。
+
+                                     ⚠️ `ItemsSource` 也**不在这儿绑**：队列必须**只增删改、不重建**
+                                     （否则每两秒一次刷新会把滚动位置顶回顶部），那一套在
+                                     `LoadCloud` 里挂一次，见 `RefreshCloudQueueAsync`。 -->
+                                <ListBox x:Name="CloudQueueList" Margin="0,12,0,0"
                                          BorderThickness="0" Background="Transparent"
                                          HorizontalContentAlignment="Stretch"
                                          ScrollViewer.HorizontalScrollBarVisibility="Disabled">
                                     <ListBox.ItemTemplate>
                                         <DataTemplate>
-                                            <Grid>
+                                            <!-- 整行挂提示：远端路径与上一次的错都在那儿（C19）。
+                                                 铺在行里的话，一行三段话、长短还都不一样，比读还慢。 -->
+                                            <Grid Margin="0,2" ToolTip="{Binding ToolTipText}">
                                                 <Grid.ColumnDefinitions>
                                                     <ColumnDefinition Width="*"/>
                                                     <ColumnDefinition Width="Auto"/>
                                                 </Grid.ColumnDefinitions>
-                                                <TextBlock Grid.Column="0" Text="{Binding Text}" TextWrapping="Wrap"
-                                                           VerticalAlignment="Center"
-                                                           FontSize="{StaticResource TextSizeBody}"
-                                                           Foreground="{DynamicResource TextPrimary}"/>
-                                                <!-- ⚠️ 两颗按钮靠 `Visibility` 显隐，**不是靠禁用**：
+
+                                                <StackPanel Grid.Column="0">
+                                                    <StackPanel Orientation="Horizontal">
+                                                        <!-- 发货 / 退货徽章。**认哪一档是 Core 判的**
+                                                             （`CloudBusinessTypeOf`），这里只按它给的档名着色。
+
+                                                             ⚠️ 颜色走 `DataTrigger` + `DynamicResource`，
+                                                             **不是**绑一支现成的笔刷：当场取到的是一支冻结的笔刷，
+                                                             开着程序换主题时这几行不会跟着变、也不报错
+                                                             （`ThemePaletteTests` 那条整类闸守的就是它）。
+                                                             `DynamicResource` 在 `Setter` 里是订阅，换字典自动跟上；
+                                                             `DataTrigger` 会在容器被复用时重判。 -->
+                                                        <Border Visibility="{Binding TypeVisibility}"
+                                                                CornerRadius="{StaticResource RadiusTag}"
+                                                                Padding="6,1" Margin="0,0,8,0"
+                                                                VerticalAlignment="Center">
+                                                            <Border.Style>
+                                                                <Style TargetType="Border">
+                                                                    <Style.Triggers>
+                                                                        <DataTrigger Binding="{Binding TypeTag}" Value="Return">
+                                                                            <Setter Property="Background"
+                                                                                    Value="{DynamicResource WarningSurface}"/>
+                                                                        </DataTrigger>
+                                                                        <DataTrigger Binding="{Binding TypeTag}" Value="Outbound">
+                                                                            <Setter Property="Background"
+                                                                                    Value="{DynamicResource AccentWeak}"/>
+                                                                        </DataTrigger>
+                                                                    </Style.Triggers>
+                                                                </Style>
+                                                            </Border.Style>
+                                                            <TextBlock Text="{Binding TypeLabel}" FontSize="12">
+                                                                <TextBlock.Style>
+                                                                    <Style TargetType="TextBlock">
+                                                                        <Style.Triggers>
+                                                                            <DataTrigger Binding="{Binding TypeTag}" Value="Return">
+                                                                                <Setter Property="Foreground"
+                                                                                        Value="{DynamicResource Warning}"/>
+                                                                            </DataTrigger>
+                                                                            <DataTrigger Binding="{Binding TypeTag}" Value="Outbound">
+                                                                                <Setter Property="Foreground"
+                                                                                        Value="{DynamicResource Accent}"/>
+                                                                            </DataTrigger>
+                                                                        </Style.Triggers>
+                                                                    </Style>
+                                                                </TextBlock.Style>
+                                                            </TextBlock>
+                                                        </Border>
+                                                        <TextBlock Text="{Binding Title}" TextTrimming="CharacterEllipsis"
+                                                                   VerticalAlignment="Center"
+                                                                   FontWeight="SemiBold"
+                                                                   FontSize="{StaticResource TextSizeBody}"
+                                                                   Foreground="{DynamicResource TextPrimary}"/>
+                                                        <!-- 状态那两个字**按状态着色**（C18）：
+                                                             上传中蓝 / 已完成绿 / 失败红 / 已放弃灰 / 等待中灰。
+                                                             色值全来自 `Theme.xaml` 里量过对比度的令牌。
+                                                             ⚠️ `StateTag` 就是 `CloudUploadState` 的成员名，
+                                                             枚举改了名这里要跟着改 —— 写错了的表现是**没颜色**，不报错。 -->
+                                                        <TextBlock Text="{Binding StateLabel}" Margin="10,0,0,0"
+                                                                   VerticalAlignment="Center"
+                                                                   FontSize="12">
+                                                            <TextBlock.Style>
+                                                                <Style TargetType="TextBlock">
+                                                                    <Setter Property="Foreground"
+                                                                            Value="{DynamicResource TextSecondary}"/>
+                                                                    <Style.Triggers>
+                                                                        <DataTrigger Binding="{Binding StateTag}" Value="Uploading">
+                                                                            <Setter Property="Foreground"
+                                                                                    Value="{DynamicResource Accent}"/>
+                                                                        </DataTrigger>
+                                                                        <DataTrigger Binding="{Binding StateTag}" Value="Done">
+                                                                            <Setter Property="Foreground"
+                                                                                    Value="{DynamicResource Success}"/>
+                                                                        </DataTrigger>
+                                                                        <DataTrigger Binding="{Binding StateTag}" Value="Failed">
+                                                                            <Setter Property="Foreground"
+                                                                                    Value="{DynamicResource Danger}"/>
+                                                                        </DataTrigger>
+                                                                        <DataTrigger Binding="{Binding StateTag}" Value="Abandoned">
+                                                                            <Setter Property="Foreground"
+                                                                                    Value="{DynamicResource TextDisabled}"/>
+                                                                        </DataTrigger>
+                                                                    </Style.Triggers>
+                                                                </Style>
+                                                            </TextBlock.Style>
+                                                        </TextBlock>
+                                                    </StackPanel>
+
+                                                    <TextBlock Text="{Binding Meta}" Margin="0,3,0,0"
+                                                               Style="{StaticResource Caption}"/>
+
+                                                    <!-- 每行自己一根进度条（C15）：传中的是实时的，
+                                                         已完成的是满格。其余状态不显示。 -->
+                                                    <ProgressBar Height="6" Margin="0,6,4,0"
+                                                                 Visibility="{Binding ProgressVisibility}"
+                                                                 Minimum="0" Maximum="1"
+                                                                 Value="{Binding Progress, Mode=OneWay}"
+                                                                 Foreground="{DynamicResource ProgressFill}"
+                                                                 Background="{DynamicResource SurfaceAlt}"
+                                                                 BorderThickness="0">
+                                                        <ProgressBar.Template>
+                                                            <ControlTemplate TargetType="ProgressBar">
+                                                                <Border Background="{TemplateBinding Background}"
+                                                                        CornerRadius="3" SnapsToDevicePixels="True">
+                                                                    <Grid>
+                                                                        <Border x:Name="PART_Track"/>
+                                                                        <Border x:Name="PART_Indicator"
+                                                                                HorizontalAlignment="Left"
+                                                                                CornerRadius="3"
+                                                                                Background="{TemplateBinding Foreground}"/>
+                                                                    </Grid>
+                                                                </Border>
+                                                            </ControlTemplate>
+                                                        </ProgressBar.Template>
+                                                    </ProgressBar>
+                                                </StackPanel>
+
+                                                <!-- ⚠️ 三颗按钮靠 `Visibility` 显隐，**不是靠禁用**：
                                                      一条正常在传的行上摊着一颗灰掉的【恢复】，
                                                      用户只会去点它，然后觉得这个界面坏了。
                                                      显隐由 Core 的 `CloudUploadStates` 决定（与
                                                      服务里那条判断是同一把尺子），界面这边不另写一份。 -->
                                                 <StackPanel Grid.Column="1" Orientation="Horizontal"
                                                             VerticalAlignment="Center" Margin="12,0,0,0">
-                                                    <Button Content="放弃" Click="OnCloudQueueAbandon"
+                                                    <Button Content="重试" Click="OnCloudQueueRetry"
                                                             Style="{StaticResource SecondaryButton}"
                                                             Padding="10,3" FontSize="12"
+                                                            Visibility="{Binding RetryVisibility}"/>
+                                                    <Button Content="放弃" Click="OnCloudQueueAbandon"
+                                                            Style="{StaticResource SecondaryButton}"
+                                                            Padding="10,3" FontSize="12" Margin="6,0,0,0"
                                                             Visibility="{Binding AbandonVisibility}"/>
                                                     <Button Content="恢复" Click="OnCloudQueueResume"
                                                             Style="{StaticResource SecondaryButton}"
