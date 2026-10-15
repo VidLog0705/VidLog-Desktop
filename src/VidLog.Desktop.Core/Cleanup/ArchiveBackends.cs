@@ -100,7 +100,12 @@ public sealed record ArchiveTarget(ArchiveBackendKind Kind, string? DirectoryPat
             "还没填网络位置 —— 这一档要一个可读写的目录（如 \\\\nas\\vidlog 或 Z:\\）。",
         ArchiveBackendKind.Directory when !Path.IsPathFullyQualified(DirectoryPath!) =>
             $"网络位置要写完整路径（如 \\\\nas\\vidlog 或 Z:\\vidlog），现在这个是相对的：{DirectoryPath}",
-        ArchiveBackendKind.Cloud => "百度网盘这一档要授权（应用凭据走环境变量，不写进配置文件）。",
+        // ⚠️ 2026-10-15 删掉了原来「百度网盘」那一支（需求方当场问「为什么还显示这个？」）。
+        // 它是一句**写死的话**，什么都没查：只要推算出来是网盘那一档就断言「没配好」——
+        // 而网盘照样传得好好的（凭据在环境变量里、登录也在），于是主窗「本机状态」的
+        // 归档层那一行和「需要注意」里同时挂一条**假的**「没配好」，把真的那一条淹掉。
+        // 真话说在别处，而且是量出来的：凭据没有 ⇒ `BaiduPanCredentials.MissingMessage`；
+        // 有凭据但没登录 ⇒ `DesktopServices.StartAsync` 里那句（登录状态那一刻才知道）。
         _ => null,
     };
 

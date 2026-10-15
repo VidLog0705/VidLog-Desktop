@@ -211,6 +211,113 @@ internal static class SmokeCheck
         //    这一句一松，卡片里的裸字就退回链上最近那个 `Control` 的默认墨色
         //    （纯黑）—— 亮色下看不出来（黑字压白卡片正好对），**只有暗色下是黑的**。
         DemandCardInk(failed);
+
+        // ④ 输入框那一层的两条机制（2026-10-15 需求方报的两个界面缺陷）。
+        DemandInputMechanics(failed);
+    }
+
+    /// <summary>
+    /// 输入框那一层的两条机制 —— 2026-10-15 需求方报的那两个界面缺陷。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// ⚠️ 这两条钉的<b>不是设计</b>（所以不违反上面那句「只钉他点过名的值」）：它们钉的是
+    /// 「少了它控件就是坏的」那种<b>机制</b>，而坏起来<b>编译绿、测试全绿、只有真去用那个控件
+    /// 的那一刻才看得见</b> —— 与这道闸存在的理由完全一致。
+    /// </para>
+    /// <para>
+    /// ① <b>可编辑下拉必须留 <c>PART_EditableTextBox</c>。</b>
+    /// <c>IsEditable=True</c> 时 WPF 把 <c>SelectionBoxItem</c> 置成<b>空串</b>
+    /// （实测 <c>Text='3 days'</c> 而同刻 <c>SelectionBoxItem=''</c>），字全靠模板里那颗
+    /// TextBox 显示。模板里少了它 ⇒「存储与备份 → 本地保留期」那四个下拉<b>全是空框</b>
+    /// （边框与箭头都在，一个字没有）。
+    /// </para>
+    /// <para>
+    /// ② <b><c>TextBox</c> 的 <c>Padding</c> 只许算一遍。</b>
+    /// <c>TextBoxBase</c> 会把 <c>TextBox.Padding</c> 拷到宿主 ScrollViewer 上，而 ScrollViewer
+    /// 自己的模板拿它当 <c>ScrollContentPresenter.Margin</c> ⇒ 模板里若再
+    /// <c>TemplateBinding</c> 一次，内缩就是 <b>2×Padding</b>。46px 宽的「闲置提醒」分钟框
+    /// 可见视口只剩 20px、文字整段被推出视口 ⇒ <b>看着就是个空框</b>（2026-10-15 就是他报的）。
+    /// 所以这里量的是<b>总内缩</b>：`Border.Padding + 边框 + 内容宿主的内边距`，必须等于
+    /// 「一遍」（`TextBox.Padding` + 边框）。算两遍 ⇒ 判红。
+    /// </para>
+    /// <para>
+    /// ⚠️ 走<b>真控件的视觉树</b>（手工赋隐式样式 → <c>ApplyTemplate</c> → 布局一遍）而<b>不开窗口</b>：
+    /// 实测没挂到任何窗口上的控件，只要显式给 <c>Style</c> 就能问出模板与内容宿主。
+    /// 模板里那两颗的 <c>x:Name</c>（<c>Bd</c> / <c>PART_ContentHost</c>）本身也是契约 ——
+    /// <c>PART_ContentHost</c> 是 TextBox 拿光标与选区用的，改不得。
+    /// </para>
+    /// </remarks>
+    private static void DemandInputMechanics(List<string> failed)
+    {
+        if (Application.Current?.TryFindResource(typeof(System.Windows.Controls.ComboBox)) is Style comboStyle)
+        {
+            var combo = new System.Windows.Controls.ComboBox { Style = comboStyle, IsEditable = true };
+            combo.ApplyTemplate();
+
+            if (combo.Template?.FindName("PART_EditableTextBox", combo)
+                    is not System.Windows.Controls.TextBox editable
+                || editable.Visibility != Visibility.Visible)
+            {
+                failed.Add("ComboBox 模板里没有（或没显示）PART_EditableTextBox —— 可编辑下拉会变成空框");
+                Write("FAIL 契约：ComboBox 模板缺 PART_EditableTextBox");
+            }
+        }
+
+        if (Application.Current?.TryFindResource(typeof(System.Windows.Controls.TextBox)) is not Style boxStyle)
+        {
+            return;
+        }
+
+        var box = new System.Windows.Controls.TextBox
+        {
+            Style = boxStyle,
+            Width = 46,
+            Text = "3",
+            IsReadOnly = true,
+        };
+
+        // 不开窗口也得走一遍布局：模板树是 Measure/Arrange 时才搭起来的。
+        box.Measure(new System.Windows.Size(46, 36));
+        box.Arrange(new System.Windows.Rect(0, 0, 46, 36));
+
+        if (box.Template?.FindName("Bd", box) is not System.Windows.Controls.Border chrome
+            || box.Template.FindName("PART_ContentHost", box) is not System.Windows.Controls.ScrollViewer host)
+        {
+            return;
+        }
+
+        var inner = Descendant<System.Windows.Controls.ScrollContentPresenter>(host)?.Margin.Left ?? 0;
+        var counted = chrome.Padding.Left + chrome.BorderThickness.Left + inner;
+        var once = box.Padding.Left + chrome.BorderThickness.Left;
+
+        if (counted > once + 0.5)
+        {
+            failed.Add($"TextBox 的内缩算了 {counted}px，应该是 {once}px（Padding 被算了两遍）—— 窄框里的字会被推出视口");
+            Write($"FAIL 契约：TextBox 内缩 {counted}px（应为 {once}px）");
+        }
+    }
+
+    /// <summary>视觉树里第一个 <typeparamref name="T"/>（模板里的无名元素只能这样找）。</summary>
+    private static T? Descendant<T>(System.Windows.DependencyObject root)
+        where T : System.Windows.DependencyObject
+    {
+        for (var i = 0; i < System.Windows.Media.VisualTreeHelper.GetChildrenCount(root); i++)
+        {
+            var child = System.Windows.Media.VisualTreeHelper.GetChild(root, i);
+
+            if (child is T hit)
+            {
+                return hit;
+            }
+
+            if (Descendant<T>(child) is { } deep)
+            {
+                return deep;
+            }
+        }
+
+        return null;
     }
 
     /// <summary>卡片样式给没给 <c>TextElement.Foreground</c>。</summary>

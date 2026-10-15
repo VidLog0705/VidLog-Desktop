@@ -421,6 +421,11 @@
                                 <TextBlock Style="{StaticResource SectionTitle}" Text="闲置提醒"/>
                                 <TextBlock Style="{StaticResource Caption}" Margin="0,0,0,8"
                                            Text="连续 N 分钟没扫码也没打点就出声提醒"/>
+                                <!-- ⚠️ 2026-10-15 需求方裁定：**只保留下拉框**。
+                                     这里原来在下拉框右边还有个 46px 的手输分钟数 TextBox
+                                     （配「自定义」那一项用），已经去掉 —— 连同「自定义」
+                                     那一项和它后面那个「分钟」标签：没有输入框之后，
+                                     选中「自定义」就只剩一个改不动的数，等于一个假开关。 -->
                                 <StackPanel Orientation="Horizontal">
                                     <ComboBox x:Name="IdleCombo" Width="110"
                                               SelectionChanged="OnIdleReminderChanged">
@@ -429,13 +434,7 @@
                                         <ComboBoxItem Tag="Three">3 分钟</ComboBoxItem>
                                         <ComboBoxItem Tag="Four">4 分钟</ComboBoxItem>
                                         <ComboBoxItem Tag="Five">5 分钟</ComboBoxItem>
-                                        <ComboBoxItem Tag="Custom">自定义</ComboBoxItem>
                                     </ComboBox>
-                                    <TextBox x:Name="IdleMinutesBox" Width="46" Margin="6,0,0,0"
-                                             VerticalContentAlignment="Center"
-                                             LostFocus="OnIdleMinutesChanged"/>
-                                    <TextBlock Text="分钟" VerticalAlignment="Center" Margin="4,0,0,0"
-                                               Foreground="{DynamicResource TextPrimary}"/>
                                 </StackPanel>
                             </StackPanel>
 
@@ -1674,17 +1673,18 @@
                         </StackPanel>
 
                         <!-- 启动时的问题（`AppHost.Warnings`）。**必须看得见** ——
-                             它们在启动那一刻就发生了，而用户多半没盯着屏幕。 -->
-                        <TextBlock Text="启动时需要注意" Style="{StaticResource SectionTitle}"
-                                   Margin="0,20,0,8"
-                                   x:Name="WarningsHeader" Visibility="Collapsed"/>
-                        <!-- ⚠️ **不给 MaxHeight**：这一页整页已经在一个 `ScrollViewer`
-                             里，再限一次高度只会让第 3、4 条被自己的滚动条裁掉
-                             （2026-10-02 实测报上来的）。没上界时它按内容长、由外层的
-                             滚动条统一管。 -->
-                        <ListBox x:Name="WarningsList"
-                                 HorizontalContentAlignment="Stretch"
-                                 Visibility="Collapsed"/>
+                             它们在启动那一刻就发生了，而用户多半没盯着屏幕。
+                             ⚠️ 2026-10-15：这里原来是 `ListBox`，条目是裸字符串、没有
+                             `ItemTemplate` ⇒ 默认模板里的 `ScrollViewer` 把整条当**一行长文本**，
+                             一超宽就长出**横向滚动条**（用户看到的正是那两个 `<` `>` 箭头）。
+                             现在直接用主窗那一句（`OverviewTexts.Warnings`）+ 折行，顺带把
+                             「同一件事两个窗子两种说法」收拢成一句。空的时候 `CaptionLine`
+                             自己收掉，不用再管可见性。
+                             ⚠️ **不给 MaxHeight**：这一页整页已经在一个 `ScrollViewer` 里，
+                             再限一次高度只会让第 3、4 条被自己的滚动条裁掉（2026-10-02 实测）。 -->
+                        <TextBlock x:Name="WarningsText"
+                                   Style="{StaticResource CaptionLine}"
+                                   Margin="0,20,0,0"/>
                     </StackPanel>
                 </Grid>
             </ScrollViewer>

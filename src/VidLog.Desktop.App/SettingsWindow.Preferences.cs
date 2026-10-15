@@ -14,7 +14,6 @@ using System.Windows.Threading;
 using Button = System.Windows.Controls.Button;
 using ComboBox = System.Windows.Controls.ComboBox;
 using ComboBoxItem = System.Windows.Controls.ComboBoxItem;
-using ListBox = System.Windows.Controls.ListBox;
 using MessageBox = System.Windows.MessageBox;
 using MessageBoxImage = System.Windows.MessageBoxImage;
 using MessageBoxResult = System.Windows.MessageBoxResult;
@@ -33,6 +32,7 @@ using VidLog.Desktop.Core.Cloud;
 using VidLog.Desktop.Core.Configuration;
 using VidLog.Desktop.Core.Diagnostics;
 using VidLog.Desktop.Core.Media;
+using VidLog.Desktop.Core.Overview;
 using VidLog.Desktop.Core.Recording;
 using VidLog.Desktop.Core.Update;
 using VidLog.Desktop.Core.Upload;
@@ -528,21 +528,11 @@ public partial class SettingsWindow : Window
     }
 
     /// <summary>启动时的问题。**必须看得见** —— 它们发生在用户没盯着屏幕的时候。</summary>
-    private void ShowWarnings()
-    {
-        if (_host.Warnings.Count == 0)
-        {
-            return;
-        }
-
-        WarningsHeader.Visibility = Visibility.Visible;
-        WarningsList.Visibility = Visibility.Visible;
-
-        foreach (var warning in _host.Warnings)
-        {
-            WarningsList.Items.Add(warning);
-        }
-    }
+    /// <remarks>
+    /// 文案直接用主窗那一份（<see cref="OverviewTexts.Warnings"/>），两个窗子说的是同一句话；
+    /// 空的时候 `CaptionLine` 样式自己把整块收掉（`Text=""` 触发），这里不必管可见性。
+    /// </remarks>
+    private void ShowWarnings() => WarningsText.Text = OverviewTexts.Warnings(_host.Warnings);
 
     // ─────────────────────────────────────────────
     // 连接手机（规格 §3.4.5）

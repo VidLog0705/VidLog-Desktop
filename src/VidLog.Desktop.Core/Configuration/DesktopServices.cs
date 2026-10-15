@@ -815,6 +815,16 @@ public sealed class DesktopServices : IAsyncDisposable
                 warnings.Add($"百度网盘的登录信息读不出来，需要重新登录一次（{ex.Message}）。");
             }
 
+            // ⚠️ 2026-10-15 补的**真**探针（需求方：「百度网盘已经可以上传了，为什么还显示
+            // 归档层没配好？」）。原来「没配好」那句是 `ArchiveTarget.ConfigurationProblem`
+            // 里写死的，见那一处的说明 —— 删掉之后这里按**当下的登录状态**说，说得着才说。
+            // 位置必须在这儿：登录是 `RestoreAsync` 恢复的，装配那一刻还问不到。
+            if (ArchiveTarget.Kind == ArchiveBackendKind.Cloud && !CloudUploads.Session.IsLoggedIn)
+            {
+                warnings.Add("百度网盘这一档还没登录：录像现在只在本机有一份，发不上去。"
+                    + "去【设置 → 百度网盘上传】登录一次就好。");
+            }
+
             CloudUploads.Start();
         }
 

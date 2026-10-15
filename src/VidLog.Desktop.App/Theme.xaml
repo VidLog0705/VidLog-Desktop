@@ -628,12 +628,27 @@
                                     <ColumnDefinition Width="*"/>
                                     <ColumnDefinition Width="34"/>
                                 </Grid.ColumnDefinitions>
-                                <ContentPresenter Grid.Column="0"
+                                <ContentPresenter x:Name="SelectionSite" Grid.Column="0"
                                                   Margin="{TemplateBinding Padding}"
                                                   VerticalAlignment="Center"
                                                   Content="{TemplateBinding SelectionBoxItem}"
                                                   ContentTemplate="{TemplateBinding SelectionBoxItemTemplate}"
                                                   ContentStringFormat="{TemplateBinding SelectionBoxItemStringFormat}"/>
+                                <!-- ⚠️ 可编辑下拉**必须**有这颗部件，名字就得叫 `PART_EditableTextBox`。
+                                     2026-10-15 实测：`IsEditable=True` 时 WPF 会把 `SelectionBoxItem`
+                                     置成**空串**（`Text='3 days'` 而 `SelectionBoxItem=''`），
+                                     字全靠这颗 TextBox 显示 —— 少了它就是「本地保留期」那四个空框。
+                                     `Style="{x:Null}"`：不要本文件那条 TextBox 样式，否则框里再套一个带边框的框。 -->
+                                <TextBox x:Name="PART_EditableTextBox" Grid.Column="0"
+                                         Margin="{TemplateBinding Padding}" VerticalAlignment="Center"
+                                         Style="{x:Null}" Background="Transparent" BorderThickness="0"
+                                         Padding="0"
+                                         FontFamily="{TemplateBinding FontFamily}"
+                                         FontSize="{TemplateBinding FontSize}"
+                                         Foreground="{TemplateBinding Foreground}"
+                                         CaretBrush="{DynamicResource TextPrimary}"
+                                         IsReadOnly="{TemplateBinding IsReadOnly}"
+                                         Visibility="Collapsed"/>
                                 <!-- 折线箭头。⚠️ 不用字体里的 ▾：那个在不同字族下大小不一。 -->
                                 <Path Grid.Column="1" HorizontalAlignment="Center" VerticalAlignment="Center"
                                       Data="M0,0 L4,4 L8,0"
@@ -666,6 +681,10 @@
                         </Popup>
                     </Grid>
                     <ControlTemplate.Triggers>
+                        <Trigger Property="IsEditable" Value="True">
+                            <Setter TargetName="PART_EditableTextBox" Property="Visibility" Value="Visible"/>
+                            <Setter TargetName="SelectionSite" Property="Visibility" Value="Collapsed"/>
+                        </Trigger>
                         <Trigger Property="IsMouseOver" Value="True">
                             <Setter TargetName="Bd" Property="BorderBrush" Value="{DynamicResource Accent}"/>
                         </Trigger>
@@ -762,10 +781,17 @@
                             BorderBrush="{DynamicResource BorderStrong}" BorderThickness="1"
                             CornerRadius="{StaticResource RadiusInput}" SnapsToDevicePixels="True">
                         <!-- ⚠️ 部件名必须是 `PART_ContentHost`（TextBox 靠它拿光标与选区）。
-                             它同时是只读 `TextBox` 的显示宿主，所以 `IsReadOnly` 的框也走这里。 -->
-                        <ScrollViewer x:Name="PART_ContentHost"
-                                      Margin="{TemplateBinding Padding}"
-                                      VerticalAlignment="Center"/>
+                             它同时是只读 `TextBox` 的显示宿主，所以 `IsReadOnly` 的框也走这里。
+                             ⚠️ 2026-10-15：「闲置提醒」那个 46px 宽的自定义分钟框**一个字都不显示**，
+                             根因就在这附近 —— `Padding` 此前同时挂在 Border 外和这颗 ScrollViewer 的
+                             `Margin` 上，等于**算了两遍**（实测文字起点在 x≈24 = 2×12），
+                             而可见视口只有 `宽 − 2 − 24`：46px 时视口 20 < 24，整段被推到视口外，
+                             框里的滚动条又是 Hidden ⇒ 看着就是个空框。
+                             ⚠️ 第二份**不是本模板给的**：`TextBoxBase` 会把 `TextBox.Padding`
+                             拷到宿主 ScrollViewer 上（实测 `PART_ContentHost.Padding=12,0,12,0`），
+                             而 ScrollViewer 自己的模板拿它当 `ScrollContentPresenter.Margin`
+                             ⇒ 再缩进一次。所以宿主的 `Padding` 必须显式钉成 0。 -->
+                        <ScrollViewer x:Name="PART_ContentHost" VerticalAlignment="Center" Padding="0"/>
                     </Border>
                     <ControlTemplate.Triggers>
                         <Trigger Property="IsMouseOver" Value="True">

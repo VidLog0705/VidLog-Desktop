@@ -142,7 +142,7 @@ public partial class SettingsWindow : Window
         // 这几个是纯文本框，没有「变更」事件可用 —— 挂一个只用来置脏标记的。
         // （下拉与单选各自在 XAML 上接了自己的处理器。两张磁盘表的行在模板里接。）
         foreach (var box in new[]
-                 { IdleMinutesBox, SegmentBox, PortBox, DuplicateDaysBox, CloudAppNameBox })
+                 { SegmentBox, PortBox, DuplicateDaysBox, CloudAppNameBox })
         {
             box.TextChanged += MarkDirty;
         }
@@ -239,7 +239,6 @@ public partial class SettingsWindow : Window
         {
             SelectRadio(ModeButtons, _host.Settings.Mode.ToString());
             SelectByTag(IdleCombo, _host.Settings.IdleReminder.ToString());
-            IdleMinutesBox.Text = _host.Settings.IdleReminderMinutes.ToString();
             SelectByTag(DurationCombo, _host.Settings.DurationFallback.ToString());
             SelectRadio(CodecButtons, _host.Settings.Codec.ToString());
             SelectRadio(ResolutionButtons, _host.Settings.Resolution.ToString());
@@ -431,7 +430,6 @@ public partial class SettingsWindow : Window
     // `SelectionChangedEventArgs` 换成 `RoutedEventArgs`（`Checked` 的签名）。
     private void OnModeChanged(object sender, RoutedEventArgs e) => MarkDirty();
     private void OnIdleReminderChanged(object sender, SelectionChangedEventArgs e) => MarkDirty();
-    private void OnIdleMinutesChanged(object sender, RoutedEventArgs e) => MarkDirty();
     private void OnDurationChanged(object sender, SelectionChangedEventArgs e) => MarkDirty();
     private void OnPrerecordChanged(object sender, SelectionChangedEventArgs e) => MarkDirty();
     private void OnRetentionChanged(object sender, SelectionChangedEventArgs e) => MarkDirty();
@@ -607,7 +605,6 @@ public partial class SettingsWindow : Window
         SegmentMinutes = SegmentBox.Text,
         PlaybackPort = PortBox.Text,
         DuplicateCheckDays = DuplicateDaysBox.Text,
-        IdleMinutes = IdleMinutesBox.Text,
         PrerecordTag = TagOf(PrerecordCombo),
         LogRetainDays = LogRetainDaysBox.Text,
         CloudParallelText = CloudParallelCombo.SelectedItem as string,

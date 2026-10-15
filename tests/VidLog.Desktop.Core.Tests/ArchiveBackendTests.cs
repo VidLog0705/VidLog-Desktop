@@ -64,6 +64,14 @@ public class ArchiveBackendTests
 
         // 本机磁盘不需要配路径 —— 它就在本机。
         Assert.Null(new ArchiveTarget(ArchiveBackendKind.LocalDisk).ConfigurationProblem);
+
+        // ⚠️ 网盘那一档**永远不算「没配好」**（2026-10-15 需求方：「百度网盘已经可以上传了，
+        // 为什么还显示归档层没配好？」）。这里原来有一句写死的话，什么都没查就断言「要授权」——
+        // 而凭据在不在、登没登录**这一格问不到**（凭据是环境变量、登录是启动时才恢复的）。
+        // 真话由那两处量出来说：`BaiduPanCredentials.MissingMessage` 与
+        // `DesktopServices.StartAsync` 里按 `Session.IsLoggedIn` 判的那句。
+        // 这条钉住的是「别再往这一格塞一句写死的话」。
+        Assert.Null(new ArchiveTarget(ArchiveBackendKind.Cloud).ConfigurationProblem);
     }
 
     // ─────────────────────────────────────────────
