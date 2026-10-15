@@ -127,9 +127,16 @@ public partial class WizardWindow : Window
     public WizardWindow(AppHost host)
     {
         _host = host;
-        _logger = host.Logger;
 
+        // ⚠️ 这句必须是**头一句**（2026-10-15 挪上来的）：`--smoke` 那道闸
+        // 靠「照常构造、参数给 null，看有没有 XamlParseException」来抓
+        // 「样式键写错 ⇒ 窗口一打开就炸」。它成立的前提是
+        // **BAML 载入早于任何碰协作对象的代码** —— 原来这里先写了
+        // `_logger = host.Logger;`，于是给 null 时抢在载入之前就 NRE 了，
+        // 这个窗口就成了那道闸的**盲点**（别的 12 个窗口都是对的）。
         InitializeComponent();
+
+        _logger = host.Logger;
 
         _previewTimer.Tick += OnPreviewTick;
         _micTimer.Tick += OnMicrophoneTick;

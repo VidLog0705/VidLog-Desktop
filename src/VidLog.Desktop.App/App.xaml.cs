@@ -110,6 +110,20 @@ public partial class App : System.Windows.Application
     {
         base.OnStartup(e);
 
+        // ⚠️ `--smoke`（批次 0 的闸）必须在**最前头**，早于日志器、主题、启动窗：
+        // 它要跑在 CI 上、跑几百遍，任何一处副作用（写日志文件、探相机、占端口）
+        // 都会让这个闸变得不敢跑。它只把每个窗口的 BAML 载入一遍就退。
+        // 判据与「为什么只跑 InitializeComponent」见 `Platform/SmokeCheck` 的类注释。
+        if (Platform.SmokeCheck.Requested(e.Args))
+        {
+            // ⚠️ 走 `Environment.Exit` 而不是 `Shutdown(code)`：`Shutdown` 会去
+            // 逐个关掉这一步造出来的窗口，而它们是**揣着 null 协作对象**造的
+            // —— `MainWindow.OnClosing` 那类收尾代码当场 NRE，进程以一个
+            // 谁也看不懂的退出码（实测 127）结束，正好把这一趟真正想报的那个
+            // 退出码盖掉。这一步是**用完就扔**的诊断，没有状态要保存。
+            Environment.Exit(Platform.SmokeCheck.Run());
+        }
+
         // ⚠️ 日志器与崩溃钩子必须在**任何业务代码之前**：
         // 这个应用是 WinExe（没有控制台），此前未捕获异常的表现是
         // 「窗口直接消失，磁盘上一个字都没有」。三个钩子全无，也没有任何测试会红。
