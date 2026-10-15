@@ -550,6 +550,36 @@ public class ArchiveBackendTests
     }
 
     [Fact]
+    public async Task 没有失败账本的那一档_失败照样如实返回_只是不记账()
+    {
+        // ⚠️ 2026-10-15 需求方裁定「甲」：网盘那一档传 `failures: null`。
+        // 那一档的失败由 `CloudUploadService.UploadQueue` 负责 —— 到点重试，
+        // 「百度网盘上传」页上还有放弃 / 恢复，是用户**真能操作**的那一个。
+        // 而网盘那条路上**没有任何代码去销这本账** ⇒ 记了就永远挂在设置页上
+        //（本机实测：2026-10-13 的两条测试残留挂到今天，造出它的 bug 10-14 就修了）。
+        using var published = new TempStore();
+        var logger = new CapturingLogger();
+        var relay = new ArchiveRelay(
+            new AlwaysFailingPublisher(), "百度网盘", published.Store, failures: null, logger);
+
+        var result = await relay.PublishAsync("e-000", Where("e.mp4"), "local.mp4");
+
+        // ① 失败**不许被吞掉**。甲去掉的是「记这本账」，不是「不说」——
+        //    结果、原因、日志三样一个字都不能少（否则网盘失败会变成静默的）。
+        Assert.False(result.Published);
+        Assert.Contains("归档层炸了", result.FailureReason);
+        Assert.Contains(logger.Entries, e => e.Level == LogLevel.Warn);
+
+        // ② 账本那**两处都空着**：落盘的那本、以及内存里的 `LastFailure`。
+        //    ⚠️ 只关掉一半就是白改 —— 设置页的黄条读的正是 `LastFailure`。
+        Assert.Null(relay.LastFailure);
+        Assert.Empty(published.Failures.Outstanding);
+
+        // ③ 补发那一路也一样空转（没有账本就没有要补的东西）。
+        Assert.Equal(0, await relay.RetryOutstandingAsync(_ => "local.mp4"));
+    }
+
+    [Fact]
     public async Task 同一条发布两次_锚取最早的那次_不许往后挪()
     {
         // ⚠️ 与回执表相反（那边是「后写的胜出」）。回执敢那么做是因为重复 commit

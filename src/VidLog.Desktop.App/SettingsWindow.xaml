@@ -684,60 +684,53 @@
                              它就是「第二份放哪儿」这唯一一个输入。 -->
                         <TextBlock Style="{StaticResource SectionTitle}"
                                    Text="录像备份位置" Margin="0,0,0,4"/>
+                        <!-- ⚠️ 2026-10-15 需求方裁定：这一句**照效果图逐字**（原来写的是
+                             「按列表顺序备份，满就换下一个，已备份的不删；留空则走百度网盘」）。 -->
                         <TextBlock Style="{StaticResource Caption}"
-                                   Text="按列表顺序备份，满就换下一个，已备份的不删；留空则走百度网盘"/>
+                                   Text="按列表顺序备份，NAS 满时切下一个，留空则备份到百度网盘"/>
 
                         <TextBlock x:Name="ArchiveReachNote" Style="{StaticResource Caption}"
                                    Margin="0,10,0,0"/>
 
                         <!-- ⚠️ 这一块**永远可见**：它不再是「某一档才要填」的东西，
-                             它就是「第二份放哪儿」这唯一一个输入。 -->
-                        <StackPanel Margin="0,10,0,0">
-                            <Border Background="{DynamicResource SurfaceAlt}"
-                                    CornerRadius="{StaticResource RadiusTab}" Padding="12,7">
-                                <Grid>
-                                    <Grid.ColumnDefinitions>
-                                        <ColumnDefinition Width="*"/>
-                                        <ColumnDefinition Width="110"/>
-                                    </Grid.ColumnDefinitions>
-                                    <TextBlock Style="{StaticResource Caption}" Text="存储路径"/>
-                                    <TextBlock Grid.Column="1" Style="{StaticResource Caption}"
-                                               Text="预留空间" HorizontalAlignment="Right"/>
-                                </Grid>
-                            </Border>
+                             它就是「第二份放哪儿」这唯一一个输入。
 
+                             ⚠️ 2026-10-15 需求方裁定「照效果图做」，这一块去掉了三样：
+                             ① 「存储路径 | 预留空间」那条表头 —— 备份表那一列是禁用的死格
+                                （见 `BackupReserveHint`），表头等于给一个不能填的东西立招牌；
+                             ② 「登录与凭据由你在系统里挂好，这里只当成一个目录」；
+                             ③ 「换台机器挂到别的盘符会怎样」那个 HelpTip。
+                             空表时那句话与四颗按钮**并排一行**（左字右钮），照图。 -->
+                        <StackPanel Margin="0,10,0,0">
                             <ListBox x:Name="BackupDiskList" Style="{StaticResource DiskTable}"
                                      ItemTemplate="{StaticResource DiskSlotTemplate}"
                                      SelectionChanged="OnDiskSelectionChanged"/>
-                            <TextBlock x:Name="BackupDiskEmptyNote"
-                                       Style="{StaticResource Caption}" Margin="12,8,0,0"
-                                       Text="用【添加磁盘】选一个可读写的网络位置；留空走百度网盘"/>
 
-                            <TextBlock Style="{StaticResource Caption}" Margin="0,10,0,0"
-                                       Text="登录与凭据由你在系统里挂好，这里只当成一个目录"/>
-
-                            <StackPanel Orientation="Horizontal" Margin="0,6,0,0">
-                                <local:HelpTip
-                                    Text="⚠️ 这个路径只是「去哪儿找归档层」，不进索引 —— 换台机器挂到别的盘符，录像照样查得到。"/>
-                                <TextBlock Style="{StaticResource Caption}" Margin="6,0,0,0"
-                                           Text="换台机器挂到别的盘符会怎样"/>
-                            </StackPanel>
-
-                            <StackPanel Orientation="Horizontal" HorizontalAlignment="Right"
-                                        Margin="0,10,0,0">
-                                <Button Content="添加磁盘" Tag="Backup"
-                                        Style="{StaticResource SecondaryButton}" Padding="14,6"
-                                        Click="OnAddDisk"/>
-                                <Button x:Name="BackupRemoveButton" Content="移除选中" Tag="Backup"
-                                        Style="{StaticResource SecondaryButton}" Padding="14,6"
-                                        Margin="8,0,0,0" Click="OnRemoveDisk"/>
-                                <Button x:Name="BackupUpButton" Content="上移" Tag="Backup"
-                                        Style="{StaticResource SecondaryButton}" Padding="14,6"
-                                        Margin="8,0,0,0" Click="OnMoveDiskUp"/>
-                                <Button x:Name="BackupDownButton" Content="下移" Tag="Backup"
-                                        Style="{StaticResource SecondaryButton}" Padding="14,6"
-                                        Margin="8,0,0,0" Click="OnMoveDiskDown"/>
-                            </StackPanel>
+                            <Grid Margin="0,8,0,0">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                </Grid.ColumnDefinitions>
+                                <TextBlock x:Name="BackupDiskEmptyNote"
+                                           Style="{StaticResource Caption}"
+                                           TextWrapping="Wrap" VerticalAlignment="Center"
+                                           Text="还没有配置。用【添加磁盘】选一个可读写的网络位置，例如 \nas\vidlog"/>
+                                <StackPanel Grid.Column="1" Orientation="Horizontal"
+                                            VerticalAlignment="Center" Margin="12,0,0,0">
+                                    <Button Content="添加磁盘" Tag="Backup"
+                                            Style="{StaticResource SecondaryButton}" Padding="14,6"
+                                            Click="OnAddDisk"/>
+                                    <Button x:Name="BackupRemoveButton" Content="移除选中" Tag="Backup"
+                                            Style="{StaticResource SecondaryButton}" Padding="14,6"
+                                            Margin="8,0,0,0" Click="OnRemoveDisk"/>
+                                    <Button x:Name="BackupUpButton" Content="上移" Tag="Backup"
+                                            Style="{StaticResource SecondaryButton}" Padding="14,6"
+                                            Margin="8,0,0,0" Click="OnMoveDiskUp"/>
+                                    <Button x:Name="BackupDownButton" Content="下移" Tag="Backup"
+                                            Style="{StaticResource SecondaryButton}" Padding="14,6"
+                                            Margin="8,0,0,0" Click="OnMoveDiskDown"/>
+                                </StackPanel>
+                            </Grid>
                         </StackPanel>
 
                         <!-- 归档层 = 本机磁盘时这块**不出现**（规格 §3.5.1）——
@@ -746,7 +739,7 @@
                                 Visibility="Collapsed">
                             <StackPanel>
                                 <TextBlock Style="{StaticResource SectionTitle}"
-                                           Text="本地保留期（发货 / 退货 × 已备份 / 未备份 = 四个数）"/>
+                                           Text="本地保留期"/>
 
                                 <Grid HorizontalAlignment="Left">
                                     <Grid.ColumnDefinitions>
@@ -788,33 +781,64 @@
                                               SelectionChanged="OnRetentionChanged"/>
                                 </Grid>
 
-                                <StackPanel Orientation="Horizontal" Margin="0,10,0,0">
-                                    <local:HelpTip
-                                        Text="四个数互相独立，改一个不动另一个。以「已备份」为例：它从归档成功那一刻起算，不是从录完起算。档位可以手输天数（例如 45）。"/>
-                                    <TextBlock Style="{StaticResource Caption}" Margin="6,0,0,0"
-                                               Text="四个数互相独立，改一个不动另一个"/>
-                                </StackPanel>
-
-                                <!-- ⚠️ 下面四条**不折进「?」** —— 规格 §3.5 明令
-                                     「禁止静默清理」并把它当成红线，藏起来等于把红线藏起来。 -->
-                                <TextBlock Style="{StaticResource Caption}" Margin="0,8,0,0"
+                                <!-- ⚠️ 下面三条**不折进「?」** —— 规格 §3.5 明令
+                                     「禁止静默清理」并把它当成红线，藏起来等于把红线藏起来。
+                                     ⚠️ 2026-10-15 需求方裁定「照效果图做」：原来是四条 + 一个
+                                     「四个数互相独立」HelpTip，图上是三条、没有那个 HelpTip，
+                                     且第 3 条是图上原话（把原来的「最近 24 小时…」与
+                                     「未备份那列…到期只提醒」并成了一行）。
+                                     图上没写「是唯一副本，永不自动删」那半句 —— 行为一个字没变
+                                     （`CleanupExecutor` 里那列本来就不删），少的是这一句说明。 -->
+                                <TextBlock Style="{StaticResource Caption}" Margin="0,10,0,0"
                                            Text="清理前弹窗报出条数和容量，点了同意才删"/>
                                 <TextBlock Style="{StaticResource Caption}" Margin="0,4,0,0"
-                                           Text="最近 24 小时录的一律不动"/>
-                                <TextBlock Style="{StaticResource Caption}" Margin="0,4,0,0"
-                                           Text="未备份那列是唯一副本，永不自动删，到期只提醒"/>
-                                <TextBlock Style="{StaticResource Caption}" Margin="0,4,0,0"
                                            Text="归档层没接上时先回查，查不到就不删"/>
+                                <TextBlock Style="{StaticResource Caption}" Margin="0,4,0,0"
+                                           Text="最近 24 小时录的一律不动，未备份那列到期只提醒"/>
                             </StackPanel>
                         </Border>
                         <TextBlock x:Name="RetentionAbsentNote" Style="{StaticResource Caption}"
                                    Margin="0,10,0,0"/>
 
                         <!-- 归档层那一份没发上去（规格 §3.4.6）。**必须说出来**：
-                             它意味着盘上这份只有一份，而用户可能以为自己已经双份了。 -->
-                        <TextBlock x:Name="ArchiveRelayNote" Style="{StaticResource Caption}"
-                                   Foreground="{DynamicResource Warning}" Margin="0,10,0,0"
-                                   Visibility="Collapsed"/>
+                             它意味着盘上这份只有一份，而用户可能以为自己已经双份了。
+
+                             ⚠️ 2026-10-15 需求方裁定「照效果图做」：原来是一段 ⚠️ Caption，
+                             图上是**一块浅黄色圆角块** —— 一行「N 条待上传」（粗体）+ 那句话，
+                             底下第二行写「修好之后…」，右边一个【查看详情】。
+                             底色用现成的 `WarningSurface`（#FFFBEB），描边用 `Warning`。
+                             文字仍由 code-behind 填（条数、撞名与否都要当下算）。 -->
+                        <Border x:Name="ArchiveRelayNote" Visibility="Collapsed"
+                                Background="{DynamicResource WarningSurface}"
+                                BorderBrush="{DynamicResource Warning}" BorderThickness="1"
+                                CornerRadius="{StaticResource RadiusInput}"
+                                Padding="12,10" Margin="0,20,0,0">
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                </Grid.ColumnDefinitions>
+                                <StackPanel Grid.Column="0" VerticalAlignment="Center">
+                                    <TextBlock TextWrapping="Wrap" MaxWidth="{StaticResource HintWidthPage}"
+                                               Foreground="{DynamicResource TextPrimary}">
+                                        <Run x:Name="ArchiveRelayHeadRun" FontWeight="Bold"/>
+                                        <Run x:Name="ArchiveRelayTextRun"/>
+                                    </TextBlock>
+                                    <TextBlock x:Name="ArchiveRelayBody"
+                                               Style="{StaticResource Caption}"
+                                               TextWrapping="Wrap" MaxWidth="{StaticResource HintWidthPage}"
+                                               Margin="0,3,0,0"/>
+                                </StackPanel>
+                                <!-- 无边框的文字按钮，复用现成的 `IconButton` 模板
+                                     （它只留内容，悬停时叠一层浅灰）。 -->
+                                <Button x:Name="ArchiveRelayDetailButton" Grid.Column="1"
+                                        Content="查看详情" Style="{StaticResource IconButton}"
+                                        Foreground="{DynamicResource Accent}"
+                                        Padding="6,2" Margin="12,0,0,0"
+                                        VerticalAlignment="Center"
+                                        Click="OnArchiveRelayDetail"/>
+                            </Grid>
+                        </Border>
                     </StackPanel>
 
                     <!-- ────────────────────────────────────────────────

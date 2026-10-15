@@ -500,19 +500,32 @@ public sealed class DirectoryArchiveBackend : IArchiveBackend, IArchivePublisher
 /// （重启往往就是因为刚出过问题）。所以失败时往 <see cref="ArchiveFailureLog"/>
 /// 记一笔、成功时把那笔撤掉。**同一个咽喉，不另找地方写。**
 /// </para>
+/// <para>
+/// <b>⚠️ 这本账不是每档都有（2026-10-15 需求方裁定）。</b>它存在的理由是
+/// 「目录型那一档没有落盘重传队列」，而网盘那一档有 —— 失败由
+/// <c>CloudUploadService.UploadQueue</c> 到点重试，「百度网盘上传」页上还摆着
+/// **放弃 / 恢复**，那是用户真能操作的那一个。网盘也记一遍的后果是具体的：
+/// 两个地方说同一件事，而**网盘那条路没有任何代码去销这笔账**
+/// ⇒ 设置页上会永远挂着一条「N 条待上传」，修好了也不消失。
+/// 所以网盘那一档传 <see langword="null"/>，见构造函数的参数说明。
+/// </para>
 /// </remarks>
 public sealed class ArchiveRelay
 {
     private readonly IArchivePublisher _publisher;
     private readonly PublishedStore _published;
-    private readonly ArchiveFailureLog _failures;
+    private readonly ArchiveFailureLog? _failures;
     private readonly IAppLogger _logger;
 
+    /// <param name="failures">
+    /// 「哪几条没发上去」那本账。**给 <see langword="null"/> 表示这一档的失败不归这儿管**
+    /// —— 它自己有落盘重传队列，也自己有界面（见 <see cref="RetryOutstandingAsync"/> 的说明）。
+    /// </param>
     public ArchiveRelay(
         IArchivePublisher publisher,
         string label,
         PublishedStore published,
-        ArchiveFailureLog failures,
+        ArchiveFailureLog? failures,
         IAppLogger? logger = null)
     {
         _publisher = publisher;
@@ -567,23 +580,36 @@ public sealed class ArchiveRelay
             // ⚠️ 顺序：**先撤欠账，再记台账**。反过来的话，撤欠账那一步若失败
             // （磁盘满、没权限），界面会一直提示「这条没发上去」——
             // 而那是个**假警报**，用户会去查一个不存在的问题。
-            await BookkeepAsync(
-                evidenceId,
-                () => _failures.NoteRecoveredAsync(evidenceId, DateTimeOffset.Now),
-                $"发布到{Label}成功，但「它上次没发上去」那笔欠账没撤掉 —— "
-                + "重启后设置页会继续提示这一条（那是假的，它已经发上去了）");
+            if (_failures is not null)
+            {
+                await BookkeepAsync(
+                    evidenceId,
+                    () => _failures.NoteRecoveredAsync(evidenceId, DateTimeOffset.Now),
+                    $"发布到{Label}成功，但「它上次没发上去」那笔欠账没撤掉 —— "
+                    + "重启后设置页会继续提示这一条（那是假的，它已经发上去了）");
+            }
 
             await RecordPublishedAsync(evidenceId, location);
             return result;
         }
 
+        // 留痕：这个失败**不影响**本机那一份与索引，但要能回答
+        // 「这条为什么还没上归档层」。⚠️ 日志**不看账本有没有** —— 没账本的那一档
+        // （网盘）出事时，日志是唯一的留痕。
+        _logger.Log(LogLevel.Warn, "归档",
+            $"发布到{Label}失败：{result.FailureReason ?? "（没给出原因）"}",
+            new Dictionary<string, object?> { ["location"] = location.Value });
+
+        // 没账本 ⇒ 这一档的失败不归这儿管（见构造函数的说明）。**内存里那个也不记** ——
+        // 账本与 `LastFailure` 是同一件事的两份（一份落盘、一份在内存），
+        // 只关掉一半，设置页照样会挂出那条提示。
+        if (_failures is null)
+        {
+            return result;
+        }
+
         LastFailure = result.FailureReason ?? "归档层那一份没发上去（没给出原因）";
         LastFailureKind = result.Kind;
-
-        // 留痕：这个失败**不影响**本机那一份与索引，但要能回答
-        // 「这条为什么还没上归档层」。
-        _logger.Log(LogLevel.Warn, "归档", $"发布到{Label}失败：{LastFailure}",
-            new Dictionary<string, object?> { ["location"] = location.Value });
 
         // ⚠️ **不传调用方的 CancellationToken**（见 `BookkeepAsync` 的说明）：
         // 这条欠账要是跟着「收尾被取消」一起丢了，重启之后用户就再也看不到它 ——
@@ -636,6 +662,14 @@ public sealed class ArchiveRelay
     public async Task<int> RetryOutstandingAsync(
         Func<string, string?> resolveLocalPath, CancellationToken cancellationToken = default)
     {
+        // 没有失败账本的那一档（网盘）**没有要补发的东西** —— 它的重传在
+        // `CloudUploadService.UploadQueue` 那边，不归这儿。生产上不会走到这一支
+        // （`DesktopServices` 只对目录型起这个循环），挡住是为了「万一」不变成 NRE。
+        if (_failures is null)
+        {
+            return 0;
+        }
+
         // ⚠️ 先拷一份：下面一边发一边把这本账里的条目划掉（发成功就撤欠账），
         // 直接在 `Outstanding` 上遍历会「遍历时修改集合」。
         var outstanding = _failures.Outstanding

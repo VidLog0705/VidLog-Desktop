@@ -281,56 +281,98 @@ public partial class SettingsWindow : Window
     /// </remarks>
     private void ShowArchiveRelayFailure()
     {
-        var relay = _host.Services.ArchiveRelay;
-
-        // ① 这一趟运行里最近那次失败 —— 最具体（带着原因），优先说它。
-        if (relay?.LastFailure is { Length: > 0 } failure)
-        {
-            ArchiveRelayNote.Visibility = Visibility.Visible;
-            ArchiveRelayNote.Text =
-                $"⚠️ 最近一次发布到{relay.Label}没成功：{failure}\n"
-                + "盘上这一份仍然是好的、也能检索 —— 但它现在只有一份，"
-                + "在发上去之前别删它。"
-                // ⚠️ 尾巴那句话**两档不一样**（§四）：撞名不是在等网络、也不是等重试，
-                // 是在等**一个人**。不分开说，用户会一直等一个永远不会发生的事。
-                + (relay.LastFailureKind == ArchiveFailureKind.Conflict
-                    ? "这一条不会自己好 —— 归档层上那份和这一份内容不一样，"
-                      + "两份都得留着，得你自己决定改哪个名 / 删哪一份。"
-                    : "修好之后下次收尾会自动再发。");
-            return;
-        }
-
-        // ② 重启之前欠下的那些。⚠️ 归档层是本机时 relay 是 null，但这本账照样要读
-        //（用户可能刚从 NAS 改回本机，之前欠着的那几条仍然只有一份）。
-        var outstanding = _host.Services.ArchiveFailures.Outstanding;
-
-        if (outstanding.Count == 0)
+        // ⚠️ 2026-10-15 需求方裁定「甲」：**网盘那一档不在这儿重复说一遍**。
+        // 那一档的失败由「百度网盘上传」页的队列负责 —— 它到点重试，页上还摆着
+        // 【放弃】/【恢复】，是用户**真能操作**的那一个。两套重叠的提示只会让人
+        // 不知道该看哪个；更要紧的是网盘那条路上**没有任何代码去销这本账**，
+        // 它会永远挂在设置页上（本机实测：2026-10-13 那两条测试残留挂到今天，
+        // 而造出它们的那个 bug 10-14 就修了）。
+        if (CurrentArchiveTarget().Kind == ArchiveBackendKind.Cloud)
         {
             ArchiveRelayNote.Visibility = Visibility.Collapsed;
             return;
         }
 
-        // 按时间倒序取最近的那条说细节，其余只报个数 —— 一条提示里塞 N 条原因是
-        // 没人读的（界面上是一行 Caption，不是列表）。
-        var newest = outstanding.OrderByDescending(r => r.At).First();
-        var rest = outstanding.Count - 1;
+        var relay = _host.Services.ArchiveRelay;
+        var outstanding = _host.Services.ArchiveFailures.Outstanding;
 
-        // ⚠️ **撞名的要先单独说**（§四）：它们等的是人，不是网络 —— 混在
+        if (outstanding.Count == 0)
+        {
+            // 兜底：这一趟运行里确实失败过，但那笔账没落上盘（磁盘满 / 没权限，
+            // `ArchiveRelay` 会为它单独记一条 Warn）。⚠️ 这个只在内存，重启就没了。
+            //
+            // ⚠️ 尾巴那句话**两档不一样**（§四）：撞名不是在等网络、也不是等重试，
+            // 是在等**一个人**。不分开说，用户会一直等一个永远不会发生的事。
+            if (relay?.LastFailure is not { Length: > 0 } failure)
+            {
+                ArchiveRelayNote.Visibility = Visibility.Collapsed;
+                return;
+            }
+
+            ShowRelayNote("最近一次没发上去", $"：{failure}",
+                relay.LastFailureKind == ArchiveFailureKind.Conflict
+                    ? "这一条不会自己好 —— 归档层上那份和这一份内容不一样，"
+                      + "两份都得留着，得你自己决定改哪个名 / 删哪一份。"
+                    : "修好之后下次收尾会自动再发。",
+                withDetail: false);
+            return;
+        }
+
+        // ⚠️ **撞名那一档要先说**（§四）：它们等的是**人**，不是网络 —— 混在
         // 「N 条没发上去」里，用户会去查网络，而查多久都不会动。
         var conflicts = outstanding.Count(r => r.Kind == ArchiveFailureKind.Conflict);
 
+        var body = "修好之后下次收尾会自动重发。";
+        if (conflicts > 0)
+        {
+            body = $"其中 {conflicts} 条是撞名 —— 归档层上已经有同名文件，但内容不是这一份。"
+                + "那几条不会自己好，得你自己决定改哪个名 / 删哪一份。"
+                + (conflicts < outstanding.Count ? "其余修好之后下次收尾会自动重发。" : string.Empty);
+        }
+
+        ShowRelayNote(
+            $"{outstanding.Count} 条待上传",
+            $" {outstanding.Count} 条录像还没发到归档层，盘上只有一份，先别删",
+            body,
+            withDetail: true);
+    }
+
+    /// <summary>铺那块黄条。<paramref name="rank"/> 是粗体那一截，<paramref name="detail"/> 接着它。</summary>
+    private void ShowRelayNote(string rank, string detail, string body, bool withDetail)
+    {
+        ArchiveRelayHeadRun.Text = rank;
+        ArchiveRelayTextRun.Text = detail;
+        ArchiveRelayBody.Text = body;
+
+        ArchiveRelayDetailButton.Visibility =
+            withDetail ? Visibility.Visible : Visibility.Collapsed;
+
         ArchiveRelayNote.Visibility = Visibility.Visible;
-        ArchiveRelayNote.Text =
-            (conflicts > 0
-                ? $"⚠️ 有 {conflicts} 条「撞名」：归档层上已经有同名的文件，但内容不是这一份。"
-                  + "两份都得留着，得你自己决定改哪个名 / 删哪一份 —— 不会自己好。\n"
-                : string.Empty)
-            + $"⚠️ 有 {outstanding.Count} 条录像没发到归档层（最近一条：{newest.EvidenceId}，"
-            + $"{newest.At.LocalDateTime:yyyy-MM-dd HH:mm} —— {newest.Reason}）"
-            + (rest > 0 ? $"，另有 {rest} 条更早的。" : "。")
-            + "\n盘上这些仍然是好的、也能检索 —— 但它们现在只有一份，"
-            + "在发上去之前别删。"
-            + (conflicts == 0 ? "修好之后下次收尾会自动再发。" : string.Empty);
+    }
+
+    /// <summary>
+    /// 【查看详情】—— 把欠着的那些一条条列出来。
+    /// </summary>
+    /// <remarks>
+    /// 黄条上只放得下一句 —— N 条原因挤在一行 Caption 里没人读。逐条列出才对得上
+    /// 用户点这颗按钮的意图：「哪几条？什么时候？为什么？」
+    /// </remarks>
+    private void OnArchiveRelayDetail(object sender, RoutedEventArgs e)
+    {
+        var outstanding = _host.Services.ArchiveFailures.Outstanding
+            .OrderByDescending(r => r.At)
+            .ToArray();
+
+        var lines = outstanding.Select(r =>
+            $"· {r.EvidenceId}　{r.At.LocalDateTime:yyyy-MM-dd HH:mm}　{r.Reason}");
+
+        MessageBox.Show(
+            this,
+            "这些录像本机上有、归档层上还没有，所以本机这一份暂时别删：\n\n"
+            + string.Join("\n", lines),
+            $"还没发上去的录像（{outstanding.Length} 条）",
+            MessageBoxButton.OK,
+            MessageBoxImage.Warning);
     }
 
     /// <summary>

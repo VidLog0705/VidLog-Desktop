@@ -536,7 +536,17 @@ public sealed class DesktopServices : IAsyncDisposable
 
         var relay = target.IsOnThisMachine
             ? null
-            : new ArchiveRelay(publisher, target.Label, published, archiveFailures, logger);
+            // ⚠️ 2026-10-15 需求方裁定「甲」：**网盘那一档不记这本欠账**。
+            // 这本账存在的理由是「目录型那一档没有落盘重传队列」（见
+            // `ArchiveRelay.RetryOutstandingAsync` 的说明），而网盘那一档有 ——
+            // `CloudUploadService.UploadQueue` 到点重试，「百度网盘上传」页上还有
+            // 放弃 / 恢复。同一件事记两遍，用户不知道该看哪个；更要紧的是
+            // **网盘那条路上没有任何代码去销这笔账**，它会永远挂在设置页上
+            // （本机实测：2026-10-13 的两条测试残留挂到今天，而那个 bug 10-14 就修了）。
+            : new ArchiveRelay(
+                publisher, target.Label, published,
+                target.Kind == ArchiveBackendKind.Cloud ? null : archiveFailures,
+                logger);
 
         if (target.ConfigurationProblem is { } problem)
         {
