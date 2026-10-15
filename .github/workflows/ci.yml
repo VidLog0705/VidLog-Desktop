@@ -153,11 +153,23 @@ jobs:
       # 只有**用户点开那个窗口**那一刻才抛 XamlParseException。
       # 而测试工程只引用 Core、不引用 App，结构上盖不到。
       # 做法与「为什么只跑 InitializeComponent」见 `Platform/SmokeCheck.cs`。
+      # ⚠️ **必须 `Start-Process -Wait`，不能用 `& exe`**（2026-10-15 栽在这儿）：
+      # 这是个 **WinExe（GUI 子系统）**，PowerShell 用 `&` 起它**不等**，`$LASTEXITCODE`
+      # 那一格**根本没被赋过值**（是 `$null`），而 `$null -ne 0` 判真 ⇒ 这一步必红
+      # （机制上必然，不是偶发；加进来之后**唯一跑过的那次** 0.15.1 就红在这儿），
+      # 报的还是「退出码 $LASTEXITCODE」→ 后面那句空着
+      # （`界面载入 smoke 失败（退出码 ）`）。更贵的是它挂在流程中段：下面
+      # 「上屏文字阈值」「测试（全量）」两步被 `skipped` 掉，CI 一直在报一件假的事，
+      # 而真的事一件都没跑。`-NoNewWindow` 是为了让窗口里那几行 OK / FAIL 照旧进日志。
+      # 判据（本机实测）：`& exe --smoke` ⇒ `$LASTEXITCODE` 为 `$null`、输出还晚于
+      # 下一句；换成下面这版 ⇒ `ExitCode` 0/1，输出顺序也对。
       - name: 界面载入 smoke（把每个窗口的 XAML 载一遍）
         run: |
-          & src/VidLog.Desktop.App/bin/Release/net9.0-windows/VidLog.Desktop.App.exe --smoke
-          if ($LASTEXITCODE -ne 0) {
-            throw "界面载入 smoke 失败（退出码 $LASTEXITCODE）—— 上面那几行 FAIL 就是哪个窗口的哪个键"
+          $smoke = Start-Process `
+              -FilePath src/VidLog.Desktop.App/bin/Release/net9.0-windows/VidLog.Desktop.App.exe `
+              -ArgumentList '--smoke' -Wait -PassThru -NoNewWindow
+          if ($smoke.ExitCode -ne 0) {
+            throw "界面载入 smoke 失败（退出码 $($smoke.ExitCode)）—— 上面那几行 FAIL 就是哪个窗口的哪个键"
           }
 
       # ⚠️ 这一步防的是**文案那几族长回来**（⚠️ 符号 / 句号 / 破折号 / 小字条数）：
