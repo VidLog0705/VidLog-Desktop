@@ -203,6 +203,36 @@ internal static class SmokeCheck
             failed.Add($"SettingsWindow.{name} 不是 RadioButton —— 工作模式裁定是两颗单选（批次 A4）");
             Write($"FAIL 契约：SettingsWindow.{name} 不是 RadioButton");
         }
+
+        // ③ 卡片那一层必须给字色（2026-10-15 需求方报「暗色下这几个字是暗的、
+        //    为什么不改成亮色」查出来的那一条）。
+        //    ⚠️ 钉**卡片这一层**，不是钉他截图里那两个 `TextBlock`：漏的是
+        //    「所有卡片里没显式给颜色的 TextBlock」，那两行只是被拍到的那两个。
+        //    这一句一松，卡片里的裸字就退回链上最近那个 `Control` 的默认墨色
+        //    （纯黑）—— 亮色下看不出来（黑字压白卡片正好对），**只有暗色下是黑的**。
+        DemandCardInk(failed);
+    }
+
+    /// <summary>卡片样式给没给 <c>TextElement.Foreground</c>。</summary>
+    private static void DemandCardInk(List<string> failed)
+    {
+        if (Application.Current?.TryFindResource("Card") is not Style card)
+        {
+            failed.Add("找不到 Card 样式 —— 卡片里那层字色就收口在它身上");
+            Write("FAIL 契约：找不到 Card 样式");
+            return;
+        }
+
+        var ink = card.Setters.OfType<Setter>().FirstOrDefault(
+            setter => setter.Property == System.Windows.Documents.TextElement.ForegroundProperty);
+
+        if (ink?.Value is not null)
+        {
+            return;
+        }
+
+        failed.Add("Card 样式没给 TextElement.Foreground —— 卡片里的裸 TextBlock 会退回纯黑（暗色下就是黑的）");
+        Write("FAIL 契约：Card 样式没给 TextElement.Foreground");
     }
 
     /// <summary>某一个类型的隐式样式在不在、字号与最小高度对不对。</summary>

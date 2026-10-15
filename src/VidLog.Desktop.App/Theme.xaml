@@ -385,6 +385,33 @@
         <Setter Property="CornerRadius" Value="{StaticResource RadiusCard}"/>
         <Setter Property="Padding" Value="20"/>
         <Setter Property="Margin" Value="0,0,0,16"/>
+
+        <!--
+            ⚠️ 这一句 2026-10-15 补的，**别删**（需求方报的「暗色下这几个字是暗的、
+            为什么不改成亮色」查出来就是它）。
+
+            机制：卡片里没显式给颜色的 `TextBlock`，`Foreground` 会一路往上继承，
+            而**链上最近的那个有值的祖先是个 `Control`（`ScrollViewer` 这类），
+            它的默认值就是系统墨色 —— 纯黑**。亮色下黑字压白卡片正好对，
+            所以这个洞在亮色里看不出来；暗色下就成了**纯黑压在 `#1E293B` 上**。
+
+            抓图量的（2026-10-15，`0.14.6` 暗色主窗）：「手机/电脑备份」与「订单联动」
+            这两行是**纯 `#000000`**（x 52..148，两组行 y 71..84 / 143..155），
+            而同卡片里挂了 `BodySecondary` 的说明行是 `#94A3B8` ——
+            也就是说这一支**不是** `TextSecondary` 那一格的问题（那格是另一条，当天已提亮）。
+
+            ⚠️ 为什么写在这儿而不是去给那两个 `TextBlock` 各加一句 `Foreground`：
+            漏的是**所有**卡片里的裸 `TextBlock`，不只报出来的那两处；
+            挂在卡片这层等于一次收口，且**只影响本来就没颜色的那些**
+            （`BodySecondary` / `Caption` 这些显式挂样式的、以及按钮里从按钮继承的，
+            都比这一层近，照旧不受影响）。
+
+            ⚠️ 亮色那侧会跟着从 `#000000` 变成 `#1E293B`（`TextPrimary` 的亮色值）。
+            这是**朝设计图改**不是改坏：量过需求方那张概览设计图（`_39`），
+            全图**一个 `#000000` 像素都没有**，正文墨色就是 `#1E293B`。
+            纯黑是没给颜色的副产物，不是设计值。
+        -->
+        <Setter Property="TextElement.Foreground" Value="{DynamicResource TextPrimary}"/>
     </Style>
 
     <!--
