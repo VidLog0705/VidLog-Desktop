@@ -356,6 +356,30 @@ public class ThemePaletteTests
             "次级字比禁用字还浅 ⇒ 「禁用」看着跟正常一样的淡");
     }
 
+    [Fact]
+    public void 暗色这三支字色的层级不许反()
+    {
+        // ⚠️ 2026-10-15 补：上面那条 `亮色这次的改动是换值不是换关系` **只盖亮色**，
+        // 而暗色的 `TextSecondary` 就是在那天从 slate-400 提到 slate-300 的
+        // （需求方报「暗色下有些文字不是白色、显示不明显」）—— 改的正是暗色，
+        // 却没有任何一条会因为这个改法红。
+        //
+        // 提到多亮都行是不对的：**正文要仍比次级字亮**（不然 `Caption` 与正文的
+        // 分层没了），**次级字要仍比禁用字亮**（不然「灰掉的」看着跟正常一样）。
+        // 门槛不取「量出来的那个数」—— 取「次级字至少比禁用字亮 2 倍」，
+        // 一眼看得出达没达标。
+        Assert.True(
+            Luminance(Dark["TextSecondary"]) < Luminance(Dark["TextPrimary"]),
+            "暗色次级字比正文还亮 ⇒ Caption 与正文的层级反了");
+
+        Assert.True(
+            Luminance(Dark["TextSecondary"]) > Luminance(Dark["TextDisabled"]),
+            "暗色次级字比禁用字还暗 ⇒ 「禁用」看着跟正常一样的淡");
+
+        var gap = Contrast(Dark["TextSecondary"], Dark["TextDisabled"]);
+        Assert.True(gap >= 2.0, $"暗色次级字与禁用字只差 {gap:F2}:1，两者分不出来");
+    }
+
     // ─────────────────────────────────────────────
     // 关系（不是压字）：两块面之间看不看得出边界
     // ─────────────────────────────────────────────

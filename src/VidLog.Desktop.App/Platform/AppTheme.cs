@@ -147,12 +147,53 @@ internal static class AppTheme
 
         // ⚠️ 标题栏是 DWM 画的，**不归 WPF 管也不跟着我们那份覆盖字典走**：
         // 实测（2026-10-07）在 `AppsUseLightTheme = 0` 下窗口标题栏仍是白的。
-        // 得每个窗口显式告诉 DWM 一句。挂 `Loaded` 的类处理器 = 一处盖住全部 14 个窗口，
-        // 不用挨个改窗口类（漏掉一个就是一条白边）。
+        // 得每个窗口显式告诉 DWM 一句。
+        //
+        // ⚠️ **挂钩点是承重的，而「越早越好」不够——`Loaded` 就已经太晚了。**
+        // 机制：**那个属性只在标题栏那张面被建出来的时候被读一次**，之后写
+        // 什么都没用。于是「窗口建出来时还不是深色、之后才切深色」这条路上，
+        // 标题栏会留在错的那一色上 —— 挂 `Loaded` 量到的就是**白底 + 一块
+        // 纯黑矩形**（正好围着图标与标题，右上三颗钮白字压白底）。
+        //
+        // ⚠️ 顺带记一笔 2026-10-15 需求方报的「暗色下标题有黑块」查成了什么：
+        // 他那两张抓图量下来，0.14.6 主窗的标题栏是**整条 `#000000`**，
+        // 并不是上面那种「白底 + 黑块」。那是 **Win10 自己的深色标题栏**，
+        // 之所以看着像一块黑，是因为窗口其余部分是 `#0F172A` / `#1E293B`、
+        // 跟纯黑不同色。**这一条改不了**：实测 `DwmSetWindowAttribute` 的
+        // 34/35/36（边框色 / 标题栏色 / 标题栏文字色）在本机（Win10 19045）
+        // **一律返回 `E_INVALIDARG`（0x80070057）**、抓图逐像素不变 ——
+        // 想让它跟窗口同色就只能自己画标题栏，那是另一件事，需求方还没定。
+        //
+        // 每条都有抓图，试过的错路一并记在这儿，别再走：
+        //   1. 真屏 BitBlt 与 PrintWindow 抓到的是同一张，不是抓图工具的锅；
+        //   2. 最小化再还原 ⇒ 整条变成正确的全黑 ⇒ **那张面会被重建**，
+        //      重建时读到的才是属性的当前值；
+        //   3. 已经排除掉、别再试：`SetWindowPos(SWP_FRAMECHANGED)`（量过，
+        //      纹丝不动）、`RedrawWindow(RDW_FRAME|RDW_UPDATENOW)`（同上）、
+        //      把它点成前台（前后抓图逐字节相同）、以及**直接对已经开着的窗口
+        //      句柄写 0 再写 1** —— 最后这条拿 pwsh 直接调 dwmapi 做的，
+        //      两张抓图**逐像素完全相同**，属性根本没被读第二次；
+        //   4. **`Loaded` 也不够早**：实测那时窗口**已经在屏上了**
+        //      （`IsWindowVisible` = true），而 `SizeChanged` 那一刻还是 false
+        //      —— 同为「备份主机」那扇窗，挂在 `SizeChanged` 上写出来的
+        //      标题栏是**整条 `#000000`、38194 个像素**（挂 `Loaded` 上就是黑块）。
+        //      所以挂 `SizeChanged`，它比 `Loaded` 早、且在 `ShowWindow` 之前。
+        //
+        // ⚠️ 为什么不挂 `SourceInitialized`（它其实更早）：**它是 CLR 事件、
+        // 不是路由事件**，`EventManager.RegisterClassHandler` 挂不上
+        // （编译直接报 CS0117）；而窗口有 16 处 `new` / 13 个窗口类，
+        // 逐个手挂必然会漏一个，漏掉的那个就是一条白标题栏。
+        // 也想过盯 `Application.Windows` 的集合变动 —— 走不通，
+        // `WindowCollection` 是密封类、**不实现 `INotifyCollectionChanged`**
+        // （这条是编译器挡的，不是猜的）。
+        //
+        // ⚠️ 窗口改尺寸会再走到这儿，多写几次同样的值 —— 无所谓，实测过：
+        // 值没变时那句调用的效果是零（连重画都不会发生）。加个「写过没有」
+        // 的标记反而多一份要维护的状态。
         EventManager.RegisterClassHandler(
             typeof(Window),
-            FrameworkElement.LoadedEvent,
-            new RoutedEventHandler((sender, _) => ApplyTitleBar((Window)sender)));
+            FrameworkElement.SizeChangedEvent,
+            new SizeChangedEventHandler((sender, _) => ApplyTitleBar((Window)sender)));
     }
 
     /// <summary>
@@ -316,17 +357,81 @@ internal static class AppTheme
             _darkOverlay = null;
         }
 
-        // 已经开着的那些窗口的标题栏也得跟着翻（`Loaded` 类处理器只管**之后**新建的）。
+        // 已经开着的那些窗口的标题栏也得跟着翻（`Start()` 里那个类处理器只管**之后**新建的）。
         // ⚠️ 放在两个分支**之外**：切回亮色时那句一样要跑，否则白字标题栏留在暗色上。
         if (Application.Current is { } app)
         {
             foreach (Window window in app.Windows)
             {
-                ApplyTitleBar(window);
+                RebuildTitleBar(window);
             }
         }
 
         return true;
+    }
+
+    /// <summary>
+    /// 「主题换了」时给<b>已经开着</b>的窗口重做标题栏。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// ⚠️ <b>光写属性是没用的</b>：实测（2026-10-15，拿 pwsh 直接调 dwmapi
+    /// 对着一扇开着的窗口写 <c>0</c> 再写 <c>1</c>）—— 前后两张抓图
+    /// <b>逐像素完全相同</b>，属性根本没被读第二次。
+    /// <c>SetWindowPos(SWP_FRAMECHANGED)</c> 也一样，量过，纹丝不动。
+    /// </para>
+    /// <para>
+    /// ⚠️ 唯一能把那张面重建的杠杆是<b>让窗口离开屏幕再回来</b>
+    /// （对应人工「最小化再还原」）：量到 <c>SW_HIDE</c> + <c>SW_SHOW</c> 之后
+    /// 整条标题栏的颜色就跟着属性走了（<c>#FFFFFF</c> / <c>#000000</c> 各一张，
+    /// 都是**整条干净**、没有黑块）。
+    /// 后面那个命令换成 <c>SW_SHOWNOACTIVATE</c> 一样管用（也量过：写完 `0`
+    /// 再 hide + noactivate，整条变 `#FFFFFF`、37718 个像素），所以「哪个窗口
+    /// 用哪个」可以只管前台，不影响这张面重不重建。
+    /// </para>
+    /// <para>
+    /// ⚠️ 代价照实说：**这一下窗口会真的闪一次**。只有「用户改了外观那一档」
+    /// 和「跟随系统时系统换了主题」两条路会走到这儿（都是罕见动作、而且是他自己
+    /// 刚点出来的），换来的是标题栏不留在错颜色上。除此之外没有别的办法——
+    /// 上面两条不闪的路都实测过、都没用。
+    /// </para>
+    /// <para>
+    /// ⚠️ 用 Win32 的 <c>ShowWindow</c> 而不是 WPF 的 <c>Window.Hide/Show</c>：
+    /// <c>ShowDialog</c> 开出来的窗口上再调 WPF 的 <c>Show()</c> 会抛
+    /// （`_showingAsDialog`），而模态窗口恰恰是最需要跟着换色的那类。
+    /// </para>
+    /// </remarks>
+    private static void RebuildTitleBar(Window window)
+    {
+        ApplyTitleBar(window);
+
+        // 还没显示出来的窗口不用管：它之后 `ShowWindow` 的那一刻会自己读到新值。
+        //
+        // ⚠️ **最小化的窗口也要跳过**，这一条不是省事、是安全：`SW_SHOW` 会把窗口
+        // 显示出来，对着一扇缩在任务栏里的窗口做一下，等于把它弹出来。而它本来
+        // 也不需要这一下 —— 从最小化还原本身就是一次「离开屏幕再回来」，
+        // 那张面会在那一刻重建、读到的就是刚写进去的新值。
+        if (!window.IsVisible || window.WindowState is WindowState.Minimized)
+        {
+            return;
+        }
+
+        var handle = new WindowInteropHelper(window).Handle;
+
+        if (handle == IntPtr.Zero)
+        {
+            return;
+        }
+
+        // ⚠️ 显示的那一下**别去抢前台**：这里是遍历所有开着的窗口，全用 `SW_SHOW`
+        // 的话，最后遍历到的那扇会跳到最前面 —— 用户只是在设置里换了一档颜色，
+        // 别的窗口不该因此翻上来。只有**本来就是前台**的那扇用 `SW_SHOW` 把焦点
+        // 拿回来（用户刚点的那一下不该被顶掉），其余用 `SW_SHOWNOACTIVATE`。
+        // ⚠️ 这句要在 `SW_HIDE` **之前**问：隐藏之后它就不是前台了。
+        var command = GetForegroundWindow() == handle ? SwShow : SwShowNoActivate;
+
+        _ = ShowWindow(handle, SwHide);
+        _ = ShowWindow(handle, command);
     }
 
     /// <summary>
@@ -343,7 +448,7 @@ internal static class AppTheme
     /// 但不试的话在这个世纪初的系统上就是一条白边。
     /// </para>
     /// <para>
-    /// ⚠️ 它**不许把启动弄崩**：这是一句装饰性的调用，调用点又在 `Loaded` 上，
+    /// ⚠️ 它**不许把启动弄崩**：这是一句装饰性的调用，调用点又在窗口刚建出 HWND 那一刻，
     /// 抛出去就是「窗口刚画出来就没了」。
     /// </para>
     /// </remarks>
@@ -355,16 +460,14 @@ internal static class AppTheme
 
             if (handle == IntPtr.Zero)
             {
-                // 还没建好 HWND（`Loaded` 之外的地方会这样）。别硬来。
+                // 还没建好 HWND。`SizeChanged` 那条路上不该出现（那时窗口已经排过版了），
+                // 但 `RebuildTitleBar` 那条路是在任意时刻遍历窗口的 —— 别硬来。
                 return;
             }
 
             var dark = _darkOverlay is not null ? 1 : 0;
 
-            if (DwmSetWindowAttribute(handle, DwmwaUseImmersiveDarkMode, ref dark, sizeof(int)) != 0)
-            {
-                _ = DwmSetWindowAttribute(handle, DwmwaUseImmersiveDarkModeLegacy, ref dark, sizeof(int));
-            }
+            Write(handle, dark);
         }
         catch (Exception ex) when (ex is DllNotFoundException or EntryPointNotFoundException or ExternalException)
         {
@@ -378,6 +481,33 @@ internal static class AppTheme
                     LogLevel.Warn, "主题",
                     $"标题栏没切成深色（dwmapi 那句调用失败了），界面其余部分是好的：{ex.Message}");
             }
+        }
+    }
+
+    /// <summary>让窗口离开屏幕。</summary>
+    private const int SwHide = 0;
+
+    /// <summary>再让它回来（顺带拿回前台，用户刚点的那一下不该被别的窗口顶掉）。</summary>
+    private const int SwShow = 5;
+
+    /// <summary>回来，但**不碰前台** —— 给那些顺带被重做的窗口用。</summary>
+    private const int SwShowNoActivate = 4;
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool ShowWindow(IntPtr hwnd, int command);
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr GetForegroundWindow();
+
+    /// <summary>把「这条标题栏是深色的吗」写给 DWM（两代属性号各试一次）。</summary>
+    private static void Write(IntPtr handle, int value)
+    {
+        var v = value;
+
+        if (DwmSetWindowAttribute(handle, DwmwaUseImmersiveDarkMode, ref v, sizeof(int)) != 0)
+        {
+            _ = DwmSetWindowAttribute(handle, DwmwaUseImmersiveDarkModeLegacy, ref v, sizeof(int));
         }
     }
 
