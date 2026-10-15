@@ -178,8 +178,11 @@
             <Border Grid.Column="3" Style="{StaticResource Card}" Padding="18,14" Margin="0">
                 <StackPanel>
                     <TextBlock Style="{StaticResource Caption}" Text="平均单件用时"/>
+                    <!-- ⚠️ 2026-10-15 去掉 `Foreground=Warning`（批次 A5）：
+                         这是「平均单件用时」那个**大号数字**，橙色在这里纯是装饰 ——
+                         它既不是错也不是警告，却跟真警告用同一个色，颜色就不表示任何东西了。 -->
                     <TextBlock x:Name="AverageText" FontSize="{StaticResource TextSizeStat}" FontWeight="Bold"
-                               Margin="0,4,0,0" Foreground="{DynamicResource Warning}"
+                               Margin="0,4,0,0" Foreground="{DynamicResource Accent}"
                                Text="0 秒"/>
                 </StackPanel>
             </Border>
@@ -208,7 +211,7 @@
                            HorizontalAlignment="Center" VerticalAlignment="Center"
                            Style="{StaticResource Caption}"
                            Visibility="Collapsed"
-                           Text="这段时间里没有录像。把时间范围放宽一点再看看。"/>
+                           Text="这段时间里没有录像，把范围放宽再看看"/>
 
                 <ScrollViewer x:Name="BucketScroll" Grid.Row="1" Margin="0,10,0,0"
                               VerticalScrollBarVisibility="Auto">
@@ -266,7 +269,7 @@
                      会被当成连续的，而用户会以为中间那些天「没录上」。 -->
                 <TextBlock Grid.Row="2" x:Name="ChartFootnoteText"
                            Style="{StaticResource Caption}" Margin="0,10,0,0"
-                           Text="只列出有录像的时间段。存储大小是按录制规格推算的约数，不是实测。"/>
+                           Text="只列有录像的时间段，大小是按规格推算的约数"/>
             </Grid>
         </Border>
 
@@ -284,7 +287,7 @@
                                Text="多店铺分组"/>
                     <TextBlock Style="{StaticResource Caption}" Margin="0,2,0,0"
                                TextWrapping="Wrap" MaxWidth="520"
-                               Text="把录像按店铺分开统计、分开看。"/>
+                               Text="把录像按店铺分开统计、分开看"/>
                 </StackPanel>
                 <Button Grid.Column="1" x:Name="ShopGroupingButton" Content="打开"
                         Style="{StaticResource SecondaryButton}" MinWidth="88"
@@ -292,8 +295,11 @@
             </Grid>
         </Border>
 
+        <!-- ⚠️ 2026-10-15 去掉 `Foreground=Warning`（批次 A5）：这句是
+             「多店铺分组还在开发中」，**不是错**。`OnOpenShopGrouping` 的注释里
+             本就写着「模态框会让用户以为这是个要处理的错」—— 那句话对橙色同样成立。 -->
         <TextBlock Grid.Row="4" x:Name="ShopGroupingNote" Style="{StaticResource Caption}"
-                   Margin="2,8,0,0" TextWrapping="Wrap" MaxWidth="620"
-                   Foreground="{DynamicResource Warning}" Visibility="Collapsed"/>
+                   Margin="2,8,0,0" TextWrapping="Wrap" MaxWidth="{StaticResource HintWidthPage}"
+                   Visibility="Collapsed"/>
     </Grid>
 </Window>

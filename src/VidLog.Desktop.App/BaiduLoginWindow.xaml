@@ -55,7 +55,7 @@
 
         <TextBlock Grid.Row="0" Style="{StaticResource Caption}" TextWrapping="Wrap"
                    Margin="0,0,0,10"
-                   Text="在这一页登录百度网盘并点「同意授权」。登录成功后这个窗会自己关掉。"/>
+                   Text="在这一页登录百度网盘并同意授权，成功后这个窗会自己关掉"/>
 
         <Border Grid.Row="1" BorderBrush="{DynamicResource CardBorder}" BorderThickness="1"
                 CornerRadius="{StaticResource RadiusControl}" ClipToBounds="True">

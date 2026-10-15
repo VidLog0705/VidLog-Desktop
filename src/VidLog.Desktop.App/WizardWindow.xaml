@@ -243,7 +243,7 @@
                             <TextBlock Style="{StaticResource WizardTitle}" Text="选择打包模式"/>
                             <TextBlock Style="{StaticResource Caption}" Margin="0,6,0,16"
                                        TextWrapping="Wrap"
-                                       Text="推荐连续打包模式，识别或扫描下一张面单时自动保存上一单"/>
+                                       Text="推荐连续打包模式，识别或扫下一张面单时自动保存上一单"/>
 
                             <RadioButton x:Name="ModeContinuous" Style="{StaticResource ChoiceCard}"
                                          GroupName="ModeChoice">
@@ -259,7 +259,7 @@
                                     </StackPanel>
                                     <TextBlock Style="{StaticResource Caption}" Margin="0,4,0,0"
                                                TextWrapping="Wrap"
-                                               Text="识别或扫描下一张面单条码后，自动结束上一单并开始下一单"/>
+                                               Text="识别或扫下一张面单条码后，自动结束上一单并开始下一单"/>
                                 </StackPanel>
                             </RadioButton>
 
@@ -271,7 +271,7 @@
                                                Foreground="{DynamicResource TextPrimary}"/>
                                     <TextBlock Style="{StaticResource Caption}" Margin="0,4,0,0"
                                                TextWrapping="Wrap"
-                                               Text="识别或扫描面单条码开始录制，再次识别同一条码停止录制"/>
+                                               Text="识别或扫面单条码开始录制，再次识别同一条码停止"/>
                                 </StackPanel>
                             </RadioButton>
                         </StackPanel>
@@ -343,7 +343,7 @@
                             <TextBlock Style="{StaticResource WizardTitle}" Text="是否使用摄像头识别面单"/>
                             <TextBlock Style="{StaticResource Caption}" Margin="0,6,0,14"
                                        TextWrapping="Wrap"
-                                       Text="开启后可直接将面单条形码放入画面，识别成功后自动开始或切换录像"/>
+                                       Text="开启后可直接将面单条形码放入画面，识别成功后自动开始或切换"/>
 
                             <Grid>
                                 <Grid.ColumnDefinitions>
@@ -453,7 +453,7 @@
                             <TextBlock Style="{StaticResource WizardTitle}" Text="检测录制性能"/>
                             <TextBlock Style="{StaticResource Caption}" Margin="0,6,0,14"
                                        TextWrapping="Wrap"
-                                       Text="正在根据这台电脑的编码能力，为已选摄像头推荐稳定的原生分辨率和帧率"/>
+                                       Text="按这台电脑的编码能力，为已选摄像头推荐稳定的分辨率和帧率"/>
 
                             <!-- 跑着 -->
                             <Border x:Name="PerfRunningBox" Background="{DynamicResource SurfaceMuted}"
@@ -525,7 +525,7 @@
 
                             <TextBlock Style="{StaticResource Caption}" Margin="0,12,0,0"
                                        TextWrapping="Wrap"
-                                       Text="⚠️ 麦克风被拒、被别的程序占用、或者中途被拔掉，录像照常进行 —— 只有那一段没有音轨，界面上会写明原因。声音绝不会让整段录像失败。"/>
+                                       Text="麦克风出问题只影响那一段的音轨，录像照常进行"/>
                         </StackPanel>
 
                         <!-- ══════════════════════════════════════════════
@@ -535,7 +535,7 @@
                             <TextBlock Style="{StaticResource WizardTitle}" Text="扫码枪（可选）"/>
                             <TextBlock Style="{StaticResource Caption}" Margin="0,6,0,14"
                                        TextWrapping="Wrap"
-                                       Text="没有扫码枪也可手动输入面单号；如需使用，可在这里测试扫码枪"/>
+                                       Text="没有扫码枪也可手动输入面单号；要用手持的在这里测即可"/>
 
                             <Border Background="{DynamicResource SurfaceMuted}"
                                     BorderBrush="{DynamicResource CardBorder}" BorderThickness="1"
@@ -600,7 +600,7 @@
                                                Foreground="{DynamicResource TextPrimary}"/>
                                     <TextBlock Style="{StaticResource Caption}" Margin="0,6,0,0"
                                                TextWrapping="Wrap"
-                                               Text="完成向导后会显示手机连接二维码。手机与这台电脑连接同一个局域网，扫码即可打开打包视频和回放页面"/>
+                                               Text="完成后会显示手机连接二维码，手机和这台电脑连同一个局域网就能扫"/>
                                     <!-- ⚠️ 图上这一段写着「完成向导后会显示手机连接二维码」，
                                          而那张码在 `EnrollWindow` 里（主窗口底部的
                                          「连接电脑 / 手机」）。这里**不另画一个入口** ——
@@ -616,10 +616,12 @@
                                 其余各项写完就生效。不说的话，用户走完向导换了摄像头、
                                 点【完成】、发现画面还是旧的 —— 而界面上一个字都没提过。
                             -->
+                            <!-- ⚠️ 2026-10-15 去掉 `Foreground=Warning`（批次 A5）：
+                                 这句是**时序提示**（哪几项要重启），不是出错。
+                                 文案本身归批次 C 处理，这里只动颜色。 -->
                             <TextBlock Style="{StaticResource Caption}" Margin="0,12,0,0"
                                        TextWrapping="Wrap"
-                                       Foreground="{DynamicResource Warning}"
-                                       Text="⚠️ 摄像头那一项（换成另一台设备、或改成网络摄像头地址）和「摄像头识别」开关，要重启软件才生效；其余各项立即生效。"/>
+                                       Text="摄像头和「摄像头识别」要重启才生效，其余立即生效"/>
                         </StackPanel>
 
                     </Grid>

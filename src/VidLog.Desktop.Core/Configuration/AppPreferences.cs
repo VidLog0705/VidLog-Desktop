@@ -197,14 +197,23 @@ public static class AppPreferences
     /// ⚠️ <b>「跟随系统」那一档必须把系统的现状说出来</b>：不说的话，
     /// 系统是亮色的用户选了「跟随系统」会看到**什么都没变** ——
     /// 那正是踩坑 #13 要防的「点了像没反应」。这一句就是本功能存在的一半理由。
+    /// <para>
+    /// ⚠️ <b>2026-10-15 需求方裁定「留一句短的」</b>（批次 A3）—— 四句一起砍到
+    /// <b>12 字以内、去掉句号</b>。砍掉的是两样东西：
+    /// ①「界面就是深的」这类<b>把前面半句再说一遍</b>的尾巴；
+    /// ②「Windows」这个主语 —— 这个程序本来就跑在 Windows 上，而「系统」
+    /// 在「跟随系统」这个上下文里指的就是它。
+    /// 留下的那半句（<b>现在</b>是深是浅）才是这功能存在的一半理由，一个字没动。
+    /// 长度由 <c>AppPreferencesTests.主题那句说明必须把系统现状说出来</c> 钉着。
+    /// </para>
     /// </remarks>
     public static string ThemeNote(AppThemeMode mode, bool systemIsDark) => mode switch
     {
-        AppThemeMode.Light => "固定浅色：不管 Windows 怎么设，界面一直是浅色。",
-        AppThemeMode.Dark => "固定深色：不管 Windows 怎么设，界面一直是深色。",
+        AppThemeMode.Light => "固定浅色，不管系统怎么设",
+        AppThemeMode.Dark => "固定深色，不管系统怎么设",
         _ => systemIsDark
-            ? "跟随系统：Windows 现在是深色，界面就是深的。"
-            : "跟随系统：Windows 现在是浅色，界面就是浅的。",
+            ? "跟随系统，现在是深色"
+            : "跟随系统，现在是浅色",
     };
 
     /// <summary>下拉该选中第几档 —— **真做了的那一档**（照实显示现状）。</summary>

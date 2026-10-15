@@ -23,7 +23,7 @@
                     <!-- ⚠️ 这句就是设计图上那句：双击进全屏、全屏内可旋转、Esc 返回。 -->
                     <TextBlock Style="{StaticResource Caption}" Margin="14,0,0,0"
                                VerticalAlignment="Center" TextWrapping="Wrap" MaxWidth="560"
-                               Text="双击某一格进入全屏（全屏里能换画质），按 Esc 或再双击一次返回；每格右上角那颗按钮转 90°，旁边那颗眼睛是不看这一格；右键还能选别的画面数。"/>
+                               Text="双击某一格进全屏，Esc 返回；右上角那颗转 90°，眼睛是不看这一格"/>
                 </StackPanel>
 
                 <StackPanel Orientation="Horizontal" HorizontalAlignment="Right"
@@ -87,7 +87,7 @@
                                    VerticalAlignment="Center" Text="全屏"/>
                         <TextBlock Style="{StaticResource Caption}" Margin="14,0,0,0"
                                    VerticalAlignment="Center"
-                                   Text="按 Esc 或再双击一次退出全屏。"/>
+                                   Text="按 Esc 或双击一次退出全屏"/>
                     </StackPanel>
 
                     <StackPanel x:Name="QualityRow" Orientation="Horizontal" Margin="0,10,0,0"/>

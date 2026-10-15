@@ -92,7 +92,7 @@
                 <Button x:Name="BusinessButton" Grid.Column="0"
                         Style="{StaticResource PrimaryButton}"
                         Padding="20,10" Click="OnToggleBusinessType"
-                        ToolTip="点一下切换「发货 / 退货」。录起来之后改它只对下一段生效 —— 正在录的这一段按开始时的档位。">
+                        ToolTip="点一下切发货/退货，录起来之后改只对下一段生效">
                     <StackPanel Orientation="Horizontal">
                         <!-- 包裹盒：内联矢量，不引任何图片资源 -->
                         <Path Data="M 8,0 L 16,4.5 L 16,12 L 8,16.5 L 0,12 L 0,4.5 Z M 8,0 L 8,16.5 M 0,4.5 L 8,8.5 L 16,4.5"
@@ -236,7 +236,7 @@
                                 Style="{StaticResource SecondaryButton}"
                                 Visibility="Collapsed"
                                 Click="OnEnterPreviewFullscreen"
-                                ToolTip="铺满整个屏幕看实时画面（按 Esc 或【退出全屏】回来）"/>
+                                ToolTip="铺满屏幕看实时画面，按 Esc 退出"/>
 
                         <!-- 实时时间。⚠️ 这是**可信时钟**的时间，不是系统时钟 ——
                              改系统时间也改不动它，与录像里烧的那个是同一个来源。
@@ -323,7 +323,7 @@
                             <Button x:Name="MultiViewButton" Content="实时多画面"
                                     Style="{StaticResource SecondaryButton}"
                                     Padding="14,6" Margin="8,0,0,0" Click="OnOpenMultiView"
-                                    ToolTip="看每台手机现在的实时画面。手机端在「设置 → 实时共享」里打开之后才会出现在这里。"/>
+                                    ToolTip="看每台手机现在的画面，手机端打开「设置 → 实时共享」后才出现"/>
                             <Button x:Name="OpenSettingsButton" Content="设置"
                                     Style="{StaticResource SecondaryButton}"
                                     Padding="14,6" Margin="8,0,0,0" Click="OnOpenSettings"/>
@@ -435,7 +435,7 @@
                         <TextBlock x:Name="OvUpdatedText" Style="{StaticResource Caption}"
                                    Margin="0,10,0,0" Text=""/>
 
-                        <Separator Margin="0,14,0,12"/>
+                        <Separator/>
 
                         <TextBlock Style="{StaticResource SectionTitle}" Text="本机状态"/>
 
@@ -514,7 +514,7 @@
                             </StackPanel>
                         </Border>
 
-                        <Separator Margin="0,14,0,12"/>
+                        <Separator/>
 
                         <!-- ⚠️ 这里原来是【连接电脑 / 手机】（需求方 2026-10-11 换掉的）：
                              录制台上换用途只能绕到设置里翻，而备份主机那一屏
@@ -528,7 +528,7 @@
                                 Style="{StaticResource SecondaryButton}"
                                 HorizontalAlignment="Stretch" Click="OnSwitchRole"/>
 
-                        <Separator Margin="0,14,0,12"/>
+                        <Separator/>
 
                         <TextBlock Style="{StaticResource SectionTitle}" Text="动态"/>
                         <TextBlock x:Name="NoticesText" TextWrapping="Wrap"
@@ -548,7 +548,7 @@
                                 <TextBlock Style="{StaticResource Caption}" Margin="0,4,0,0"
                                            HorizontalAlignment="Center" TextAlignment="Center"
                                            TextWrapping="Wrap"
-                                           Text="等同于按一下上面的【开始录制】；之后扫面单才会开录。"/>
+                                           Text="等同于按一下上面的【开始录制】，之后扫面单才开录"/>
                                 <Border Background="White" Padding="8" Margin="0,8,0,0"
                                         CornerRadius="{StaticResource RadiusControl}" HorizontalAlignment="Center"
                                         BorderBrush="{DynamicResource CardBorder}"
@@ -668,7 +668,7 @@
                         <TextBlock x:Name="BackupDeviceText" Style="{StaticResource BodySecondary}"
                                    Margin="0,9,0,0" Text="暂无手机/电脑设备"/>
 
-                        <Separator Margin="0,14,0,12"/>
+                        <Separator/>
 
                         <!-- 订单联动 -->
                         <Grid>
@@ -680,9 +680,11 @@
                                 <TextBlock Text="订单联动" Margin="8,0,0,0"
                                            FontSize="{StaticResource TextSizeEmphasis}" FontWeight="SemiBold"/>
                             </StackPanel>
+                            <!-- ⚠️ 2026-10-15 去掉 `Foreground=Warning`（批次 A5）：
+                                 「暂无设备」是**空态**，不是错 —— 橙色留给真异常。 -->
                             <TextBlock x:Name="BackupOrderTag" HorizontalAlignment="Right"
                                        VerticalAlignment="Center" FontSize="{StaticResource TextSizeCaption}"
-                                       Foreground="{DynamicResource Warning}" Text="暂无设备"/>
+                                       Foreground="{DynamicResource TextSecondary}" Text="暂无设备"/>
                         </Grid>
                         <TextBlock x:Name="BackupOrderText" Style="{StaticResource BodySecondary}"
                                    Margin="0,9,0,0" Text="暂无订单接收设备"/>
@@ -763,7 +765,7 @@
                     <Button Grid.Row="2" Grid.Column="0" Grid.ColumnSpan="2" Margin="0"
                             Style="{StaticResource SecondaryButton}" Padding="16,12"
                             Click="OnOpenMultiView"
-                            ToolTip="看每台手机现在的实时画面。手机端在「设置 → 实时共享」里打开之后才会出现在这里。">
+                            ToolTip="看每台手机现在的画面，手机端打开「设置 → 实时共享」后才出现">
                         <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
                             <Path Stroke="{DynamicResource Accent}" StrokeThickness="1.4"
                                   StrokeLineJoin="Round" VerticalAlignment="Center"

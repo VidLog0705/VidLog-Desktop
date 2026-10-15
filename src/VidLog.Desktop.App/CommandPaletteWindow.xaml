@@ -20,7 +20,7 @@
             <!-- 这句是**死的**（不随输入变），所以写在 XAML 里，不在每次敲字时重设 -->
             <TextBlock x:Name="HintText" Margin="2,8,0,0" TextWrapping="Wrap"
                        Style="{StaticResource Caption}"
-                       Text="↑↓ 选，回车打开，Esc 关掉。也可以直接打单号。"/>
+                       Text="↑↓ 选，回车打开，Esc 关掉，也可以直接打单号"/>
 
             <ListBox x:Name="ResultList" Margin="0,8,0,0" MinHeight="180" MaxHeight="300"
                      BorderThickness="0" Background="Transparent"

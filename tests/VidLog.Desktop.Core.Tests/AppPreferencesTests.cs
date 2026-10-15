@@ -155,6 +155,16 @@ public class AppPreferencesTests
             AppPreferences.ThemeNote(AppThemeMode.Dark, false),
         };
         Assert.Equal(all.Length, all.Distinct().Count());
+
+        // ⚠️ **需求方 2026-10-15 裁定「留一句短的」**（批次 A3）。这条闸钉的就是那个「短」：
+        // 四句一起砍到 ≤16 字、**不带句号**（与批次 C 那条「说明句一律不加句号」同一条尺子）。
+        // 钉它是因为这一句最容易以「说得更清楚」为名长回去 —— 而它长了，
+        // 设置页那一行就跟着长，当初那个「小字太多」的毛病就从这里复发。
+        foreach (var note in all)
+        {
+            Assert.DoesNotContain("。", note);
+            Assert.True(note.Length <= 16, $"「{note}」{note.Length} 字，超过 16 —— 裁定是「留一句短的」");
+        }
     }
 
     [Fact]

@@ -298,6 +298,14 @@ public partial class SettingsWindow : Window
 
     private RadioButton[] CodecButtons => [CodecH264, CodecH265];
 
+    /// <summary>工作模式那两颗单选（批次 A4，2026-10-15 由下拉改来）。</summary>
+    /// <remarks>
+    /// ⚠️ <c>Tag</c> 与从前那两颗 <c>ComboBoxItem</c> 逐字一样（<c>Continuous</c> /
+    /// <c>StopOnSameWaybill</c>）——`SettingsForm.ModeTag` 吃的就是这个字符串，
+    /// 所以落盘与协议**零改动**。
+    /// </remarks>
+    private RadioButton[] ModeButtons => [ModeContinuous, ModeStopOnSame];
+
     private RadioButton[] ResolutionButtons => [Res4K, Res1080, Res720];
 
     /// <summary>

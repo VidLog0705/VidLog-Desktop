@@ -93,7 +93,7 @@
                            Foreground="{DynamicResource TextPrimary}"/>
 
                 <StackPanel Grid.Column="1" Orientation="Horizontal"
-                            VerticalAlignment="Center">
+                            VerticalAlignment="Center" Margin="16,0,0,0">
                     <TextBox Width="64" Padding="6,3" TextAlignment="Right"
                              Background="{DynamicResource SurfaceMuted}"
                              BorderBrush="{DynamicResource CardBorder}"
@@ -216,7 +216,7 @@
                              免得这里写一份、结果卡上又写另一份。 -->
                         <TextBlock Style="{StaticResource SectionTitle}" Text="电脑用途"/>
                         <TextBlock Style="{StaticResource Caption}" Margin="0,0,0,8"
-                                   Text="选择这台电脑在 VidLog 中承担的职责。这一项改了会自动重启软件。"/>
+                                   Text="这台电脑在 VidLog 里干什么，改了会自动重启"/>
                         <ComboBox x:Name="RoleCombo" Width="300"
                                   SelectionChanged="OnRoleChanged"/>
 
@@ -229,7 +229,7 @@
                                选中就落盘、存下去当场换色（`AppHost.SaveSettingsAsync`）。
                              两行的选项与文案都从 `AppPreferences` 取（Core 里，测得到），
                              这里不写第二份文案。 -->
-                        <Separator Margin="0,18,0,16"/>
+                        <Separator/>
 
                         <Grid>
                             <Grid.ColumnDefinitions>
@@ -240,13 +240,13 @@
                                 <TextBlock Style="{StaticResource SectionTitle}" Margin="0"
                                            Text="界面语言"/>
                                 <TextBlock Style="{StaticResource Caption}" Margin="0,2,0,0"
-                                           TextWrapping="Wrap" MaxWidth="380"
-                                           Text="默认跟随 Windows 显示语言，修改后重启生效。"/>
+                                           TextWrapping="Wrap" MaxWidth="{StaticResource HintWidthField}"
+                                           Text="默认跟随 Windows 显示语言，改完重启生效"/>
                             </StackPanel>
                             <!-- ⚠️ 没有 SelectionChanged：表里只有一档能选（就是已经选中的
                                  那一档），另两档禁用 —— 挂一个处理器上去是永远不会跑的代码。 -->
                             <ComboBox Grid.Column="1" x:Name="LanguageCombo" Width="220"
-                                      VerticalAlignment="Center"/>
+                                      VerticalAlignment="Center" Margin="16,0,0,0" />
                         </Grid>
 
                         <Grid Margin="0,14,0,0">
@@ -258,15 +258,15 @@
                                 <TextBlock Style="{StaticResource SectionTitle}" Margin="0"
                                            Text="外观主题"/>
                                 <TextBlock Style="{StaticResource Caption}" Margin="0,2,0,0"
-                                           TextWrapping="Wrap" MaxWidth="380"
-                                           Text="可跟随系统，或固定为浅色 / 深色主题。"/>
+                                           TextWrapping="Wrap" MaxWidth="{StaticResource HintWidthField}"
+                                           Text="可跟随系统，或固定为浅色 / 深色"/>
                             </StackPanel>
                             <!-- ⚠️ 这一颗 2026-10-08 起**真的能选**（三档都做出来了）——
                                  所以它有 SelectionChanged，且选中的那一档落盘。
                                  右边那颗「界面语言」仍然只有一个真值（见上）。 -->
                             <ComboBox Grid.Column="1" x:Name="ThemeCombo" Width="220"
                                       VerticalAlignment="Center"
-                                      SelectionChanged="OnThemeChanged"/>
+                                      SelectionChanged="OnThemeChanged" Margin="16,0,0,0" />
                         </Grid>
 
                         <!-- ⚠️ 上面两个下拉**点得动**（需求方 2026-10-01 裁决：
@@ -275,16 +275,21 @@
                              ⚠️ 「外观主题」2026-10-08 起三档都做了，它写在这里的是
                              **选中那一档会怎样**（尤其「跟随系统」要把系统的现状说出来，
                              否则系统是浅色的人选了它会觉得点了没反应）。
-                             ⚠️ 不弹模态框：这一页是静态的，一句话放在点击处最近的地方最好找。 -->
+                             ⚠️ 不弹模态框：这一页是静态的，一句话放在点击处最近的地方最好找。
+                             ⚠️ **2026-10-15 去掉 `Foreground=Warning`**（批次 A5）：
+                             这一句说的是「你选的那一档会怎样」，**不是出错** ——
+                             橙色在这里等于骗人。灰字（`Caption` 本来就带的）才对。
+                             同一批把 `ExtensionsNote` / `ShopGroupingNote` /
+                             `BackupOrderTag` / 向导里那句重启提示也去了橙。 -->
                         <TextBlock x:Name="PreferencesNote" Style="{StaticResource Caption}"
-                                   Margin="0,10,0,0" TextWrapping="Wrap" MaxWidth="520"
-                                   Foreground="{DynamicResource Warning}" Visibility="Collapsed"/>
+                                   Margin="0,10,0,0" TextWrapping="Wrap" MaxWidth="{StaticResource HintWidthPage}"
+                                   Visibility="Collapsed"/>
 
-                        <Separator Margin="0,18,0,16"/>
+                        <Separator/>
 
                         <TextBlock Style="{StaticResource SectionTitle}" Text="摄像头"/>
                         <TextBlock Style="{StaticResource Caption}" Margin="0,0,0,8"
-                                   Text="录制用哪一路画面。换了要重启才生效。"/>
+                                   Text="录制用哪一路画面，换了要重启"/>
                         <StackPanel Orientation="Horizontal">
                             <ComboBox x:Name="CameraCombo" Width="300" IsEnabled="False"/>
                             <!-- ⚠️ `TextWrapping` + `MaxWidth` 两个都要：这一句是个
@@ -293,7 +298,7 @@
                                  「当前用的是网络摄像头（…），在」后面没了。 -->
                             <TextBlock x:Name="CameraHint" Margin="10,0,0,0"
                                        VerticalAlignment="Center" TextWrapping="Wrap"
-                                       MaxWidth="360"
+                                       MaxWidth="{StaticResource HintWidthField}"
                                        Foreground="{DynamicResource TextSecondary}" Text=""/>
                         </StackPanel>
 
@@ -303,8 +308,8 @@
                              只是现在要先去「高级设置」那一页 —— 所以这里必须留一句指路，
                              否则那句话又变成指着一个找不到的入口。 -->
                         <TextBlock Style="{StaticResource Caption}" Margin="0,10,0,0"
-                                   TextWrapping="Wrap" MaxWidth="620"
-                                   Text="配置向导在【高级设置】里 —— 摄像头、摄像头识别、方向、麦克风、扫码枪都在那儿重配。"/>
+                                   TextWrapping="Wrap" MaxWidth="{StaticResource HintWidthPage}"
+                                   Text="摄像头、识别、方向、麦克风、扫码枪都在【高级设置 → 配置向导】里"/>
 
                     </StackPanel>
 
@@ -326,15 +331,25 @@
                     <StackPanel x:Name="ScanSection" Visibility="Collapsed">
                         <TextBlock Style="{StaticResource SectionTitle}" Text="工作模式"/>
                         <TextBlock Style="{StaticResource Caption}" Margin="0,0,0,8"
-                                   TextWrapping="Wrap" MaxWidth="620"
-                                   Text="连续扫：换件即换段。同码停：复扫同一张单号就停 —— 它不会因为扫到别的面单就自动换段，也不会一路录到把盘写满。"/>
-                        <ComboBox x:Name="ModeCombo" Width="260" HorizontalAlignment="Left"
-                                  SelectionChanged="OnModeChanged">
-                            <ComboBoxItem Tag="Continuous">连续扫（换件即换段）</ComboBoxItem>
-                            <ComboBoxItem Tag="StopOnSameWaybill">同码停（复扫同号停）</ComboBoxItem>
-                        </ComboBox>
+                                   TextWrapping="Wrap" MaxWidth="{StaticResource HintWidthPage}"
+                                   Text="连续扫换件即换段；同码停是复扫同一张单号才停"/>
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock Text="工作模式" Style="{StaticResource FieldLabel}"/>
+                            <!-- ⚠️ 两颗单选，**不是下拉**（批次 A4，需求方 2026-10-15 裁定）。
+                                 `Tag` 与从前那两颗 `ComboBoxItem` 逐字一样 ⇒
+                                 落盘与协议**零改动**（`SettingsForm.ModeTag` 吃的是这个字符串，
+                                 见 `SettingsWindow.xaml.cs` 的 `ModeTag = TagOf(ModeButtons)`）。
+                                 ⚠️ 用 `Checked` 而不是 `Click`：`SelectRadio` 在装载设置时
+                                 直接改 `IsChecked`，只有 `Checked` 收得到那一次。 -->
+                            <RadioButton x:Name="ModeContinuous" GroupName="Mode" Tag="Continuous"
+                                         Content="连续扫（换件即换段）" VerticalAlignment="Center"
+                                         Checked="OnModeChanged"/>
+                            <RadioButton x:Name="ModeStopOnSame" GroupName="Mode" Tag="StopOnSameWaybill"
+                                         Content="同码停（复扫同号停）" VerticalAlignment="Center"
+                                         Margin="28,0,0,0" Checked="OnModeChanged"/>
+                        </StackPanel>
 
-                        <Separator Margin="0,18,0,16"/>
+                        <Separator/>
 
                         <!-- 预录缓冲（规格 §3.1.3，批次 C）。
                              ⚠️ 前身产品也把「扫码预录制」放在这一页，位置一致。
@@ -343,8 +358,8 @@
                              恰好裁定的是**识码关掉它照样生效**。这句话是那一页上最要紧的一句。 -->
                         <TextBlock Style="{StaticResource SectionTitle}" Text="扫码预录缓冲"/>
                         <TextBlock Style="{StaticResource Caption}" Margin="0,0,0,8"
-                                   TextWrapping="Wrap" MaxWidth="620"
-                                   Text="把包裹放上秤、面单刚朝镜头的那几秒也留住。开始工作的这段时间摄像头一直被占着（指示灯会常亮）。改了下次开始工作生效。"/>
+                                   TextWrapping="Wrap" MaxWidth="{StaticResource HintWidthPage}"
+                                   Text="开始工作前多录几秒，期间摄像头一直被占用；改完下次生效"/>
                         <ComboBox x:Name="PrerecordCombo" Width="140" HorizontalAlignment="Left"
                                   SelectionChanged="OnPrerecordChanged">
                             <ComboBoxItem Tag="0">关闭</ComboBoxItem>
@@ -353,16 +368,16 @@
                             <ComboBoxItem Tag="10">10 秒</ComboBoxItem>
                         </ComboBox>
                         <TextBlock Style="{StaticResource Caption}" Margin="0,8,0,0"
-                                   TextWrapping="Wrap" MaxWidth="620"
-                                   Text="⚠️ 与「用摄像头取景识码」无关：识码关掉时它照样生效。缓冲那几秒计入已录时长。"/>
+                                   TextWrapping="Wrap" MaxWidth="{StaticResource HintWidthPage}"
+                                   Text="识码关掉它照样生效，缓冲那几秒计入已录时长"/>
 
-                        <Separator Margin="0,18,0,16"/>
+                        <Separator/>
 
                         <!-- ⚠️ 摄像头识别、扫码枪、画面方向这三样**不在这一页**：
                              它们只有配置向导一个入口（见「高级设置」）。这里不摆
                              一个点开没反应的开关充数，指一句路就够。 -->
-                        <TextBlock Style="{StaticResource Caption}" TextWrapping="Wrap" MaxWidth="620"
-                                   Text="⚠️ 摄像头取景识码、扫码枪、画面方向不在这里配 —— 它们在【高级设置 → 配置向导】里。"/>
+                        <TextBlock Style="{StaticResource Caption}" TextWrapping="Wrap" MaxWidth="{StaticResource HintWidthPage}"
+                                   Text="识码、扫码枪、画面方向在【高级设置 → 配置向导】"/>
                     </StackPanel>
 
                     <!-- ────────────────────────────────────────────────
@@ -391,12 +406,12 @@
                                 <TextBlock Style="{StaticResource SectionTitle}" Margin="0"
                                            Text="引导式录像"/>
                                 <TextBlock Style="{StaticResource Caption}" Margin="0,2,0,0"
-                                           TextWrapping="Wrap" MaxWidth="380"
-                                           Text="录的时候给软提示，录完再检测一遍 —— 只提醒，不打断录制。"/>
+                                           TextWrapping="Wrap" MaxWidth="{StaticResource HintWidthField}"
+                                           Text="录的时候给软提示，录完再查一遍，全程不打断录制"/>
                             </StackPanel>
                             <Button Grid.Column="1" x:Name="GuidedRecordingButton" Content="打开"
                                     Style="{StaticResource SecondaryButton}" MinWidth="88"
-                                    VerticalAlignment="Center" Click="OnOpenGuidedRecording"/>
+                                    VerticalAlignment="Center" Click="OnOpenGuidedRecording" Margin="16,0,0,0" />
                         </Grid>
 
                         <Separator Margin="0,4,0,16"/>
@@ -405,7 +420,7 @@
                             <StackPanel>
                                 <TextBlock Style="{StaticResource SectionTitle}" Text="闲置提醒"/>
                                 <TextBlock Style="{StaticResource Caption}" Margin="0,0,0,8"
-                                           Text="连续 N 分钟没有任何扫码或打点就出声提醒。"/>
+                                           Text="连续 N 分钟没扫码也没打点就出声提醒"/>
                                 <StackPanel Orientation="Horizontal">
                                     <ComboBox x:Name="IdleCombo" Width="110"
                                               SelectionChanged="OnIdleReminderChanged">
@@ -427,7 +442,7 @@
                             <StackPanel Margin="32,0,0,0">
                                 <TextBlock Style="{StaticResource SectionTitle}" Text="时长兜底"/>
                                 <TextBlock Style="{StaticResource Caption}" Margin="0,0,0,8"
-                                           Text="到点弹一条询问，不替你停。"/>
+                                           Text="到点弹一条询问，不替你停"/>
                                 <ComboBox x:Name="DurationCombo" Width="110"
                                           SelectionChanged="OnDurationChanged">
                                     <ComboBoxItem Tag="Off">关闭</ComboBoxItem>
@@ -439,14 +454,14 @@
                         </StackPanel>
 
                         <TextBlock Style="{StaticResource Caption}" Margin="0,10,0,0"
-                                   TextWrapping="Wrap" MaxWidth="620"
-                                   Text="闲置提醒只看「有没有扫码或打点」，不看画面；到点只出声提醒，不会替你停录 —— 真正会停的是时长兜底。"/>
+                                   TextWrapping="Wrap" MaxWidth="{StaticResource HintWidthPage}"
+                                   Text="闲置提醒只看有没有扫码或打点，不看画面；真会停录的是时长兜底"/>
 
-                        <Separator Margin="0,18,0,16"/>
+                        <Separator/>
 
                         <TextBlock Style="{StaticResource SectionTitle}" Text="录制规格"/>
                         <TextBlock Style="{StaticResource Caption}" Margin="0,0,0,8"
-                                   Text="帧率固定 30，不提供选择。改了下次开段生效。"/>
+                                   Text="帧率固定 30 改不了；改画质下次开段生效"/>
 
                         <!-- ⚠️ 编码与分辨率**必须横排单选，不许换成下拉** ——
                              规格 §3.1.7 点名「横排（**不用下拉**）」，两端都是。 -->
@@ -499,8 +514,8 @@
                         <!-- 录制声音（规格 §3.1.8）。设置项名逐字照规格，**默认开**。 -->
                         <TextBlock Style="{StaticResource SectionTitle}" Text="录制声音"/>
                         <TextBlock Style="{StaticResource Caption}" Margin="0,0,0,8"
-                                   TextWrapping="Wrap" MaxWidth="620"
-                                   Text="音轨固定为 AAC、单声道、44.1 kHz、64 kbps，不提供选择。改了下次开始工作生效，录制中不可改。"/>
+                                   TextWrapping="Wrap" MaxWidth="{StaticResource HintWidthPage}"
+                                   Text="音轨固定 AAC 单声道 44.1 kHz，录制中改不了"/>
                         <StackPanel Orientation="Horizontal">
                             <!-- ⚠️ 挂 Checked/Unchecked 而**不是 Click**：Click 只在用户点的时候响，
                                  而 IsChecked 还能被别的途径改（UIA 的 TogglePattern 就是直接赋值的，
@@ -522,8 +537,8 @@
                         <!-- ⚠️ 这一条**不折进「?」**：它说的是「麦克风出问题也不会毁掉录像」，
                              不写出来用户不敢开声音（而且它正是 I4 在界面上的落点）。 -->
                         <TextBlock Style="{StaticResource Caption}" Margin="0,8,0,0"
-                                   TextWrapping="Wrap" MaxWidth="620"
-                                   Text="⚠️ 麦克风被拒、被别的程序占用、或者中途被拔掉，录像照常进行 —— 只有那一段没有音轨，界面上会写明原因。声音绝不会让整段录像失败。"/>
+                                   TextWrapping="Wrap" MaxWidth="{StaticResource HintWidthPage}"
+                                   Text="麦克风出问题只影响那一段的音轨，录像照常进行"/>
                     </StackPanel>
 
                     <!-- ────────────────────────────────────────────────
@@ -562,12 +577,12 @@
                             </Border>
                             <TextBlock Grid.Column="1" x:Name="CapacityText"
                                        Style="{StaticResource Body}" Text="正在统计…"
-                                       VerticalAlignment="Center"/>
+                                       VerticalAlignment="Center" Margin="16,0,0,0" />
                         </Grid>
                         <TextBlock x:Name="CapacityNote" Style="{StaticResource Caption}"
                                    Margin="0,6,0,0"/>
 
-                        <Separator Margin="0,18,0,16"/>
+                        <Separator/>
 
                         <!-- ── ① 录像清理 ────────────────────────────────
                              ⚠️ 归档层就是本机磁盘时**整块收掉**（规格 §3.5.1）：
@@ -581,10 +596,10 @@
                                 <TextBlock Style="{StaticResource SectionTitle}"
                                            Text="录像清理" Margin="0,0,0,4"/>
                                 <TextBlock Style="{StaticResource Caption}"
-                                           Text="清理只影响电脑本地录像，NAS 中已备份的文件不会受到影响"/>
+                                           Text="只清本地录像，NAS 里已备份的不受影响"/>
                             </StackPanel>
                             <StackPanel Grid.Column="1" Orientation="Horizontal"
-                                        VerticalAlignment="Center">
+                                        VerticalAlignment="Center" Margin="16,0,0,0">
                                 <Button x:Name="CleanupByTimeButton" Content="按时间清理…"
                                         Style="{StaticResource SecondaryButton}" Padding="14,7"
                                         Click="OnCleanupByTime"/>
@@ -603,13 +618,13 @@
                         <TextBlock x:Name="CleanupNote" Style="{StaticResource Caption}"
                                    Margin="0,8,0,0"/>
 
-                        <Separator Margin="0,18,0,16"/>
+                        <Separator/>
 
                         <!-- ── ② 录像保存位置（多磁盘，规格 §3.5 的容量侧）── -->
                         <TextBlock Style="{StaticResource SectionTitle}"
                                    Text="录像保存位置" Margin="0,0,0,4"/>
                         <TextBlock Style="{StaticResource Caption}"
-                                   Text="本地磁盘直接保存录像，空间不足时按保护期自动循环清理"/>
+                                   Text="本地磁盘直接保存录像，空间不足时按保护期自动清理"/>
 
                         <Border Background="{DynamicResource SurfaceAlt}"
                                 CornerRadius="{StaticResource RadiusTab}" Padding="12,7" Margin="0,10,0,0">
@@ -629,13 +644,13 @@
                                  SelectionChanged="OnDiskSelectionChanged"/>
                         <TextBlock x:Name="SaveDiskEmptyNote" Style="{StaticResource Caption}"
                                    Margin="12,8,0,0" Visibility="Collapsed"
-                                   Text="还没有配置 —— 录像写在默认目录（数据目录下的 archive）里。"/>
+                                   Text="还没有配置，录像写在默认目录里"/>
 
                         <!-- ⚠️ 这一句**逐字照抄**设计图。里面的 30GB/10% 与
                              20GB/5% 就是 `Core/Cleanup/ReservedSpace.cs` 里那几个常数，
                              改了一处就必须改另一处。 -->
                         <TextBlock Style="{StaticResource Caption}" Margin="0,10,0,0"
-                                   Text="录像会按列表顺序保存。每个磁盘只剩下预留空间时，会自动换到下一个磁盘；系统盘默认至少预留 30GB 或 10%，其他磁盘至少预留 20GB 或 5%，以较大值为准"/>
+                                   Text="按顺序写，满了换下一个盘；系统盘留 30GB 或 10%，其他盘留 20GB 或 5%"/>
 
                         <StackPanel Orientation="Horizontal" HorizontalAlignment="Right"
                                     Margin="0,10,0,0">
@@ -658,7 +673,7 @@
                                     Margin="8,0,0,0" Click="OnMoveDiskDown"/>
                         </StackPanel>
 
-                        <Separator Margin="0,18,0,16"/>
+                        <Separator/>
 
                         <!-- ── ③ 录像备份位置（第二份落在哪儿）──────
                              ⚠️ 2026-10-13 删掉了原来那个「归档层」下拉（需求方裁定）：
@@ -671,7 +686,7 @@
                         <TextBlock Style="{StaticResource SectionTitle}"
                                    Text="录像备份位置" Margin="0,0,0,4"/>
                         <TextBlock Style="{StaticResource Caption}"
-                                   Text="录像会按列表顺序备份到当前可用的位置；NAS 满时自动切换到下一个，NAS 中已备份的文件不会被程序删除。留空则备份到百度网盘。"/>
+                                   Text="按列表顺序备份，满就换下一个，已备份的不删；留空则走百度网盘"/>
 
                         <TextBlock x:Name="ArchiveReachNote" Style="{StaticResource Caption}"
                                    Margin="0,10,0,0"/>
@@ -697,10 +712,10 @@
                                      SelectionChanged="OnDiskSelectionChanged"/>
                             <TextBlock x:Name="BackupDiskEmptyNote"
                                        Style="{StaticResource Caption}" Margin="12,8,0,0"
-                                       Text="还没有配置 —— 用【添加磁盘】选一个可读写的网络位置（例如 \\nas\vidlog 或 Z:\vidlog）；留空则备份到百度网盘，见「百度网盘上传」那一页。"/>
+                                       Text="用【添加磁盘】选一个可读写的网络位置；留空走百度网盘"/>
 
                             <TextBlock Style="{StaticResource Caption}" Margin="0,10,0,0"
-                                       Text="网络那一层（登录、凭据）由你在系统里挂好，我们只当成一个目录用。"/>
+                                       Text="登录与凭据由你在系统里挂好，这里只当成一个目录"/>
 
                             <StackPanel Orientation="Horizontal" Margin="0,6,0,0">
                                 <local:HelpTip
@@ -778,19 +793,19 @@
                                     <local:HelpTip
                                         Text="四个数互相独立，改一个不动另一个。以「已备份」为例：它从归档成功那一刻起算，不是从录完起算。档位可以手输天数（例如 45）。"/>
                                     <TextBlock Style="{StaticResource Caption}" Margin="6,0,0,0"
-                                               Text="四个数怎么互相影响、档位能不能手输"/>
+                                               Text="四个数互相独立，改一个不动另一个"/>
                                 </StackPanel>
 
                                 <!-- ⚠️ 下面四条**不折进「?」** —— 规格 §3.5 明令
                                      「禁止静默清理」并把它当成红线，藏起来等于把红线藏起来。 -->
                                 <TextBlock Style="{StaticResource Caption}" Margin="0,8,0,0"
-                                           Text="⚠️ 这会真的删：每次启动算一遍到期该清的，先弹窗告诉你多少条、多少容量，你点了同意才动手（禁止静默清理）。删的只是本机上这一份 —— 归档层上那份不动。"/>
+                                           Text="清理前弹窗报出条数和容量，点了同意才删"/>
                                 <TextBlock Style="{StaticResource Caption}" Margin="0,4,0,0"
-                                           Text="⚠️「不保留」不是立刻删：最近 24 小时内录的一律不动（这一条关不掉），所以它实际是「归档后最快 24 小时清理」。"/>
+                                           Text="最近 24 小时录的一律不动"/>
                                 <TextBlock Style="{StaticResource Caption}" Margin="0,4,0,0"
-                                           Text="⚠️「未备份」那一列永不自动删除 —— 那是唯一副本，删了就永久没了。它到期的动作只有提醒（列表标红 + 催上传），起算点是录完时刻。"/>
+                                           Text="未备份那列是唯一副本，永不自动删，到期只提醒"/>
                                 <TextBlock Style="{StaticResource Caption}" Margin="0,4,0,0"
-                                           Text="⚠️「已备份 = 不保留」而归档层还没接上时，清理前会先回查归档层：查不到或查不了都不删。"/>
+                                           Text="归档层没接上时先回查，查不到就不删"/>
                             </StackPanel>
                         </Border>
                         <TextBlock x:Name="RetentionAbsentNote" Style="{StaticResource Caption}"
@@ -813,7 +828,7 @@
                              「档位不对」与「档位对但没配凭据」是两句不同的话。 -->
                         <TextBlock x:Name="CloudDisabledNote" Style="{StaticResource Caption}"
                                    Foreground="{DynamicResource Warning}" TextWrapping="Wrap"
-                                   MaxWidth="520" Margin="0,0,0,14"
+                                   MaxWidth="{StaticResource HintWidthPage}" Margin="0,0,0,14"
                                    Visibility="Collapsed"/>
 
                         <!-- ── 卡 1：账号与上传状态 ────────────────────── -->
@@ -821,7 +836,7 @@
                             <StackPanel>
                                 <TextBlock Style="{StaticResource SectionTitle}" Text="账号与上传状态"/>
                                 <TextBlock x:Name="CloudAccountNote" Style="{StaticResource Caption}"
-                                           TextWrapping="Wrap" MaxWidth="520"/>
+                                           TextWrapping="Wrap" MaxWidth="{StaticResource HintWidthPage}"/>
 
                                 <Grid Margin="0,12,0,0">
                                     <Grid.ColumnDefinitions>
@@ -886,8 +901,8 @@
                                      **一个单号一个文件**了（见 `BaiduPanLayout`）。
                                      留着旧的那半句，用户会照着去网盘上找一个不存在的文件名。 -->
                                 <TextBlock Style="{StaticResource Caption}" TextWrapping="Wrap"
-                                           MaxWidth="520"
-                                           Text="录像上传到百度网盘「我的应用数据/[网盘目录应用名]/(日期)/发货或退货/单号.mp4」，按开录日期与发货退货分类。"/>
+                                           MaxWidth="{StaticResource HintWidthPage}"
+                                           Text="传到我的应用数据/&lt;应用名&gt;/&lt;日期&gt;/发货或退货/单号.mp4"/>
 
                                 <Grid Margin="0,14,0,0">
                                     <Grid.ColumnDefinitions>
@@ -898,14 +913,14 @@
                                         <TextBlock Style="{StaticResource SectionTitle}" Margin="0"
                                                    Text="启用自动上传"/>
                                         <TextBlock Style="{StaticResource Caption}" Margin="0,2,0,0"
-                                                   TextWrapping="Wrap" MaxWidth="420"
-                                                   Text="仅此开关开启后新开始录制的视频会上传。"/>
+                                                   TextWrapping="Wrap" MaxWidth="{StaticResource HintWidthField}"
+                                                   Text="只上传开启之后新录的"/>
                                     </StackPanel>
                                     <ToggleButton Grid.Column="1" x:Name="CloudAutoUploadToggle"
                                                   Style="{StaticResource ToggleSwitch}"
                                                   VerticalAlignment="Center"
                                                   Checked="OnCloudAutoUploadChanged"
-                                                  Unchecked="OnCloudAutoUploadChanged"/>
+                                                  Unchecked="OnCloudAutoUploadChanged" Margin="16,0,0,0" />
                                 </Grid>
 
                                 <Grid Margin="0,14,0,0">
@@ -923,14 +938,14 @@
                                              「全盘按单号去重」。同单号换个日期录的那一条照样要传
                                              （本来就该传，它是另一场），但照旧文案用户会以为不会。 -->
                                         <TextBlock Style="{StaticResource Caption}" Margin="0,2,0,0"
-                                                   TextWrapping="Wrap" MaxWidth="420"
-                                                   Text="定期与网盘实际内容对比：远端那个目录下已经有同名文件的，本机这条直接标成「已完成」，不重复上传；其余按「补传范围」补传。开启后约每分钟检查一次队列。"/>
+                                                   TextWrapping="Wrap" MaxWidth="{StaticResource HintWidthField}"
+                                                   Text="远端已有的直接标成已完成，不重复上传；开启后约每分钟查一次队列"/>
                                     </StackPanel>
                                     <ToggleButton Grid.Column="1" x:Name="CloudCompareToggle"
                                                   Style="{StaticResource ToggleSwitch}"
                                                   VerticalAlignment="Center"
                                                   Checked="OnCloudCompareChanged"
-                                                  Unchecked="OnCloudCompareChanged"/>
+                                                  Unchecked="OnCloudCompareChanged" Margin="16,0,0,0" />
                                 </Grid>
 
                                 <Grid Margin="0,14,0,0">
@@ -942,10 +957,10 @@
                                         <TextBlock Style="{StaticResource SectionTitle}" Margin="0"
                                                    Text="补传范围"/>
                                         <TextBlock Style="{StaticResource Caption}" Margin="0,2,0,0"
-                                                   TextWrapping="Wrap" MaxWidth="420"
-                                                   Text="全部=本机所有可上传录像；自定起始日=只补该日及之后开录的（以开录自然日为准）。"/>
+                                                   TextWrapping="Wrap" MaxWidth="{StaticResource HintWidthField}"
+                                                   Text="全部是本机可上传录像；自定起始日只补该日及之后开录的"/>
                                     </StackPanel>
-                                    <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                                    <StackPanel Grid.Column="1" VerticalAlignment="Center" Margin="16,0,0,0">
                                         <ComboBox x:Name="CloudScopeCombo" Width="220"
                                                   SelectionChanged="OnCloudScopeChanged"/>
                                         <DatePicker x:Name="CloudFromDatePicker" Width="220"
@@ -963,11 +978,11 @@
                                         <TextBlock Style="{StaticResource SectionTitle}" Margin="0"
                                                    Text="同时上传数"/>
                                         <TextBlock Style="{StaticResource Caption}" Margin="0,2,0,0"
-                                                   TextWrapping="Wrap" MaxWidth="420"
-                                                   Text="同一时间并行上传的录像条数，过大可能触发网盘风控。"/>
+                                                   TextWrapping="Wrap" MaxWidth="{StaticResource HintWidthField}"
+                                                   Text="同时传几条，太大可能触发网盘风控"/>
                                     </StackPanel>
                                     <ComboBox Grid.Column="1" x:Name="CloudParallelCombo" Width="220"
-                                              VerticalAlignment="Center"/>
+                                              VerticalAlignment="Center" Margin="16,0,0,0" />
                                 </Grid>
 
                                 <Grid Margin="0,14,0,0">
@@ -983,11 +998,11 @@
                                              而那句话里一个字都没提「应用名填错了」——
                                              没有这一句，用户会去查权限、查过审，查半天。 -->
                                         <TextBlock Style="{StaticResource Caption}" Margin="0,2,0,0"
-                                                   TextWrapping="Wrap" MaxWidth="420"
-                                                   Text="开放平台后台填写的「产品名称」，必须一字不差（含大小写与空格）。远端路径就是 /apps/(这个名称)/；填错的表现是所有上传都报「路径不在应用允许访问的范围内」，而那句话里看不出是名字填错了。"/>
+                                                   TextWrapping="Wrap" MaxWidth="{StaticResource HintWidthField}"
+                                                   Text="填开放平台后台那个「产品名称」，一字不差；填错时上传会报「路径不在应用允许访问的范围内」"/>
                                     </StackPanel>
                                     <TextBox Grid.Column="1" x:Name="CloudAppNameBox" Width="220"
-                                             VerticalAlignment="Center"/>
+                                             VerticalAlignment="Center" Margin="16,0,0,0" />
                                 </Grid>
                             </StackPanel>
                         </Border>
@@ -1005,7 +1020,7 @@
                                     <!-- 图上右上角那句状态（「暂无录像」就在这儿）。 -->
                                     <TextBlock Grid.Column="1" x:Name="CloudQueueNote"
                                                Style="{StaticResource Caption}"
-                                               VerticalAlignment="Center"/>
+                                               VerticalAlignment="Center" Margin="16,0,0,0" />
                                 </Grid>
 
                                 <!-- ⚠️ `HorizontalContentAlignment="Stretch"`：ListBoxItem 默认是
@@ -1252,16 +1267,16 @@
                         <StackPanel Orientation="Horizontal">
                             <TextBox x:Name="PortBox" Width="120"/>
                             <TextBlock Style="{StaticResource Caption}" Margin="10,0,0,0"
-                                       VerticalAlignment="Center" Text="改了要重启才生效。"/>
+                                       VerticalAlignment="Center" Text="改完要重启"/>
                         </StackPanel>
 
                         <TextBlock x:Name="ServerUrlText" Style="{StaticResource Caption}"
                                    Margin="0,10,0,0" Text=""/>
                         <TextBlock Style="{StaticResource Caption}" Margin="0,10,0,0"
-                                   TextWrapping="Wrap" MaxWidth="620"
-                                   Text="手机与别的电脑在同一个局域网里，用上面这个地址就能打开回放页检索、播放。⚠️ 找不到录像时它不会伪造一个空结果 —— 服务没起来时这一行会直说「未启动」。"/>
+                                   TextWrapping="Wrap" MaxWidth="{StaticResource HintWidthPage}"
+                                   Text="手机和别的电脑在同一局域网时，用这个地址打开回放页"/>
 
-                        <Separator Margin="0,18,0,16"/>
+                        <Separator/>
 
                         <!-- ⚠️ 「连接电脑 / 手机」原来是**设备与外观**里的一行（批次 G 搬来）：
                              前身产品把它归在「局域网与网页」，它确实是局域网里的事 ——
@@ -1273,7 +1288,7 @@
                                            Text="点开弹出一张二维码，手机端扫它来申请连接。申请到了由你决定同意还是拒绝 —— 没有这一步，手机换不到凭据，录像传不上来。"/>
                             <TextBlock Style="{StaticResource Caption}" Margin="6,0,0,0"
                                        VerticalAlignment="Center"
-                                       Text="手机要接进来，得先在这里发一张二维码。"/>
+                                       Text="手机要接进来，先在这里发一张二维码"/>
                         </StackPanel>
                         <Button x:Name="EnrollButton" Content="连接电脑/手机"
                                 Style="{StaticResource SecondaryButton}"
@@ -1294,8 +1309,8 @@
                         <Border Style="{StaticResource Card}">
                             <StackPanel>
                                 <TextBlock Style="{StaticResource SectionTitle}" Text="扩展与联动"/>
-                                <TextBlock Style="{StaticResource Caption}" TextWrapping="Wrap" MaxWidth="520"
-                                           Text="这一节还在开发中。下面这两项将来会装在这里，现在点开只会看到一句实话。"/>
+                                <TextBlock Style="{StaticResource Caption}" TextWrapping="Wrap" MaxWidth="{StaticResource HintWidthPage}"
+                                           Text="这一节还在开发中，点开只有一句实话"/>
 
                                 <Grid Margin="0,14,0,0">
                                     <Grid.ColumnDefinitions>
@@ -1306,12 +1321,12 @@
                                         <TextBlock Style="{StaticResource SectionTitle}" Margin="0"
                                                    Text="扩展 API"/>
                                         <TextBlock Style="{StaticResource Caption}" Margin="0,2,0,0"
-                                                   TextWrapping="Wrap" MaxWidth="420"
-                                                   Text="让第三方脚本通过接口读取录像与单号。"/>
+                                                   TextWrapping="Wrap" MaxWidth="{StaticResource HintWidthField}"
+                                                   Text="让第三方脚本通过接口读取录像与单号"/>
                                     </StackPanel>
                                     <Button Grid.Column="1" x:Name="ExtensionApiButton" Content="打开"
                                             Style="{StaticResource SecondaryButton}" MinWidth="88"
-                                            VerticalAlignment="Center" Click="OnOpenExtensionApi"/>
+                                            VerticalAlignment="Center" Click="OnOpenExtensionApi" Margin="16,0,0,0" />
                                 </Grid>
 
                                 <Grid Margin="0,14,0,0">
@@ -1323,19 +1338,19 @@
                                         <TextBlock Style="{StaticResource SectionTitle}" Margin="0"
                                                    Text="扩展市场"/>
                                         <TextBlock Style="{StaticResource Caption}" Margin="0,2,0,0"
-                                                   TextWrapping="Wrap" MaxWidth="420"
-                                                   Text="浏览、安装别人写好的扩展。"/>
+                                                   TextWrapping="Wrap" MaxWidth="{StaticResource HintWidthField}"
+                                                   Text="浏览、安装别人写好的扩展"/>
                                     </StackPanel>
                                     <Button Grid.Column="1" x:Name="ExtensionMarketRowButton" Content="打开"
                                             Style="{StaticResource SecondaryButton}" MinWidth="88"
-                                            VerticalAlignment="Center" Click="OnOpenExtensionMarket"/>
+                                            VerticalAlignment="Center" Click="OnOpenExtensionMarket" Margin="16,0,0,0" />
                                 </Grid>
 
                                 <!-- ⚠️ 点开之后**就在这里说**，不弹模态框：
                                      这一页本来就是静态的，一句话放在点击处最近的地方最好找。 -->
                                 <TextBlock x:Name="ExtensionsNote" Style="{StaticResource Caption}"
-                                           Margin="0,12,0,0" TextWrapping="Wrap" MaxWidth="520"
-                                           Foreground="{DynamicResource Warning}" Visibility="Collapsed"/>
+                                           Margin="0,12,0,0" TextWrapping="Wrap" MaxWidth="{StaticResource HintWidthPage}"
+                                           Visibility="Collapsed"/>
                             </StackPanel>
                         </Border>
                     </StackPanel>
@@ -1363,14 +1378,14 @@
                                 <TextBlock Style="{StaticResource SectionTitle}" Margin="0"
                                            Text="开机自启动"/>
                                 <TextBlock Style="{StaticResource Caption}" Margin="0,2,0,0"
-                                           TextWrapping="Wrap" MaxWidth="420"
-                                           Text="电脑开机后自动启动本程序。"/>
+                                           TextWrapping="Wrap" MaxWidth="{StaticResource HintWidthField}"
+                                           Text="电脑开机后自动启动本程序"/>
                             </StackPanel>
                             <ToggleButton Grid.Column="1" x:Name="RunAtStartupToggle"
                                           Style="{StaticResource ToggleSwitch}"
                                           VerticalAlignment="Center"
                                           Checked="OnRunAtStartupChanged"
-                                          Unchecked="OnRunAtStartupChanged"/>
+                                          Unchecked="OnRunAtStartupChanged" Margin="16,0,0,0" />
                         </Grid>
 
                         <Grid Margin="0,14,0,0">
@@ -1382,18 +1397,18 @@
                                 <TextBlock Style="{StaticResource SectionTitle}" Margin="0"
                                            Text="关闭窗口时"/>
                                 <TextBlock Style="{StaticResource Caption}" Margin="0,2,0,0"
-                                           TextWrapping="Wrap" MaxWidth="420"
-                                           Text="可以每次询问、最小化到托盘或直接退出。"/>
+                                           TextWrapping="Wrap" MaxWidth="{StaticResource HintWidthField}"
+                                           Text="可以每次询问、最小化到托盘或直接退出"/>
                             </StackPanel>
                             <ComboBox Grid.Column="1" x:Name="CloseActionCombo" Width="220"
                                       VerticalAlignment="Center"
-                                      SelectionChanged="OnCloseActionChanged"/>
+                                      SelectionChanged="OnCloseActionChanged" Margin="16,0,0,0" />
                         </Grid>
                         <!-- ⚠️ 选「直接退出」时**必须**说清「在录的段怎么办」——
                              这条与托盘那条退出路是同一个行为，用户得知道它不会
                              悄悄把这一段扔掉。 -->
                         <TextBlock x:Name="CloseActionNote" Style="{StaticResource Caption}"
-                                   Margin="0,6,0,0" TextWrapping="Wrap" MaxWidth="520"
+                                   Margin="0,6,0,0" TextWrapping="Wrap" MaxWidth="{StaticResource HintWidthPage}"
                                    Text=""/>
 
                         <Grid Margin="0,14,0,0">
@@ -1405,14 +1420,14 @@
                                 <TextBlock Style="{StaticResource SectionTitle}" Margin="0"
                                            Text="自动检查更新"/>
                                 <TextBlock Style="{StaticResource Caption}" Margin="0,2,0,0"
-                                           TextWrapping="Wrap" MaxWidth="420"
-                                           Text="启动后在后台问一句有没有新版本，有就在托盘上提示一句；不会自动下载、也不会替换本程序。检查结果见「关于」页。"/>
+                                           TextWrapping="Wrap" MaxWidth="{StaticResource HintWidthField}"
+                                           Text="启动后在后台问一句有没有新版本，有就在托盘提示；不会自动下载"/>
                             </StackPanel>
                             <ToggleButton Grid.Column="1" x:Name="CheckUpdateToggle"
                                           Style="{StaticResource ToggleSwitch}"
                                           VerticalAlignment="Center"
                                           Checked="OnCheckUpdateChanged"
-                                          Unchecked="OnCheckUpdateChanged"/>
+                                          Unchecked="OnCheckUpdateChanged" Margin="16,0,0,0" />
                         </Grid>
 
                         <!-- ── 配置向导（批次 3，照设计图 `_16`–`_34`）─────────────
@@ -1433,12 +1448,12 @@
                                 <TextBlock Style="{StaticResource SectionTitle}" Margin="0"
                                            Text="配置向导"/>
                                 <TextBlock Style="{StaticResource Caption}" Margin="0,2,0,0"
-                                           TextWrapping="Wrap" MaxWidth="420"
-                                           Text="一步步配好摄像头、摄像头识别、方向、麦克风、扫码枪，并当场跑一次录制性能检测。"/>
+                                           TextWrapping="Wrap" MaxWidth="{StaticResource HintWidthField}"
+                                           Text="一步步配好摄像头、识别、方向、麦克风、扫码枪，并当场跑一次检测"/>
                             </StackPanel>
                             <Button Grid.Column="1" x:Name="OpenWizardButton" Content="打开配置向导"
                                     Style="{StaticResource SecondaryButton}" MinWidth="120"
-                                    VerticalAlignment="Center" Click="OnOpenWizard"/>
+                                    VerticalAlignment="Center" Click="OnOpenWizard" Margin="16,0,0,0" />
                         </Grid>
 
                         <!-- ── 日志（2026-10-01 需求方要「级别可配」）──────────
@@ -1453,12 +1468,12 @@
                                 <TextBlock Style="{StaticResource SectionTitle}" Margin="0"
                                            Text="日志级别"/>
                                 <TextBlock Style="{StaticResource Caption}" Margin="0,2,0,0"
-                                           TextWrapping="Wrap" MaxWidth="420"
-                                           Text="平时留在「信息」就够。出了问题要查的时候改成「调试」—— 改完立刻生效，不用重启，也不用等一个新版本。"/>
+                                           TextWrapping="Wrap" MaxWidth="{StaticResource HintWidthField}"
+                                           Text="平时留在信息就够；要查问题改成调试，改完立刻生效"/>
                             </StackPanel>
                             <ComboBox Grid.Column="1" x:Name="LogLevelCombo" Width="220"
                                       VerticalAlignment="Center"
-                                      SelectionChanged="OnLogLevelChanged"/>
+                                      SelectionChanged="OnLogLevelChanged" Margin="16,0,0,0" />
                         </Grid>
 
                         <Grid Margin="0,14,0,0">
@@ -1470,15 +1485,15 @@
                                 <TextBlock Style="{StaticResource SectionTitle}" Margin="0"
                                            Text="日志保留天数"/>
                                 <TextBlock Style="{StaticResource Caption}" Margin="0,2,0,0"
-                                           TextWrapping="Wrap" MaxWidth="420"
-                                           Text="超过这个天数的日志会被删掉（按文件名里的时间戳算，不看文件的修改时间）。"/>
+                                           TextWrapping="Wrap" MaxWidth="{StaticResource HintWidthField}"
+                                           Text="超过这个天数的日志会被删掉，按文件名时间戳算"/>
                             </StackPanel>
                             <TextBox Grid.Column="1" x:Name="LogRetainDaysBox" Width="80"
                                      VerticalContentAlignment="Center"
-                                     LostFocus="OnLogRetainDaysChanged"/>
+                                     LostFocus="OnLogRetainDaysChanged" Margin="16,0,0,0" />
                         </Grid>
 
-                        <Separator Margin="0,18,0,16"/>
+                        <Separator/>
 
                         <TextBlock Style="{StaticResource SectionTitle}" Text="分段与重复检测"/>
 
@@ -1488,7 +1503,7 @@
                             <TextBox x:Name="SegmentBox" Width="120"/>
                         </StackPanel>
                         <TextBlock Style="{StaticResource Caption}" Margin="130,4,0,0"
-                                   Text="单个分段的上限。到点自动滚下一段，用户无感。"/>
+                                   Text="单个分段的上限，到点自动滚下一段"/>
 
                         <!-- 重复单号检测（规格 §3.2.5：「N 可配置」）——
                              必须给得出「关掉」这个值，否则它在连续扫的工位上就是噪声。 -->
@@ -1498,7 +1513,7 @@
                             <TextBox x:Name="DuplicateDaysBox" Width="120"/>
                         </StackPanel>
                         <TextBlock Style="{StaticResource Caption}" Margin="130,4,0,0"
-                                   Text="⚠️ 只提醒、不挡开录 —— 录制照常开始。填 0 关掉。"/>
+                                   Text="只提醒，不挡开录，填 0 关掉"/>
                         <StackPanel Orientation="Horizontal" Margin="130,4,0,0">
                             <local:HelpTip
                                 Text="扫到的单号若在这么多天内录过，会提醒你（气泡 + 语音）。它只提醒、不挡开录 —— 录制照常开始，你事后核对是不是重复录件或单号扫错了。"/>
@@ -1506,7 +1521,7 @@
                                        Text="什么时候会提醒、提醒成什么样"/>
                         </StackPanel>
 
-                        <Separator Margin="0,18,0,16"/>
+                        <Separator/>
 
                         <!-- 时间校准（规格 §3.6.4）。**未校准不能开始录制** ——
                              所以它必须说清三件事：为什么 / 怎么办 / 已有录像照常可用。 -->
@@ -1527,9 +1542,9 @@
                         <!-- ⚠️ 这一条**不折进「?」**：它说的是「没校准也不会怎样」，
                              不写出来用户会以为录像全废了。 -->
                         <TextBlock Style="{StaticResource Caption}" Margin="0,8,0,0"
-                                   Text="⚠️ 未校准只挡住新录：已有的录像照常可以检索、回放、导出、交付 —— 与许可那条红线（不得锁住已有录像）是同一条道理。"/>
+                                   Text="未校准只挡新录，已有的照常检索、回放、导出"/>
 
-                        <Separator Margin="0,18,0,16"/>
+                        <Separator/>
 
                         <!-- 许可（规格 §3.9 / `docs/04-许可设计.md`）。**只限机位** ——
                              未激活只挡住「开始新的录制」与「新的手机接进来」，
@@ -1544,7 +1559,7 @@
                         <TextBlock x:Name="LicenseNote" Style="{StaticResource Body}"
                                    Margin="0,10,0,0"/>
 
-                        <TextBlock Text="本机机器码（抄给提供方，用来签发这台机器的激活码）"
+                        <TextBlock Text="本机机器码，抄给提供方签发激活码"
                                    Style="{StaticResource Caption}" Margin="0,12,0,0"/>
                         <StackPanel Orientation="Horizontal" Margin="0,4,0,0">
                             <TextBox x:Name="MachineCodeBox" Width="330" IsReadOnly="True"
@@ -1556,7 +1571,7 @@
                                     Click="OnCopyMachineCode"/>
                         </StackPanel>
 
-                        <TextBlock Text="激活码（提供方签发的那一串，整段粘进来就行）"
+                        <TextBlock Text="提供方签发的那一串，整段粘进来"
                                    Style="{StaticResource Caption}" Margin="0,10,0,0"/>
                         <StackPanel Orientation="Horizontal" Margin="0,4,0,0">
                             <TextBox x:Name="ActivationBox" Width="330"
@@ -1571,7 +1586,7 @@
                         <!-- ⚠️ 这一条**不折进「?」**：它是 L8 那条红线在界面上的落点
                              （「用户的数据是他的，不是人质」），必须直接看得见。 -->
                         <TextBlock Style="{StaticResource Caption}" Margin="0,10,0,0"
-                                   Text="⚠️ 未激活只挡住新的录制和新的手机接入：已有的录像照常可以检索、回放、导出、交付。已经接进来的手机也照样上传，不会被打断。"/>
+                                   Text="未激活只挡新录和新手机接入，已有的照常使用"/>
                     </StackPanel>
 
                     <!-- ────────────────────────────────────────────────
@@ -1636,7 +1651,7 @@
                                 Margin="0,12,0,0" HorizontalAlignment="Left"
                                 Click="OnOpenDataFolder"/>
 
-                        <Separator Margin="0,18,0,16"/>
+                        <Separator/>
 
                         <!-- ────────────────────────────────────────────
                              日志导出（需求方 2026-10-03）：
@@ -1647,7 +1662,7 @@
                              ──────────────────────────────────────────── -->
                         <TextBlock Style="{StaticResource SectionTitle}" Text="日志与诊断包"/>
                         <TextBlock Style="{StaticResource Caption}" Margin="0,0,0,8"
-                                   Text="把日志、设置与环境信息打成一个 zip，不含任何视频。发给我们看就行。"/>
+                                   Text="把日志、设置和环境信息打成 zip，不含视频"/>
                         <StackPanel Orientation="Horizontal">
                             <Button x:Name="SaveDiagnosticsButton" Content="保存到本地…"
                                     Style="{StaticResource SecondaryButton}"
@@ -1693,7 +1708,7 @@
                                VerticalAlignment="Center" TextWrapping="Wrap"
                                Margin="0,0,16,0"
                                Foreground="{DynamicResource TextSecondary}"/>
-                    <StackPanel Grid.Column="1" Orientation="Horizontal" HorizontalAlignment="Right">
+                    <StackPanel Grid.Column="1" Orientation="Horizontal" HorizontalAlignment="Right" Margin="16,0,0,0">
                         <Button x:Name="OkButton" Content="确定"
                                 Style="{StaticResource PrimaryButton}"
                                 MinWidth="88" Click="OnOk" IsDefault="True"/>

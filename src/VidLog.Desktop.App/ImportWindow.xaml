@@ -60,7 +60,7 @@
                                Margin="0,16,0,6"/>
                     <TextBox x:Name="WaybillBox"/>
                     <TextBlock Style="{StaticResource Caption}" Margin="0,4,0,0"
-                               Text="默认取文件名（本机导出的成品就是「单号.mp4」）。请核对 —— 填错了，这条录像在按单号检索时找不到。"/>
+                               Text="默认取文件名，请核对；填错了按单号检索时找不到"/>
                 </StackPanel>
 
                 <!-- ── 业务类型 ──────────────────────────────────────── -->
@@ -86,13 +86,13 @@
                                    Margin="8,0,0,0" Text="（时:分:秒）"/>
                     </StackPanel>
                     <TextBlock Style="{StaticResource Caption}" Margin="0,6,0,0"
-                               Text="默认取文件的最后修改时间 —— 那是个猜测，请核对。它决定这条录像按哪个日期被检索到、以及什么时候会被清理。"/>
+                               Text="默认取最后修改时间，是个猜测，请核对；它决定检索日期和清理"/>
                 </StackPanel>
 
                 <!-- ── 说明 + 状态 ───────────────────────────────────── -->
                 <StackPanel Grid.Row="4" Margin="0,16,0,0">
                     <TextBlock Style="{StaticResource Caption}" TextWrapping="Wrap"
-                               Text="文件会被复制进录像目录（原文件留在原地不动），然后量时长、算哈希、写进索引。做完之后它和本机录的没有区别：能检索、能回放、能导出，也照常参与保留期清理。"/>
+                               Text="复制进录像目录，原文件不动；之后和本机录的一样，能检索、回放、导出"/>
                     <TextBlock x:Name="StatusText" Style="{StaticResource Caption}"
                                Margin="0,12,0,0" TextWrapping="Wrap" Visibility="Collapsed"/>
                 </StackPanel>

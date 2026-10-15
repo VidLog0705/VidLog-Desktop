@@ -211,7 +211,7 @@
                                               CalendarDayButtonStyle="{StaticResource MarkedDayButton}"
                                               SelectedDatesChanged="OnDayPicked"/>
                                     <TextBlock Style="{StaticResource Caption}" Margin="6,4,6,2"
-                                               Text="浅蓝的日子有录像。点一天，就列出那天的。"/>
+                                               Text="浅蓝的日子有录像，点一天就列出那天的"/>
                                 </StackPanel>
                             </Border>
                         </Popup>
@@ -249,7 +249,7 @@
                                     Style="{StaticResource SecondaryButton}"
                                     Padding="8,6" HorizontalAlignment="Stretch"
                                     IsEnabled="False" Click="OnExportWaybills"
-                                    ToolTip="先检索出结果，再导出单号。">
+                                    ToolTip="先检索出结果，再导出单号">
                                 <StackPanel Orientation="Horizontal"
                                             HorizontalAlignment="Center">
                                     <!-- 清单一枚：内联矢量，不引任何图片资源 -->
@@ -265,7 +265,7 @@
                                     Style="{StaticResource SecondaryButton}"
                                     Padding="8,6" Margin="8,0,0,0"
                                     HorizontalAlignment="Stretch" Click="OnImport"
-                                    ToolTip="把外面录来的视频文件收进本机录像库。">
+                                    ToolTip="把外面录来的视频收进本机录像库">
                                 <StackPanel Orientation="Horizontal"
                                             HorizontalAlignment="Center">
                                     <!-- 文件夹一枚 -->
@@ -297,7 +297,7 @@
                         </StackPanel>
 
                         <TextBlock Style="{StaticResource Caption}" Margin="0,6,0,0"
-                                   Text="单号框里按回车也能检索。日期结束那天是整日包含的。"/>
+                                   Text="单号框里按回车也能检索；日期结束那天整日包含"/>
                     </StackPanel>
 
                     <!-- 结果列表。⚠️ 左边栏窄，所以是「一行一条」的列表而不是表格。 -->
@@ -390,7 +390,7 @@
                                 HorizontalAlignment="Stretch" IsEnabled="False"
                                 Click="OnExportResult"/>
                         <TextBlock Style="{StaticResource Caption}" Margin="0,6,0,0"
-                                   Text="选中一条之后可以导出 —— 原样另存，不转码、不压缩、不裁剪、不打码。"/>
+                                   Text="选中一条后可以导出，原样另存，不转码不压缩"/>
 
                         <!-- ⚠️ 与设置窗底部同一条：**两列**，别把文字与按钮摞在一格。
                              摞在一格时两者互不知情，条目一多（「共 1234 条，第 12 / 25 页」）
@@ -443,7 +443,7 @@
                              播放区宽约 740，620 是给它左右各留一点边。 -->
                         <TextBlock x:Name="PlayerHintText" Text="请选择录像开始播放"
                                    Margin="0,14,0,0" HorizontalAlignment="Center"
-                                   TextWrapping="Wrap" MaxWidth="620" TextAlignment="Center"
+                                   TextWrapping="Wrap" MaxWidth="{StaticResource HintWidthPage}" TextAlignment="Center"
                                    Foreground="{DynamicResource TextDisabled}"/>
                     </StackPanel>
                 </Grid>

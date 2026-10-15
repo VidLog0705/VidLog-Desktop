@@ -237,7 +237,7 @@ public partial class SettingsWindow : Window
         _suppressSettingsEvents = true;
         try
         {
-            SelectByTag(ModeCombo, _host.Settings.Mode.ToString());
+            SelectRadio(ModeButtons, _host.Settings.Mode.ToString());
             SelectByTag(IdleCombo, _host.Settings.IdleReminder.ToString());
             IdleMinutesBox.Text = _host.Settings.IdleReminderMinutes.ToString();
             SelectByTag(DurationCombo, _host.Settings.DurationFallback.ToString());
@@ -427,7 +427,9 @@ public partial class SettingsWindow : Window
     // 几个控件的变更处理器。**它们都只置脏标记，不存盘** ——
     // 存盘在【确定】/【应用】。有两个之所以还留着方法体，是因为它们
     // 顺手要做一件与保存无关的界面刷新（见下面各自的名字）。
-    private void OnModeChanged(object sender, SelectionChangedEventArgs e) => MarkDirty();
+    // ⚠️ 工作模式 2026-10-15 从下拉改成两颗单选 ⇒ 签名跟着从
+    // `SelectionChangedEventArgs` 换成 `RoutedEventArgs`（`Checked` 的签名）。
+    private void OnModeChanged(object sender, RoutedEventArgs e) => MarkDirty();
     private void OnIdleReminderChanged(object sender, SelectionChangedEventArgs e) => MarkDirty();
     private void OnIdleMinutesChanged(object sender, RoutedEventArgs e) => MarkDirty();
     private void OnDurationChanged(object sender, SelectionChangedEventArgs e) => MarkDirty();
@@ -612,7 +614,7 @@ public partial class SettingsWindow : Window
 
         // 下拉的 tag
         StationRoleTag = TagOf(RoleCombo),
-        ModeTag = TagOf(ModeCombo),
+        ModeTag = TagOf(ModeButtons),
         CodecTag = TagOf(CodecButtons),
         ResolutionTag = TagOf(ResolutionButtons),
         IdleReminderTag = TagOf(IdleCombo),

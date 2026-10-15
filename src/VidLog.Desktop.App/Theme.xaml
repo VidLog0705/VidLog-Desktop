@@ -26,14 +26,15 @@
         豁免范围**只限界面外观**（留档见 `docs/实现决策.md` §59）。
         代码、密钥做法、架构**没有被豁免**。
 
-        ⚠️ 有意不做的：`ComboBox` / `TextBox` / `DataGrid` / `DatePicker`
+        ⚠️ ~~有意不做的：`ComboBox` / `TextBox` / `DataGrid` / `DatePicker`
         都**不重写 `ControlTemplate`**。重写这四个是几百行，而且极易踩出
         「下拉打不开」「日期选不了」这类**只有跑起来才看得见**的毛病。
         它们保持 Windows 原生长相，只用普通 Setter 逼近配色 ——
-        这是取舍，不是没做完。
-        （`NavItem` 与几个按钮重写了模板：前者本来就只是个
-        Border + ContentPresenter；后者是界面上最显眼的控件，
-        套默认 chrome 的话蓝色底会跟系统渐变打架。）
+        这是取舍，不是没做完。~~
+        → **2026-10-15 需求方翻案：`ComboBox` / `TextBox` / `RadioButton`
+        改走薄模板**（只覆盖外观，部件名照原样接），`DatePicker` 与 `DataGrid`
+        **仍不重写**。那两条理由仍然成立，所以模板刻意做薄 ——
+        见下面「输入控件」那一节。`NavItem` 与几个按钮本来就重写了模板。
 
         ⚠️ 字号（20/14/13/12）是**相对关系**保留原来的，没有绝对标定 ——
         截图 DPI 未知，量不出 pt。做具体窗口时对着图微调。
@@ -227,8 +228,20 @@
         **同一条规矩适用于所有 `ControlTemplate` 内部**，见 `RadiusTab` 上面那段。
     -->
     <CornerRadius x:Key="RadiusControl">6</CornerRadius>
-    <CornerRadius x:Key="RadiusCard">8</CornerRadius>
+    <CornerRadius x:Key="RadiusCard">12</CornerRadius>
+    <CornerRadius x:Key="RadiusInput">8</CornerRadius>
     <CornerRadius x:Key="RadiusTag">4</CornerRadius>
+
+    <!--
+        ⚠️ 2026-10-15 需求方裁定（批次 B2）：**卡片圆角照 PP 走 12**。
+        上面那段「数出来的」是 2026-10-04 的口径，那天量到 8 出现 14 次、是量多的那一档；
+        这次不是「量出来的」而是**比出来的** —— 对照 `H:\PackingProof-Upstream` 的
+        `SectionCardStyle`（CornerRadius 12、Padding 20），卡片这一层就该更圆。
+        ⚠️ 但 **8 没有被消灭**：输入控件（`ComboBox`/`TextBox`/下拉面板）在设计图里
+        就是 8（`_scratch\ui-mockup\App.xaml` 的 `MockCombo`/`MockText` 写死 8，需求方已过目），
+        所以把它改名成 `RadiusInput` 继续用，而不是让输入控件跟着卡片一起胖一圈。
+        两张角色：**卡片 12 / 输入 8**。
+    -->
 
     <!--
         表头那种「上圆下直」——设置窗里两块存储路径表用的（`SettingsWindow.xaml`
@@ -370,8 +383,37 @@
         <Setter Property="BorderBrush" Value="{DynamicResource CardBorder}"/>
         <Setter Property="BorderThickness" Value="1"/>
         <Setter Property="CornerRadius" Value="{StaticResource RadiusCard}"/>
-        <Setter Property="Padding" Value="16"/>
-        <Setter Property="Margin" Value="0,0,0,12"/>
+        <Setter Property="Padding" Value="20"/>
+        <Setter Property="Margin" Value="0,0,0,16"/>
+    </Style>
+
+    <!--
+        说明文字的宽度（批次 B1，2026-10-15）。
+
+        ⚠️ 我们这边的说明不在列里，是 StackPanel 里靠 `MaxWidth` 收右边缘 ——
+        所以「宽度」就是它的版式。收之前设置窗里同时有 **420 / 520 / 380 / 360**
+        四种右边缘，同一页上灰小字参差不齐，这正是「像小作坊」的来源之一。
+        只留两档：字段下面一句 → `HintWidthField`，整页/整卡一段 → `HintWidthPage`。
+
+        ⚠️ **不往别的窗口上套**：`HelpTip` 的 440 是气泡自己的宽、`MultiViewWindow`
+        的 560/460/760 是画面格自己的宽 —— 它们不是「页面右边缘」，不该跟这两档对齐。
+    -->
+    <sys:Double x:Key="HintWidthField">420</sys:Double>
+    <sys:Double x:Key="HintWidthPage">620</sys:Double>
+
+    <!--
+        分节分隔线（批次 B3，2026-10-15）。
+
+        ⚠️ 走**隐含样式**而不是 `Style="{StaticResource …}"`：全仓 17 条分隔线
+        分两种写法（设置窗 13 条 `0,18,0,16`、主窗 4 条 `0,14,0,12`），
+        挂 key 就要改 17 个调用点，隐含样式只改这一处，`<Separator/>` 一个字不用动。
+        ⚠️ 不设 `Template` —— 只加 Margin，线本身仍由主题模板画（同 `DatePickerTextBox`
+        那条：`Style` 与 `ThemeStyle` 各管各的，不设 Template 就不会把原生外观顶掉）。
+        ⚠️ 调用点上的局部 `Margin` 优先级更高，所以设置窗里那条 `0,4,0,16`
+        （紧跟小标题、要贴紧）**保持原样**，不被这条覆盖。
+    -->
+    <Style TargetType="Separator">
+        <Setter Property="Margin" Value="0,14,0,14"/>
     </Style>
 
     <!-- ── 按钮 ──────────────────────────────────────────────────── -->
@@ -510,6 +552,243 @@
                         </Trigger>
                         <Trigger Property="IsEnabled" Value="False">
                             <Setter Property="Opacity" Value="0.4"/>
+                            <Setter Property="Cursor" Value="Arrow"/>
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <!-- ── 输入控件（批次 A1-b，2026-10-15） ─────────────────────── -->
+    <!--
+        ⚠️ **这一段推翻了文件头那条「四个输入控件不重写模板」的取舍**
+        （2026-09-28 定的，需求方 2026-10-15 明确翻案）。
+        当年回避的理由是「几百行、极易踩出只有跑起来才看得见的毛病」——
+        那条理由**今天仍然成立**，所以这里用的是**薄模板**：
+
+          · 只覆盖**外观**（底色 / 描边 / 圆角 / 聚焦蓝边 / 下拉项悬停）
+          · **下拉与日期的逻辑一律不动** —— `PART_Popup` / `PART_ContentHost`
+            这些部件名照原样接上，WPF 该找什么还是找什么
+
+        ⚠️ 与 2026-09-28 那版的内联字面量不同，这里取色**一律 `DynamicResource`**
+        （文件头第 5 批那条规矩）；字族/字号/圆角这些不随主题变的照旧 `StaticResource`。
+
+        ⚠️ **`DatePicker` 仍然不重写模板**（它的模板里还套着 `DatePickerTextBox`
+        与整个 `Calendar` 弹出层，那是当年那条理由最重的一块）。
+        但它必须有一个**隐式样式挡住下面 `TextBox` 那一支**：
+        `DatePickerTextBox` 派生自 `TextBox`，而 WPF 的隐式样式**会按继承链往下找** ——
+        不挡的话，日历里那个小输入框会套上我们 36 高的方框，在 24 高的日期控件里被剪掉。
+    -->
+
+    <Style TargetType="ComboBox">
+        <Setter Property="FontFamily" Value="{StaticResource UiFont}"/>
+        <Setter Property="FontSize" Value="13"/>
+        <Setter Property="MinHeight" Value="36"/>
+        <Setter Property="Padding" Value="12,0,8,0"/>
+        <Setter Property="Foreground" Value="{DynamicResource TextPrimary}"/>
+        <Setter Property="Background" Value="{DynamicResource Surface}"/>
+        <Setter Property="SnapsToDevicePixels" Value="True"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="ComboBox">
+                    <Grid>
+                        <Border x:Name="Bd" Background="{TemplateBinding Background}"
+                                BorderBrush="{DynamicResource BorderStrong}" BorderThickness="1"
+                                CornerRadius="{StaticResource RadiusInput}" SnapsToDevicePixels="True">
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="34"/>
+                                </Grid.ColumnDefinitions>
+                                <ContentPresenter Grid.Column="0"
+                                                  Margin="{TemplateBinding Padding}"
+                                                  VerticalAlignment="Center"
+                                                  Content="{TemplateBinding SelectionBoxItem}"
+                                                  ContentTemplate="{TemplateBinding SelectionBoxItemTemplate}"
+                                                  ContentStringFormat="{TemplateBinding SelectionBoxItemStringFormat}"/>
+                                <!-- 折线箭头。⚠️ 不用字体里的 ▾：那个在不同字族下大小不一。 -->
+                                <Path Grid.Column="1" HorizontalAlignment="Center" VerticalAlignment="Center"
+                                      Data="M0,0 L4,4 L8,0"
+                                      Stroke="{DynamicResource TextSecondary}" StrokeThickness="1.6"
+                                      StrokeStartLineCap="Round" StrokeEndLineCap="Round"
+                                      StrokeLineJoin="Round"/>
+                            </Grid>
+                        </Border>
+                        <!-- ⚠️ 这颗 ToggleButton **盖在整块上面**（Grid 里排在 Border 之后）
+                             且底色透明 —— 点哪都能拉开下拉。它是 `Focusable="False"`，
+                             Tab 落在 ComboBox 本身。**这一块就是「下拉打不开」的防线，别动。** -->
+                        <ToggleButton Background="Transparent" BorderThickness="0" Focusable="False"
+                                      ClickMode="Press"
+                                      IsChecked="{Binding IsDropDownOpen, Mode=TwoWay,
+                                                          RelativeSource={RelativeSource TemplatedParent}}">
+                            <ToggleButton.Template>
+                                <ControlTemplate TargetType="ToggleButton">
+                                    <Border Background="Transparent"/>
+                                </ControlTemplate>
+                            </ToggleButton.Template>
+                        </ToggleButton>
+                        <Popup x:Name="PART_Popup" AllowsTransparency="True" Placement="Bottom"
+                               IsOpen="{TemplateBinding IsDropDownOpen}" PopupAnimation="Fade">
+                            <Border Background="{DynamicResource Surface}"
+                                    BorderBrush="{DynamicResource CardBorder}" BorderThickness="1"
+                                    CornerRadius="{StaticResource RadiusInput}" Margin="0,4,0,0"
+                                    MinWidth="{TemplateBinding ActualWidth}">
+                                <ScrollViewer MaxHeight="240"><ItemsPresenter/></ScrollViewer>
+                            </Border>
+                        </Popup>
+                    </Grid>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsMouseOver" Value="True">
+                            <Setter TargetName="Bd" Property="BorderBrush" Value="{DynamicResource Accent}"/>
+                        </Trigger>
+                        <Trigger Property="IsKeyboardFocusWithin" Value="True">
+                            <Setter TargetName="Bd" Property="BorderBrush" Value="{DynamicResource Accent}"/>
+                        </Trigger>
+                        <Trigger Property="IsEnabled" Value="False">
+                            <Setter TargetName="Bd" Property="Background" Value="{DynamicResource SurfaceMuted}"/>
+                            <Setter TargetName="Bd" Property="BorderBrush" Value="{DynamicResource CardBorder}"/>
+                            <Setter Property="Foreground" Value="{DynamicResource TextDisabled}"/>
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <!-- 下拉里的每一项。⚠️ 选中态用 `AccentWeak` 底 + 正文色，不用系统那支高亮蓝。 -->
+    <Style TargetType="ComboBoxItem">
+        <Setter Property="FontFamily" Value="{StaticResource UiFont}"/>
+        <Setter Property="FontSize" Value="13"/>
+        <Setter Property="Padding" Value="10,7"/>
+        <Setter Property="Foreground" Value="{DynamicResource TextPrimary}"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="ComboBoxItem">
+                    <Border x:Name="Bd" Background="Transparent" Padding="{TemplateBinding Padding}"
+                            Margin="4,1" CornerRadius="{StaticResource RadiusControl}"
+                            SnapsToDevicePixels="True">
+                        <ContentPresenter/>
+                    </Border>
+                    <ControlTemplate.Triggers>
+                        <!-- ⚠️ 悬停走 `IsHighlighted` 而不是 `IsMouseOver`：
+                             键盘上下键也是这个属性，鼠标与键盘才会长得一样。 -->
+                        <Trigger Property="IsHighlighted" Value="True">
+                            <Setter TargetName="Bd" Property="Background" Value="{DynamicResource SurfaceAlt}"/>
+                        </Trigger>
+                        <Trigger Property="IsSelected" Value="True">
+                            <Setter TargetName="Bd" Property="Background" Value="{DynamicResource AccentWeak}"/>
+                        </Trigger>
+                        <Trigger Property="IsEnabled" Value="False">
+                            <Setter Property="Foreground" Value="{DynamicResource TextDisabled}"/>
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <!--
+        ⚠️ **这一支只干一件事：把下面那条 `TextBox` 隐式样式挡在 `DatePicker` 外面。**
+        `DatePickerTextBox` 派生自 `TextBox`，而 WPF 的隐式样式**会按继承链往下找** ——
+        不挡的话日历里那个小输入框会套上我们 36 高的方框，在 24 高的日期控件里被剪掉。
+        它不设 `Template`，所以日期控件的样子仍是系统的（见上面那段说明）。
+
+        ⚠️ 2026-10-15 深色逐屏核对的结果，一并记在这儿，省得下次再试一遍：
+        **这一支与下面 `DatePicker` 那一支，加 `Background`/`Foreground` 都【不生效】。**
+        日期控件走的是**主题样式**（`ThemeStyle`），它盖过隐式样式 —— 实测在隐式样式里
+        写 `Background="{DynamicResource Surface}"`，深色下这一格**仍是白的**；
+        只有在**调用点**写局部值才压得住（局部值优先级最高），而那只把**外层边框**
+        改暗，**里面那个 `DatePickerTextBox` 依旧是白的** —— 于是成了浅字压白底，比不改更糟。
+        要真正修好只有两条路：①重写 `DatePicker` 的 `ControlTemplate`（就是下面说的、
+        B2 当初回避的那件事）；②在 `AppTheme` 的暗色覆盖里压 `SystemColors.WindowBrushKey`
+        （动的是那份被 `ThemePaletteTests` 钉着的字典）。**两条都是取舍，没做，留给需求方定。**
+    -->
+    <Style TargetType="{x:Type DatePickerTextBox}">
+        <Setter Property="MinHeight" Value="0"/>
+        <Setter Property="Padding" Value="0"/>
+        <Setter Property="FontSize" Value="13"/>
+        <Setter Property="VerticalContentAlignment" Value="Center"/>
+    </Style>
+
+    <!-- 日期控件只加高、不改长相：与旁边 36 高的下拉排在一行时齐平。 -->
+    <Style TargetType="DatePicker">
+        <Setter Property="FontFamily" Value="{StaticResource UiFont}"/>
+        <Setter Property="FontSize" Value="13"/>
+        <Setter Property="MinHeight" Value="36"/>
+        <Setter Property="VerticalContentAlignment" Value="Center"/>
+    </Style>
+
+    <Style TargetType="TextBox">
+        <Setter Property="FontFamily" Value="{StaticResource UiFont}"/>
+        <Setter Property="FontSize" Value="13"/>
+        <Setter Property="MinHeight" Value="36"/>
+        <Setter Property="Padding" Value="12,0"/>
+        <Setter Property="Foreground" Value="{DynamicResource TextPrimary}"/>
+        <Setter Property="Background" Value="{DynamicResource Surface}"/>
+        <Setter Property="CaretBrush" Value="{DynamicResource TextPrimary}"/>
+        <Setter Property="SnapsToDevicePixels" Value="True"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="TextBox">
+                    <Border x:Name="Bd" Background="{TemplateBinding Background}"
+                            BorderBrush="{DynamicResource BorderStrong}" BorderThickness="1"
+                            CornerRadius="{StaticResource RadiusInput}" SnapsToDevicePixels="True">
+                        <!-- ⚠️ 部件名必须是 `PART_ContentHost`（TextBox 靠它拿光标与选区）。
+                             它同时是只读 `TextBox` 的显示宿主，所以 `IsReadOnly` 的框也走这里。 -->
+                        <ScrollViewer x:Name="PART_ContentHost"
+                                      Margin="{TemplateBinding Padding}"
+                                      VerticalAlignment="Center"/>
+                    </Border>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsMouseOver" Value="True">
+                            <Setter TargetName="Bd" Property="BorderBrush" Value="{DynamicResource BorderStrong}"/>
+                        </Trigger>
+                        <Trigger Property="IsKeyboardFocusWithin" Value="True">
+                            <Setter TargetName="Bd" Property="BorderBrush" Value="{DynamicResource Accent}"/>
+                        </Trigger>
+                        <Trigger Property="IsEnabled" Value="False">
+                            <Setter TargetName="Bd" Property="Background" Value="{DynamicResource SurfaceMuted}"/>
+                            <Setter TargetName="Bd" Property="BorderBrush" Value="{DynamicResource CardBorder}"/>
+                            <Setter Property="Foreground" Value="{DynamicResource TextDisabled}"/>
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <!-- 单选点。⚠️ 设置窗左侧导航那套 `NavItem` **不受影响**（它有 `x:Key`，是显式挂的）。 -->
+    <Style TargetType="RadioButton">
+        <Setter Property="FontFamily" Value="{StaticResource UiFont}"/>
+        <Setter Property="FontSize" Value="13"/>
+        <Setter Property="Foreground" Value="{DynamicResource TextPrimary}"/>
+        <Setter Property="Cursor" Value="Hand"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="RadioButton">
+                    <StackPanel Orientation="Horizontal" Background="Transparent">
+                        <Grid Width="16" Height="16" VerticalAlignment="Center">
+                            <Ellipse x:Name="Ring" Stroke="{DynamicResource BorderStrong}" StrokeThickness="1.5"
+                                     Fill="{DynamicResource Surface}"/>
+                            <Ellipse x:Name="Dot" Width="8" Height="8" Fill="{DynamicResource Accent}"
+                                     Visibility="Collapsed"/>
+                        </Grid>
+                        <ContentPresenter Margin="8,0,0,0" VerticalAlignment="Center"/>
+                    </StackPanel>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsChecked" Value="True">
+                            <Setter TargetName="Dot" Property="Visibility" Value="Visible"/>
+                            <Setter TargetName="Ring" Property="Stroke" Value="{DynamicResource Accent}"/>
+                        </Trigger>
+                        <!-- ⚠️ 键盘焦点必须看得见：这条模板没有系统那个虚线焦点框（`FocusVisualStyle`），
+                             而这两颗单选是**唯一能 Tab 到、箭头键还能改选择**的控件 ——
+                             少了这一条，键盘用户不知道自己停在哪儿。同 `ComboBox`/`TextBox`。 -->
+                        <Trigger Property="IsKeyboardFocused" Value="True">
+                            <Setter TargetName="Ring" Property="Stroke" Value="{DynamicResource Accent}"/>
+                        </Trigger>
+                        <Trigger Property="IsEnabled" Value="False">
+                            <Setter Property="Foreground" Value="{DynamicResource TextDisabled}"/>
                             <Setter Property="Cursor" Value="Arrow"/>
                         </Trigger>
                     </ControlTemplate.Triggers>
