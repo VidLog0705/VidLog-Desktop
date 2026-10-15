@@ -432,8 +432,23 @@
           证据与原因写在 `Theme.xaml` 的 `DatePickerTextBox` 那一段。顺带给新单选补了键盘焦点框
           （薄模板把系统那个虚线焦点框丢掉了）。
         ⚠️ 这一版**没走 CI 发 Release**（同 0.14.5/0.14.6），只在本机出安装程序。
+
+      0.15.1（2026-10-15，当天第二版）：需求方接着报的两条暗色问题，一条改、一条只是订正。
+        ① 「手机/电脑备份」「订单联动」在深色下是**纯黑** —— 根因不在 `TextSecondary`
+          那一格（那格 0.15.0 已提亮），而是 `Card` 样式**从来没给过字色**：
+          卡片里没写 `Foreground` 的 `TextBlock` 会一路继承到链上最近那个 `Control`
+          的默认墨色（纯黑），亮色下黑字压白卡片正好对 ⇒ 只在深色下露头。
+          改法收口在卡片这一层（`Card` 给 `TextElement.Foreground = TextPrimary`），
+          18 处一次覆盖；补了 `--smoke` 契约 ③ 钉住（**反证过**：拿掉就红、退出码 1）。
+          亮色那两行跟着 `#000000 → #1E293B`，朝设计图 `_39` 靠（那张图一个纯黑都没有）。
+        ② 「浅色改深色时『设置』两个字有黑框」**0.15.0 里已经修了**（`ca2f8bf` 那套
+          `SizeChanged` + 重建标题栏面），这一版只是**真机复现复验**（亮色启动 → 设置窗
+          选深色 → 应用：主窗标题栏纯白 39022 → 0 px、设置窗 3524 → 64 px），
+          并把 `AppTheme.cs` 里那段落档写岔的注释订正过来（ca2f8bf 把「白底+黑块」
+          解释掉了，其实那是缺陷本身）。裁定「不改系统标题栏」一并落档。
+        ⚠️ 这一版同样没走 CI 发 Release，只在本机出安装程序。
     -->
-    <Version>0.15.0</Version>
+    <Version>0.15.1</Version>
     <OutputType>WinExe</OutputType>
     <TargetFramework>net9.0-windows</TargetFramework>
     <Nullable>enable</Nullable>
