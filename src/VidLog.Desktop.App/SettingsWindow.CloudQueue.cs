@@ -248,7 +248,11 @@ public partial class SettingsWindow : Window
         var name = BaiduPanLayout.FileNameOf(item.RemotePath);
         var type = CloudBusinessTypeOf(item.RemotePath);
 
-        var meta = $"{Display.Bytes(item.SizeBytes)}｜开录 {item.StartedAt:MM-dd HH:mm}"
+        // ⚠️ `StartedAt` 是 `DateTimeOffset`，落盘存的是 `+00:00`（A4，2026-10-16）：
+        // 不 `ToLocalTime()` 就是拿 UTC 直接印，同一条录像在这里写 `07:06`、
+        // 在回放页写 `15:06` —— 差 8 小时，用户会以为队列串了行。
+        // 回放页那条路一直是带 `ToLocalTime()` 的写法，这里跟上。
+        var meta = $"{Display.Bytes(item.SizeBytes)}｜开录 {item.StartedAt.ToLocalTime():MM-dd HH:mm}"
             + $"｜试过 {item.Attempts} 次"
             // 失败的那一行要说清「还会不会自己再试」：光写「失败」两个字，
             // 「1 分钟后自己会重试」与「要你动手」是同一句话 —— 而那是两件事。
