@@ -639,15 +639,22 @@
 
         <!-- ── 主体：左边两张状态卡 + 右边六颗按钮 ───────────────── -->
         <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto" Padding="20">
-            <Grid>
+            <!-- ⚠️ 这层 Grid **必须自己带 `VerticalAlignment="Top"`**（需求方 2026-10-16，
+                 「左卡的底边要和右边那摞按钮的底边齐」）：
+                 `ScrollViewer` 默认把内容拉满视口，而这个 Grid 的隐式行是 `*`
+                 ⇒ 被拉到整屏高，左卡（默认 `Stretch`）跟着撑成一张**整屏高的空卡**，
+                 而右栏里那三行是 `Auto`、按钮仍旧贴着顶。
+                 ⚠️ 修的方向是**让左卡收短**，不是把右栏往下拉到整屏 —— 上一版就是这么
+                 改错的（两栏都去掉了 `Top`，却没人管这层 Grid 还把内容拉满）。
+                 改完之后两栏都回到各自的自然高度，而这两个高度本来就只差一点点：
+                 2026-10-16 拿真窗口截图逐列量过像素 —— 左卡底边 y=312、右边那摞按钮的
+                 底边 y=311（差 1 px 是描边的抗锯齿）；修之前是 710 对 322，差 388 px。 -->
+            <Grid VerticalAlignment="Top">
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="*"/>
                     <ColumnDefinition Width="1.6*"/>
                 </Grid.ColumnDefinitions>
 
-                <!-- ⚠️ 左右两栏**都不给 `VerticalAlignment="Top"`**（需求方 2026-10-16）：
-                     给了它俩就各自按内容高度收口，左边那张卡矮一截、右边那摞按钮高，
-                     底边参差不齐。去掉之后两栏都撑到同一行高 ⇒ 底部平行。 -->
                 <Border Grid.Column="0" Style="{StaticResource Card}"
                         Padding="16,14" Margin="0,0,10,0">
                     <StackPanel>
