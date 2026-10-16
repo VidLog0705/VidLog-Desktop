@@ -581,7 +581,25 @@
         改法是给**那层 Grid 自己**加 `VerticalAlignment="Top"`，让它按内容测量。
         ⚠️ 这一版没走 CI 发 Release，只在本机出安装程序。
     -->
-    <Version>0.15.8</Version>
+    <!--
+        0.15.9（2026-10-16）—— 修 0.15.7 自己引入的一处**空转 + 说假话**。
+
+        网盘那一档的 `work/` 回收（0.15.7 裁定的「方案 a」）排在
+        `CloudUploads.Session.RestoreAsync()` **之前** 42 行，而
+        `BaiduPanSession.IsLoggedIn` 就是 `_login is not null`、`_login` 只有
+        `RestoreAsync` 会填 ⇒ 那趟回查**每次启动一律**「问不到百度网盘：还没登录百度网盘」
+        ⇒ 一律不删。**方案 a 从上线起就没跑起来过**，而且每次启动写一句与事实相反的日志。
+
+        证据是需求方 2026-10-16 当场发现的：他明明登着百度网盘，我照着日志说他没登；
+        同一次会话里，那句假话之后 9.3 秒就有一个 `pan.baidu.com/api/quota` 返回 200
+        （拿到 200 就说明令牌可用、登录态在），同一个进程。
+
+        改法：把那一次 `SweepFinalizedAsync` 调用挪到登录恢复之后（一行 + 注释）。
+        并加一条**源码顺序绊线** `扫work那一趟要排在登录恢复之后`（正反都验过：
+        挪回旧位置当场红、挪回来绿）。
+        ⚠️ 这一版没走 CI 发 Release，只在本机出安装程序。
+    -->
+    <Version>0.15.9</Version>
     <OutputType>WinExe</OutputType>
     <TargetFramework>net9.0-windows</TargetFramework>
     <Nullable>enable</Nullable>
