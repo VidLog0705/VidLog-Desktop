@@ -65,19 +65,34 @@ public partial class MainWindow : Window
         var keys = new GlobalHotKeys(this, _host.Logger);
         _hotKeys = keys;
 
+        // ⚠️ **抢不到必须上屏，不能只写日志**（A5，2026-10-16）。
+        // 现场那台机器上 `Ctrl+Alt+R` 就是被别的程序占着的，而在此之前
+        // 用户手上只有一个**按下去没有任何反应**的键 —— 界面上一个字都没说，
+        // 只有日志里一条 WARN（那正是用户看不见的地方）。这与上面
+        // `StartKeyboardHook` 那句「装不上要给用户看见（I3）」是同一条规矩。
+        const ModifierKeys Mods = ModifierKeys.Control | ModifierKeys.Alt;
+
+        void Add(string what, Key key, Action onPressed)
+        {
+            if (keys.TryAdd(what, Mods, key, onPressed))
+            {
+                return;
+            }
+
+            AddNoticeLine(
+                $"快捷键 {GlobalHotKeys.Describe(Mods, key)}（{what}）被别的程序占着，"
+                    + "按下去不会有反应 —— 请用屏幕上的按钮。");
+        }
+
         // ⚠️ 多画面**两种用途下都挂**：那面墙是「看每台手机现在在拍什么」，
         // 与这台电脑录不录像无关（备份主机上也照样看）。
-        keys.TryAdd(
-            "实时多画面", ModifierKeys.Control | ModifierKeys.Alt, Key.M,
-            () => OnOpenMultiView(this, new RoutedEventArgs()));
+        Add("实时多画面", Key.M, () => OnOpenMultiView(this, new RoutedEventArgs()));
 
         // ⚠️ 录像那一个**只在本机真的录像时才挂**：备份主机那两档按下去什么动静
         // 都不会有，而一个按下去没反应的键比没有这个键更让人费解。
         if (_host.Settings.Role.Records)
         {
-            keys.TryAdd(
-                "开始/停止录像", ModifierKeys.Control | ModifierKeys.Alt, Key.R,
-                () => OnStartOrStopWork(this, new RoutedEventArgs()));
+            Add("开始/停止录像", Key.R, () => OnStartOrStopWork(this, new RoutedEventArgs()));
         }
     }
 

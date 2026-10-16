@@ -273,8 +273,9 @@ public partial class MainWindow : Window
         var recovered = _host.Startup.RecoveredCount;
         if (recovered > 0)
         {
-            NoticesText.Text =
-                $"{DateTime.Now:HH:mm:ss}  上次有 {recovered} 场录像没走完收尾，已自动收好并入库。";
+            // ⚠️ **加一行，不是赋值**：上面 `AttachHotKeys` 可能刚往这一栏写过
+            // 「快捷键没挂上」那一句，直接赋值会把它抹掉（A5，2026-10-16）。
+            AddNoticeLine($"上次有 {recovered} 场录像没走完收尾，已自动收好并入库。");
         }
 
         // 保留期到了的那些（规格 §3.5.5）。**排在最后**：它是唯一会删东西的一步，

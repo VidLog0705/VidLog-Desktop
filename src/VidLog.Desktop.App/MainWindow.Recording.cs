@@ -72,6 +72,24 @@ public partial class MainWindow : Window
         UpdateRecordingStatus();
     }
 
+    /// <summary>
+    /// 往「本机录制动态」那一栏顶上写一行。
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ <b>是「加一行」不是「赋值」</b>：这一栏是滚动条，直接赋值会把上面刚写的那些
+    /// 抹掉。启动时那几个字就要靠这条（`AttachHotKeys` 的失败提示与
+    /// 「上次有 N 场录像没走完收尾」都往这里写，谁先谁后不该决定谁活下来）。
+    /// 只留最近若干条 —— 这是给人看的滚动条，不是日志（日志在文件里）。
+    /// </remarks>
+    private void AddNoticeLine(string message)
+    {
+        var line = $"{DateTime.Now:HH:mm:ss}  {message}";
+        var existing = NoticesText.Text;
+
+        var lines = new[] { line }.Concat(existing.Split('\n').Take(19));
+        NoticesText.Text = string.Join('\n', lines.Where(l => l.Length > 0));
+    }
+
     /// <summary>扫码枪扫到了 —— 界面跟着填，让用户看得见识别到了什么。</summary>
     private void OnScanned(ScanOutcome outcome)
     {
@@ -88,12 +106,7 @@ public partial class MainWindow : Window
             return;
         }
 
-        var line = $"{DateTime.Now:HH:mm:ss}  {notice.Message}";
-        var existing = NoticesText.Text;
-
-        // 只留最近若干条 —— 这是给人看的滚动条，不是日志（日志在文件里）。
-        var lines = new[] { line }.Concat(existing.Split('\n').Take(19));
-        NoticesText.Text = string.Join('\n', lines.Where(l => l.Length > 0));
+        AddNoticeLine(notice.Message);
 
         // ── 时长兜底的询问（规格 §3.3.4）──────────────────────────────
         //

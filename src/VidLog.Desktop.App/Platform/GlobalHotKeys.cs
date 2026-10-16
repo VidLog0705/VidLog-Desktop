@@ -126,7 +126,11 @@ public sealed class GlobalHotKeys : IDisposable
     }
 
     /// <summary>热键写成人看得懂的那一行（`Ctrl+Alt+R`）。日志、提示都用它。</summary>
-    private static string Describe(ModifierKeys modifiers, Key key)
+    /// <remarks>
+    /// ⚠️ `internal` 而不是 `private`（A5，2026-10-16）：抢不到时调用方要拿这同一句话
+    /// 去界面上说 —— 两处各拼一份迟早出现「日志说 Ctrl+Alt+R、屏幕上说 Alt+Ctrl+R」。
+    /// </remarks>
+    internal static string Describe(ModifierKeys modifiers, Key key)
     {
         var parts = new List<string>(4);
 
