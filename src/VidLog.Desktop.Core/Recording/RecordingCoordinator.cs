@@ -119,7 +119,7 @@ public sealed class RecordingCoordinator : IAsyncDisposable
     private readonly IPunchLog _punches;
     private readonly IAppLogger _logger;
     private readonly WorkModePolicy _policy;
-    private readonly CoordinatorOptions _options;
+    private CoordinatorOptions _options;
 
     /// <summary>
     /// 错误扫描记录（规格 §6.1「必须保存的事实」里的那一条）。
@@ -341,6 +341,30 @@ public sealed class RecordingCoordinator : IAsyncDisposable
     /// 见 <c>docs/实现决策.md</c> §79。
     /// </remarks>
     public string Encoder { get; set; }
+
+    /// <summary>
+    /// 画面从哪来（规格 §3.1.7 的设备维）。装配层启动时填一次，用户改了摄像头再填一次。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// ⚠️ 与 <see cref="SessionOptions"/> **同一个口径**：取值发生在**每次开新段**
+    /// 那一刻（就是本类里 `new RecordingSession(...)` 那一处），所以改动是
+    /// 「下次开始工作生效」，不需要重启 —— 界面上那句话说的就是这件事。
+    /// </para>
+    /// <para>
+    /// ⚠️ 只换这一个字段、其余原样带过去（`with` 而不是整个重造）：`Encoder` 与
+    /// `DuplicateCheckDays` 各有各的活路径，重造会把它们抹回默认值。
+    /// </para>
+    /// </remarks>
+    public CameraSource Source
+    {
+        get => _options.Source;
+        set => _options = _options with { Source = value };
+    }
+
+    // ⚠️ 这里**没有** `SourceDeviceId` 的对应属性，是有意的：那个值是**机器名**，
+    // 换摄像头并不换这台机器，没有要写穿它的场合。要用它读 `_options.SourceDeviceId`
+    // （`_options` 本来就在手边，加一层转手只会多一个没人调的方法）。
 
     /// <summary>
     /// 开一段**之前**的准备动作（装配层挂：规格改了就在这里重探并换掉

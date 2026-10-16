@@ -125,8 +125,10 @@ public partial class MainWindow : Window
 
             // ── ② 状态 ────────────────────────────────────────────────
             //
-            // ⚠️ 读的是 `AppHost.Camera`（**启动时**定下来的那个），
-            // 不是设置里用户刚选的那个 —— 摄像头改了要重启才生效。
+            // ⚠️ 读的是 `AppHost.Camera` —— 那个字段**会被热改**
+            // （2026-10-16 起：设置里换了摄像头就写穿它，见 `AppHost.ApplyCameraAsync`），
+            // 所以这一行不用重启就会跟着换。写的是**新**那台的名字，
+            // 而真正开始用它是**下一次开始工作**（相机独占，正录着换不了）。
             OvCameraText.Text = OverviewTexts.Camera(
                 _host.Services.FfmpegPath is not null, _host.Camera);
 
@@ -281,10 +283,12 @@ public partial class MainWindow : Window
             ? $"{address}:{_host.Services.PlaybackPort}"
             : $"本机地址没读出来（回放端口 {_host.Services.PlaybackPort}）";
 
-        // ⚠️ 订单联动**一个字都不许编**：它要那个至今没开工的服务端接口。
-        // 图上这里是「暂无设备」，而真实原因是这边根本没有能装的东西，
-        // 所以照实写原因 —— 与旁边那两颗按钮的悬停提示是同一句话。
-        BackupOrderText.Text = "订单联动还没开工：要服务端先把订单接口做出来，电脑端这边没有可装的东西。";
+        // ⚠️ 订单联动**一个字都不许编**，但也**不许铺一大段**（需求方 2026-10-16）：
+        // 那一整段「要服务端先把订单接口做出来…」压在卡里比标题还长，把旁边那行
+        // 「手机/电脑备份」衬得像没写完。这一格只回答「现在能不能用」——
+        // 真正的原因由**那两颗按钮自己**在点开时说（`OnInstallOrderLink` /
+        // `OnSendTestOrder` 走「留入口、点开如实说一句」那条路，不是靠悬停）。
+        BackupOrderText.Text = "功能正在开发中。";
     }
 
     /// <summary>

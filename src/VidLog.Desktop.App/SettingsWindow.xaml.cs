@@ -391,8 +391,13 @@ public partial class SettingsWindow : Window
         {
             // 向导改的是同一份设置 ⇒ 这里必须重载，不能留着老值。
             LoadSettingsIntoUi();
+
+            // ⚠️ 两样的**生效时机不一样**，别糊成一句（2026-10-16 拆开的）：
+            // 摄像头那一组现在**热生效**（下一次开始工作生效，见 `AppHost.ApplyCameraAsync`），
+            // 而「摄像头识别」仍旧要重启 —— 它是启动时那个取景进程建不建。
+            // 照旧写成「那两项要重启」的话，用户会为一个不必重启的改动去重启。
             SettingsStatus.Text =
-                "配置向导已保存。摄像头与「摄像头识别」那两项要重启才生效，其余立即生效。";
+                "配置向导已保存。换摄像头下一次开始工作时生效，「摄像头识别」仍要重启软件。";
         }
     }
 
@@ -405,22 +410,30 @@ public partial class SettingsWindow : Window
     /// </remarks>
     private void OnClosing(object? sender, CancelEventArgs e)
     {
-        if (!_dirty)
+        if (_dirty)
         {
-            return;
+            var answer = MessageBox.Show(
+                this,
+                "有改动还没保存。要放弃它们吗？",
+                "设置", MessageBoxButton.YesNo, MessageBoxImage.Question,
+                // 默认「否」——不可逆的动作不该让回车键替用户点头（与清理那个框同一个理由）。
+                MessageBoxResult.No);
+
+            if (answer != MessageBoxResult.Yes)
+            {
+                // 不关窗 ⇒ 这一页还得接着刷，定时器留着（所以停它放在这条 return 之后）。
+                e.Cancel = true;
+                return;
+            }
         }
 
-        var answer = MessageBox.Show(
-            this,
-            "有改动还没保存。要放弃它们吗？",
-            "设置", MessageBoxButton.YesNo, MessageBoxImage.Question,
-            // 默认「否」——不可逆的动作不该让回车键替用户点头（与清理那个框同一个理由）。
-            MessageBoxResult.No);
-
-        if (answer != MessageBoxResult.Yes)
-        {
-            e.Cancel = true;
-        }
+        // ⚠️ **关窗必须停掉这一页的 2 秒定时器**（2026-10-16 修的真缺陷）：
+        // 从前的 `Stop()` 只在「从网盘页切走」（`NavChange`）里，而**在网盘页上直接
+        // 关窗**走不到那儿。后果是这颗 `DispatcherTimer` 一直挂在 Dispatcher 上：
+        // 每 2 秒读一次 `upload-queue.jsonl`、每 60 秒问一次网盘配额，
+        // 而 `Tick` 的 lambda 捕获了 `this` ⇒ **整个设置窗回收不掉**，开关一次泄一个。
+        // （实测反证：这一轮进过网盘页，关窗后连着三分钟每 60 秒一条 `网盘请求`。）
+        _cloudTimer.Stop();
     }
 
     // 几个控件的变更处理器。**它们都只置脏标记，不存盘** ——
@@ -530,6 +543,10 @@ public partial class SettingsWindow : Window
         // 里已经是新用途了，两种「变没变」的判断都会恒为假。
         var roleBefore = _host.Settings.StationRole;
 
+        // ⚠️ 同一个理由，取的是归档档位（`AppSettings.Archive` 是**算出来的**属性，
+        // 存完之后它会跟着新的备份位置表/自动上传开关变）。判据见下面重启那一段。
+        var archiveBefore = _host.Settings.Archive.Kind;
+
         try
         {
             await _host.SaveSettingsAsync(next);
@@ -588,6 +605,18 @@ public partial class SettingsWindow : Window
         if (next.StationRole != roleBefore)
         {
             _host.RestartForRole(roleBefore, next.StationRole);
+        }
+        // ── 归档档位变了 ⇒ 同样当场重启（需求方 2026-10-16 裁定「乙」）──────
+        //
+        // ⚠️ 用户原话是「点应用，程序端没有反应，既不重启也不使应用生效」——
+        // 这一档改成网盘/网络位置要**重新装配**整个归档层（建服务、验凭据、接中继），
+        // 装配流程是启动时跑一次的，所以只能重启。
+        //
+        // ⚠️ `else if`：用途那一下已经会重启，同一个新进程里两样都读新的了，
+        // 连着重启两次只是把用户多晾一遍。
+        else if (next.Archive.Kind != archiveBefore)
+        {
+            _host.RestartForArchive(archiveBefore, next.Archive.Kind);
         }
 
         return true;

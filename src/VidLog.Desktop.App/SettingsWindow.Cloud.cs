@@ -183,7 +183,11 @@ public partial class SettingsWindow : Window
 
             CloudAccountNote.Text = string.Empty;
             CloudQueueNote.Text = "这一页现在不工作";
-            CloudQueueList.Items.Clear();
+            // ⚠️ 清的是**行集合**，不是 `CloudQueueList.Items`（2026-10-16 修的崩）：
+            // `ItemsSource` 一设上，`Items` 就成了只读视图 —— `Items.Clear()` 当场抛
+            // `InvalidOperationException`，把整页刷崩（崩的是设置里那一页，
+            // 而抛点在这两处「这一页不工作」的提前返回上）。
+            _cloudQueueRows.Clear();
             CloudQueuePageText.Text = string.Empty;
             CloudQueuePrevButton.IsEnabled = false;
             CloudQueueNextButton.IsEnabled = false;
@@ -207,7 +211,8 @@ public partial class SettingsWindow : Window
 
             CloudAccountNote.Text = string.Empty;
             CloudQueueNote.Text = "这一页现在不工作";
-            CloudQueueList.Items.Clear();
+            // ⚠️ 同上：`Items.Clear()` 在设过 `ItemsSource` 之后必抛。
+            _cloudQueueRows.Clear();
             CloudQueuePageText.Text = string.Empty;
             CloudQueuePrevButton.IsEnabled = false;
             CloudQueueNextButton.IsEnabled = false;
@@ -255,8 +260,10 @@ public partial class SettingsWindow : Window
     private string CloudUnavailableReason(ArchiveTarget target) =>
         target.Kind == ArchiveBackendKind.Directory
             // 配了网络位置 ⇒ 按规则第二份走它、本来就不走网盘。
+            // ⚠️ 只写「保存」不写「保存并重启」（2026-10-16 起档位一改就自动重启，
+            // 见 `SettingsWindow.SaveAsync` 尾部）—— 再写「重启」等于让用户以为要自己动手。
             ? $"「存储与备份」里配了「{target.Label}」，录像的第二份走它、不走百度网盘。"
-              + "想改用百度网盘的话，把那张备份位置表清空、保存并重启。"
+              + "想改用百度网盘的话，把那张备份位置表清空、保存。"
             // 没网络位置、也不是网盘 ⇒ 只剩一种可能：【启用自动上传】被关掉了。
             : target.Kind == ArchiveBackendKind.LocalDisk
                 ? "【启用自动上传】现在关着，录像不会往网盘传。把它打开，"
@@ -264,9 +271,18 @@ public partial class SettingsWindow : Window
                 // 推算是「网盘」，服务却没起来，只有两个可能：还没重启，或者压根没配凭据。
                 // ⚠️ 这一句落在 `CloudDisabledNote`（TextBlock）上，**不认 Markdown** ——
                 // 加了 `**` 会连星号一起显示出来（与 `ArchivePublishResult.Conflict` 同一条）。
-                : _host.Settings.Archive.Kind != ArchiveBackendKind.Cloud
-                    ? "备份位置刚改成走百度网盘，保存并重启之后这一页才会起来。"
-                    : BaiduPanCredentials.MissingMessage;
+                //
+                // ⚠️ **不许拿 `Archive.Kind` 反推「没配凭据」**（2026-10-16 修的假消息）：
+                // 点过【应用】之后那个值已经被保存成 Cloud 了，而服务是**装配时**
+                // 定的、这会儿还是 null ⇒ 照它推就一口咬定「没找到应用凭据」，
+                // 把真正的「要重启」盖掉，而且凭据明明好好地在那儿（实测过）。
+                // 只有真读一遍环境变量、确实为空，才说没配。
+                : BaiduPanCredentials.FromEnvironment() is null
+                    ? BaiduPanCredentials.MissingMessage
+                    // ⚠️ 这一句只在**保存到重启之间**那零点几秒能被看见（档位一改就自动
+                    // 重启）；留着它是因为没有重启钩子时（`RequestRestart is null`）
+                    // 那一下真的要靠用户自己动手。
+                    : "备份位置刚改成走百度网盘，重启之后这一页就会起来。";
 
     /// <summary>
     /// 「账号与上传状态」那张卡上的一段话。

@@ -124,7 +124,9 @@ public class OrphanRecoveryTests
     /// </param>
     private static OrphanRecovery BuildRecovery(
         TempDir dir, RecordingWorkspace workspace, IProcessRunner runner, IRecordingIndex index,
-        string ffmpegPath = "ffmpeg")
+        string ffmpegPath = "ffmpeg",
+        Core.Cleanup.IArchiveBackend? archive = null,
+        IAppLogger? logger = null)
     {
         var finalizer = new SessionFinalizer(
             new RemuxPipeline(ffmpegPath, runner),
@@ -132,7 +134,15 @@ public class OrphanRecoveryTests
             index,
             dir.Dir("archive"));
 
-        return new OrphanRecovery(workspace, finalizer);
+        return new OrphanRecovery(
+            workspace,
+            finalizer,
+            index,
+            // 归档层给**真**的那个（指向本用例自己的临时目录）：清扫那几条要的
+            // 就是「文件真在不在」这一个行为，换成假的反而验不到那一层。
+            archive ?? new Core.Cleanup.DirectoryArchiveBackend(
+                dir.Dir("archive"), Core.Cleanup.ArchiveBackendKind.LocalDisk),
+            logger);
     }
 
     // ─────────────────────────────────────────────
@@ -707,5 +717,146 @@ public class OrphanRecoveryTests
         return int.Parse(match.Groups[1].Value, CultureInfo.InvariantCulture) * 3600
             + int.Parse(match.Groups[2].Value, CultureInfo.InvariantCulture) * 60
             + double.Parse(match.Groups[3].Value, CultureInfo.InvariantCulture);
+    }
+
+    // ─────────────────────────────────────────────
+    // 清扫：已经归档成功却还留着源目录的会话（方案 a，2026-10-16）
+    // ─────────────────────────────────────────────
+    //
+    // ⚠️ 这一族用例守的是**失败方向**：这个动作会删东西，所以每一条「不该删」
+    // 都各占一条 —— 只写「该删的那条绿了」等于没守（删错了才是事故）。
+
+    private const string SweepSession = "session-swept";
+
+    private static readonly Core.RelativePath SweepLocation =
+        Core.RelativePath.Parse("VidLog-Video/2026-10-16/发货/SF1234567890.mp4");
+
+    private sealed class FakeIndex(params RecordingEntry[] entries) : IRecordingIndex
+    {
+        public Task AddAsync(RecordingEntry entry, CancellationToken cancellationToken = default) =>
+            Task.CompletedTask;
+
+        public Task<IReadOnlyList<RecordingEntry>> LoadAllAsync(
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult<IReadOnlyList<RecordingEntry>>(entries);
+    }
+
+    private static RecordingEntry EntryFor(string sessionId, string evidenceId) => new(
+        evidenceId,
+        sessionId,
+        WaybillNumber.Parse("SF1234567890"),
+        new DateTimeOffset(2026, 10, 16, 14, 14, 0, TimeSpan.FromHours(8)),
+        new DateTimeOffset(2026, 10, 16, 14, 19, 0, TimeSpan.FromHours(8)),
+        TimeSpan.FromMinutes(5),
+        SweepLocation,
+        ContentHash.Parse(new string('b', 64)),
+        "device-1");
+
+    /// <summary>造一个「收尾过、归档层没成」的现场：源还在 <c>work/</c> 里。</summary>
+    private static async Task<RecordingWorkspace> CreateFinalizedLeftoverAsync(TempDir dir)
+    {
+        var workspace = await CreateKilledSessionAsync(
+            dir, SweepSession, markFinalized: true);
+
+        return workspace;
+    }
+
+    /// <summary>把成品真放到归档层的根下（`DirectoryArchiveBackend` 的判据就是它在不在）。</summary>
+    private static void PutArchivedCopy(TempDir dir)
+    {
+        var path = System.IO.Path.Combine(dir.Dir("archive"), SweepLocation.Value);
+        Directory.CreateDirectory(System.IO.Path.GetDirectoryName(path)!);
+        File.WriteAllText(path, "published-mp4-bytes");
+    }
+
+    [Fact]
+    public async Task 成品已经在归档层上就把源目录清掉()
+    {
+        using var dir = new TempDir();
+        var workspace = await CreateFinalizedLeftoverAsync(dir);
+        PutArchivedCopy(dir);
+
+        var recovery = BuildRecovery(
+            dir,
+            workspace,
+            new SucceedingRunner(),
+            new FakeIndex(EntryFor(SweepSession, SweepSession + "-000")));
+
+        await recovery.SweepFinalizedAsync();
+
+        Assert.False(
+            Directory.Exists(workspace.SessionDirectory(SweepSession)),
+            "成品已经在归档层上了，源分段就该丢掉 —— 否则它永远占着地方（实测 173 MB 躺了两天）");
+    }
+
+    [Fact]
+    public async Task 成品还没到归档层上时一个字节都不动()
+    {
+        using var dir = new TempDir();
+        var workspace = await CreateFinalizedLeftoverAsync(dir);
+
+        // ⚠️ **故意不放成品**：这就是「收尾时自动上传关着、后来还没补传上去」那一档。
+        var recovery = BuildRecovery(
+            dir,
+            workspace,
+            new SucceedingRunner(),
+            new FakeIndex(EntryFor(SweepSession, SweepSession + "-000")));
+
+        await recovery.SweepFinalizedAsync();
+
+        Assert.True(
+            Directory.Exists(workspace.SessionDirectory(SweepSession)),
+            "归档层上还没有它 —— 这时本机那份是**唯一**的副本，删了就是丢证据");
+    }
+
+    [Fact]
+    public async Task 回查本身出错时也不删()
+    {
+        using var dir = new TempDir();
+        var workspace = await CreateFinalizedLeftoverAsync(dir);
+        PutArchivedCopy(dir);
+
+        // ⚠️ 归档层**存在**但这一趟查不了（网断了、凭据废了）—— I8：
+        // 「查不了」与「没有」必须分开，前者唯一安全的动作是不删。
+        var recovery = BuildRecovery(
+            dir,
+            workspace,
+            new SucceedingRunner(),
+            new FakeIndex(EntryFor(SweepSession, SweepSession + "-000")),
+            archive: new UnreachableArchive());
+
+        await recovery.SweepFinalizedAsync();
+
+        Assert.True(
+            Directory.Exists(workspace.SessionDirectory(SweepSession)),
+            "回查不了 ⇒ 不许删（I8）。删错 = 丢掉唯一那份证据");
+    }
+
+    [Fact]
+    public async Task 索引里查不到这条会话时也不删()
+    {
+        using var dir = new TempDir();
+        var workspace = await CreateFinalizedLeftoverAsync(dir);
+        PutArchivedCopy(dir);
+
+        // 索引里**没有**它 ⇒ 连该去归档层的哪条路径回查都不知道 ⇒ 不动。
+        var recovery = BuildRecovery(
+            dir, workspace, new SucceedingRunner(), new FakeIndex());
+
+        await recovery.SweepFinalizedAsync();
+
+        Assert.True(
+            Directory.Exists(workspace.SessionDirectory(SweepSession)),
+            "索引里查不到它、无从回查 ⇒ 不许删");
+    }
+
+    /// <summary>一个「查不了」的归档层：存在，但这一趟回查不了。</summary>
+    private sealed class UnreachableArchive : Core.Cleanup.IArchiveBackend
+    {
+        public Core.Cleanup.ArchiveBackendKind Kind => Core.Cleanup.ArchiveBackendKind.Directory;
+
+        public Task<Core.Cleanup.ArchiveVerifyResult> VerifyAsync(
+            Core.RelativePath location, CancellationToken cancellationToken = default) =>
+            Task.FromResult(new Core.Cleanup.ArchiveVerifyResult(false, "网络断了"));
     }
 }

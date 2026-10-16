@@ -135,9 +135,9 @@ public partial class SettingsWindow : Window
     /// 把枚举到的摄像头填进下拉。
     /// </summary>
     /// <remarks>
-    /// ⚠️ 这里**只是让用户选**。真正录哪一个由启动时的
-    /// <see cref="AppHost.DeviceName"/> 决定 —— 所以改了要重启才生效，
-    /// 界面上那句话不是客套。
+    /// ⚠️ 这里**只是让用户选**：真正录哪一个由 <see cref="AppHost.Camera"/> 说了算，
+    /// 而那个字段是**存设置时**写穿的（见 <see cref="AppHost.ApplyCameraAsync"/>）——
+    /// 2026-10-16 起不用重启，**下一次开始工作**就生效。
     /// </remarks>
     private async void LoadCameras()
     {

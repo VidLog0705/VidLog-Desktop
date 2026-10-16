@@ -80,7 +80,31 @@ internal sealed record CloudQueueRow(
     Visibility ProgressVisibility,
     Visibility AbandonVisibility,
     Visibility ResumeVisibility,
-    Visibility RetryVisibility);
+    Visibility RetryVisibility)
+{
+    /// <summary>
+    /// 屏幕阅读器念这一行时念什么（A6 同族，2026-10-16 补）。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// ⚠️ 不覆盖它，念出来的就是 record 自动生成的那一串
+    /// 「<c>CloudQueueRow { Title = … EvidenceId = … TypeVisibility = Collapsed … }</c>」，
+    /// 屏幕阅读器一字不差念完（与 `SearchResultRow` 当年是同一个病）。
+    /// </para>
+    /// <para>
+    /// 只留人看得懂的四样，**按屏幕上从上到下的顺序**：分类、标题、状态、大小与开录时间。
+    /// ⚠️ `TypeLabel` 在「不是发货也不是退货」时是**空串**（见构造处），
+    /// 不过滤就会念出「标题，，更新中」这种空断句。
+    /// </para>
+    /// <para>
+    /// ⚠️ 落 <c>ToString</c> 而不是给容器挂 <c>AutomationProperties.Name</c> 的理由，
+    /// 与 `SearchResultRow` 一字不差 —— 那边写全了，不重复。
+    /// </para>
+    /// </remarks>
+    public override string ToString() => string.Join(
+        "，",
+        new[] { TypeLabel, Title, StateLabel, Meta }.Where(one => !string.IsNullOrWhiteSpace(one)));
+}
 
 public partial class SettingsWindow : Window
 {

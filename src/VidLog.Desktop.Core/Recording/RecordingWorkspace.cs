@@ -173,6 +173,40 @@ public sealed class RecordingWorkspace
     }
 
     /// <summary>
+    /// 列出**已经收尾过**（有 <c>finalized.json</c>）的会话 id。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// ⚠️ 与 <see cref="ListOrphansAsync"/> 是**互补的两半**：那一条只认**没有**
+    /// <c>finalized.json</c> 的，这一条只认**有**的。分开写而不是合成一个，
+    /// 是因为两者要回答的问题不同（那边要给收尾用的分段清单，这边只要会话号）。
+    /// </para>
+    /// <para>
+    /// ⚠️ 它**没有副作用**（与 <see cref="ListOrphansAsync"/> 正好相反，那一条会删
+    /// 陈年的空会话目录）。用它的地方是启动时那次「归档成功了的源还在不在」的收拾。
+    /// </para>
+    /// <para>
+    /// ⚠️ 正常情况下这个列表是**空的**（收尾成功就直接丢掉了）—— 非空只有两种来路：
+    /// 收尾时归档层还没成（见 <see cref="OrphanRecovery.SweepFinalizedAsync"/>），
+    /// 或者丢目录那一步删失败了。
+    /// </para>
+    /// </remarks>
+    public IReadOnlyList<string> ListFinalizedSessionIds()
+    {
+        if (!Directory.Exists(_root))
+        {
+            return [];
+        }
+
+        return Directory.EnumerateDirectories(_root)
+            .Where(one => File.Exists(Path.Combine(one, FinalizedFileName)))
+            .Select(Path.GetFileName)
+            .Where(one => !string.IsNullOrEmpty(one))
+            .Select(one => one!)
+            .ToList();
+    }
+
+    /// <summary>
     /// 丢掉一个会话的工作目录。
     /// </summary>
     /// <remarks>

@@ -288,8 +288,11 @@
                         <Separator/>
 
                         <TextBlock Style="{StaticResource SectionTitle}" Text="摄像头"/>
+                        <!-- ⚠️ 2026-10-16 起不再是「换了要重启」（需求方裁定热生效）：
+                             换完存下去就写穿了，**下一次开始工作**用新的那一台 ——
+                             而正在录的那一场不换（相机独占，中途换会把它掐掉）。 -->
                         <TextBlock Style="{StaticResource Caption}" Margin="0,0,0,8"
-                                   Text="录制用哪一路画面，换了要重启"/>
+                                   Text="录制用哪一路画面，换了下次开始工作生效"/>
                         <StackPanel Orientation="Horizontal">
                             <ComboBox x:Name="CameraCombo" Width="300" IsEnabled="False"/>
                             <!-- ⚠️ `TextWrapping` + `MaxWidth` 两个都要：这一句是个
@@ -1262,6 +1265,7 @@
                                                VerticalAlignment="Center"/>
                                     <ComboBox Grid.Column="1" x:Name="CloudQueueFilterCombo" Width="110"
                                               Margin="8,0,0,0" FontSize="13" VerticalAlignment="Center"
+                                              AutomationProperties.Name="筛选"
                                               SelectionChanged="OnCloudQueueFilterChanged"/>
 
                                     <TextBlock Grid.Column="3" Text="每页" Style="{StaticResource Body}"
@@ -1272,6 +1276,7 @@
                                     <ComboBox Grid.Column="4" x:Name="CloudQueuePageSizeCombo" Width="64"
                                               Margin="8,0,0,0" FontSize="13" VerticalAlignment="Center"
                                               SelectedIndex="1"
+                                              AutomationProperties.Name="每页条数"
                                               SelectionChanged="OnCloudQueuePageSizeChanged">
                                         <ComboBoxItem Content="5" Tag="5"/>
                                         <ComboBoxItem Content="10" Tag="10"/>

@@ -9,6 +9,7 @@ using MessageBoxButton = System.Windows.MessageBoxButton;
 using MessageBoxImage = System.Windows.MessageBoxImage;
 
 using VidLog.Desktop.Core.Camera;
+using VidLog.Desktop.Core.Cleanup;
 using VidLog.Desktop.Core.Configuration;
 using VidLog.Desktop.Core.Diagnostics;
 using VidLog.Desktop.Core.Media;
@@ -209,9 +210,11 @@ public sealed class AppHost : IAsyncDisposable
     /// 本次运行真正在用的那一路画面源；<see cref="CameraSource.IsEmpty"/> 表示没找到。
     /// </summary>
     /// <remarks>
-    /// ⚠️ <b>它是「启动时定下来的那个」，不是用户在设置里刚选的那个</b> ——
-    /// 摄像头改了要重启才生效（界面上就是这么写的）。拆窗之后主窗口不再有
-    /// 摄像头下拉，它要靠这一个属性回答「现在到底有没有摄像头」。
+    /// ⚠️ <b>2026-10-16 起它不再是「启动时那个、之后一动不动」</b>：用户在向导里
+    /// 换了摄像头之后，<see cref="ApplyCameraAsync"/> 会当场把它换成**新**那一台
+    /// （所以它只有一个私有 setter，写的地方也就那一处）。真正开始用新相机是
+    /// **下一次开始工作**（相机是独占的，正录着去开它只会失败）。
+    /// 拆窗之后主窗口不再有摄像头下拉，它要靠这一个属性回答「现在到底有没有摄像头」。
     /// <para>
     /// ⚠️ 界面上要用 <see cref="CameraSource.Display"/> 或 <see cref="CameraSource.Identity"/>，
     /// **不要**碰 <see cref="CameraSource.Address"/> —— 网络那一路的地址里带凭据。
@@ -238,8 +241,15 @@ public sealed class AppHost : IAsyncDisposable
     /// **上一次**探测的结论。拿它去跟用户新选的比，会得到一句「这台电脑跑不通」的
     /// **假话** —— 而那一档根本还没测过。见 `SettingsWindow.ShowEffectiveSpec`。
     /// </para>
+    /// <para>
+    /// ⚠️ <b><see langword="null"/> = 「还没探过 / 上一次那个结论不作数了」</b>
+    /// （2026-10-16 加了空值这一档，与 `SessionOptions.Spec` 同一个约定）。
+    /// 会把它清空的有两处：启动时还没探过，以及**换了摄像头**
+    /// （<see cref="ApplyCameraAsync"/>）—— 缓存键里其实还藏着第三样东西
+    /// 「哪台相机」，而它是探出来的结论，规格那两个字面上看不出来。
+    /// </para>
     /// </remarks>
-    public RecordingSpec ProbedSpec { get; private set; } = RecordingSpec.Default;
+    public RecordingSpec? ProbedSpec { get; private set; } = RecordingSpec.Default;
 
     /// <summary>
     /// 上一次探测的结论是「回落」——也就是<b>本来能用的那一档没跑通</b>。
@@ -765,7 +775,10 @@ public sealed class AppHost : IAsyncDisposable
         //
         // ⚠️ `CameraRecognition` 是配置向导第 3 步那个二选一（照图 `_28`/`_29`）：
         // 关掉时**连取景进程都不建** —— 不是「建了不用」，那样它照样占着相机。
-        // 它要重启才生效（与摄像头同一档，界面上写明了）。
+        // 它要重启才生效（界面上写明了）。
+        // ⚠️ **与摄像头那一组不是一档了**（2026-10-16）：换摄像头现在热生效
+        // （见 `ApplyCameraAsync`），而「识别」开关仍旧是启动期决定的这一件事 ——
+        // 它决定的是取景进程建不建，那一刻早就过去了。
         //
         // ⚠️ 预录缓冲与识码**无关**（需求方 2026-10-02 裁定）：识码关着而缓冲非零时
         // **照样要建这个进程** —— 只是它不挂解码器（出灰帧但不识码）。
@@ -1012,14 +1025,61 @@ public sealed class AppHost : IAsyncDisposable
                 ["生效时机"] = RequestRestart is null ? "重启软件" : "自动重启",
             });
 
+        RequestRestartOrSayWhy(
+            "用途已切换",
+            $"用途已切换成「{StationRoles.Describe(after).Title}」。\n\n"
+            + "⚠️ 要重启软件才生效 —— 录不录像、装不装摄像头与麦克风，都是在启动时定下的。");
+    }
+
+    /// <summary>
+    /// 归档档位**存下去之后**该做的事：记一条「为什么要重启」，然后让 App 重启
+    /// （需求方 2026-10-16 裁定「乙」）。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// ⚠️ <b>为什么要重启</b>：归档那一整套（归档目标、后端、中继、收尾器）是
+    /// <see cref="DesktopServices.Create"/> 在**装配时一次定死**的，收尾器还被
+    /// 只读地注进了协调器 ⇒ 当场换掉它等于把半个装配流程重写一遍。
+    /// 而「点【应用】没反应」是需求方原话里最刺眼的一条，所以取「立刻自动重启」。
+    /// </para>
+    /// <para>
+    /// ⚠️ 调用方必须**已经把新设置存下去了**：这里读的是 <see cref="Settings"/>，
+    /// 存之前读到的还是老的那一份。
+    /// </para>
+    /// </remarks>
+    /// <param name="before">改之前那一档。</param>
+    /// <param name="after">改之后那一档。</param>
+    public void RestartForArchive(ArchiveBackendKind before, ArchiveBackendKind after)
+    {
+        _logger.Log(
+            LogLevel.Info, "归档",
+            $"归档档位已改：{before} → {after}，接下来录的走「{Settings.Archive.Label}」。",
+            new Dictionary<string, object?>
+            {
+                ["归档档位"] = Settings.Archive.Label,
+                ["生效时机"] = RequestRestart is null ? "重启软件" : "自动重启",
+            });
+
+        RequestRestartOrSayWhy(
+            "归档档位已改",
+            $"归档档位已改成「{Settings.Archive.Label}」。\n\n"
+            + "⚠️ 要重启软件才生效 —— 存哪儿、传不传网盘，都是启动时装配好的。");
+    }
+
+    /// <summary>
+    /// 「存完之后某项变了 ⇒ 当场重启」的公共尾巴（T31 起两个入口共用）。
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ 没有重启钩子时**必须出声**（I3：不允许静默失效）：静默不重启是最坏的一种 ——
+    /// 用户以为换好了，而程序照旧按老的那一套跑。
+    /// </remarks>
+    private void RequestRestartOrSayWhy(string title, string message)
+    {
         if (RequestRestart is null)
         {
-            // 没有重启钩子 ⇒ 退回老行为。静默不重启是最坏的一种：
-            // 用户以为换好了，而它照旧按老用途录（I3：不允许静默失效）。
+            // 退回老行为：把话说明白，让用户自己关掉重开。
             MessageBox.Show(
-                $"用途已切换成「{StationRoles.Describe(after).Title}」。\n\n"
-                + "⚠️ 要重启软件才生效 —— 录不录像、装不装摄像头与麦克风，都是在启动时定下的。",
-                "用途已切换", MessageBoxButton.OK, MessageBoxImage.Information);
+                message, title, MessageBoxButton.OK, MessageBoxImage.Information);
             return;
         }
 
@@ -1041,8 +1101,9 @@ public sealed class AppHost : IAsyncDisposable
         var changes = SettingsStore.DescribeChanges(Settings, next);
 
         // ⚠️ 必须在 `Settings = next` **之前**算：赋值之后这两个比较就恒为假了
-        // （那个判据收的是新旧两份，见 `SettingsSavePlan.AudioChanged`）。
+        // （那两个判据收的是新旧两份，见 `SettingsSavePlan.AudioChanged` / `CameraChanged`）。
         var audioChanged = SettingsSavePlan.AudioChanged(Settings, next);
+        var cameraChanged = SettingsSavePlan.CameraChanged(Settings, next);
 
         await new SettingsStore(Services.Layout.SettingsPath).SaveAsync(next);
         Settings = next;
@@ -1093,6 +1154,13 @@ public sealed class AppHost : IAsyncDisposable
         // 这里存下去即可，不要去动正在跑的那一个进程（换成新档要重启进程、
         // 而重启 = 相机放开又拿回来那 1.5 秒，用户正站在那里等）。
         Coordinator.PrerecordBuffer = TimeSpan.FromSeconds(next.PrerecordSeconds);
+
+        // 画面（规格 §3.1.7 的设备维）：只有那三样真变了才重新解析一次 ——
+        // 每次存设置都枚举一遍 dshow 设备是白等（与音频那条同一个理由）。
+        if (cameraChanged)
+        {
+            await ApplyCameraAsync(CancellationToken.None);
+        }
 
         // 音轨（规格 §3.1.8）：只有音频那两项真变了才重新枚举设备 ——
         // 每次存设置都起一次 ffmpeg 枚举设备是白花 0.3 秒。
@@ -1172,15 +1240,33 @@ public sealed class AppHost : IAsyncDisposable
     {
         var wanted = new RecordingSpec(Settings.Codec, Settings.Resolution, Settings.Rotation);
 
-        // 没改就立刻返回 —— 见上面最后一条备注。比的是编码 + 分辨率，不含方向
-        //（判据只此一处，见 `RecordingSpec.ProbeMatches`）。
-        if (wanted.ProbeMatches(ProbedSpec))
+        // 没改就立刻返回 —— 见上面最后一条备注。
+        if (AlreadyProbed(wanted))
         {
             return;
         }
 
         await ProbeAsync(cancellationToken);
     }
+
+    /// <summary>
+    /// 「用户现在选的这一档，已经在**当前这台相机上**探过了」。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// ⚠️ <b>两个探测入口都必须问这一个方法</b>（开段前那一条、心跳那一条）——
+    /// 各写一遍的话，改一处忘一处就成了「换了摄像头还是拿旧的录，而且不报任何错」。
+    /// </para>
+    /// <para>
+    /// ⚠️ 「编码 + 分辨率怎么比」仍然是 <c>RecordingSpec.ProbeMatches</c> 那**唯一**
+    /// 一处判据；这里多出来的只是**第三样**：结论是在**哪台相机**上得出来的。
+    /// 规格那两个字面上没有它，所以换相机时只能靠把
+    /// <see cref="ProbedSpec"/> 清空（见 <see cref="ApplyCameraAsync"/>）——
+    /// 清空之后这一句自动为假，界面那边也会如实改口说「还没实测过」。
+    /// </para>
+    /// </remarks>
+    private bool AlreadyProbed(RecordingSpec wanted) =>
+        ProbedSpec is { } done && wanted.ProbeMatches(done);
 
     /// <summary>
     /// 真探一次，并把结论落实下去（采集对象 / 编码器 / 会话选项三样一起换）。
@@ -1207,7 +1293,7 @@ public sealed class AppHost : IAsyncDisposable
         // 2026-10-09 15:31:04 实测撞到过：19 毫秒内两条「录制规格已改为 …」，
         // 而同一刻两条探测进程是**被杀**（-5）退出的。
         var probed = await _probeGate.RunAsync(
-            alreadyDone: () => wanted.ProbeMatches(ProbedSpec),
+            alreadyDone: () => AlreadyProbed(wanted),
             probe: () => ProbeOnceAsync(wanted, ffmpegPath, cancellationToken),
             cancellationToken);
 
@@ -1337,6 +1423,52 @@ public sealed class AppHost : IAsyncDisposable
 
         _logger.Log(LogLevel.Info, "录制", "相机可能已经回来了，重探一次录制规格");
         await ProbeAsync(cancellationToken);
+    }
+
+    /// <summary>
+    /// 用户把摄像头（或来源）改掉之后，当场把新的一台落实下去
+    /// （需求方 2026-10-16 裁定「热生效」）。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// ⚠️ <b>这里只改「下一次开段用哪台」，绝不动正在跑的采集</b>：相机是**独占**的，
+    /// 正录着的时候去开它会失败，而那个失败会被读成「这个组合跑不通」
+    /// （见 <see cref="ProbeAsync"/> 里那条注释，2026-09-30 踩过）。
+    /// 真正把采集对象换掉的是 <see cref="ProbeOnceAsync"/>，它只在**开段前那一刻**
+    /// 跑 —— 那时相机必然是空的。所以「热」的口径是**下次开始工作生效**，
+    /// 与编码 / 分辨率那一档完全一致，界面上也是这么写的。
+    /// </para>
+    /// <para>
+    /// ⚠️ <b>把 <see cref="ProbedSpec"/> 清空是这件事的要害</b>：
+    /// <see cref="AlreadyProbed"/> 把「哪台相机」也算进去了，而那个前提没法从
+    /// 规格里看出来 ⇒ 不主动作废的话，换完摄像头会**一直拿旧那台录，而且不报任何错**。
+    /// 清掉之后界面那边也会如实改口说「还没实测过」（见 <c>EffectiveSpecNotice</c>）。
+    /// </para>
+    /// <para>
+    /// ⚠️ 解析出来的告警（网络地址没填、一台摄像头都没有）**必须落日志**：
+    /// 这是 I3 说的那条「不许静默降级」——换完之后录不出画面，日志里得有东西解释。
+    /// </para>
+    /// </remarks>
+    private async Task ApplyCameraAsync(CancellationToken cancellationToken)
+    {
+        var warnings = new List<string>();
+
+        var resolved = await ResolveCameraAsync(
+            Services, Settings, warnings, _logger, cancellationToken);
+
+        Camera = resolved;
+        Coordinator.Source = resolved;
+        ProbedSpec = null;
+
+        foreach (var one in warnings)
+        {
+            _logger.Log(LogLevel.Warn, "摄像头", one);
+        }
+
+        _logger.Log(
+            LogLevel.Info, "摄像头",
+            $"摄像头已改为 {resolved.Identity}，下次开始工作时生效",
+            new Dictionary<string, object?> { ["生效时机"] = "下次开始工作" });
     }
 
     private static async Task<CameraSource> ResolveCameraAsync(

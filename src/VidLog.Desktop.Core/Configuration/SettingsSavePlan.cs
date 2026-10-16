@@ -81,4 +81,22 @@ public static class SettingsSavePlan
     public static bool AudioChanged(AppSettings current, AppSettings next) =>
         next.RecordAudio != current.RecordAudio
         || !string.Equals(next.MicrophoneDevice, current.MicrophoneDevice, StringComparison.Ordinal);
+
+    /// <summary>
+    /// 画面那三样（来源、本机设备名、网络地址）有没有真变 —— 变了才值得重新解析一次。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// ⚠️ 解析一次要枚举 dshow 设备（起一个 ffmpeg 进程，见
+    /// <c>AppHost.ResolveCameraAsync</c>），而「存设置」是高频动作 ——
+    /// 界面上改**任何**一格都会走一遍，每次都枚举是白等。
+    /// </para>
+    /// <para>
+    /// ⚠️ 比的是 <see cref="AppSettings.Camera"/>（那条**造出来的**描述符）
+    /// 而不是三个字段各比一遍：三个字段里任意一个变了，描述符就可能变，
+    /// 而比描述符只有一处、也不会有「漏比了哪一支」。
+    /// </para>
+    /// </remarks>
+    public static bool CameraChanged(AppSettings current, AppSettings next) =>
+        next.Camera != current.Camera;
 }

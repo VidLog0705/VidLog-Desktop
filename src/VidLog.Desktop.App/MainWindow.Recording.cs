@@ -551,6 +551,15 @@ public partial class MainWindow : Window
             ? $"在线机位 {online}/{limit}"
             : $"在线机位 {online}";
 
+        // ⭐ 需求方 2026-10-16 裁定「乙」：录制台上这颗【实时多画面】**只在真有手机
+        // 推流时才出现** —— 这台机器拿摄像头在本机录的时候，它点了也只是九格
+        // 「无信号输入」，白占一行地方。
+        //
+        // ⚠️ 判据取 `Live.Active()`（**正在报到**的机位），**不取已入网设备数**：
+        // 入网过一次的机器会一直留在 `DeviceRegistry` 里，拿它当条件等于永远显示、
+        // 收不起来。`online` 上面刚算过，顺手用，不另调一次（那是会改状态的读）。
+        MultiViewButton.Visibility = online > 0 ? Visibility.Visible : Visibility.Collapsed;
+
         StatusDiskText.Text = "本机存档盘 " + FormatFreeSpace(_host.Services.Storage.ActiveRoot);
         StatusLicenseText.Text = StatusSummaries.License(_host);
         StatusPortText.Text = $"端口 {_host.Services.PlaybackPort}";

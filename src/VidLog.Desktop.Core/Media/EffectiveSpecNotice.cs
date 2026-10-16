@@ -25,7 +25,11 @@ public static class EffectiveSpecNotice
     /// </summary>
     /// <param name="wanted">用户**此刻**在设置里选的那一对（含方向）。</param>
     /// <param name="effective">最近一次真开相机得出的结论（<c>AppHost.EffectiveSpec</c>）。</param>
-    /// <param name="probed">**上一次实测过**的那一对（<c>AppHost.ProbedSpec</c>）。</param>
+    /// <param name="probed">
+    /// **上一次实测过**的那一对（<c>AppHost.ProbedSpec</c>）；
+    /// <see langword="null"/> = 还没探过，或者上一次那个结论**不作数了**
+    /// （换了摄像头 —— 结论里藏着「哪台相机」，而那是规格上看不出来的第三样）。
+    /// </param>
     /// <param name="fallbackReason">回落的原因，没有就是 <see langword="null"/>。</param>
     /// <returns>
     /// <c>Text</c> 是要显示的那句，<c>Warning</c> 为真时界面该把它画成警告色。
@@ -42,6 +46,12 @@ public static class EffectiveSpecNotice
     /// <item>探过且回落了 ⇒ 说结论 + 原因（§3.1.7 的「回落必须可见」）。</item>
     /// </list>
     /// <para>
+    /// ⚠️ 情形 2 有两个来路：**用户改了规格**，或者**用户换了摄像头**
+    /// （2026-10-16 起的第二支，那时 <paramref name="probed"/> 是
+    /// <see langword="null"/>）。两句话是同一句 —— 因为对用户来说是同一件事：
+    /// 「你现在选的这一档，在这台机器上还没实测过」。
+    /// </para>
+    /// <para>
     /// ⚠️ 方向**要一起比**：它也在 spec 里，不带上它的话，一个方向设成「转 180°」的
     /// 机器每次开这一页都会看到那句回落警告（两个 spec 的 <c>Rotation</c> 不一样）。
     /// 所以最后一档用的是**整条记录**的相等，而不是只看编码与分辨率。
@@ -55,11 +65,11 @@ public static class EffectiveSpecNotice
     public static (string Text, bool Warning) Describe(
         RecordingSpec wanted,
         RecordingSpec effective,
-        RecordingSpec probed,
+        RecordingSpec? probed,
         string? fallbackReason)
     {
         // 情形 2：用户刚改的这一对还没实测过。**先判它**，否则会拿旧结论说新组合的不是。
-        if (!probed.ProbeMatches(wanted))
+        if (probed is null || !probed.ProbeMatches(wanted))
         {
             return (
                 $"「{wanted.Label}」还没实测过 —— 下次开始工作时会真开一次相机验一遍，"

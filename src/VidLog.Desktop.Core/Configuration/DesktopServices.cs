@@ -575,7 +575,7 @@ public sealed class DesktopServices : IAsyncDisposable
         // ⚠️ logger 一定要传：工作区是「读不出来的会话」唯一的留痕出口，
         // 而那一条正是本仓**唯一会丢证据**的方向（见 `ReadManifestAsync`）。
         var workspace = new RecordingWorkspace(layout.WorkspaceRoot, logger);
-        var orphanRecovery = new OrphanRecovery(workspace, finalizer);
+        var orphanRecovery = new OrphanRecovery(workspace, finalizer, index, archiveBackend, logger);
 
         var search = new RecordingSearch(index, labels);
         var punchNavigation = new PunchNavigation(index, punches);
@@ -783,6 +783,15 @@ public sealed class DesktopServices : IAsyncDisposable
         {
             warnings.Add($"孤儿会话 {failed.Reason} 收尾失败：{failed.FailureReason}");
         }
+
+        // ⚠️ **必须排在孤儿收尾之后**：上面那一步刚收完尾的会话也可能落在「归档层
+        // 还没成」那一档（比如收尾那一刻网盘传不上去），而它们正是这一趟要看的。
+        // 反过来（先扫后收尾）会漏掉这一批，而它们要等到下一次启动才被看见。
+        //
+        // ⚠️ 它的失败**不进 `warnings`**：清扫不成只是多占点地方（日志里有），
+        // 不是需要用户当场做点什么的事 —— 与「取证录像收尾失败」不是一档。
+        // （异常也在它内部自己兜住了，不会把启动这一路带下去。）
+        await OrphanRecovery.SweepFinalizedAsync(cancellationToken);
 
         string? playbackUrl = null;
         if (Server is not null)

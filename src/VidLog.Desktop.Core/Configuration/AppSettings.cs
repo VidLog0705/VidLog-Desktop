@@ -41,8 +41,13 @@ public sealed record AppSettings
     /// 而那也正是把相机让出来的做法（dshow 上相机是独占的）。
     /// </para>
     /// <para>
-    /// ⚠️ 改它**要重启才生效**，与摄像头、<see cref="CameraRecognition"/> 同一档：
-    /// 三者都在 <c>AppHost.StartAsync</c> 的装配期定死，界面上写明了。
+    /// ⚠️ 改它**要重启才生效**，与 <see cref="CameraRecognition"/> 同一档：
+    /// 两者都在 <c>AppHost.StartAsync</c> 的装配期定死，界面上写明了。
+    /// </para>
+    /// <para>
+    /// ⚠️ <b>摄像头那三项 2026-10-16 起不在这张名单上了</b>：它们走
+    /// <c>AppHost.ApplyCameraAsync</c>，**下一次开始工作**就生效（不必重启）——
+    /// 见 <see cref="Camera"/>。
     /// </para>
     /// </remarks>
     public StationRole StationRole { get; init; } = StationRole.RecordAndKeep;
@@ -180,8 +185,16 @@ public sealed record AppSettings
     /// 摄像头配置（哪一个 + 地址合成一个）。**不落盘**，由上面那两个字段算出来。
     /// </summary>
     /// <remarks>
+    /// <para>
     /// 与 <see cref="Archive"/> 同一路数：两个字段合成一个判断对象，
     /// 免得每个调用点各写一遍「到底用哪个」。
+    /// </para>
+    /// <para>
+    /// ⚠️ 改它**下一次开始工作才生效**，不必重启（2026-10-16 起，需求方裁定「热生效」）：
+    /// 落点在 <c>AppHost.SaveSettingsAsync</c> 里那一句「画面那三样真变了才重新解析」，
+    /// 以及协调器的 <c>Source</c> —— 那个值每次开段才被读一次。
+    /// <b>采集对象本身要等到开段前那一刻才换</b>（相机是独占的，正录着去开它会失败）。
+    /// </para>
     /// </remarks>
     [JsonIgnore]
     public Recording.CameraSource Camera => Recording.CameraSource.FromConfig(
