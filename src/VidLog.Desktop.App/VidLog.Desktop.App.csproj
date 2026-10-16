@@ -548,7 +548,7 @@
           界面上那句「打不开」是守门人自己编的、不是系统给的。
         ⚠️ 这一版同样没走 CI 发 Release，只在本机出安装程序。
     -->
-    <Version>0.15.5</Version>
+    <Version>0.15.6</Version>
     <OutputType>WinExe</OutputType>
     <TargetFramework>net9.0-windows</TargetFramework>
     <Nullable>enable</Nullable>
