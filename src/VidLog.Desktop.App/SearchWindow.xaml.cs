@@ -47,7 +47,37 @@ internal sealed record SearchResultRow(
     string LockLabel,
     string VoidLabel,
     string EvidenceId,
-    RecordingHit Hit);
+    RecordingHit Hit)
+{
+    /// <summary>
+    /// 屏幕阅读器念这一行时念什么（A6，2026-10-16）。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// ⚠️ 不覆盖它，念出来的就是 record 自动生成的那一串
+    /// 「<c>SearchResultRow { Waybill = … ContentHash = c3da7725… Location = … SourceDeviceId = … }</c>」，
+    /// 屏幕阅读器会一字不差地念完（实测报上来的）。
+    /// </para>
+    /// <para>
+    /// ⚠️ <b>为什么落在 <c>ToString</c> 上而不是给行容器挂
+    /// `AutomationProperties.Name`</b>：两条**都管用**，但前者不用碰 XAML
+    /// ——`ListBoxItem` 的容器是 `ItemContainerGenerator` 生成的，要挂就得写
+    /// `ItemContainerStyle` + 一个「数据项 → 这一行那句话」的绑定，那是**同一句话
+    /// 的第二处实现**。而数据项自己的 `ToString()` 本来就该回答「我是什么」。
+    /// </para>
+    /// <para>
+    /// ⚠️ 两条都管用时**容器上那个赢**（`ItemAutomationPeer.GetNameCore` 先读
+    /// `AutomationProperties.Name`，读不到才回落 `Item.ToString()`）——
+    /// 2026-10-16 在 .NET 9 WPF 上真跑过探针核实，别照「哪个在前」去猜。
+    /// </para>
+    /// <para>
+    /// 只留人看得懂的三样：单号、发货/退货、时间与时长。⚠️ <c>Subtitle</c> 末尾那个
+    /// 「 · 」是给右边那个色块留的分隔（见 `RenderPage`），念出来是个断句，剪掉。
+    /// </para>
+    /// </remarks>
+    public override string ToString() =>
+        $"{Waybill}，{BusinessLabel}，{Subtitle.TrimEnd(' ', '·')}";
+}
 
 /// <summary>
 /// 历史录像检索与回放 —— 纯视图（2026-09-28 从 <see cref="MainWindow"/> 拆出来）。

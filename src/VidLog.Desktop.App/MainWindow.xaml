@@ -702,7 +702,18 @@
                         <RowDefinition Height="Auto"/>
                     </Grid.RowDefinitions>
 
-                    <Button Grid.Row="0" Grid.Column="0" Margin="0,0,6,10"
+                    <!-- ⚠️ 这五颗的 `x:Name` 与 `AutomationProperties.Name` 是 A6
+                         （2026-10-16）补的：内容是个 `StackPanel`（图标 + 文字），
+                         而 WPF 只有内容**是字符串**时才自动把文字当无障碍名 ——
+                         于是屏幕阅读器在这五颗上念不出任何东西，
+                         脚本也按 `AutomationId` 找不到它们（WPF 的 AutomationId
+                         缺省回落到 `x:Name`）。`AutomationProperties` 就在默认的
+                         XAML 命名空间里，不用加前缀。三条都是 2026-10-16 在
+                         .NET 9 WPF 上真跑探针量出来的，不是照文档推的：
+                         字符串内容 → 名字就是那段文字；`StackPanel` 内容 → 名字是空串；
+                         `x:Name` → 就是 `AutomationId`。 -->
+                    <Button x:Name="EnrollButton" Grid.Row="0" Grid.Column="0" Margin="0,0,6,10"
+                            AutomationProperties.Name="连接电脑/手机"
                             Style="{StaticResource SecondaryButton}" Padding="16,12"
                             Click="OnEnroll">
                         <StackPanel Orientation="Horizontal">
@@ -717,7 +728,8 @@
                         </StackPanel>
                     </Button>
 
-                    <Button Grid.Row="0" Grid.Column="1" Margin="6,0,0,10"
+                    <Button x:Name="PlaybackPageButton" Grid.Row="0" Grid.Column="1" Margin="6,0,0,10"
+                            AutomationProperties.Name="网页回放"
                             Style="{StaticResource SecondaryButton}" Padding="16,12"
                             Click="OnOpenPlaybackPage">
                         <StackPanel Orientation="Horizontal">
@@ -734,7 +746,8 @@
                          而触屏 / 不悬停的用户永远不知道它为什么点不动）。
                          订单联动要一个至今没开工的服务端（规格记在 M6），
                          不是这边少写了几行。 -->
-                    <Button Grid.Row="1" Grid.Column="0" Margin="0,0,6,10"
+                    <Button x:Name="InstallOrderLinkButton" Grid.Row="1" Grid.Column="0" Margin="0,0,6,10"
+                            AutomationProperties.Name="安装订单联动"
                             Style="{StaticResource SecondaryButton}" Padding="16,12"
                             Click="OnInstallOrderLink">
                         <StackPanel Orientation="Horizontal">
@@ -746,7 +759,8 @@
                         </StackPanel>
                     </Button>
 
-                    <Button Grid.Row="1" Grid.Column="1" Margin="6,0,0,10"
+                    <Button x:Name="SendTestOrderButton" Grid.Row="1" Grid.Column="1" Margin="6,0,0,10"
+                            AutomationProperties.Name="发送测试订单"
                             Style="{StaticResource SecondaryButton}" Padding="16,12"
                             Click="OnSendTestOrder">
                         <StackPanel Orientation="Horizontal">
@@ -762,7 +776,8 @@
                          与上面那颗是**同一个处理函数**（`OnOpenMultiView`）——
                          它自己会把已经开着的那一个叫到前面，不会开出第二个来。 -->
 
-                    <Button Grid.Row="2" Grid.Column="0" Grid.ColumnSpan="2" Margin="0"
+                    <Button x:Name="BackupMultiViewButton" Grid.Row="2" Grid.Column="0" Grid.ColumnSpan="2" Margin="0"
+                            AutomationProperties.Name="实时多画面"
                             Style="{StaticResource SecondaryButton}" Padding="16,12"
                             Click="OnOpenMultiView"
                             ToolTip="看每台手机现在的画面，手机端打开「设置 → 实时共享」后才出现">
