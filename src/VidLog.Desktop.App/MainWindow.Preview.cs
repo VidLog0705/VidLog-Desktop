@@ -208,9 +208,18 @@ public partial class MainWindow : Window
                 // ⚠️ 只在**由有到无的那一次**记：判据与提示文字是同一处，
                 // 而画面空着的时候这个分支不会再进来（`PreviewImage` 已经不是 Visible），
                 // 所以长期没画面不会把日志刷满（§6.1「重复的问题只在变了的时候记」）。
+                // ⚠️ 级别跟着**这到底是不是故障**走（A7，2026-10-16）：收工之后
+                // 预览正常收尾走的是后半句，而它此前也记 WARN —— 用户刚点完
+                // 【结束工作】就看到一条 WARN，第一反应是去查（实测报上来的）。
+                // 要查的是**工作期间**断掉的那一种，那一档才配 WARN。
+                var working = _host.Coordinator.IsWorking;
+
                 _host.Logger.Log(
-                    VidLog.Desktop.Core.Diagnostics.LogLevel.Warn, "预览",
-                    _host.Coordinator.IsWorking
+                    working
+                        ? VidLog.Desktop.Core.Diagnostics.LogLevel.Warn
+                        : VidLog.Desktop.Core.Diagnostics.LogLevel.Info,
+                    "预览",
+                    working
                         ? "工作期间取景画面断了（录制本身不受影响）"
                         : "取景画面断了");
 
