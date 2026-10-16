@@ -886,6 +886,60 @@ public class DesktopServicesTests
     }
 
     /// <summary>
+    /// 钉住「启动时那一趟**孤儿收尾**也排在登录恢复之后」（2026-10-16 补，与上一条同族）。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// ⚠️ 上一条守的是「清扫空转」，这一条守的是**收尾本身**：孤儿走的是同一套收尾逻辑
+    /// （<c>SessionFinalizer</c>），而它最后一步要**发布到归档层** —— 归档层是百度网盘
+    /// 那一档时那一步要令牌。排在登录恢复之前 ⇒ 每一次「崩过再启动」都会：
+    /// <list type="number">
+    /// <item>队列那条**白烧一次重试额度**（<c>CloudUploadService.MaxAttempts</c> 是 8）；</item>
+    /// <item>写一句与事实相反的话「还没登上百度网盘」，设置页那行「最近一次出错」跟着说假话；</item>
+    /// <item><c>ArchiveComplete</c> 为假 ⇒ <c>work/</c> 那份源 MKV 不删，而要等到
+    /// <b>下一次启动</b>才被上面那趟清扫收回去（清扫一次启动只跑一趟，且排在那颗
+    /// 60 秒的定时器前面）。</item>
+    /// </list>
+    /// </para>
+    /// <para>
+    /// ⚠️ 它**不丢证据**：本机那份照常落盘、进索引（<c>Succeeded</c> 只看 <c>Indexed</c>），
+    /// 所以是个「慢性」缺陷 —— 不炸，但每次崩过都留一笔。也正因为不炸，
+    /// 没有任何一条行为用例会红：<c>OrphanRecoveryTests</c> 自己 <c>new</c> 一个归档后端
+    /// 喂进去，证明的是「给它一个能发布的后端它会发」，**不是「生产上那一刻令牌在」**。
+    /// 0.15.9 及以前就排在前面，全套测试照样全绿。
+    /// </para>
+    /// <para>
+    /// ⚠️ 天花板与旁边几条绊线一样：只挡「顺序被改回去 / 那一段被挪走」，
+    /// 挡不住「改成一条不跑的路径」。
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public void 孤儿收尾要排在登录恢复之后()
+    {
+        var path = Path.Combine(
+            RepoRoot(), "src", "VidLog.Desktop.Core", "Configuration", "DesktopServices.cs");
+
+        var code = string.Join(
+            '\n',
+            File.ReadAllLines(path).Where(line => !line.TrimStart().StartsWith("//")));
+
+        // 哨兵：两处都在。少了任何一处，下面那条比较就成了「-1 > -1」式的假绿。
+        const string restore = "CloudUploads.Session.RestoreAsync(cancellationToken)";
+        const string recover = "OrphanRecovery.RecoverAsync(cancellationToken)";
+
+        var atRestore = code.IndexOf(restore, StringComparison.Ordinal);
+        var atRecover = code.IndexOf(recover, StringComparison.Ordinal);
+
+        Assert.True(atRestore >= 0, $"`DesktopServices` 里找不到 `{restore}` —— 这句被挪走/改名了，这条闸跟着失效。");
+        Assert.True(atRecover >= 0, $"`DesktopServices` 里找不到 `{recover}` —— 孤儿收尾被摘掉了（T21 整条没了）。");
+
+        Assert.True(
+            atRecover > atRestore,
+            "孤儿收尾排到了**登录恢复之前** —— 归档层是百度网盘那一档时，收尾最后一步发布拿不到令牌："
+                + "白烧一次重试额度、写一句「还没登上百度网盘」的假话、`work/` 那份源 MKV 还留到下次启动。");
+    }
+
+    /// <summary>
     /// 钉住「取景识码那个对象真的挂到协调器上了」（规格 §3.2.1 / §3.1.3）。
     /// </summary>
     /// <remarks>

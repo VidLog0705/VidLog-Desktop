@@ -777,13 +777,6 @@ public sealed class DesktopServices : IAsyncDisposable
             }
         }
 
-        var orphanOutcomes = await OrphanRecovery.RecoverAsync(cancellationToken);
-
-        foreach (var failed in orphanOutcomes.Where(o => !o.Succeeded))
-        {
-            warnings.Add($"孤儿会话 {failed.Reason} 收尾失败：{failed.FailureReason}");
-        }
-
         string? playbackUrl = null;
         if (Server is not null)
         {
@@ -842,6 +835,32 @@ public sealed class DesktopServices : IAsyncDisposable
             }
 
             CloudUploads.Start();
+        }
+
+        // ── 孤儿收尾（T21）────────────────────────────────────────────
+        //
+        // ⚠️ **必须排在 `CloudUploads.Session.RestoreAsync()` 之后**，与下面那一趟清扫同一条道理：
+        // 孤儿走的是**同一套**收尾逻辑，而它最后一步要**发布到归档层** —— 归档层是百度网盘
+        // 那一档时那一步要令牌，`IsLoggedIn` 是 `RestoreAsync` 填出来的。
+        // 0.15.9 及以前它排在登录恢复之前 ⇒ 每一次「崩过再启动」都会：
+        //
+        //   ① 队列那条**白烧一次重试额度**（`MaxAttempts` 是 8）；
+        //   ② 写一句与事实相反的话「还没登上百度网盘」，设置页那行「最近一次出错」跟着说假话；
+        //   ③ `ArchiveComplete` 为假 ⇒ `work/` 那份源 MKV 不删，而要等到**下一次启动**
+        //      才被下面的清扫收回去（清扫一次启动只跑一趟，且排在那颗 60 秒的定时器前面）。
+        //
+        // 这三条都不丢证据（本机那份已经落盘、进索引，`Succeeded` 只看 `Indexed`），
+        // 所以它是个「慢性」缺陷：不炸，但每次崩过都留一笔。
+        //
+        // ⚠️ 代价说清楚：排到这里之后令牌已经好了 ⇒ 这一趟**真的会同步传完**
+        // （`PublishAsync` 里是 `await`），崩后第一次启动会晚一会儿才出窗口。
+        // 这与「正常收尾也 await 上传」一致；下面目录型那条**不 await** 的是**重试**，
+        // 不是第一次发布，两者不是一回事。
+        var orphanOutcomes = await OrphanRecovery.RecoverAsync(cancellationToken);
+
+        foreach (var failed in orphanOutcomes.Where(o => !o.Succeeded))
+        {
+            warnings.Add($"孤儿会话 {failed.Reason} 收尾失败：{failed.FailureReason}");
         }
 
         // ── work/ 里那些「已归档、当时没传成」的源分段，事后补传成功了就回收 ──
