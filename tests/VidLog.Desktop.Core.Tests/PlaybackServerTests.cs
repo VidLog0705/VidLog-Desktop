@@ -143,6 +143,25 @@ public class PlaybackServerTests
     /// 接不接机位发现那一档。传 false 是给「没接那一档时如实说不」那一条用的 ——
     /// 生产组合根**总是**传它（`DesktopServices`）。
     /// </param>
+    /// <summary>
+    /// 库里最早那条录像的起始时刻：**今天往前 14 天 10:00**。
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ **不许写死某一个日子**（2026-10-16 修）。原来这里是
+    /// `new DateTimeOffset(2026, 9, 16, 10, 0, 0, +08:00)`，而 `/api/overview`
+    /// 的估算窗口是拿**真钟**减出来的（`PlaybackServer.Playback.cs`：
+    /// `spanDays = min(窗口, 现在 − 最早)`）⇒「最早那条到今天的距离」**随日子长大**，
+    /// 满 30 天那天 `统计卡_窗口盖住库里的录像时给出可保留天数` 就翻红 ——
+    /// 那条用例的前提是「历史短于 30 天窗口，所以分母是历史而不是窗口」。
+    /// 2026-10-16 恰好是 2026-09-16 之后第 30 天，实测红（本机与 CI 都会红）。
+    ///
+    /// ⚠️ 时刻钉在 10:00 是照原来的形状来的，也让「最早那条」那条断言不必跟秒后
+    /// 小数打交道。取 `static readonly` 而不是每次现算：同一个进程里
+    /// `StartAsync` 与断言必须看到**同一个**时刻，否则跨零点那一刻会闪。
+    /// </remarks>
+    private static readonly DateTimeOffset FixtureStart =
+        new(DateTime.Today.AddDays(-14).AddHours(10));
+
     /// <param name="archiveBackend">
     /// 归档层那一档。不传就不接（**绝大多数用例要的正是「不接」**）。
     /// 传一个指向死路径的实现，就是「这台机器现在够不着归档层」——
@@ -171,7 +190,10 @@ public class PlaybackServerTests
 
         await File.WriteAllBytesAsync(mediaPath, mediaBytes);
 
-        var started = new DateTimeOffset(2026, 9, 16, 10, 0, 0, TimeSpan.FromHours(8));
+        // ⚠️ 起点见 `FixtureStart`：**相对现在**，不写死日子（2026-10-16 修）。
+        // ⚠️ 下面那个 `relative` 路径里的日期是**不透明的**（索引里存的是位置，
+        //     `StartedAt` 是另一个字段）—— 两边不一致不影响任何东西，别去对齐它。
+        var started = FixtureStart;
         var index = new JsonLinesRecordingIndex(dir.File("index.jsonl"));
         await index.AddAsync(new RecordingEntry(
             evidenceId,
@@ -988,8 +1010,11 @@ public class PlaybackServerTests
         Assert.Equal(2, payload.GetProperty("count").GetInt32());
         Assert.Equal(2, payload.GetProperty("waybillCount").GetInt32());
 
-        // 最早那一条 = `e1`（`e2` 比它晚一小时）。
-        Assert.StartsWith("2026-09-16T10:00:00", payload.GetProperty("earliest").GetString());
+        // 最早那一条 = `e1`（`e2` 比它晚一小时）。⚠️ 拿 `FixtureStart` 换算，
+        // 不写死日子 —— 理由见它那段 remarks。
+        Assert.StartsWith(
+            FixtureStart.ToString("yyyy-MM-ddTHH:mm:ss"),
+            payload.GetProperty("earliest").GetString());
 
         // 已用是**录像的估算**占用，不是整块盘已用 —— 所以它必须是个正数
         // 而不是「盘上用了多少」（那个数在干净机器上会是几十 GB）。
@@ -1018,7 +1043,7 @@ public class PlaybackServerTests
     [Fact]
     public async Task 统计卡_库里那些录像都在估算窗口之外时报暂无法估算()
     {
-        // 库里最早那条在 2026-09-16，而窗口是「最近 7 天」⇒ 窗口内一条都没有
+        // 库里最早那条在 14 天前（`FixtureStart`），而窗口是「最近 7 天」⇒ 窗口内一条都没有
         // ⇒ 日均占用算不出来 ⇒ 回 null。页面照设计图上那句话报「暂无法估算」。
         //
         // ⚠️ 这里**绝不能编一个数**出来：把全库的量摊到 7 天上会得到一个
