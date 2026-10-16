@@ -837,6 +837,55 @@ public class DesktopServicesTests
     }
 
     /// <summary>
+    /// 钉住「扫 `work/` 那一趟排在**登录恢复之后**」（2026-10-16 需求方当场撞出来的）。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// ⚠️ <b>这条为什么不能靠行为测试</b>：没有一个用例会撞上「启动装配的顺序」——
+    /// `OrphanRecoveryTests` 是**直接构造** <c>OrphanRecovery</c> 并自己传一个归档后端的，
+    /// 所以它证明的是「给它一个查得动的后端它会删」，**不是「生产上那一刻后端查得动」**。
+    /// 0.15.7 排错了位置，全套测试**照样全绿**。
+    /// </para>
+    /// <para>
+    /// ⚠️ 顺序反了的后果不是「少做一件事」，而是**做了一件与事实相反的事**：
+    /// 网盘那一档的 <c>VerifyAsync</c> 要令牌，而 <c>BaiduPanSession.IsLoggedIn</c> 是
+    /// <c>RestoreAsync()</c> 填出来的 ⇒ 排在它前面就一律「问不到百度网盘：还没登录」
+    /// ⇒ **一律不删**（方案 a 整条空转），并且每次启动写一句假话 ——
+    /// 用户明明登着，日志说他没登（2026-10-16 就是照这句假话去跟需求方对质的）。
+    /// </para>
+    /// <para>
+    /// ⚠️ 天花板与旁边几条绊线一样：只挡「顺序被改回去 / 那一行被挪走」，
+    /// 挡不住「改成一条不跑的路径」。
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public void 扫work那一趟要排在登录恢复之后()
+    {
+        var path = Path.Combine(
+            RepoRoot(), "src", "VidLog.Desktop.Core", "Configuration", "DesktopServices.cs");
+
+        var code = string.Join(
+            '\n',
+            File.ReadAllLines(path).Where(line => !line.TrimStart().StartsWith("//")));
+
+        // 哨兵：两处都在。少了任何一处下面那条比较就是「-1 > -1」式的假绿 ——
+        // 与「许可那句话只有一份」那条同一个教训（2026-10-07 当场撞到过）。
+        const string restore = "CloudUploads.Session.RestoreAsync(cancellationToken)";
+        const string sweep = "OrphanRecovery.SweepFinalizedAsync(cancellationToken)";
+
+        var atRestore = code.IndexOf(restore, StringComparison.Ordinal);
+        var atSweep = code.IndexOf(sweep, StringComparison.Ordinal);
+
+        Assert.True(atRestore >= 0, $"`DesktopServices` 里找不到 `{restore}` —— 这句被挪走/改名了，这条闸跟着失效。");
+        Assert.True(atSweep >= 0, $"`DesktopServices` 里找不到 `{sweep}` —— 清扫被摘掉了（方案 a 整条没了）。");
+
+        Assert.True(
+            atSweep > atRestore,
+            "清扫 `work/` 那一趟排到了**登录恢复之前** —— 网盘那一档每次启动都会空转"
+                + "（回查一律「还没登录」⇒ 一律不删），而且会写一句与事实相反的日志。");
+    }
+
+    /// <summary>
     /// 钉住「取景识码那个对象真的挂到协调器上了」（规格 §3.2.1 / §3.1.3）。
     /// </summary>
     /// <remarks>

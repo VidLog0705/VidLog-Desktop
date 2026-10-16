@@ -784,15 +784,6 @@ public sealed class DesktopServices : IAsyncDisposable
             warnings.Add($"孤儿会话 {failed.Reason} 收尾失败：{failed.FailureReason}");
         }
 
-        // ⚠️ **必须排在孤儿收尾之后**：上面那一步刚收完尾的会话也可能落在「归档层
-        // 还没成」那一档（比如收尾那一刻网盘传不上去），而它们正是这一趟要看的。
-        // 反过来（先扫后收尾）会漏掉这一批，而它们要等到下一次启动才被看见。
-        //
-        // ⚠️ 它的失败**不进 `warnings`**：清扫不成只是多占点地方（日志里有），
-        // 不是需要用户当场做点什么的事 —— 与「取证录像收尾失败」不是一档。
-        // （异常也在它内部自己兜住了，不会把启动这一路带下去。）
-        await OrphanRecovery.SweepFinalizedAsync(cancellationToken);
-
         string? playbackUrl = null;
         if (Server is not null)
         {
@@ -852,6 +843,31 @@ public sealed class DesktopServices : IAsyncDisposable
 
             CloudUploads.Start();
         }
+
+        // ── work/ 里那些「已归档、当时没传成」的源分段，事后补传成功了就回收 ──
+        //
+        // ⚠️ **前后两处顺序都卡着，缺任何一条这一趟就是空转**：
+        //
+        //   ① 必须排在**孤儿收尾（`RecoverAsync`）之后**：上面那一步刚收完尾的会话也可能
+        //      落在「归档层还没成」那一档（比如收尾那一刻网盘传不上去），而它们正是这一趟
+        //      要看的。反过来（先扫后收尾）会漏掉这一批，它们要等到下一次启动才被看见。
+        //
+        //   ② 必须排在**`CloudUploads.Session.RestoreAsync()` 之后**：网盘那一档的回查要令牌，
+        //      而 `IsLoggedIn` 是 `RestoreAsync` 填出来的（`_login is not null`）。
+        //      0.15.7 排在了它前面 ⇒ 网盘这一档**每次启动都空转**（回查一律「问不到百度网盘：
+        //      还没登录」⇒ 一律不删），并且**写一句与事实相反的日志** ——
+        //      2026-10-16 需求方当场发现：他明明登着，界面上却说他没登。
+        //      （同一条道理，上面那句「登录是 `RestoreAsync` 恢复的，装配那一刻还问不到」
+        //      本来就写在文件里，是我没照它做。）
+        //
+        // ⚠️ 排在 `CloudUploads.Start()` 之后**不会跟补传抢**：那颗定时器是 `PeriodicTimer`，
+        // 第一趟在 60 秒之后，而这一趟只做几次回查。就算真撞上也不出事 —— 抢着传的那条
+        // 还没进归档层，回查会说「不实在」⇒ 不删。
+        //
+        // ⚠️ 它的失败**不进 `warnings`**：清扫不成只是多占点地方（日志里有），
+        // 不是需要用户当场做点什么的事 —— 与「取证录像收尾失败」不是一档。
+        // （异常也在它内部自己兜住了，不会把启动这一路带下去。）
+        await OrphanRecovery.SweepFinalizedAsync(cancellationToken);
 
         // ── 归档层没发上去的那些，补发（T23-B / 3.1）────────────────────
         //
