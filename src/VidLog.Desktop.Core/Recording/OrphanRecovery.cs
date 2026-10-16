@@ -154,7 +154,7 @@ public sealed class OrphanRecovery
                 .GroupBy(one => one.SessionId, StringComparer.Ordinal)
                 .ToDictionary(one => one.Key, one => one.ToList(), StringComparer.Ordinal);
 
-            var swept = 0;
+            var sweptIds = new List<string>();
 
             foreach (var sessionId in sessionIds)
             {
@@ -199,14 +199,17 @@ public sealed class OrphanRecovery
                 }
 
                 _workspace.DiscardSessionDirectory(sessionId);
-                swept++;
+                sweptIds.Add(sessionId);
             }
 
-            if (swept > 0)
+            // ⚠️ 会话号要**写进这一条**（§6.1「不可逆动作要留痕」）：删目录这一步事后
+            // 再也没别的痕迹了，光记「清掉 3 个」的话，「那场 10-13 的目录哪去了」
+            // 就答不上来 —— 而这正是删东西最会被追问的那一刻。
+            if (sweptIds.Count > 0)
             {
                 _logger?.Log(LogLevel.Info, "录制",
-                    $"清掉 {swept} 个会话的工作目录：它们的成品都已经在归档层上了"
-                    + "（收尾当时还没传成，是事后补传上去的）");
+                    $"清掉 {sweptIds.Count} 个会话的工作目录（{string.Join("、", sweptIds)}）："
+                    + "它们的成品都已经在归档层上了（收尾当时还没传成，是事后补传上去的）");
             }
         }
         catch (OperationCanceledException)
