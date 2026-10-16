@@ -62,19 +62,6 @@ public sealed class AppHost : IAsyncDisposable
     public IAppLogger Logger => _logger;
 
     /// <summary>
-    /// 把日志级别应用到**运行中**那个 logger（设置页保存之后叫它）。
-    /// </summary>
-    /// <remarks>
-    /// ⚠️ 这是「级别可配」这条要求的落点：设置页改完**立刻生效**，
-    /// 不必重启、更不必等一个新版本 —— 而「等一个新版本」等于那条日志永远拿不到。
-    /// <para>
-    /// ⚠️ 改档这件事本身由 <see cref="FileLogger.MinLevel"/> 的 setter 留痕
-    /// （而且**绕过阈值**：把档调高时，用 Info 记这一条会被它自己刚设的阈值滤掉）。
-    /// </para>
-    /// </remarks>
-    public void ApplyLogLevel(LogLevel level) => _logger.MinLevel = level;
-
-    /// <summary>
     /// 主窗那幅取景画面的落点。**全进程只有这一个槽** ——
     /// 相机同一时刻只可能被一个进程占着，所以「谁在录/谁在识码」都往这里投，
     /// 界面只管从这里取最新一帧。
@@ -432,22 +419,32 @@ public sealed class AppHost : IAsyncDisposable
     /// <summary>协调器要告诉用户的事。</summary>
     public event Action<CoordinatorNotice>? Notice;
 
-    /// <summary>日志器的参数：生产 INFO、开发 DEBUG，保留天数取用户设置。</summary>
+    /// <summary>日志器的参数：**全量**（记到最啰嗦那一档），保留天数取用户设置。</summary>
     /// <remarks>
     /// <para>
-    /// ⚠️ <b>级别来自设置（<see cref="AppSettings.LogMinLevel"/>），不再来自构建配置。</b>
-    /// 原来这里是 <c>#if DEBUG</c>，于是 **Release 包没有任何办法开 DEBUG** ——
-    /// 用户在真机上遇到问题，我们只能让他等一个新包，而那等于那条日志永远拿不到。
-    /// 现在设置里能改（默认仍然是 <see cref="LogLevel.Info"/>，生产上开着 DEBUG
-    /// 会被淹掉，而**淹掉的日志等于没有日志**）。
+    /// ⚠️ <b>2026-10-16 需求方裁掉「日志级别」这个设置项：日志一律全量。</b>
+    /// 这里的第 4 个参数因此**刻意不传**，吃的是
+    /// <see cref="FileLogOptions.MinLevel"/> 自己的默认值 —— 那个默认值
+    /// 本来就是 <see cref="LogLevel.Debug"/>（= 什么都写）。
     /// </para>
     /// <para>
-    /// ⚠️ 它只是**启动时**的初值：运行中改档走
-    /// <see cref="FileLogger.MinLevel"/> 那个 setter（设置页改完立刻生效，不必重启）。
+    /// 为什么敢全量：全项目真正只在 <see cref="LogLevel.Debug"/> 上记的调用点只有
+    /// 六处（网盘请求流水、回环连接、百度 -9、预录丢帧、试用记录读写失败两条），
+    /// 也就是「信息」档其实**已经几乎是全量**，这个开关给用户的多余价值极小；
+    /// 而留着它的代价是「出问题时那条日志从没被写下过」——那恰恰是**补不回来**的。
+    /// 实测（2026-10-16，本机）：同一次启动在 INFO 与 DEBUG 两档下产出的日志**逐字节相同**。
+    /// </para>
+    /// <para>
+    /// ⚠️ 保留天数**没有**跟着删：控制日志总量该靠**删旧文件**（那个数是看得见、
+    /// 说得清的），不是靠「少写一点」。
+    /// </para>
+    /// <para>
+    /// ⚠️ 别把 <c>#if DEBUG</c> 那套加回来：构建配置决定日志级别 = Release 包
+    /// **没有任何办法**拿到 DEBUG 那些行，只能等我们发一个新包。
     /// </para>
     /// </remarks>
     private static FileLogOptions LogOptionsFor(DataLayout layout, AppSettings settings) =>
-        new(layout.LogDirectory, "vidlog", settings.LogRetainDays, settings.LogMinLevel);
+        new(layout.LogDirectory, "vidlog", settings.LogRetainDays);
 
     /// <summary>
     /// 建一个**先于设置加载**的日志器：崩溃兜底要用它。

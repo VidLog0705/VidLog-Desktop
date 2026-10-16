@@ -56,10 +56,11 @@ public sealed class NullLogger : IAppLogger
 
 /// <param name="RetainDays">留几天。<see cref="LogRetention.SelectExpired"/> 用它挑该删的。</param>
 /// <param name="MinLevel">
-/// 低于这个级别的一条都不写。默认 <see cref="LogLevel.Debug"/> = 全写
-/// （改动前的行为，测试与临时排查要它）；**组合根在正式运行时应传
-/// <see cref="LogLevel.Info"/>** —— 生产上开着 DEBUG，日志会被淹掉，
-/// 而淹掉的日志等于没有日志。
+/// 低于这个级别的一条都不写。默认 <see cref="LogLevel.Debug"/> = 全写，
+/// **正式运行也是这个默认值**：2026-10-16 需求方裁掉「日志级别」这个设置项，
+/// 改为日志一律全量（量本身由 <see cref="RetainDays"/> 管，不由级别管）。
+/// 测试仍然传 <see cref="LogLevel.Error"/> / <see cref="LogLevel.Warn"/>
+/// 来只验上半截。
 /// </param>
 /// <param name="MaxBytes">
 /// 单个日志文件的上限，超了就换一个新的。
@@ -108,14 +109,11 @@ public sealed class FileLogger : IAppLogger, IAsyncDisposable
     private readonly FileLogOptions _options;
 
     /// <summary>
-    /// 当前阈值。⚠️ **可以在运行时改**（设置里那个「日志级别」）。
+    /// 阈值。<b>构造时定下就不改了</b>（2026-10-16 之前有个「日志级别」设置项能在运行时改它，
+    /// 那个设置项已被需求方裁掉 —— 日志一律全量，这个字段恒等于
+    /// <see cref="FileLogOptions.MinLevel"/>，保留是为了「测试能只留 Error」）。
     /// </summary>
-    /// <remarks>
-    /// ⚠️ 用 <c>volatile</c> 而不是普通字段：写的人在 UI 线程、读的人在
-    /// **每个调用线程**上，而这是个「迟早会被看见」的开关 ——
-    /// 不 volatile 的话，改完之后可能过一会儿才生效（表现是「改了没反应」，最费解的一种）。
-    /// </remarks>
-    private volatile LogLevel _minLevel;
+    private readonly LogLevel _minLevel;
 
     /// <summary>当前这个文件已经写了多少（按字符算，够用来判上限）。</summary>
     private long _currentBytes;
@@ -173,34 +171,6 @@ public sealed class FileLogger : IAppLogger, IAsyncDisposable
 
     public string Path => _path;
 
-    /// <summary>
-    /// 当前的级别阈值。**可以在运行时改** —— 设置里那个「日志级别」用它。
-    /// </summary>
-    /// <remarks>
-    /// ⚠️ <b>改档本身要留痕，而且绕过阈值。</b>把档调高（比如只留 Error）时，
-    /// 用 <see cref="LogLevel.Info"/> 记这一条会被它自己刚设的阈值滤掉 ——
-    /// 而「怎么日志突然少了」恰恰是最需要解释的那一次。
-    /// </remarks>
-    public LogLevel MinLevel
-    {
-        get => _minLevel;
-
-        set
-        {
-            if (_minLevel == value) return;
-
-            var previous = _minLevel;
-            _minLevel = value;
-
-            WriteRaw(LogLevel.Warn, "日志", $"日志级别 {previous} → {value}");
-        }
-    }
-
-    /// <summary>不走阈值、直接排一条（改档那一句用）。</summary>
-    private void WriteRaw(LogLevel level, string category, string message) =>
-        _queue.Writer.TryWrite(new Entry(
-            Format(level, category, message, new Dictionary<string, object?>()), null));
-
     /// <summary>文件名里带时间戳 —— 轮转与保留期都靠它，不靠文件系统的修改时间。</summary>
     public static string FileNameFor(FileLogOptions options, DateTimeOffset at) => options.FileNameFor(at);
 
@@ -210,8 +180,8 @@ public sealed class FileLogger : IAppLogger, IAsyncDisposable
     public void Log(
         LogLevel level, string category, string message, IReadOnlyDictionary<string, object?> data)
     {
-        // 低于阈值直接丢在调用线程上 —— 生产上开 DEBUG 会把日志淹掉，
-        // 而**淹掉的日志等于没有日志**。
+        // 低于阈值直接丢在调用线程上。⚠️ 正式运行**不会**扔任何一条
+        // （`MinLevel` 走默认值 Debug）—— 这个分支现在只有测试会走到。
         if (level < _minLevel)
         {
             return;

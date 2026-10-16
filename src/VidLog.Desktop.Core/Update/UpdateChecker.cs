@@ -253,7 +253,9 @@ public static class UpdateStatusText
     {
         if (!checkEnabled)
         {
-            return "已关闭（在「高级」里可以打开）。";
+            // ⚠️ 别再写「在「高级」里可以打开」：2026-10-16 那个开关已经**搬到
+            // 这一页**（就在这行下面），照旧措辞会让用户跑去一个已经没有它的页面找。
+            return "已关闭 —— 下面「自动检查更新」那个开关打开就行。";
         }
 
         if (status is not { } result)

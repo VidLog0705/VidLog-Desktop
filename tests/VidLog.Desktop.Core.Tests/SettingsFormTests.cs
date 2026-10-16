@@ -1,6 +1,5 @@
 using VidLog.Desktop.Core.Cleanup;
 using VidLog.Desktop.Core.Configuration;
-using VidLog.Desktop.Core.Diagnostics;
 using VidLog.Desktop.Core.Media;
 using VidLog.Desktop.Core.Recording;
 
@@ -280,18 +279,6 @@ public class SettingsFormTests
         }
     }
 
-    [Fact]
-    public void 日志级别认不出来退的是Info_不是原值()
-    {
-        // ⚠️ 与上面那条**方向相反**，是刻意的：这一格四项写死，
-        // 读不出 tag 就是界面坏了，而 Info 是那个「什么都记」的安全档。
-        // 退回原值的话，一台设成 Warn 的机器读不出 tag 就继续只记警告，
-        // 下次出事翻日志什么都没有。
-        var current = Current with { LogMinLevel = LogLevel.Warn };
-
-        Assert.Equal(LogLevel.Info, Build(Input(), current).Next!.LogMinLevel);
-    }
-
     [Theory]
     [InlineData("0")]
     [InlineData("366")]
@@ -446,7 +433,6 @@ public class SettingsFormTests
                  CloseActionTag = nameof(CloseWindowAction.MinimizeToTray),
                  ThemeTag = nameof(AppThemeMode.Dark),
                  CloudBackfillScopeTag = nameof(BackfillScope.All),
-                 LogLevelTag = nameof(LogLevel.Warn),
                  RunAtStartup = true, CheckForUpdates = true, RecordAudio = true,
                  CloudAutoUpload = true, CloudCompareAndBackfill = true,
                  CameraDevice = "cam", MicrophoneDevice = "mic",
@@ -483,7 +469,7 @@ public class SettingsFormTests
              {
                  SegmentMinutes = "999", PlaybackPort = "-1", DuplicateCheckDays = "99999",
                  IdleMinutes = "999999", PrerecordTag = "999", LogRetainDays = "99999",
-                 CloudParallelText = "99", LogLevelTag = "没有这个",
+                 CloudParallelText = "99",
                  ArchivedOutbound = new RetentionInput(-1, "999999999999999999999"),
                  ArchivedReturn = new RetentionInput(-1, "??"),
                  UnarchivedOutbound = new RetentionInput(-1, "9999天"),

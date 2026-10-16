@@ -296,51 +296,19 @@ public partial class SettingsWindow : Window
         note.Visibility = Visibility.Visible;
     }
 
-    // ── 日志（2026-10-01「级别可配」）──────────────
-
-    private void OnLogLevelChanged(object sender, SelectionChangedEventArgs e) => MarkDirty();
+    // ── 日志 ──────────────────────────────────────
 
     private void OnLogRetainDaysChanged(object sender, RoutedEventArgs e) => MarkDirty();
 
-    /// <summary>把日志那两项填进界面。</summary>
-    private void FillLogging(AppSettings settings)
-    {
-        LogLevelCombo.Items.Clear();
-
-        foreach (var level in LogLevels)
-        {
-            LogLevelCombo.Items.Add(new ComboBoxItem
-            {
-                Content = DescribeLogLevel(level),
-                Tag = level.ToString(),
-            });
-        }
-
-        // 认不出来的档（手改坏了）就落到「信息」那一档 —— 取保守的那一头。
-        var index = Array.IndexOf(LogLevels, settings.LogMinLevel);
-        LogLevelCombo.SelectedIndex = index >= 0 ? index : Array.IndexOf(LogLevels, LogLevel.Info);
-
-        LogRetainDaysBox.Text = settings.LogRetainDays.ToString();
-    }
-
-    /// <summary>能选的级别。**顺序即下拉里的顺序**（从最啰嗦到最安静）。</summary>
-    private static readonly LogLevel[] LogLevels =
-        [LogLevel.Debug, LogLevel.Info, LogLevel.Warn, LogLevel.Error];
-
-    /// <summary>
-    /// 级别在界面上叫什么。
-    /// </summary>
+    /// <summary>把日志那一项填进界面。</summary>
     /// <remarks>
-    /// ⚠️ 用中文而不是 `Debug` / `Info` —— 这一格是给用户按的，
-    /// 而这个下拉就在「开机自启动」下面。
+    /// ⚠️ 这里原来还有一格「日志级别」（2026-10-01 要的「级别可配」），
+    /// **2026-10-16 需求方裁掉了**：日志一律全量，不由设置决定写不写。
+    /// 那个下拉、那两组文案与 `LogLevels` 数组一并删除，别再加回来 ——
+    /// 理由写在 `AppHost.LogOptionsFor` 上。
     /// </remarks>
-    private static string DescribeLogLevel(LogLevel level) => level switch
-    {
-        LogLevel.Debug => "调试（最啰嗦，排查用）",
-        LogLevel.Info => "信息（默认）",
-        LogLevel.Warn => "警告",
-        _ => "错误（最安静）",
-    };
+    private void FillLogging(AppSettings settings) =>
+        LogRetainDaysBox.Text = settings.LogRetainDays.ToString();
 
 
     // ─────────────────────────────────────────────

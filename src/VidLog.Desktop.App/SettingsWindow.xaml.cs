@@ -533,11 +533,6 @@ public partial class SettingsWindow : Window
         try
         {
             await _host.SaveSettingsAsync(next);
-
-            // ⚠️ **改完立刻生效，不必重启** —— 这正是「级别可配」的目的：
-            // 真机上出问题时不用等一个新版本，改一下当场就能看到 DEBUG 那些行。
-            // （开机自启那一项落在注册表里，这一项落在**运行中那个 logger** 上。）
-            _host.ApplyLogLevel(next.LogMinLevel);
         }
         catch (Exception ex)
         {
@@ -625,7 +620,6 @@ public partial class SettingsWindow : Window
         CloseActionTag = TagOf(CloseActionCombo),
         ThemeTag = TagOf(ThemeCombo),
         CloudBackfillScopeTag = TagOf(CloudScopeCombo),
-        LogLevelTag = TagOf(LogLevelCombo),
 
         // 开关
         RunAtStartup = RunAtStartupToggle.IsChecked == true,

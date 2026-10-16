@@ -1392,7 +1392,10 @@
                              还有分段、重复检测、时间校准、许可 —— 那几样是真能力
                              （图上是把它们挪进了配置向导），所以这里是**加在最上面**，
                              与「设备与外观」那一节同一个处理方式。
-                             ⚠️ 第三行的说明**刻意没有照抄图上那句**
+                             ⚠️ 2026-10-16 需求方把原第三行「自动检查更新」**挪到关于页** ——
+                             它就摆在「更新检查」那一行的旁边，那儿才是它的上下文。
+                             这一节因此只剩两行。
+                             ⚠️ 关于页那一份的说明**刻意没有照抄图上那句**
                              （图上写的是「启动器后台下载增量包，下次启动时自动安装」）：
                              需求方 2026-09-30 裁决「自动更新 = **只做检查 + 提示**，
                              不做启动器 exe、不自替换」。照抄那句就等于在界面上
@@ -1439,25 +1442,6 @@
                                    Margin="0,6,0,0" TextWrapping="Wrap" MaxWidth="{StaticResource HintWidthPage}"
                                    Text=""/>
 
-                        <Grid Margin="0,14,0,0">
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="*"/>
-                                <ColumnDefinition Width="Auto"/>
-                            </Grid.ColumnDefinitions>
-                            <StackPanel Grid.Column="0">
-                                <TextBlock Style="{StaticResource SectionTitle}" Margin="0"
-                                           Text="自动检查更新"/>
-                                <TextBlock Style="{StaticResource Caption}" Margin="0,2,0,0"
-                                           TextWrapping="Wrap" MaxWidth="{StaticResource HintWidthField}"
-                                           Text="启动后在后台问一句有没有新版本，有就在托盘提示；不会自动下载"/>
-                            </StackPanel>
-                            <ToggleButton Grid.Column="1" x:Name="CheckUpdateToggle"
-                                          Style="{StaticResource ToggleSwitch}"
-                                          VerticalAlignment="Center"
-                                          Checked="OnCheckUpdateChanged"
-                                          Unchecked="OnCheckUpdateChanged" Margin="16,0,0,0" />
-                        </Grid>
-
                         <!-- ── 配置向导（批次 3，照设计图 `_16`–`_34`）─────────────
                              ⚠️ 这颗按钮**原本在「设备与外观」**（紧挨着摄像头那两行）。
                              批次 G 照前身产品的分页搬到这里 —— 前身把
@@ -1482,43 +1466,6 @@
                             <Button Grid.Column="1" x:Name="OpenWizardButton" Content="打开配置向导"
                                     Style="{StaticResource SecondaryButton}" MinWidth="120"
                                     VerticalAlignment="Center" Click="OnOpenWizard" Margin="16,0,0,0" />
-                        </Grid>
-
-                        <!-- ── 日志（2026-10-01 需求方要「级别可配」）──────────
-                             ⚠️ 设计图上没有这两行 —— 这是**新要求**，不是偏离。
-                             加在这里是因为「高级设置」本来就是给运维/排查用的那一节。 -->
-                        <Grid Margin="0,14,0,0">
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="*"/>
-                                <ColumnDefinition Width="Auto"/>
-                            </Grid.ColumnDefinitions>
-                            <StackPanel Grid.Column="0">
-                                <TextBlock Style="{StaticResource SectionTitle}" Margin="0"
-                                           Text="日志级别"/>
-                                <TextBlock Style="{StaticResource Caption}" Margin="0,2,0,0"
-                                           TextWrapping="Wrap" MaxWidth="{StaticResource HintWidthField}"
-                                           Text="平时留在信息就够；要查问题改成调试，改完立刻生效"/>
-                            </StackPanel>
-                            <ComboBox Grid.Column="1" x:Name="LogLevelCombo" Width="220"
-                                      VerticalAlignment="Center"
-                                      SelectionChanged="OnLogLevelChanged" Margin="16,0,0,0" />
-                        </Grid>
-
-                        <Grid Margin="0,14,0,0">
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="*"/>
-                                <ColumnDefinition Width="Auto"/>
-                            </Grid.ColumnDefinitions>
-                            <StackPanel Grid.Column="0">
-                                <TextBlock Style="{StaticResource SectionTitle}" Margin="0"
-                                           Text="日志保留天数"/>
-                                <TextBlock Style="{StaticResource Caption}" Margin="0,2,0,0"
-                                           TextWrapping="Wrap" MaxWidth="{StaticResource HintWidthField}"
-                                           Text="超过这个天数的日志会被删掉，按文件名时间戳算"/>
-                            </StackPanel>
-                            <TextBox Grid.Column="1" x:Name="LogRetainDaysBox" Width="80"
-                                     VerticalContentAlignment="Center"
-                                     LostFocus="OnLogRetainDaysChanged" Margin="16,0,0,0" />
                         </Grid>
 
                         <Separator/>
@@ -1679,6 +1626,30 @@
                                 Margin="0,12,0,0" HorizontalAlignment="Left"
                                 Click="OnOpenDataFolder"/>
 
+                        <!-- ⚠️ 2026-10-16 需求方把「自动检查更新」从高级设置**挪到这里**：
+                             上一行就是「更新检查」的结论，这个开关是同一件事的另一半 ——
+                             分开摆在两页上，用户看到「没查到新版本」时找不到那开关。
+                             ⚠️ 这是**搬**不是复制：`CheckUpdateToggle` 全仓只有这一个
+                             （code-behind 的 `OnCheckUpdateChanged` 与 `ReadForm` 都绑在它上面）。 -->
+                        <Grid Margin="0,16,0,0">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+                            <StackPanel Grid.Column="0">
+                                <TextBlock Style="{StaticResource SectionTitle}" Margin="0"
+                                           Text="自动检查更新"/>
+                                <TextBlock Style="{StaticResource Caption}" Margin="0,2,0,0"
+                                           TextWrapping="Wrap" MaxWidth="{StaticResource HintWidthField}"
+                                           Text="启动后在后台问一句有没有新版本，有就在托盘提示；不会自动下载"/>
+                            </StackPanel>
+                            <ToggleButton Grid.Column="1" x:Name="CheckUpdateToggle"
+                                          Style="{StaticResource ToggleSwitch}"
+                                          VerticalAlignment="Center"
+                                          Checked="OnCheckUpdateChanged"
+                                          Unchecked="OnCheckUpdateChanged" Margin="16,0,0,0" />
+                        </Grid>
+
                         <Separator/>
 
                         <!-- ────────────────────────────────────────────
@@ -1700,6 +1671,51 @@
                                     Margin="8,0,0,0"
                                     Click="OnEmailDiagnostics"/>
                         </StackPanel>
+
+                        <!-- ⚠️ 2026-10-16 需求方把「日志保留天数」从高级设置**挪到这里** ——
+                             它管的是刚在上面那两个按钮产出的东西，摆在别处等于藏起来。
+                             ⚠️ 这是**搬**不是复制：`LogRetainDaysBox` 全仓只有这一个
+                             （code-behind 的 `OnLogRetainDaysChanged` 与 `ReadForm` 都绑在它上面）。 -->
+                        <Grid Margin="0,16,0,0">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+                            <StackPanel Grid.Column="0">
+                                <TextBlock Style="{StaticResource SectionTitle}" Margin="0"
+                                           Text="日志保留天数"/>
+                                <TextBlock Style="{StaticResource Caption}" Margin="0,2,0,0"
+                                           TextWrapping="Wrap" MaxWidth="{StaticResource HintWidthField}"
+                                           Text="超过这个天数的日志会被删掉，按文件名时间戳算"/>
+                            </StackPanel>
+                            <TextBox Grid.Column="1" x:Name="LogRetainDaysBox" Width="80"
+                                     VerticalContentAlignment="Center"
+                                     LostFocus="OnLogRetainDaysChanged" Margin="16,0,0,0" />
+                        </Grid>
+
+                        <Separator/>
+
+                        <!-- ────────────────────────────────────────────
+                             联系我们（需求方 2026-10-16）：
+                             「在关于页合理位置加上联系我们并附上二维码」。
+                             ⚠️ 图是他自己给的（`contact-qr.png`，编进程序集）——
+                             换人就换那张文件，**别去改这里的代码**。
+                             ⚠️ 底下那圈白底**是必须的、不是装饰**：二维码要靠自己四周
+                             那圈静区才扫得出来，而这一页在暗色主题下整片是深的 ——
+                             不垫白底就是一个深底黑块，扫不出来。所以这里的 `White`
+                             与 `MainWindow` 里那张业务码是同一条理由（裸色，但**刻意**）。
+                             ──────────────────────────────────────────── -->
+                        <TextBlock Style="{StaticResource SectionTitle}" Text="联系我们"/>
+                        <TextBlock Style="{StaticResource Caption}" Margin="0,0,0,8"
+                                   Text="微信扫码加我们，使用中遇到问题直接说"/>
+                        <Border Background="White" Padding="8"
+                                CornerRadius="{StaticResource RadiusControl}"
+                                HorizontalAlignment="Left"
+                                BorderBrush="{DynamicResource CardBorder}"
+                                BorderThickness="1">
+                            <Image Source="contact-qr.png" Width="180" Height="180"
+                                   RenderOptions.BitmapScalingMode="HighQuality"/>
+                        </Border>
 
                         <!-- 启动时的问题（`AppHost.Warnings`）。**必须看得见** ——
                              它们在启动那一刻就发生了，而用户多半没盯着屏幕。

@@ -1,5 +1,4 @@
 using VidLog.Desktop.Core.Cleanup;
-using VidLog.Desktop.Core.Diagnostics;
 using VidLog.Desktop.Core.Media;
 using VidLog.Desktop.Core.Recording;
 
@@ -45,7 +44,6 @@ public sealed record SettingsFormInput
     public string? CloseActionTag { get; init; }
     public string? ThemeTag { get; init; }
     public string? CloudBackfillScopeTag { get; init; }
-    public string? LogLevelTag { get; init; }
 
     // ── 开关 ──
     public bool RunAtStartup { get; init; }
@@ -210,10 +208,9 @@ public static class SettingsForm
             ThemeMode = ParseOr(input.ThemeTag, current.ThemeMode),
             CheckForUpdates = input.CheckForUpdates,
 
-            // ── 日志（2026-10-01 需求方要「级别可配」）──
-            // ⚠️ 级别认不出来退的是 **Info**（不是原值）：这一格四项写死，
-            // 读不出 tag 就是界面坏了，而 Info 是那个「什么都记」的安全档。
-            LogMinLevel = ParseOr(input.LogLevelTag, LogLevel.Info),
+            // ── 日志 ──
+            // ⚠️ 2026-10-16 需求方裁掉「日志级别」那一格：**日志一律全量**，
+            // 不再由设置决定写不写（见 `AppHost` 建 `FileLogger` 那一处）。
             LogRetainDays = logRetainDays,
 
             // ⚠️ 用着网络摄像头时那个下拉是禁用且空的，直接把 null 写进去
