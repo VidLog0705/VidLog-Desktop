@@ -247,9 +247,29 @@ public sealed class CloudUploadService : IAsyncDisposable
     /// 收尾那一条路：一条录像刚落地，问一句要不要顺手传上去。
     /// </summary>
     /// <remarks>
+    /// <para>
     /// ⚠️ <b>开关没开时回的是「失败」而不是「成功」。</b>这里很容易顺手写成
     /// 「没开就当传过了」—— 那会让回查归档层（I8）以为云端有一份，
     /// 于是本机**唯一**的那一份被清理删掉。
+    /// </para>
+    /// <para>
+    /// ⚠️ <b>整段都在 <c>_drainGate</c> 里</b>（A2，2026-10-16）。这里从前
+    /// <b>直接调 <c>UploadOneAsync</c>，根本不进那道闸</b> —— 而那道闸存在的
+    /// 全部意义就是「同一时刻只有一个上传者在读这份队列」。绕开之后，
+    /// 同一份录像会被<b>并发</b>传两遍：这条路刚把一条写成「正在传」，
+    /// 下一趟 60 秒的定时检查读队列时，<c>UploadQueue.LoadAsync</c> 的崩溃自愈
+    /// 又把「正在传」看成了「等着传」，于是它也来传这一条。
+    /// 实测 `upload-queue.jsonl` 上：13:48:48 起传、13:48:53 第 11 个 tick 又挑一次，
+    /// 两条的 <c>attempts</c> 都还是 0（⇒ 是并发，不是重试；慢传只是让它变必然 ——
+    /// 真正的规则是「上传在飞的那段窗口里落进了一个 tick」）。
+    /// 代价：<c>rtype=3</c> 覆盖，所以云端不多文件，是**双倍的流量**。
+    /// </para>
+    /// <para>
+    /// ⚠️ 与 <see cref="DrainAsync"/> 那一边<b>不等</b>：它在闸上只
+    /// <c>WaitAsync(0)</c>，闸忙就跳过这一轮（下一分钟还有一趟）。这里<b>要等</b>，
+    /// 因为手上这一条必须给出结论 —— 收尾拿它决定本机那份能不能丢。
+    /// 代价是收尾可能排在一次正在跑的补传后面，那是一次有界的等待。
+    /// </para>
     /// </remarks>
     public async Task<ArchivePublishResult> PublishAsync(
         RelativePath location, string localPath, CancellationToken cancellationToken = default)
@@ -262,31 +282,40 @@ public sealed class CloudUploadService : IAsyncDisposable
                 "「启用自动上传」没开，这条没有传到百度网盘。");
         }
 
-        var item = await EnqueueAsync(location, cancellationToken);
+        await _drainGate.WaitAsync(cancellationToken);
 
-        if (item is null)
+        try
         {
-            return ArchivePublishResult.Failed($"索引里没有这一条，不知道它是哪一条录像：{location.Value}");
-        }
+            var item = await EnqueueAsync(location, cancellationToken);
 
-        if (item.State == CloudUploadState.Done)
+            if (item is null)
+            {
+                return ArchivePublishResult.Failed($"索引里没有这一条，不知道它是哪一条录像：{location.Value}");
+            }
+
+            if (item.State == CloudUploadState.Done)
+            {
+                return ArchivePublishResult.Ok;
+            }
+
+            // ⚠️ 用户明确说过「这一条不传」（队列那一行的【放弃】）。这里**必须认**：
+            // 不认的话，「同一个单号又收尾了一次」这种少见但真会发生的路径
+            // 会绕过他的决定，把这条又传上去。
+            if (item.State == CloudUploadState.Abandoned)
+            {
+                return ArchivePublishResult.Failed("这一条在队列里被标成「放弃上传」了，没有传。");
+            }
+
+            var outcome = await UploadOneAsync(item, localPath, cancellationToken);
+
+            return outcome.Published
+                ? ArchivePublishResult.Ok
+                : ArchivePublishResult.Failed(outcome.Reason ?? "上传百度网盘失败。");
+        }
+        finally
         {
-            return ArchivePublishResult.Ok;
+            _drainGate.Release();
         }
-
-        // ⚠️ 用户明确说过「这一条不传」（队列那一行的【放弃】）。这里**必须认**：
-        // 不认的话，「同一个单号又收尾了一次」这种少见但真会发生的路径
-        // 会绕过他的决定，把这条又传上去。
-        if (item.State == CloudUploadState.Abandoned)
-        {
-            return ArchivePublishResult.Failed("这一条在队列里被标成「放弃上传」了，没有传。");
-        }
-
-        var outcome = await UploadOneAsync(item, localPath, cancellationToken);
-
-        return outcome.Published
-            ? ArchivePublishResult.Ok
-            : ArchivePublishResult.Failed(outcome.Reason ?? "上传百度网盘失败。");
     }
 
     /// <summary>队列现在的样子（设置页每一秒左右问一次）。</summary>
@@ -630,11 +659,20 @@ public sealed class CloudUploadService : IAsyncDisposable
 
     /// <summary>一次定时检查。</summary>
     /// <remarks>
+    /// <para>
     /// ⚠️ <b>这里抛出去的异常必须被吃掉</b>：这个循环是后台任务，
     /// 它挂掉的表现是「网盘再也没传过东西，而界面上一切正常」——
     /// 没有任何人会知道。网络断了是常态，不是异常。
+    /// </para>
+    /// <para>
+    /// ⚠️ <b><c>public</c> 是为了让它测得动</b>（本仓没有 <c>InternalsVisibleTo</c>，
+    /// 与 <c>LiveTileProcess</c> 那几个成员同一条理由）——「两个开关怎么串」
+    /// 这件事**只在这一处**，而它正是 A2 那次「关掉总开关照样把整库传上去」
+    /// 的所在地，不能只靠读代码。它本来就是 <see cref="Start"/> 那个循环
+    /// 每一趟调的那一下，手工调它没有任何副作用（幂等 + 有闸）。
+    /// </para>
     /// </remarks>
-    private async Task TickAsync(CancellationToken cancellationToken)
+    public async Task TickAsync(CancellationToken cancellationToken)
     {
         try
         {
@@ -654,12 +692,18 @@ public sealed class CloudUploadService : IAsyncDisposable
                 // 开关开着：**新开始录制的**那些自动进队列。
                 await EnqueueEligibleAsync(
                     settings.AutoUploadSince ?? _since, cancellationToken);
-            }
 
-            if (settings.CompareAndBackfill)
-            {
-                await EnqueueEligibleAsync(settings.Floor, cancellationToken);
-                await CompareAsync(cancellationToken);
+                // ⚠️ 补传**也必须挂在这个开关下面**（需求方 2026-10-16 裁定）。
+                // 原来它在外面：用户关掉「启用自动上传」之后，只要「自动对比补传」还开着，
+                // 这一支就会按 `settings.Floor` 把**整个库**重新收一遍 —— 而
+                // 「补传范围=全部」时 `Floor` 是 `DateTimeOffset.MinValue`，
+                // 连带着把「只上传开启之后新录的」那个承诺也一起作废了。
+                // 关掉总开关就一条都不该再自己动，这与收尾那条路（`PublishAsync`）一致。
+                if (settings.CompareAndBackfill)
+                {
+                    await EnqueueEligibleAsync(settings.Floor, cancellationToken);
+                    await CompareAsync(cancellationToken);
+                }
             }
 
             // 队列里有东西就推一把 —— 哪怕两个开关都关了：

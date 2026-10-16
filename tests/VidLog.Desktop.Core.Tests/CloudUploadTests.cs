@@ -85,6 +85,98 @@ public class CloudUploadTests
         Assert.Single(harness.Api.Created);
     }
 
+    [Fact]
+    public async Task 收尾正在传的时候_定时检查不会把同一条再传一遍()
+    {
+        // ⚠️ A2（2026-10-16）：同一份录像被**并发**传两遍，不是重试。
+        // 根因：收尾这条路（`PublishAsync`）从前直接调 `UploadOneAsync`，
+        // **绕开了 `_drainGate`** —— 而那道闸的全部意义就是「同一时刻只有一个
+        // 上传者在读这份队列」。绕开之后，下一趟定时检查读队列时那个崩溃自愈
+        // 又把「正在传」看成了「等着传」，于是它也来传这一条。
+        // 实测 `upload-queue.jsonl`：13:48:48 起传、13:48:53 第 11 个 tick 又挑一次，
+        // 两条的 `attempts` 都还是 0。真正的规则是「上传在飞的那段窗口里
+        // 落进了一个 tick」—— 慢传只是让它变成必然。
+        //
+        // 代价：`rtype=3` 覆盖，云端不多文件，是**双倍的流量**。
+        using var harness = new Harness(Open());
+        var location = await harness.AddRecordingAsync("e1");
+
+        // 把收尾那条路**卡在第一片上传上**，好让定时检查正好落进那个窗口。
+        var started = new TaskCompletionSource();
+        var release = new TaskCompletionSource();
+        var first = 1;
+
+        harness.Api.OnSlice = async () =>
+        {
+            if (Interlocked.Exchange(ref first, 0) == 1)
+            {
+                started.TrySetResult();
+                await release.Task;
+            }
+        };
+
+        var publish = harness.Service.PublishAsync(location, harness.LocalPathOf(location));
+
+        await started.Task;
+
+        // ★ 这一趟定时检查必须一条都不挑（闸被收尾那条路拿着）。
+        await harness.Service.TickAsync(default);
+
+        release.SetResult();
+
+        var result = await publish;
+
+        Assert.True(result.Published, result.FailureReason);
+        Assert.Single(harness.Api.Created);
+    }
+
+    [Fact]
+    public async Task 总开关关了_补传也跟着停()
+    {
+        // ⚠️ 需求方 2026-10-16 裁定「走甲」：补传那一支**挂在总开关下面**。
+        // 它从前在外面 —— 用户关掉「启用自动上传」之后，只要「自动对比补传」
+        // 还开着，每一趟定时检查照样按 `settings.Floor` 把**整个库**收进队列；
+        // 而「补传范围=全部」时那个下界是 `DateTimeOffset.MinValue`，
+        // 于是连「只上传开启之后新录的」那个承诺也一起作废了。
+        // 实测 `vidlog-20261016-140840.log`：14:19:34 收尾那条路正确地回绝了
+        // （「启用自动上传」没开），14:20:16 定时检查却把同一条收进了队列并传了上去。
+        using var harness = new Harness(CloudUploadSettings.Default with
+        {
+            AutoUpload = false,
+            CompareAndBackfill = true,
+            BackfillScope = BackfillScope.All,
+        });
+
+        await harness.AddRecordingAsync("e1");
+
+        await harness.Service.TickAsync(default);
+
+        Assert.Empty(await harness.Queue.LoadAsync());
+        Assert.Empty(harness.Api.Created);
+    }
+
+    [Fact]
+    public async Task 总开关开着时_补传照旧把整库收进来()
+    {
+        // ★ 上一条的**反面**。少了它，上一条在「补传那条路整个坏了」时
+        // 也是绿的 —— 而那是「空集永远绿」那一类假绿。
+        using var harness = new Harness(CloudUploadSettings.Default with
+        {
+            AutoUpload = true,
+            CompareAndBackfill = true,
+            BackfillScope = BackfillScope.All,
+        });
+
+        await harness.AddRecordingAsync("e1");
+
+        await harness.Service.TickAsync(default);
+
+        var item = await harness.Queue.FindAsync("e1");
+        Assert.NotNull(item);
+        Assert.Equal(CloudUploadState.Done, item.State);
+        Assert.Single(harness.Api.Created);
+    }
+
     // ─────────────────────────────────────────────
     // 补传那一条路（设计图 `_46` 的「自动对比补传」）
     // ─────────────────────────────────────────────

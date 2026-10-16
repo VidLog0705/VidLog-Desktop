@@ -935,9 +935,18 @@
                                     <StackPanel Grid.Column="0">
                                         <TextBlock Style="{StaticResource SectionTitle}" Margin="0"
                                                    Text="启用自动上传"/>
+                                        <!-- ⚠️ 这句 2026-10-16 重写过（A2/甲的裁定）。
+                                             改之前写的是「只上传开启之后新录的」——
+                                             那句话只说了其中一半，而且**是误导的**：
+                                             关掉它之后，只要「自动对比补传」还开着，
+                                             定时检查照样按「补传范围」把整库重新收一遍
+                                             （「补传范围=全部」时那个下界是 MinValue，
+                                             连「只传开启之后新录的」这个承诺也一起作废了）。
+                                             现在两根开关是**串的** —— 见 `CloudUploadService.TickAsync`，
+                                             所以这句话得说成总开关。 -->
                                         <TextBlock Style="{StaticResource Caption}" Margin="0,2,0,0"
                                                    TextWrapping="Wrap" MaxWidth="{StaticResource HintWidthField}"
-                                                   Text="只上传开启之后新录的"/>
+                                                   Text="总开关：关掉后不再自动上传，也不再自动补传"/>
                                     </StackPanel>
                                     <ToggleButton Grid.Column="1" x:Name="CloudAutoUploadToggle"
                                                   Style="{StaticResource ToggleSwitch}"
@@ -962,7 +971,7 @@
                                              （本来就该传，它是另一场），但照旧文案用户会以为不会。 -->
                                         <TextBlock Style="{StaticResource Caption}" Margin="0,2,0,0"
                                                    TextWrapping="Wrap" MaxWidth="{StaticResource HintWidthField}"
-                                                   Text="远端已有的直接标成已完成，不重复上传；开启后约每分钟查一次队列"/>
+                                                   Text="约每分钟与网盘对一遍：远端已有的标成已完成；没有的按下面的「补传范围」补传上去"/>
                                     </StackPanel>
                                     <ToggleButton Grid.Column="1" x:Name="CloudCompareToggle"
                                                   Style="{StaticResource ToggleSwitch}"

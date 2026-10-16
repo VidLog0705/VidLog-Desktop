@@ -212,6 +212,12 @@ public sealed class UploadQueue
         // ⚠️ 上次跑到一半被杀掉的那些条目卡在「正在传」上，而那个状态**没人会再来推它** ——
         // 不在这里翻回「等着传」，那些录像就会永远停在队列里从头到尾没动过，
         // 而界面上显示的不是「失败」也不是「等待」，是一个看不出要干嘛的中间态。
+        //
+        // ⚠️ **这一段每读一遍都会把一个正在飞的上传也翻回「等着传」**，而它曾经
+        // 正是 A2「同一份录像并发传两遍」的帮凶（2026-10-16）。修的地方**不在这里**：
+        // 挪成「每个进程只修一次」会把另一件事弄坏 —— 上传中途被取消（关机）的那条
+        // 会一直卡在「正在传」上，直到下次开机才有人管。
+        // 真正的根因是**收尾那条路绕开了 `_drainGate`**，见 `CloudUploadService.PublishAsync`。
         return [.. byId.Values.Select(i => i.State == CloudUploadState.Uploading
             ? i with { State = CloudUploadState.Pending, LastError = null }
             : i)];
