@@ -132,9 +132,25 @@ public partial class MainWindow : Window
             case CoordinatorNoticeKind.SegmentStopped
                 or CoordinatorNoticeKind.SwitchedWaybill
                 or CoordinatorNoticeKind.SegmentStarted
-                or CoordinatorNoticeKind.WorkStarted
-                or CoordinatorNoticeKind.WorkStopped:
+                or CoordinatorNoticeKind.WorkStarted:
                 HideDurationPrompt();
+                break;
+
+            // ⚠️ **收工这一条要单独一支**（A1，2026-10-16）：它除了收询问条，
+            // 还得把右栏重算一遍。从前没有这一句 —— 一个专门录像的工位
+            // 录完三场，屏幕上还写着「今日 0 件」，用户要手点【刷新】才对得上。
+            //
+            // ⚠️ 挑这一条通知是**因为它保证收尾已经结算完**：
+            // 两条来路（`StopWorkAsync` 与 `WatchSessionLoopAsync` 自己停）都是在
+            // `StopCurrentSegmentAsync` 之后才发它的。于是它一条就同时盖住了
+            // 「用户点【结束工作】」与「时长兜底自己停」两种收工。
+            //
+            // ⚠️ 不挂在 `SegmentStopped`（换件）上：那一条每件包裹都来一发，
+            // 而重算要全量读索引 + 遍历每一个保存位置的目录，连着扫单时是纯浪费。
+            // 换件期间用户也不在看右栏。
+            case CoordinatorNoticeKind.WorkStopped:
+                HideDurationPrompt();
+                _ = RefreshOverviewAsync();
                 break;
 
             // 发货 / 退货换了（点按钮，或拿扫码枪扫了屏幕上那张码）。
