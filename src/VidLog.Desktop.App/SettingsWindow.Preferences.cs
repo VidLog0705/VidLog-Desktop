@@ -327,8 +327,11 @@ public partial class SettingsWindow : Window
         AboutSpecText.Text = _host.EffectiveSpec.Label
             + $"（用户选的是 {new RecordingSpec(_host.Settings.Codec, _host.Settings.Resolution).Label}）";
 
+        // ⚠️ 两处都用 `DisplayUrl` 而不是 `BaseUrl`（A3，2026-10-16）：后者是
+        // 绑定规格 `http://+:8720/`，用户照着填打不开 —— 理由见
+        // `PlaybackServer.DisplayUrl` 的注释。
         var server = _host.Services.Server;
-        AboutServerText.Text = server?.BaseUrl is { Length: > 0 } url
+        AboutServerText.Text = server?.DisplayUrl is { Length: > 0 } url
             ? url
             : "未启动";
         AboutArchiveText.Text = _host.Services.ArchiveTarget.Label;
@@ -336,7 +339,7 @@ public partial class SettingsWindow : Window
 
         // 「局域网与网页」那一节里也有一句 —— 两处读的是**同一个** server 对象，
         // 不可能一边说已启动一边说未启动。
-        ServerUrlText.Text = server?.BaseUrl is { Length: > 0 } other
+        ServerUrlText.Text = server?.DisplayUrl is { Length: > 0 } other
             ? $"现在这个地址是：{other}"
               + (server.IsUsingFallback ? "（只绑到本机，别的设备访问不了）" : string.Empty)
             : "回放服务没有起来 —— 手机和别的电脑现在打不开回放页。";
@@ -483,7 +486,9 @@ public partial class SettingsWindow : Window
             $"OS: {Environment.OSVersion}",
             $".NET: {Environment.Version}",
             $"机器名: {Environment.MachineName}",
-            $"回放服务: {(_host.Services.Server?.BaseUrl is { Length: > 0 } url ? url : "未启动")}",
+            // ⚠️ `DisplayUrl` 不是 `BaseUrl`（A3，2026-10-16）：诊断包里印
+            // `http://+:8720/` 的话，照这个包排查的人也会以为那个地址能打开。
+            $"回放服务: {(_host.Services.Server?.DisplayUrl is { Length: > 0 } url ? url : "未启动")}",
         };
 
         if (_host.Services.FfmpegPath is { } ffmpeg)

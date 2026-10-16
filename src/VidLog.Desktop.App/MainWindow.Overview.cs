@@ -130,9 +130,11 @@ public partial class MainWindow : Window
             OvCameraText.Text = OverviewTexts.Camera(
                 _host.Services.FfmpegPath is not null, _host.Camera);
 
+            // ⚠️ 是 `DisplayUrl` 不是 `BaseUrl`（A3，2026-10-16）：后者是绑定规格
+            // `http://+:8720/`，照着填打不开。理由见那一边的注释。
             var server = _host.Services.Server;
             OvServerText.Text = OverviewTexts.Server(
-                server?.BaseUrl, server?.IsUsingFallback ?? false);
+                server?.DisplayUrl, server?.IsUsingFallback ?? false);
 
             var archive = _host.Services.ArchiveTarget;
             OvArchiveText.Text = OverviewTexts.Archive(archive.Label, archive.ConfigurationProblem);

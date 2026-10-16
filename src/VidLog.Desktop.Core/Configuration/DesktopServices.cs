@@ -790,7 +790,13 @@ public sealed class DesktopServices : IAsyncDisposable
             try
             {
                 await Server.StartAsync(cancellationToken);
-                playbackUrl = Server.BaseUrl;
+
+                // ⚠️ `DisplayUrl` 不是 `BaseUrl`（A3，2026-10-16）：这个字段名字与注释
+                // 都写着「局域网回放地址」，而后者是**绑定规格** `http://+:8720/` ——
+                // 通配地址不是任何一个可路由的主机名。现在**没有**生产调用方读它
+                // （只有测试），但把 `+` 留在名字这么写的字段里，下一个读它的人
+                // 一定会照着填。理由见 `PlaybackServer.DisplayUrl`。
+                playbackUrl = Server.DisplayUrl;
 
                 if (Server.IsUsingFallback)
                 {

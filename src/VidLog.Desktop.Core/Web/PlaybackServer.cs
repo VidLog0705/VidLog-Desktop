@@ -202,6 +202,51 @@ public sealed partial class PlaybackServer : IAsyncDisposable
     /// <summary>绑不上首选地址时的原因，供界面告知用户。没有回退过时为 <see langword="null"/>。</summary>
     public string? FallbackReason { get; private set; }
 
+    /// <summary>
+    /// <b>能打开的那一个</b>回放地址 —— 界面与诊断包该印的是这个，不是 <see cref="BaseUrl"/>。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// ⚠️ <see cref="BaseUrl"/> 是**绑定规格**：正式装配里它是 <c>http://+:8720/</c>，
+    /// 而 <c>+</c> 不是任何一个可路由的主机名 —— 手机和别的电脑照着填一律打不开。
+    /// 从前三处界面加一处诊断包印的都是它，而且 <c>+</c> 这一档**连那句
+    /// 「只绑到本机，别的设备访问不了」都不会触发**（那句只看
+    /// <see cref="IsUsingFallback"/>）⇒ 用户拿到一个打不开的地址，还一个字提醒都没有
+    /// （A3，2026-10-16）。
+    /// </para>
+    /// <para>
+    /// 挑法照抄「用手机打开」那个二维码（<see cref="LanAddress"/>）：**别的设备连得上**
+    /// 才是这一格要回答的问题。所以与二维码一样认 <see cref="PlaybackServerOptions.LanHost"/>。
+    /// </para>
+    /// <para>
+    /// ⚠️ 退回了本机（<see cref="IsUsingFallback"/>）时直接给 <see cref="BaseUrl"/>：
+    /// 那是个 <c>localhost</c> 前缀，本身就是能打开的地址，而且**如实反映了
+    /// 「只有本机可达」**这件事；换个局域网 IP 上去反而是在说假话。
+    /// 同理，一块网卡地址都挑不出来时给 <c>localhost</c> 而不是退回去印 <c>+</c>。
+    /// </para>
+    /// </remarks>
+    public string DisplayUrl
+    {
+        get
+        {
+            if (BaseUrl.Length == 0)
+            {
+                return string.Empty;
+            }
+
+            if (IsUsingFallback)
+            {
+                return BaseUrl;
+            }
+
+            var host = _options.LanHost ?? LanAddress.Discover();
+
+            return host is { Length: > 0 }
+                ? $"http://{host}:{BoundPort()}/"
+                : $"http://localhost:{BoundPort()}/";
+        }
+    }
+
     public Task StartAsync(CancellationToken cancellationToken = default)
     {
         // ⚠️ 三条分支**每条都要留痕**（AGENTS.md §5.1「关键操作必须留痕」）：

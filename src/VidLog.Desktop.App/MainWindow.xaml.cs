@@ -256,7 +256,9 @@ public partial class MainWindow : Window
         _clockTicker.Start();
         _previewTimer.Start();
 
-        StatusText.Text = _host.Services.Server?.BaseUrl is { Length: > 0 } url
+        // ⚠️ `DisplayUrl` 不是 `BaseUrl`（A3，2026-10-16）：后者是 `http://+:8720/`，
+        // 那是个**绑定规格**，手机照着填打不开。理由见 `PlaybackServer.DisplayUrl`。
+        StatusText.Text = _host.Services.Server?.DisplayUrl is { Length: > 0 } url
             ? $"服务已就绪。回放地址：{url}"
             : "服务已就绪。回放服务未启动。";
 

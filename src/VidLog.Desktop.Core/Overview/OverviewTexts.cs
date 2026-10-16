@@ -110,12 +110,17 @@ public static class OverviewTexts
                 : camera.Display;
 
     /// <summary>回放服务那一格。</summary>
+    /// <param name="url">
+    /// ⚠️ <b>能打开的那一个地址</b>（`PlaybackServer.DisplayUrl`），**不是**
+    /// 绑定规格 `http://+:8720/` —— `+` 不是主机名，照着填打不开（A3，2026-10-16）。
+    /// 服务没起来时为 <see langword="null"/> 或空串。
+    /// </param>
     /// <remarks>
     /// ⚠️ 退回本机地址那一档要说出来：不说的话用户会拿这个地址去别的设备上试，
     /// 然后以为是自己网断了。
     /// </remarks>
-    public static string Server(string? baseUrl, bool usingFallback) =>
-        baseUrl is { Length: > 0 } url
+    public static string Server(string? url, bool usingFallback) =>
+        url is { Length: > 0 }
             ? usingFallback
                 ? $"已启动 · {url}（只绑到本机，别的设备访问不了）"
                 : $"已启动 · {url}"
