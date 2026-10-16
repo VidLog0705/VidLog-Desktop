@@ -572,7 +572,16 @@
           底部对齐，订单联动那格改成「功能正在开发中。」。
         ⚠️ 这一版同样没走 CI 发 Release，只在本机出安装程序。
     -->
-    <Version>0.15.7</Version>
+    <!--
+        0.15.8（2026-10-16）—— 0.15.7 那批里**改错了方向**的一处收口：
+        备份主机那屏「左卡底边与右边那摞按钮的底边对齐」。0.15.7 只把两栏各自的
+        `VerticalAlignment="Top"` 去掉，却没管外面那一层 Grid —— `ScrollViewer`
+        默认把内容拉满视口，而那层 Grid 的隐式行是 `*`，于是被拉到整屏高，
+        左卡（默认 Stretch）跟着撑成一整屏的空卡，反而差得更多（实测 388 px → 1 px）。
+        改法是给**那层 Grid 自己**加 `VerticalAlignment="Top"`，让它按内容测量。
+        ⚠️ 这一版没走 CI 发 Release，只在本机出安装程序。
+    -->
+    <Version>0.15.8</Version>
     <OutputType>WinExe</OutputType>
     <TargetFramework>net9.0-windows</TargetFramework>
     <Nullable>enable</Nullable>
