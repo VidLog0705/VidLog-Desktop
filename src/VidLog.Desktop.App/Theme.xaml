@@ -161,6 +161,23 @@
     -->
     <SolidColorBrush x:Key="Danger" Color="#FFEF4444"/>
 
+    <!--
+        发货那一块**分类块**的底与字（2026-10-16 需求方裁定：全程序统一为
+        发货绿、退货橙）。退货那一半直接复用现成的 `WarningSurface` + `Warning`
+        （橙，两套主题都达标），**这里不另起一套红**。
+
+        ⚠️ **不能**直接拿 `Success` 当底再压白字 —— 那一对亮色只有 2.54:1，
+        是上面明知留着的旧账（钉在
+        `ThemePaletteTests.白字压危险与成功色那两对明知差一点的不许更差`），
+        别往新地方再铺一份。这一对按老规矩「浅底 + 同色系深字」：
+        亮色 emerald-100 底 + -700 字，量出来 4.85:1（暗色 6.38:1，见 `ThemePalette.Dark`）。
+
+        两个用处：检索窗口那枚分类块、设置页「百度网盘上传」那枚徽章。
+        绊线：`ThemePaletteTests.发货退货那两个分类块的字压在自己的底上够看得清`。
+    -->
+    <SolidColorBrush x:Key="SuccessSurface" Color="#FFD1FAE5"/>
+    <SolidColorBrush x:Key="SuccessInk" Color="#FF047857"/>
+
     <!-- 预览区深底：slate-900。`_35` 的录制预览就是它。 -->
     <SolidColorBrush x:Key="VideoBackground" Color="#FF0F172A"/>
 

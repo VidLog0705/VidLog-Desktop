@@ -297,6 +297,38 @@ public class ThemePaletteTests
         Assert.Equal(Rgb(Dark["Success"]), Rgb(LightColorKeys["Success"]));
     }
 
+    [Fact]
+    public void 发货退货那两个分类块的字压在自己的底上够看得清()
+    {
+        // ⚠️ 这一条与上面那条**方向正好相反**：上面钉的是「白字压 `Success`/`Danger`
+        // 明知差一点，不许更差」，这里**不许差** —— 分类块上那两个字就是它的全部信息
+        // （发货/退货），读不清等于这块颜色白给了。所以按正文门槛 4.5 走。
+        //
+        // ⚠️ 亮暗两边值不同（不是那一对对「同值」的），所以两套主题各量一次：
+        // 只量亮色的话，暗色那两支哪天被改糊了没人喊。
+        //
+        // ⚠️ 退货那一对**是现成的** `Warning` / `WarningSurface`（需求方 2026-10-16
+        // 裁定全程序发货绿、退货橙）—— 这里也量一遍：亮色那边它原来只按**描边**
+        // 门槛 3.0 钉着（`Warning` 描边压在 `WarningSurface` 上那一行），而这两个字
+        // 是当**正文**用的，得走 4.5。
+        foreach (var (theme, table) in new (string, IReadOnlyDictionary<string, string>)[]
+                 { ("亮色", LightColorKeys), ("暗色", Dark) })
+        {
+            foreach (var (label, ink, surface) in new[]
+                     {
+                         ("发货", "SuccessInk", "SuccessSurface"),
+                         ("退货", "Warning", "WarningSurface"),
+                     })
+            {
+                var ratio = Contrast(table[ink], table[surface]);
+                Assert.True(
+                    ratio >= 4.5,
+                    $"{theme}：{label}块的字（{table[ink]}）压在底（{table[surface]}）上"
+                        + $"只有 {ratio:F2}:1，要求 ≥ 4.5:1");
+            }
+        }
+    }
+
     // ─────────────────────────────────────────────
     // 亮色那边本来就有的几对（2026-10-07 一并改了）
     // ─────────────────────────────────────────────

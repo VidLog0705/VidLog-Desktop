@@ -40,6 +40,8 @@ namespace VidLog.Desktop.App;
 internal sealed record SearchResultRow(
     string Waybill,
     string Subtitle,
+    string BusinessLabel,
+    string BusinessKind,
     string Note,
     Visibility NoteVisibility,
     string LockLabel,
@@ -200,9 +202,13 @@ public partial class SearchWindow : Window
 
             return new SearchResultRow(
                 h.Entry.Waybill.Value,
+                // ⚠️ 末尾那个「 · 」是留给**右边那块分类**的分隔：分类现在是个色块，
+                // 装不进这串字里（2026-10-16）。
                 $"{h.Entry.StartedAt.ToLocalTime():yyyy-MM-dd HH:mm:ss}"
                 + $" · {(int)h.Entry.Duration.TotalMinutes}:{h.Entry.Duration.Seconds:00}"
-                + $" · {BusinessLabel(h.BusinessType)}",
+                + " ·",
+                BusinessLabel(h.BusinessType),
+                BusinessKind(h.BusinessType),
                 note,
                 note.Length > 0 ? Visibility.Visible : Visibility.Collapsed,
                 // 争议锁定（规格 §3.6.5）。判据用 `EvidenceLock.IsLocked`
@@ -284,6 +290,20 @@ public partial class SearchWindow : Window
         BusinessType.Outbound => "发货",
         BusinessType.Return => "退货",
         _ => "类型未知",
+    };
+
+    /// <summary>分类色块的着色档，给 XAML 里那两个 <c>DataTrigger</c> 认。</summary>
+    /// <remarks>
+    /// ⚠️ 走字符串而不是直接绑 <see cref="BusinessType"/>：`DataTrigger` 拿字符串去
+    /// 比一个可空枚举要过一次类型转换，**认不出来是静默的**（那块只是没颜色）。
+    /// 这里两边都是字符串，比不中就是比不中，没有中间态。
+    /// 与 <see cref="BusinessLabel"/> 一样，认不出来时返回中性档 ⇒ 灰块 +「类型未知」。
+    /// </remarks>
+    private static string BusinessKind(BusinessType? type) => type switch
+    {
+        BusinessType.Outbound => "Outbound",
+        BusinessType.Return => "Return",
+        _ => "Unknown",
     };
 
     /// <summary>

@@ -1076,6 +1076,11 @@
                                                         <!-- 发货 / 退货徽章。**认哪一档是 Core 判的**
                                                              （`CloudBusinessTypeOf`），这里只按它给的档名着色。
 
+                                                             ⚠️ 2026-10-16 需求方裁定：**全程序统一为
+                                                             发货绿、退货橙**（原来这里发货是蓝的
+                                                             `AccentWeak`，与检索页那块绿的不同色）。
+                                                             与 `SearchWindow.xaml` 里那枚分类块是同一对键。
+
                                                              ⚠️ 颜色走 `DataTrigger` + `DynamicResource`，
                                                              **不是**绑一支现成的笔刷：当场取到的是一支冻结的笔刷，
                                                              开着程序换主题时这几行不会跟着变、也不报错
@@ -1095,7 +1100,7 @@
                                                                         </DataTrigger>
                                                                         <DataTrigger Binding="{Binding TypeTag}" Value="Outbound">
                                                                             <Setter Property="Background"
-                                                                                    Value="{DynamicResource AccentWeak}"/>
+                                                                                    Value="{DynamicResource SuccessSurface}"/>
                                                                         </DataTrigger>
                                                                     </Style.Triggers>
                                                                 </Style>
@@ -1110,7 +1115,7 @@
                                                                             </DataTrigger>
                                                                             <DataTrigger Binding="{Binding TypeTag}" Value="Outbound">
                                                                                 <Setter Property="Foreground"
-                                                                                        Value="{DynamicResource Accent}"/>
+                                                                                        Value="{DynamicResource SuccessInk}"/>
                                                                             </DataTrigger>
                                                                         </Style.Triggers>
                                                                     </Style>

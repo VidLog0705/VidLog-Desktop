@@ -322,15 +322,20 @@
                                  SelectionChanged="OnResultSelected">
                             <ListBox.ItemTemplate>
                                 <DataTemplate>
-                                    <!-- ⚠️ **两行**：单号与【锁定】并排（第 0 行），
-                                         下面那两行说明**跨满整行**（第 1 行）。
-                                         原来它们是同一个 StackPanel 挤在「单号那一列」里，
-                                         于是**整块**都被右边那颗按钮压掉约 50px ——
-                                         下面那句「… · 类型未知」正好差这一点点宽度，
-                                         在左边那一栏里被折成两行（2026-10-02 实测：
-                                         「类型未 / 知」）。跨满整行就不用再抠那几十像素。 -->
+                                    <!-- ⚠️ **三行**：单号与【锁定】并排（第 0 行）、
+                                         时间·时长·分类块与【作废】并排（第 1 行）、
+                                         说明跨满整行（第 2 行）。
+                                         2026-10-16 需求方点的那一条：时间与分类要跟【作废】**齐平**
+                                         —— 原来它们和说明挤在同一个 StackPanel 里跨满整行，
+                                         于是整行落在两颗按钮**下面**。
+                                         ⚠️ 说明那一行仍然跨满整行：这一栏本来就窄，
+                                         当年整块被按钮压掉约 50px，把「… · 类型未知」
+                                         折成了两行（2026-10-02 实测：「类型未 / 知」）。
+                                         第 1 行现在只到按钮左边，所以它**定长且不折行**
+                                         （`TextWrapping="NoWrap"` + 横向 StackPanel 不给折行机会）。 -->
                                     <Grid Margin="2,4">
                                         <Grid.RowDefinitions>
+                                            <RowDefinition Height="Auto"/>
                                             <RowDefinition Height="Auto"/>
                                             <RowDefinition Height="Auto"/>
                                         </Grid.RowDefinitions>
@@ -344,39 +349,95 @@
                                                    FontWeight="SemiBold"
                                                    Foreground="{DynamicResource TextPrimary}"/>
 
-                                        <!-- ⚠️ 两颗按钮**竖着**排，不是并排：左边这一栏本来就窄
-                                             （锁定那颗当年把下面那几行说明压折过一次，
-                                             见上面关于第 0/1 行的注释），并排会再压掉约 50px。 -->
-                                        <StackPanel Grid.Row="0" Grid.Column="1"
-                                                    Margin="6,0,0,0" VerticalAlignment="Top">
-                                            <!-- 争议锁定（规格 §3.6.5）。⚠️ 它是**硬豁免**（§3.5.3②）：
-                                                 锁上之后保留期到了也不会自动清理这一条。 -->
-                                            <Button Content="{Binding LockLabel}"
-                                                    Padding="8,2"
-                                                    Style="{StaticResource SecondaryButton}"
-                                                    Click="OnToggleLock"
-                                                    Tag="{Binding EvidenceId}"/>
-                                            <!-- 作废／重录（D1，2026-10-10）。⚠️ 与锁定**不同**：
-                                                 作废不动文件、也不豁免清理 —— 它只管
-                                                 「检索里标出来」和「不再算作重复单号」。 -->
-                                            <Button Content="{Binding VoidLabel}"
-                                                    Padding="8,2" Margin="0,4,0,0"
-                                                    Style="{StaticResource SecondaryButton}"
-                                                    Click="OnToggleVoid"
-                                                    Tag="{Binding EvidenceId}"/>
-                                        </StackPanel>
+                                        <!-- 争议锁定（规格 §3.6.5）。⚠️ 它是**硬豁免**（§3.5.3②）：
+                                             锁上之后保留期到了也不会自动清理这一条。 -->
+                                        <Button Grid.Row="0" Grid.Column="1"
+                                                Content="{Binding LockLabel}"
+                                                Padding="8,2" Margin="6,0,0,0"
+                                                Style="{StaticResource SecondaryButton}"
+                                                Click="OnToggleLock"
+                                                Tag="{Binding EvidenceId}"/>
 
-                                        <StackPanel Grid.Row="1" Grid.Column="0" Grid.ColumnSpan="2">
+                                        <!-- 第 1 行：时间 · 时长 · 分类块 -->
+                                        <StackPanel Grid.Row="1" Grid.Column="0"
+                                                    Orientation="Horizontal"
+                                                    Margin="0,4,0,0" VerticalAlignment="Center">
                                             <TextBlock Text="{Binding Subtitle}"
                                                        Style="{StaticResource Caption}"
-                                                       Margin="0,2,0,0"/>
-                                            <!-- 重复单号 / 成品不在盘上这类，说明白 -->
-                                            <TextBlock Text="{Binding Note}"
-                                                       Style="{StaticResource Caption}"
-                                                       Margin="0,2,0,0"
-                                                       Foreground="{DynamicResource Warning}"
-                                                       Visibility="{Binding NoteVisibility}"/>
+                                                       TextWrapping="NoWrap"
+                                                       VerticalAlignment="Center"/>
+                                            <!-- 发货 / 退货那块（需求方 2026-10-16：**全程序统一为
+                                                 发货绿、退货橙**，与设置页「百度网盘上传」那枚徽章同色）。
+                                                 ⚠️ 颜色走 `DataTrigger` + `DynamicResource`，
+                                                 **不是**绑一支现成的笔刷：当场取到的是**冻结**笔刷，
+                                                 开着程序换主题时这一块不会跟着变、也不报错
+                                                 （`ThemePaletteTests` 那条整类闸守的就是它）。
+                                                 退货直接用现成的 `WarningSurface` + `Warning` 那一对
+                                                 （橙，两套主题都达标），不另起一套红色。
+                                                 `BusinessKind` 认不出来时留中性灰 —— 那时候
+                                                 `BusinessLabel` 写的是「类型未知」，底色不该替它选边。 -->
+                                            <Border CornerRadius="{StaticResource RadiusTag}"
+                                                    Padding="6,1" Margin="6,0,0,0"
+                                                    VerticalAlignment="Center">
+                                                <Border.Style>
+                                                    <Style TargetType="Border">
+                                                        <Setter Property="Background"
+                                                                Value="{DynamicResource SurfaceAlt}"/>
+                                                        <Style.Triggers>
+                                                            <DataTrigger Binding="{Binding BusinessKind}" Value="Outbound">
+                                                                <Setter Property="Background"
+                                                                        Value="{DynamicResource SuccessSurface}"/>
+                                                            </DataTrigger>
+                                                            <DataTrigger Binding="{Binding BusinessKind}" Value="Return">
+                                                                <Setter Property="Background"
+                                                                        Value="{DynamicResource WarningSurface}"/>
+                                                            </DataTrigger>
+                                                        </Style.Triggers>
+                                                    </Style>
+                                                </Border.Style>
+                                                <TextBlock Text="{Binding BusinessLabel}"
+                                                           FontFamily="{StaticResource UiFont}"
+                                                           FontSize="12" TextWrapping="NoWrap"
+                                                           VerticalAlignment="Center">
+                                                    <TextBlock.Style>
+                                                        <Style TargetType="TextBlock">
+                                                            <Setter Property="Foreground"
+                                                                    Value="{DynamicResource TextSecondary}"/>
+                                                            <Style.Triggers>
+                                                                <DataTrigger Binding="{Binding BusinessKind}" Value="Outbound">
+                                                                    <Setter Property="Foreground"
+                                                                            Value="{DynamicResource SuccessInk}"/>
+                                                                </DataTrigger>
+                                                                <DataTrigger Binding="{Binding BusinessKind}" Value="Return">
+                                                                    <Setter Property="Foreground"
+                                                                            Value="{DynamicResource Warning}"/>
+                                                                </DataTrigger>
+                                                            </Style.Triggers>
+                                                        </Style>
+                                                    </TextBlock.Style>
+                                                </TextBlock>
+                                            </Border>
                                         </StackPanel>
+
+                                        <!-- 作废／重录（D1，2026-10-10）。⚠️ 与锁定**不同**：
+                                             作废不动文件、也不豁免清理 —— 它只管
+                                             「检索里标出来」和「不再算作重复单号」。 -->
+                                        <Button Grid.Row="1" Grid.Column="1"
+                                                Content="{Binding VoidLabel}"
+                                                Padding="8,2" Margin="6,4,0,0"
+                                                VerticalAlignment="Center"
+                                                Style="{StaticResource SecondaryButton}"
+                                                Click="OnToggleVoid"
+                                                Tag="{Binding EvidenceId}"/>
+
+                                        <!-- 重复单号 / 成品不在盘上这类，说明白。
+                                             ⚠️ 跨满整行，见上面那段为什么。 -->
+                                        <TextBlock Grid.Row="2" Grid.Column="0" Grid.ColumnSpan="2"
+                                                   Text="{Binding Note}"
+                                                   Style="{StaticResource Caption}"
+                                                   Margin="0,2,0,0"
+                                                   Foreground="{DynamicResource Warning}"
+                                                   Visibility="{Binding NoteVisibility}"/>
                                     </Grid>
                                 </DataTemplate>
                             </ListBox.ItemTemplate>
