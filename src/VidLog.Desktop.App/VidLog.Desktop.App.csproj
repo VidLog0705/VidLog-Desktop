@@ -513,7 +513,15 @@
           解释掉了，其实那是缺陷本身）。裁定「不改系统标题栏」一并落档。
         ⚠️ 这一版同样没走 CI 发 Release，只在本机出安装程序。
     -->
-    <Version>0.15.3</Version>
+    <!--
+        0.15.4（2026-10-16）—— 全是界面：
+        ① 检索页结果行由两行改三行：**时间·时长与分类块**上移，与右边那颗
+          【作废】齐平；分类不再是文字，改成**色块**（发货绿、退货橙）。
+        ② 同一批裁定：全程序那两个分类色**统一为发货绿、退货橙** —— 设置页
+          「百度网盘上传」那枚徽章原来发货是蓝的，跟着改。
+        ⚠️ 这一版同样没走 CI 发 Release，只在本机出安装程序。
+    -->
+    <Version>0.15.4</Version>
     <OutputType>WinExe</OutputType>
     <TargetFramework>net9.0-windows</TargetFramework>
     <Nullable>enable</Nullable>
