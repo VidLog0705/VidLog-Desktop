@@ -1,0 +1,44 @@
+name: atomgit-上行探针
+
+# 临时的诊断用 workflow：量「GitHub runner → AtomGit 对象存储」的上传速度。
+# 2026-10-17 出包那一步在这里挂了 26 分钟没上去，先量数再定方案。用完即删。
+
+on:
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: 传 8MB 看速度
+        env:
+          ATOMGIT_TOKEN: ${{ secrets.ATOMGIT_TOKEN }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $repo = 'Vidlog/vidlog-update-test'
+          $api  = "https://api.atomgit.com/api/v5/repos/$repo"
+          $h    = @{ 'PRIVATE-TOKEN' = $env:ATOMGIT_TOKEN }
+          $tag  = "probe-$($env:GITHUB_RUN_ID)"
+
+          $body = @{ tag_name = $tag; target_commitish = 'main'; name = $tag; body = 'probe'; prerelease = $false } | ConvertTo-Json
+          $null = Invoke-RestMethod -Method Post -Uri "$api/releases" -Headers $h -ContentType 'application/json' -Body $body
+          Write-Host "建好探针 release $tag"
+
+          $f = Join-Path $env:RUNNER_TEMP 'probe.bin'
+          $bytes = [byte[]]::new(8MB)
+          [Random]::new(42).NextBytes($bytes)
+          [IO.File]::WriteAllBytes($f, $bytes)
+
+          $info = Invoke-RestMethod -Uri "$api/releases/$tag/upload_url?file_name=probe.bin" -Headers $h
+          $uh = @{}
+          $info.headers.PSObject.Properties | ForEach-Object { $uh[$_.Name] = $_.Value }
+
+          $sw = [Diagnostics.Stopwatch]::StartNew()
+          Invoke-WebRequest -Method Put -Uri $info.url -Headers $uh -InFile $f | Out-Null
+          $sw.Stop()
+          $sec = $sw.Elapsed.TotalSeconds
+          Write-Host ("8 MB 上传完成：{0:N1} 秒，{1:N2} MB/s" -f $sec, (8 / $sec))
