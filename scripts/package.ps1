@@ -308,7 +308,8 @@ Write-Host ''
 Write-Host "安装程序：$($setup.FullName)"
 Write-Host ("     大小 {0:N1} MB   sha256 {1}" -f ($setup.Length / 1MB), $setupHash)
 Write-Host '     装到 Program Files，顺手注册 8720 端口的访问许可（所以会要提权）。'
-Write-Host '     ⚠️ 卸载**不删**录像：数据在 %LOCALAPPDATA%\VidLog，不在安装目录里。'
+Write-Host '     ⚠️ 数据在 %LOCALAPPDATA%\VidLog（不在安装目录里）；卸载时会问一次要不要删，'
+Write-Host '        两项默认都不勾 —— 顺手点下一步不会删掉录像。'
 
 # ⚠️ stage 到这里才能删 —— 安装程序就是拿它当素材的。
 Remove-Item $stage -Recurse -Force
