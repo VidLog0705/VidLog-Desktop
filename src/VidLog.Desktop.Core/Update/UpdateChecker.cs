@@ -179,49 +179,63 @@ public sealed class UpdateChecker
 }
 
 /// <summary>
-/// GitHub「最新发布」那一段响应的读法（T27② 第 4 批）。
+/// AtomGit「最新发布」那一段响应的读法（T27② 第 4 批；2026-10-17 换源）。
 /// </summary>
 /// <remarks>
 /// <para>
-/// ⚠️ <b>「对端一个版本都没发过」与「没问到」必须分得开</b>：前者是**空数组**
-/// （正常状态，永远可能是这样），被限流时对端给的是一个**对象**
-/// <c>{"message":"API rate limit exceeded…"}</c>。
+/// ⚠️ <b>「对端一个版本都没发过」与「没问到」必须分得开</b>：AtomGit 在
+/// 「这个仓一个 release 都没有」时回 <b>400</b> 加一句 <c>未找到 release</c>
+/// （<b>不是</b> 404，也不是空数组）。
 /// </para>
 /// <para>
-/// ⚠️ 所以结构认不出来时**抛**（<see cref="UpdateChecker.CheckAsync"/> 会收成
-/// 「没问到」），只有「确实是空数组」与「有元素但没有 <c>tag_name</c>」才回
-/// <see langword="null"/>。两个都当成 <see langword="null"/> 的话，
-/// 一次被限流的请求会变成界面上那句「对端还没有发布过任何版本」——
-/// 而它的意思是**对端的问题**，与「我们没问到」正好相反。
+/// ⚠️ <b>2026-10-17 换掉旧写法</b>：原来问的是列表接口、取第 0 条 —— 那在 GitHub
+/// 上成立（按发布时间倒序），**AtomGit 上正好相反**（按旧到新，实测 mindspore
+/// 依次给 v2.8.0 / v2.9.0 / v2.10.0），取第 0 条会拿到**最旧**那一个。
+/// 所以改成问 <c>/releases/latest</c>，读一个对象。
+/// </para>
+/// <para>
+/// ⚠️ 结构认不出来时**抛**（<see cref="UpdateChecker.CheckAsync"/> 会收成
+/// 「没问到」）。混成 <see langword="null"/> 的话，一次被限流的请求会变成界面上
+/// 那句「对端还没有发布过任何版本」—— 而它的意思是**对端的问题**，
+/// 与「我们没问到」正好相反。
 /// </para>
 /// <para>
 /// ⚠️ 只读 <c>tag_name</c>，**不建一个与对端字段一一对应的 DTO**：那等于把
-/// GitHub 的响应结构变成我们的编译期契约，对端加一个字段我们就得跟着改。
+/// 对端的响应结构变成我们的编译期契约，对端加一个字段我们就得跟着改。
 /// </para>
 /// </remarks>
 public static class ReleaseFeedJson
 {
-    /// <summary>最新一个发布的 tag；一个都没发过时给 <see langword="null"/>。</summary>
+    /// <summary>最新一个发布的 tag。</summary>
     /// <exception cref="JsonException">这段文本不是 JSON。</exception>
-    /// <exception cref="FormatException">是 JSON，但根不是一个数组（多半是限流/报错）。</exception>
+    /// <exception cref="FormatException">是 JSON，但不是一个带 <c>tag_name</c> 的对象（多半是报错）。</exception>
     public static string? ReadLatestTag(string json)
     {
         using var document = JsonDocument.Parse(json);
         var root = document.RootElement;
 
-        if (root.ValueKind != JsonValueKind.Array)
+        if (root.ValueKind != JsonValueKind.Object)
         {
             throw new FormatException(
-                $"发布列表的根是 {root.ValueKind}，不是一个数组 —— 多半是被限流或者报错了。");
+                $"发布信息的根是 {root.ValueKind}，不是一个对象 —— 多半是被限流或者报错了。");
         }
 
-        if (root.GetArrayLength() == 0)
+        if (!root.TryGetProperty("tag_name", out var tag) || tag.ValueKind != JsonValueKind.String)
         {
-            return null;
+            throw new FormatException("这个对象里没有 tag_name —— 多半是被限流或者报错了。");
         }
 
-        return root[0].TryGetProperty("tag_name", out var tag) ? tag.GetString() : null;
+        return tag.GetString();
     }
+
+    /// <summary>「这个仓一个 release 都还没发过」的那一声。</summary>
+    /// <remarks>
+    /// ⚠️ 只认 AtomGit 那一句「未找到 release」，**别的 400 照旧当失败**：
+    /// 仓库名写错、权限不对也会回 400，把它们说成「还没有发布过」就是
+    /// 又一次「绿着的假成功」。
+    /// </remarks>
+    public static bool IsNoRelease(int statusCode, string json) =>
+        statusCode == 400 && json.Contains("未找到 release", StringComparison.Ordinal);
 }
 
 /// <summary>

@@ -124,40 +124,53 @@ public class UpdateCheckerTests
     }
 
     // ─────────────────────────────────────────────
-    // 读发布列表那一段 JSON（T27② 第 4 批）
+    // 读「最新发布」那一段 JSON（T27② 第 4 批；2026-10-17 换源 AtomGit）
     // ─────────────────────────────────────────────
     //
     // ⚠️ 这一段原来在 `App/Platform/ReleaseFeed.cs` 里，而那个工程没有测试工程。
-    // 搬下来正是因为「`[]`」与「被限流那个对象」分不分得开**只有这里能挡**。
+    // 搬下来正是因为「没发过」与「没问到」分不分得开**只有这里能挡**。
 
     [Fact]
-    public void 一个版本都没发过时读到空()
+    public void 一个版本都没发过时认得出那一声()
     {
-        // ⚠️ 与上面那条「不算失败」是一对：`[]` 是**真的没有发布过**。
-        Assert.Null(ReleaseFeedJson.ReadLatestTag("[]"));
+        // AtomGit 在「这个仓一个 release 都没有」时回 400 + 这句话
+        // （2026-10-17 实测 openharmony/docs：不是 404，也不是空数组）。
+        Assert.True(ReleaseFeedJson.IsNoRelease(
+            400,
+            """{"error_code":400,"error_code_name":"BAD_REQUEST","error_message":"未找到 release"}"""));
     }
 
     [Fact]
-    public void 列表里第一个就是最新的那一个()
+    public void 别的400不许当成没发过()
     {
-        // 接口按发布时间倒序给，取第 0 个。
-        Assert.Equal("v1.2.0", ReleaseFeedJson.ReadLatestTag(
-            """[{"tag_name":"v1.2.0"},{"tag_name":"v1.1.9"}]"""));
+        // ⚠️ 仓库名写错、权限不对也会回 400。把它们说成「还没有发布过」，
+        // 就是又一次「绿着的假成功」。
+        Assert.False(ReleaseFeedJson.IsNoRelease(400, """{"error_message":"仓库不存在"}"""));
+        Assert.False(ReleaseFeedJson.IsNoRelease(500, """{"error_message":"未找到 release"}"""));
+    }
+
+    [Fact]
+    public void 读到最新那个发布的tag()
+    {
+        // `/releases/latest` 给的是**一个对象**（2026-10-17 实测 body 带 tag_name）。
+        Assert.Equal("v1.2.0", ReleaseFeedJson.ReadLatestTag("""{"tag_name":"v1.2.0"}"""));
     }
 
     [Fact]
     public void 那一段里没有tag_name时当成没问到()
     {
-        Assert.Null(ReleaseFeedJson.ReadLatestTag("""[{"name":"发布 1.2"}]"""));
+        Assert.Throws<FormatException>(() =>
+        {
+            _ = ReleaseFeedJson.ReadLatestTag("""{"name":"发布 1.2"}""");
+        });
     }
 
     [Fact]
     public void 被限流的那个对象要抛_不许当成没发布过()
     {
-        // ⚠️ 这一段里最要紧的一条。被限流时 GitHub 回的是**一个对象**
-        // （未认证的接口每小时只给 60 次），若它和 `[]` 一样回 null，
-        // 界面上显示的就是「已经是最新」—— 而真实情况是**根本没问到**。
-        // 抛出去由 UpdateChecker 收成 Succeeded=false，那才是实话。
+        // ⚠️ 这一段里最要紧的一条。被限流时对端回的是一个**没有 tag_name 的对象**，
+        // 若它回 null，界面上显示的就是「已经是最新」—— 而真实情况是
+        // **根本没问到**。抛出去由 UpdateChecker 收成 Succeeded=false，那才是实话。
         Assert.Throws<FormatException>(() =>
         {
             _ = ReleaseFeedJson.ReadLatestTag("""{"message":"API rate limit exceeded"}""");
