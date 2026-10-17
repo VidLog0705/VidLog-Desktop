@@ -283,6 +283,116 @@ public class CloudUploadTests
     }
 
     // ─────────────────────────────────────────────
+    // 取回（甲，2026-10-16）：点播放时本机没有 → 从网盘搬回来
+    // ─────────────────────────────────────────────
+
+    /// <summary>按真实现的样子建一个网盘归档后端（这一组都只要它）。</summary>
+    private static CloudArchiveBackend CloudOf(Harness harness) =>
+        new(harness.Layout, harness.Api, harness.Session, harness.Service);
+
+    [Fact]
+    public async Task 网盘上有这一条_取回落到本机而且内容一致()
+    {
+        using var harness = new Harness(Open());
+        var location = await harness.AddRecordingAsync("e1");
+
+        // 正常传上去，然后假装本机那一份没了（用户清过盘）。
+        await harness.Service.PublishAsync(location, harness.LocalPathOf(location));
+        var local = harness.LocalPathOf(location);
+        File.Delete(local);
+
+        var progress = new List<(long Received, long? Total)>();
+        var result = await CloudOf(harness).FetchAsync(
+            location, local, (received, total) => progress.Add((received, total)));
+
+        Assert.True(result.Fetched, result.FailureReason);
+        Assert.Equal(harness.Api.DownloadContent, await File.ReadAllBytesAsync(local));
+
+        // ⚠️ **两处都不留痕**才算搬干净：`.part` 留着的话它是一份看着像成品的坏文件。
+        Assert.False(File.Exists(local + ".part"));
+
+        // 进度要一路报到尾 —— 界面那根条靠它（总长度来自 Content-Length）。
+        Assert.Equal((long)harness.Api.DownloadContent.Length, progress[^1].Received);
+        Assert.Equal((long)harness.Api.DownloadContent.Length, progress[^1].Total);
+    }
+
+    [Fact]
+    public async Task 网盘上没有这一条_说的是没找到_不是取不回来()
+    {
+        using var harness = new Harness(Open());
+        var location = await harness.AddRecordingAsync("e1");
+
+        var local = System.IO.Path.Combine(harness.Root, "本机", "SF1000000001.mp4");
+        var result = await CloudOf(harness).FetchAsync(location, local);
+
+        Assert.False(result.Fetched);
+        Assert.True(result.Missing, "网盘上没有这一条");
+        Assert.Null(result.FailureReason);
+        Assert.False(File.Exists(local));
+    }
+
+    [Fact]
+    public async Task 改过分类的那一条_取回时去另一个目录也找得到()
+    {
+        // 与回查同一条道理（I5）：分类取自可改的标签。只按当前分类找的话，
+        // 用户把它从发货改成退货之后，云端那一份在取回眼里就「不存在」。
+        using var harness = new Harness(Open());
+        var location = await harness.AddRecordingAsync("e1");
+
+        // 传的时候是「发货」。
+        await harness.Service.PublishAsync(location, harness.LocalPathOf(location));
+
+        await harness.Labels.SetAsync(
+            "e1", LabelKeys.BusinessType, BusinessTypes.ToValue(BusinessType.Return));
+
+        var local = harness.LocalPathOf(location);
+        File.Delete(local);
+
+        var result = await CloudOf(harness).FetchAsync(location, local);
+
+        Assert.True(result.Fetched, result.FailureReason);
+    }
+
+    [Fact]
+    public async Task 问不到网盘时_取回算失败_不是没找到()
+    {
+        using var harness = new Harness(Open());
+        var location = await harness.AddRecordingAsync("e1");
+
+        await harness.Session.LogoutAsync();
+
+        var local = System.IO.Path.Combine(harness.Root, "本机", "SF1000000001.mp4");
+        var result = await CloudOf(harness).FetchAsync(location, local);
+
+        Assert.False(result.Fetched);
+        Assert.False(result.Missing, "问不到的时候**不能**说「网盘上没有这一条」");
+        Assert.NotNull(result.FailureReason);
+    }
+
+    [Fact]
+    public async Task 下到一半断了_说失败_而且半截文件不许留成本品()
+    {
+        // ⚠️ 半截的 `<单号>.mp4` 落在盘上，检索页会判「本机有」—— 于是那句警告消失，
+        // 而播放器打开的是一个坏文件。清理不干净就是这条测试要挡的事。
+        using var harness = new Harness(Open());
+        var location = await harness.AddRecordingAsync("e1");
+        await harness.Service.PublishAsync(location, harness.LocalPathOf(location));
+
+        var local = harness.LocalPathOf(location);
+        File.Delete(local);
+
+        harness.Api.FailDownload = new IOException("网络断了");
+
+        var result = await CloudOf(harness).FetchAsync(location, local);
+
+        Assert.False(result.Fetched);
+        Assert.False(result.Missing);
+        Assert.NotNull(result.FailureReason);
+        Assert.False(File.Exists(local), "半截的东西**不许**冒充成品");
+        Assert.False(File.Exists(local + ".part"));
+    }
+
+    // ─────────────────────────────────────────────
     // 补传范围（设计图 `_46` 的「补传范围」）
     // ─────────────────────────────────────────────
 
@@ -1450,6 +1560,61 @@ public class CloudUploadTests
             }
 
             return Task.FromResult<IReadOnlySet<string>>(Files[directory]);
+        }
+
+        /// <summary>取直链时下回来的内容（验「落盘的是这一份」）。</summary>
+        public byte[] DownloadContent { get; set; } = new byte[4096];
+
+        /// <summary>取过直链的远端路径（按调用顺序）。</summary>
+        public List<string> Dlinks { get; } = [];
+
+        /// <summary>非空时下载下到一半就抛它（演「断了」）。</summary>
+        public Exception? FailDownload { get; set; }
+
+        public Task<string> GetDlinkAsync(
+            string accessToken, string remotePath, CancellationToken cancellationToken = default)
+        {
+            string leaf;
+
+            lock (_gate)
+            {
+                var directory = DirectoryOf(remotePath);
+
+                leaf = remotePath[directory.Length..];
+
+                if (!Directories.Contains(directory) || !Files[directory].Contains(leaf))
+                {
+                    // 真网盘对不存在的文件回的就是这个码（063 的 31066）。
+                    throw new BaiduPanException(31066, $"文件不存在：{remotePath}");
+                }
+
+                Dlinks.Add(remotePath);
+            }
+
+            return Task.FromResult($"https://d.pcs.baidu.com/fake/{leaf}");
+        }
+
+        public async Task DownloadAsync(
+            string accessToken,
+            string dlink,
+            Stream destination,
+            Action<long, long?>? progress = null,
+            CancellationToken cancellationToken = default)
+        {
+            var content = DownloadContent;
+
+            // ⚠️ 断了的时候**先写半截再抛**：真断线就是这样 —— 目标那头已经落了
+            // 一部分字节。一点不写的话，「半截文件不许留」那条测试就测不到东西。
+            if (FailDownload is { } problem)
+            {
+                await destination.WriteAsync(content[..(content.Length / 2)], cancellationToken);
+                progress?.Invoke(content.Length / 2, content.Length);
+
+                throw problem;
+            }
+
+            await destination.WriteAsync(content, cancellationToken);
+            progress?.Invoke(content.Length, content.Length);
         }
 
         private static string DirectoryOf(string remotePath)

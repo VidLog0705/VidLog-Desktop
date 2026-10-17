@@ -63,6 +63,25 @@ public sealed record ArchiveVerifyResult(bool Exists, string? FailureReason)
     public bool CouldNotVerify => FailureReason is not null;
 }
 
+/// <summary>从归档层取回一条录像的结果。</summary>
+/// <param name="Fetched">取回来了没有。</param>
+/// <param name="Missing">归档层上**没有这一条**（与「取不回来」是两件事）。</param>
+/// <param name="FailureReason">取不回来的原因（断网、限流、写本地失败…）。</param>
+/// <remarks>
+/// ⚠️ <b>三态，不是两态</b> —— 与 <see cref="ArchiveVerifyResult"/> 同一条理由：
+/// 「归档层上没有」和「问不到归档层」在界面上是**两句不同的话**
+/// （前者用户该去看别的机器，后者该去修网络），合成一句就把他引到错的方向。
+/// </remarks>
+public sealed record ArchiveFetchResult(bool Fetched, bool Missing, string? FailureReason)
+{
+    public static ArchiveFetchResult Ok { get; } = new(true, false, null);
+
+    /// <summary>归档层上没有这一条。</summary>
+    public static ArchiveFetchResult NotFound { get; } = new(false, true, null);
+
+    public static ArchiveFetchResult Failed(string reason) => new(false, false, reason);
+}
+
 /// <summary>
 /// 归档层。
 /// </summary>
@@ -75,6 +94,41 @@ public interface IArchiveBackend
 
     /// <summary>回查某条录像的成品在归档层上还在不在。</summary>
     Task<ArchiveVerifyResult> VerifyAsync(RelativePath location, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// 把归档层上的这一条**取回本机**，写到 <paramref name="destination"/>。
+    /// </summary>
+    /// <param name="progress">
+    /// 边取边报：<c>(已取字节, 总共多少)</c>。⚠️ 总数**可能是 <see langword="null"/>**
+    /// （网盘没给 <c>Content-Length</c>、或目录型那个文件读不出来大小），
+    /// 这时调用方该显示「下载中」而**不要**编一个百分比出来。
+    /// </param>
+    /// <remarks>
+    /// <para>
+    /// ⚠️ <b>落到 <paramref name="destination"/> 上的必须是完整的成品。</b>
+    /// 两条实现都先写一个 <c>.part</c> 临时名、下完再改名 —— 理由是
+    /// 「本机有没有」在这个系统里的唯一判据是 <c>File.Exists</c>
+    /// （见 <c>StorageLocations.Resolve</c>）：留一个半截的
+    /// <c>&lt;单号&gt;.mp4</c> 在那儿，检索页会认为本机有、**警告消失**，
+    /// 而播放器打开的是一个坏文件。这与发布那一头（<c>DirectoryArchiveBackend.PublishAsync</c>）
+    /// 是同一条规矩。
+    /// </para>
+    /// <para>
+    /// ⚠️ 失败时**不删 <paramref name="destination"/> 上原有的东西**：调用方只在
+    /// 「本机没有这一条」时才来取回，所以那里本来就不该有成品；真有的话是别人的，
+    /// 动它比不动更危险。
+    /// </para>
+    /// <para>
+    /// ⚠️ <b><paramref name="destination"/> 的父目录由实现这一头建</b>
+    /// （`ResolveOrActive` 给的是一个**还没被创建过**的路径 —— 这一条在本机上
+    /// 从来没落过盘）：交给调用方去建的话，五处调用点迟早各建一遍、或者有一处忘了。
+    /// </para>
+    /// </remarks>
+    Task<ArchiveFetchResult> FetchAsync(
+        RelativePath location,
+        string destination,
+        Action<long, long?>? progress = null,
+        CancellationToken cancellationToken = default);
 }
 
 /// <summary>保留期策略（规格 §3.5.2）。</summary>

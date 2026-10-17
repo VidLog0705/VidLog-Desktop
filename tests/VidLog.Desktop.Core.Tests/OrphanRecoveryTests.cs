@@ -858,5 +858,13 @@ public class OrphanRecoveryTests
         public Task<Core.Cleanup.ArchiveVerifyResult> VerifyAsync(
             Core.RelativePath location, CancellationToken cancellationToken = default) =>
             Task.FromResult(new Core.Cleanup.ArchiveVerifyResult(false, "网络断了"));
+
+        // 收尾那一路不取回（取回是检索页点播放那条路的事）。
+        public Task<Core.Cleanup.ArchiveFetchResult> FetchAsync(
+            Core.RelativePath location,
+            string destination,
+            Action<long, long?>? progress = null,
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult(Core.Cleanup.ArchiveFetchResult.Failed("网络断了"));
     }
 }

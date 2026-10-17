@@ -144,6 +144,15 @@ public sealed class DesktopServices : IAsyncDisposable
     public IArchiveBackend ArchiveBackend { get; private init; } = null!;
 
     /// <summary>
+    /// 「本机没有 → 从归档层取回来」（检索页点播放时用）。
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ 它**只在这一档的归档层上能取**：本机那一档（<c>ArchiveBackendKind.LocalDisk</c>）
+    /// 没有第二个地方，取回会如实回「未找到」。
+    /// </remarks>
+    public ArchiveRetrievalService Retrieval { get; private init; } = null!;
+
+    /// <summary>
     /// 百度网盘那一套（队列、对比去重、并发）。
     /// </summary>
     /// <remarks>
@@ -665,6 +674,9 @@ public sealed class DesktopServices : IAsyncDisposable
             new CleanupExecutor(archiveBackend, locations, cleanupAudit, effectiveLogger),
             effectiveLogger);
 
+        // 「本机没有 → 从归档层取回来」（检索页点播放那条路）。
+        var retrieval = new ArchiveRetrievalService(archiveBackend, locations, effectiveLogger);
+
         // T26①：【按时间清理…】/【按空间释放…】按下之后该算什么 —— 从 WPF 的
         // 按钮点击事件里搬出来的（母仓 §4「逻辑不许塞进 UI 层」）。
         // ⚠️ 保留期是**每次调用时传进来的**，不在这里存一份：设置页上改完立刻生效，
@@ -685,6 +697,7 @@ public sealed class DesktopServices : IAsyncDisposable
         {
             ArchiveTarget = target,
             ArchiveBackend = archiveBackend,
+            Retrieval = retrieval,
             CloudUploads = cloudUploads,
             Storage = locations,
             ArchiveRelay = relay,

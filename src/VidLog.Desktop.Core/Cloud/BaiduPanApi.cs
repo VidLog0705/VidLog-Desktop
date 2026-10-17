@@ -287,4 +287,33 @@ public interface IBaiduPanApi
     /// </remarks>
     Task<IReadOnlySet<string>> ListFilesAsync(
         string accessToken, string directory, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// 要一条文件的**下载直链**（047「获取文件信息」带 <c>dlink=1</c>）。
+    /// </summary>
+    /// <param name="remotePath">网盘上的绝对路径（<c>/apps/&lt;应用名&gt;/…</c>）。</param>
+    /// <returns>一条**带签名、会过期**的直链。</returns>
+    /// <remarks>
+    /// ⚠️ <b>直链本身不带凭据</b>：取回来必须自己把 <c>access_token</c> 拼到它后面
+    /// （见 <see cref="DownloadAsync"/>）—— 这是文档 047 注意事项里那条。
+    /// </remarks>
+    Task<string> GetDlinkAsync(
+        string accessToken, string remotePath, CancellationToken cancellationToken = default);
+
+    /// <summary>把一条直链的内容取回来，写进 <paramref name="destination"/>。</summary>
+    /// <param name="progress">
+    /// <c>(已收字节, 总共多少)</c>。⚠️ 总数可能是 <see langword="null"/>——
+    /// 网盘没给 <c>Content-Length</c>。那时调用方该显示「下载中」而不要编百分比。
+    /// </param>
+    /// <remarks>
+    /// ⚠️ 两条来自手机端那段已经跑通的实现（<c>baidu_pan.dart</c> 的 <c>download</c>）：
+    /// ① 直链要**拼上 <c>access_token</c>**；② 请求要带 <c>User-Agent: pan.baidu.com</c>
+    /// （<c>31326 命中防盗链</c>的排查方向写的就是这一条）。
+    /// </remarks>
+    Task DownloadAsync(
+        string accessToken,
+        string dlink,
+        Stream destination,
+        Action<long, long?>? progress = null,
+        CancellationToken cancellationToken = default);
 }

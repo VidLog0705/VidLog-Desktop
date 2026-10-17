@@ -316,6 +316,147 @@ public class ArchiveBackendTests
     }
 
     // ─────────────────────────────────────────────
+    // 取回（甲，2026-10-16）：本机没有就从归档层搬回来
+    // ─────────────────────────────────────────────
+
+    [Fact]
+    public async Task 取回把归档层那一份搬到本机()
+    {
+        using var dir = new TempDir();
+        var nas = System.IO.Path.Combine(dir.Path, "nas");
+        var backend = new DirectoryArchiveBackend(nas, ArchiveBackendKind.Directory);
+
+        var location = Where("VidLog-Video/2026-10-16/发货/SF1.mp4");
+        var onNas = System.IO.Path.Combine(nas, location.Value);
+        Directory.CreateDirectory(System.IO.Path.GetDirectoryName(onNas)!);
+        await File.WriteAllBytesAsync(onNas, [1, 2, 3, 4]);
+
+        var local = System.IO.Path.Combine(dir.Path, "本机", "SF1.mp4");
+
+        var seen = new List<(long Received, long? Total)>();
+        var result = await backend.FetchAsync(
+            location, local, (received, total) => seen.Add((received, total)));
+
+        Assert.True(result.Fetched, result.FailureReason);
+
+        // ⚠️ 取回来的要**一模一样**：搬完这条就与「本来就是在本机录的」不可区分
+        //（能播、能导出、能回查、能清理）—— 下游一处都不用改。
+        Assert.Equal([1, 2, 3, 4], await File.ReadAllBytesAsync(local));
+
+        // ⚠️ 半截文件不留：留着的话它就是一份看着像成品的坏文件。
+        Assert.False(File.Exists(local + ".part"));
+
+        // 归档层那一份**不动** —— 取回是复制不是搬家。搬走的话别处就没第二份了，
+        // 而清理层放行本机那一份的判据**正是**「别处还有一份」。
+        Assert.True(File.Exists(onNas));
+
+        // 进度要一路报到尾（界面那根条靠它）：最后一次是「收满 / 总共」。
+        Assert.Equal(4, seen[^1].Received);
+        Assert.Equal(4, seen[^1].Total);
+    }
+
+    [Fact]
+    public async Task 归档层上没有这一条_说的是没找到_不是取不回来()
+    {
+        // 这两句话对用户**不是一回事**：一个说「这条在哪儿都没有了」，
+        // 一个说「现在问不到」。混成一句的话，用户看到「没找到」会以为录像没了，
+        // 而它可能好端端在盘上、只是那台机器现在没开机（I8 的同一条道理）。
+        using var dir = new TempDir();
+        var nas = System.IO.Path.Combine(dir.Path, "nas");
+        Directory.CreateDirectory(nas); // 归档层建好了、只是这一条不在上面
+
+        var local = System.IO.Path.Combine(dir.Path, "本机", "SF1.mp4");
+        var result = await new DirectoryArchiveBackend(nas, ArchiveBackendKind.Directory)
+            .FetchAsync(Where("VidLog-Video/2026-10-16/发货/SF1.mp4"), local);
+
+        Assert.False(result.Fetched);
+        Assert.True(result.Missing, "目录摸得到、文件不在 —— 这才是「没有这一条」");
+        Assert.Null(result.FailureReason);
+        Assert.False(File.Exists(local), "没取到就不许在本机留下空壳");
+    }
+
+    [Fact]
+    public async Task 一个根摸不到_另一个根上有_就从有的那个取()
+    {
+        // ⚠️ 与回查同一个理由（用户换过 NAS）：只看第一个根的话，老录像永远取不回来，
+        // 而界面上只会说「未找到」—— 用户会以为录像被删了。
+        using var dir = new TempDir();
+        var gone = System.IO.Path.Combine(dir.Path, "没插的盘", "nas");
+        var old = System.IO.Path.Combine(dir.Path, "老NAS");
+        Directory.CreateDirectory(old);
+
+        var location = Where("VidLog-Video/2026-10-16/发货/SF1.mp4");
+        var onOld = System.IO.Path.Combine(old, location.Value);
+        Directory.CreateDirectory(System.IO.Path.GetDirectoryName(onOld)!);
+        await File.WriteAllBytesAsync(onOld, [7, 7]);
+
+        var local = System.IO.Path.Combine(dir.Path, "本机", "SF1.mp4");
+        var result = await new DirectoryArchiveBackend([gone, old], ArchiveBackendKind.Directory)
+            .FetchAsync(location, local);
+
+        Assert.True(result.Fetched, result.FailureReason);
+        Assert.Equal([7, 7], await File.ReadAllBytesAsync(local));
+    }
+
+    [Fact]
+    public async Task 一个根都摸不到_说的是取不回来_不是没有()
+    {
+        using var dir = new TempDir();
+
+        var local = System.IO.Path.Combine(dir.Path, "本机", "SF1.mp4");
+        var result = await new DirectoryArchiveBackend(
+            [System.IO.Path.Combine(dir.Path, "没插的盘", "nas")],
+            ArchiveBackendKind.Directory).FetchAsync(Where("VidLog-Video/2026-10-16/发货/SF1.mp4"), local);
+
+        Assert.False(result.Fetched);
+        Assert.False(result.Missing, "摸都摸不到，那时**不能**说「没有这一条」");
+        Assert.False(string.IsNullOrWhiteSpace(result.FailureReason));
+        Assert.False(File.Exists(local));
+    }
+
+    [Fact]
+    public async Task 本机磁盘那一档_取回直接说没有_不去归档根下瞎找()
+    {
+        // 这一档下「本机那一份**就是**归档层那一份」，所以「本机没有」= 哪儿都没有。
+        // ⚠️ 不特判的话它会去 `<根>\archive\…` 里翻（那个目录根本不存在），
+        // 然后回一句「归档层访问不了」—— 把用户引向「是不是盘掉了」这个错方向。
+        using var dir = new TempDir();
+        Directory.CreateDirectory(dir.ArchiveRoot);
+
+        var local = System.IO.Path.Combine(dir.Path, "本机", "SF1.mp4");
+        var result = await new DirectoryArchiveBackend(dir.Path, ArchiveBackendKind.LocalDisk)
+            .FetchAsync(Where("VidLog-Video/2026-10-16/发货/SF1.mp4"), local);
+
+        Assert.True(result.Missing);
+        Assert.Null(result.FailureReason);
+    }
+
+    [Fact]
+    public async Task 本机已经有那一份了_取回不许把它盖掉()
+    {
+        // ⚠️ 这条挡的是「拿归档层上那一份（可能是老的、可能是别人的）覆盖掉本机这一份」。
+        // 两份内容不同就意味着至少有一份要人来判 —— 静默盖掉 = 丢证据。
+        using var dir = new TempDir();
+        var nas = System.IO.Path.Combine(dir.Path, "nas");
+        var backend = new DirectoryArchiveBackend(nas, ArchiveBackendKind.Directory);
+
+        var location = Where("VidLog-Video/2026-10-16/发货/SF1.mp4");
+        var onNas = System.IO.Path.Combine(nas, location.Value);
+        Directory.CreateDirectory(System.IO.Path.GetDirectoryName(onNas)!);
+        await File.WriteAllBytesAsync(onNas, [9, 9, 9]);
+
+        var local = System.IO.Path.Combine(dir.Path, "本机", "SF1.mp4");
+        Directory.CreateDirectory(System.IO.Path.GetDirectoryName(local)!);
+        await File.WriteAllBytesAsync(local, [1, 1, 1]);
+
+        var result = await backend.FetchAsync(location, local);
+
+        Assert.False(result.Fetched);
+        Assert.Equal([1, 1, 1], await File.ReadAllBytesAsync(local));
+        Assert.Equal([9, 9, 9], await File.ReadAllBytesAsync(onNas));
+    }
+
+    // ─────────────────────────────────────────────
     // relay：失败要看得见，但绝不拖垮本机那一份
     // ─────────────────────────────────────────────
 

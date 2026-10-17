@@ -813,6 +813,12 @@ public class CleanupTests
         public Task<ArchiveVerifyResult> VerifyAsync(
             RelativePath location, CancellationToken cancellationToken = default) =>
             Task.FromResult(new ArchiveVerifyResult(exists, failure));
+
+        // 清理这一族用例**不取回**：清理器手上根本没有这一条路。
+        public Task<ArchiveFetchResult> FetchAsync(
+            RelativePath location, string destination,
+            Action<long, long?>? progress = null, CancellationToken cancellationToken = default) =>
+            Task.FromResult(ArchiveFetchResult.NotFound);
     }
 
     private sealed class ThrowingArchive : IArchiveBackend
@@ -822,6 +828,11 @@ public class CleanupTests
         public Task<ArchiveVerifyResult> VerifyAsync(
             RelativePath location, CancellationToken cancellationToken = default) =>
             throw new IOException("回查炸了");
+
+        public Task<ArchiveFetchResult> FetchAsync(
+            RelativePath location, string destination,
+            Action<long, long?>? progress = null, CancellationToken cancellationToken = default) =>
+            throw new IOException("取回炸了");
     }
 
     private sealed class TempDir : IDisposable

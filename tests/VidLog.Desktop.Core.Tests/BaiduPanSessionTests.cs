@@ -295,6 +295,18 @@ public class BaiduPanSessionTests
         public Task<IReadOnlySet<string>> ListFilesAsync(
             string accessToken, string directory, CancellationToken cancellationToken = default) =>
             Task.FromResult<IReadOnlySet<string>>(new HashSet<string>(StringComparer.Ordinal));
+
+        // 这一族用例只管令牌，不碰取回。
+        public Task<string> GetDlinkAsync(
+            string accessToken, string remotePath, CancellationToken cancellationToken = default) =>
+            throw new BaiduPanException(-9, "路径不存在");
+
+        public Task DownloadAsync(
+            string accessToken,
+            string dlink,
+            Stream destination,
+            Action<long, long?>? progress = null,
+            CancellationToken cancellationToken = default) => Task.CompletedTask;
     }
 
     private sealed class CapturingLogger : IAppLogger

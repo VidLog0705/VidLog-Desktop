@@ -387,7 +387,7 @@ public sealed class DirectoryArchiveBackend : IArchiveBackend, IArchivePublisher
                 // **半截文件**而不是一个看着完好的坏文件。半截文件的扩展名不是 .mp4，
                 // 回查时那一份仍算「不存在」，下次会重发。
                 var staging = destination + ".part";
-                await CopyAsync(localPath, staging, cancellationToken);
+                await CopyAsync(localPath, staging, null, cancellationToken);
                 File.Move(staging, destination, overwrite: false);
 
                 return ArchivePublishResult.Ok;
@@ -406,6 +406,80 @@ public sealed class DirectoryArchiveBackend : IArchiveBackend, IArchivePublisher
             failures.Count == 0
                 ? $"{Label}没有配置可写的目录。"
                 : $"{Label}上都没写成功 —— {string.Join("；", failures)}");
+    }
+
+    /// <remarks>
+    /// ⚠️ 归档层是**本机**那一档（<see cref="ArchiveBackendKind.LocalDisk"/>）时
+    /// **直接回「没有这一条」**，不往下走。那一档的语义是「本机这一份**就是**归档层
+    /// 那一份」（见本类说明），所以盘上没有就真的没有第二个地方可取；
+    /// 而那一档的根是 <c>&lt;root&gt;\archive</c>，那个目录**根本不会被建出来**
+    /// —— 不早退的话会走成「归档目录访问不了：…」，一句与事实不符的话。
+    /// <para>
+    /// ⚠️ 多根时**第一个有的赢**（与 <see cref="VerifyAsync"/> 同一个试法）：
+    /// 换过 NAS 的机器上，同一个相对路径可能两个根上都有。
+    /// </para>
+    /// </remarks>
+    public async Task<ArchiveFetchResult> FetchAsync(
+        RelativePath location,
+        string destination,
+        Action<long, long?>? progress = null,
+        CancellationToken cancellationToken = default)
+    {
+        if (IsSelf)
+        {
+            return ArchiveFetchResult.NotFound;
+        }
+
+        try
+        {
+            var reachable = 0;
+
+            foreach (var root in _roots)
+            {
+                if (!Directory.Exists(root))
+                {
+                    continue;
+                }
+
+                reachable++;
+
+                var source = Path.Combine(root, location.Value);
+
+                if (!File.Exists(source))
+                {
+                    continue;
+                }
+
+                var parent = Path.GetDirectoryName(destination);
+                if (!string.IsNullOrEmpty(parent))
+                {
+                    Directory.CreateDirectory(parent);
+                }
+
+                // ⚠️ 与发布那一头**同一条**：先写 `.part` 再改名。
+                // 半截的 `<单号>.mp4` 落在盘上会被 `File.Exists` 当成「本机有」——
+                // 检索页那句警告消失，而播放器打开的是一个坏文件。
+                var staging = destination + ".part";
+                await CopyAsync(source, staging, progress, cancellationToken);
+                File.Move(staging, destination, overwrite: false);
+
+                return ArchiveFetchResult.Ok;
+            }
+
+            if (reachable == 0)
+            {
+                return ArchiveFetchResult.Failed($"{Label}访问不了：{string.Join("、", _roots)}");
+            }
+
+            return ArchiveFetchResult.NotFound;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException
+            or NotSupportedException or ArgumentException)
+        {
+            TryCleanStaging(destination);
+
+            return ArchiveFetchResult.Failed($"从{Label}取回出错：{ex.Message}");
+        }
     }
 
     /// <summary>
@@ -463,14 +537,43 @@ public sealed class DirectoryArchiveBackend : IArchiveBackend, IArchivePublisher
         _ => "本机磁盘",
     };
 
-    private static async Task CopyAsync(string from, string to, CancellationToken cancellationToken)
+    private static async Task CopyAsync(
+        string from, string to, Action<long, long?>? progress, CancellationToken cancellationToken)
     {
         await using var source = new FileStream(
             from, FileMode.Open, FileAccess.Read, FileShare.Read, 81920, useAsync: true);
         await using var target = new FileStream(
             to, FileMode.Create, FileAccess.Write, FileShare.None, 81920, useAsync: true);
 
-        await source.CopyToAsync(target, cancellationToken);
+        if (progress is null)
+        {
+            await source.CopyToAsync(target, cancellationToken);
+            await target.FlushAsync(cancellationToken);
+
+            return;
+        }
+
+        // 要报进度就得自己搬 —— `Stream.CopyToAsync` 没有「搬到哪儿了」的出口。
+        // 总数取 `Length`：本机盘与网络盘上的文件都报得出来（读不动的话
+        // `Length` 自己会抛，那也是「取不回来」，由调用方落成一次失败）。
+        var total = source.Length;
+        var buffer = new byte[81920];
+        long copied = 0;
+
+        while (true)
+        {
+            var read = await source.ReadAsync(buffer, cancellationToken);
+
+            if (read <= 0)
+            {
+                break;
+            }
+
+            await target.WriteAsync(buffer.AsMemory(0, read), cancellationToken);
+            copied += read;
+            progress(copied, total);
+        }
+
         await target.FlushAsync(cancellationToken);
     }
 }

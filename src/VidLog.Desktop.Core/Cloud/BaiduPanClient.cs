@@ -113,6 +113,17 @@ public sealed class BaiduPanClient : IBaiduPanApi
     private const string NasBase = "https://pan.baidu.com/rest/2.0/xpan/nas";
 
     /// <summary>
+    /// 取文件信息 / 下载直链的那个服务（047）。
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ 它与 <c>FileBase</c> **不是一族**：<c>method=meta&amp;dlink=1</c> 挂在
+    /// <c>/rest/2.0/xpan/multimedia</c> 上（手机端已经跑通的那一份用的就是它）。
+    /// 挂到 <c>file</c> 那一族上会回 <c>errno=31023</c>（参数不对），
+    /// 而那句「参数不对」指不回「你把服务名拼错了」。
+    /// </remarks>
+    private const string MultimediaBase = "https://pan.baidu.com/rest/2.0/xpan/multimedia";
+
+    /// <summary>
     /// 容量（「获取网盘容量信息」）。
     /// </summary>
     /// <remarks>
@@ -644,6 +655,95 @@ public sealed class BaiduPanClient : IBaiduPanApi
         }
     }
 
+    public async Task<string> GetDlinkAsync(
+        string accessToken, string remotePath, CancellationToken cancellationToken = default)
+    {
+        var url = $"{MultimediaBase}?method=meta"
+            + "&dlink=1"
+            + $"&access_token={Uri.EscapeDataString(accessToken)}"
+            + $"&path={Uri.EscapeDataString(remotePath)}";
+
+        // 顶层 errno 非 0 由 `ReadAsync` 抛（它是全类统一的那一处）。
+        var json = await GetJsonAsync(url, cancellationToken);
+
+        if (json.TryGetProperty("list", out var list) && list.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var item in list.EnumerateArray())
+            {
+                // ⚠️ 顶层是 0 时**这一条自己还可能带 errno**（047 的 `list[].errno`）：
+                // 只看顶层就会拿着一个空串去下载，而报出来的错是「HTTP 403」之类
+                // 指不回这里的话。
+                var itemErrno = item.TryGetProperty("errno", out var code) ? code.GetInt32() : 0;
+
+                if (itemErrno != 0)
+                {
+                    throw new BaiduPanException(
+                        itemErrno, $"这一条文件取不到下载地址：errno={itemErrno}{Hint(itemErrno)}");
+                }
+
+                if (Optional(item, "dlink") is { Length: > 0 } link)
+                {
+                    return link;
+                }
+            }
+        }
+
+        throw new BaiduPanException(0, "取不到下载地址：答复里没有这一条文件");
+    }
+
+    public async Task DownloadAsync(
+        string accessToken,
+        string dlink,
+        Stream destination,
+        Action<long, long?>? progress = null,
+        CancellationToken cancellationToken = default)
+    {
+        // ⚠️ 直链**自己不带凭据**，要把 `access_token` 拼上去（047 的注意事项）。
+        var separator = dlink.Contains('?') ? '&' : '?';
+        var url = $"{dlink}{separator}access_token={Uri.EscapeDataString(accessToken)}";
+
+        using var request = new HttpRequestMessage(HttpMethod.Get, url);
+        WithHeaders(request);
+
+        using var response = await SendTimedAsync(
+            request, url, cancellationToken, HttpCompletionOption.ResponseHeadersRead);
+
+        if (!response.IsSuccessStatusCode)
+        {
+            throw new BaiduPanException(
+                0, $"下载失败：百度网盘回了 HTTP {(int)response.StatusCode}");
+        }
+
+        // ⚠️ 总数**可能是 null**（网盘没给 `Content-Length`）。那是「不知道还要多久」，
+        // 不是 0 —— 当成 0 会算出一个恒 100% 的假进度条。
+        var total = response.Content.Headers.ContentLength;
+
+        await using var body = await response.Content.ReadAsStreamAsync(cancellationToken);
+
+        var buffer = new byte[81920];
+        long received = 0;
+
+        while (true)
+        {
+            var read = await body.ReadAsync(buffer, cancellationToken);
+
+            if (read <= 0)
+            {
+                break;
+            }
+
+            await destination.WriteAsync(buffer.AsMemory(0, read), cancellationToken);
+            received += read;
+            progress?.Invoke(received, total);
+        }
+
+        await destination.FlushAsync(cancellationToken);
+
+        _logger.Log(
+            LogLevel.Info, "网盘", "从网盘取回一条",
+            new Dictionary<string, object?> { ["字节"] = received, ["总数"] = total });
+    }
+
     // ───────────── HTTP 那点杂事 ─────────────
 
     private static BaiduToken ReadToken(JsonElement json) => new(
@@ -806,14 +906,26 @@ public sealed class BaiduPanClient : IBaiduPanApi
     /// 逐片记会把日志淹掉，而**淹掉的日志等于没有日志** —— 那条路只在失败时记。
     /// </para>
     /// </remarks>
+    /// <param name="completion">
+    /// ⚠️ 默认那一档是「**整条响应体读完了才回来**」。取回录像那一路必须传
+    /// <see cref="HttpCompletionOption.ResponseHeadersRead"/>：用默认的话，172 MB 的
+    /// 一条会先进内存/临时文件，然后下游那个「边收边报进度」的循环读的是一个**已经读完的**
+    /// 流 —— 进度条会在眨眼里从 0 冲到 100%，而用户要的正是「还要多久」。
+    /// 附带的好处：头部到了之后那个 <c>HttpClient.Timeout</c> 就不再掐这次下载了。
+    /// 那一刻记的「耗时ms」也跟着变成**首字节耗时** —— 整条下载的耗时由
+    /// <see cref="DownloadAsync"/> 自己按字节数的那条日志交代。
+    /// </param>
     private async Task<HttpResponseMessage> SendTimedAsync(
-        HttpRequestMessage request, string url, CancellationToken cancellationToken)
+        HttpRequestMessage request,
+        string url,
+        CancellationToken cancellationToken,
+        HttpCompletionOption completion = HttpCompletionOption.ResponseContentRead)
     {
         var started = Stopwatch.GetTimestamp();
 
         try
         {
-            var response = await _http.SendAsync(request, cancellationToken);
+            var response = await _http.SendAsync(request, completion, cancellationToken);
 
             _logger.Log(
                 LogLevel.Debug, "网盘", $"网盘请求 {Path(url)}",
