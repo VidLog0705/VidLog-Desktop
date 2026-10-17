@@ -1,5 +1,7 @@
+using System.ComponentModel;
 using System.Globalization;
 using System.IO;
+using System.Runtime.CompilerServices;
 using System.Text;
 using System.Windows;
 using System.Windows.Controls.Primitives;
@@ -42,13 +44,137 @@ internal sealed record SearchResultRow(
     string Subtitle,
     string BusinessLabel,
     string BusinessKind,
-    string Note,
-    Visibility NoteVisibility,
     string LockLabel,
     string VoidLabel,
     string EvidenceId,
-    RecordingHit Hit)
+    RecordingHit Hit) : INotifyPropertyChanged
 {
+    private double _retrievalPercent;
+    private string _retrievalText = string.Empty;
+    private string _retrievalKind = string.Empty;
+    private Visibility _retrievalBar = Visibility.Collapsed;
+    private Visibility _retrievalLine = Visibility.Collapsed;
+
+    /// <summary>
+    /// 取回状态变了（甲，2026-10-16）。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// ⚠️ 这几样**必须能变**，所以这个 record 得实现 <see cref="INotifyPropertyChanged"/>：
+    /// 「下载中」到「已下载」是在**同一行对象**上发生的，而结果列表不重建
+    /// （重建要重跑一次检索）。绑一次性属性的话进度条只会停在 0%。
+    /// </para>
+    /// <para>
+    /// ⚠️ 可变属性**不是位置参数**，写在 record 体里：位置参数那部分是
+    /// 「这一行是什么」的不可变身份，这些是「这一行现在到哪一步了」。
+    /// </para>
+    /// </remarks>
+    public double RetrievalPercent
+    {
+        get => _retrievalPercent;
+        private set => Set(ref _retrievalPercent, value);
+    }
+
+    /// <summary>「下载中 42%」「已下载」「未找到」「取回失败」。</summary>
+    public string RetrievalText
+    {
+        get => _retrievalText;
+        private set => Set(ref _retrievalText, value);
+    }
+
+    /// <summary>
+    /// 着色档，给 XAML 里那几个 <c>DataTrigger</c> 认。
+    /// </summary>
+    /// <remarks>
+    /// 与 <see cref="BusinessKind"/> 同一个理由：`DataTrigger` 拿字符串去比
+    /// 一个枚举要过一次类型转换，**认不出来是静默的**（那块只是没颜色）。
+    /// </remarks>
+    public string RetrievalKind
+    {
+        get => _retrievalKind;
+        private set => Set(ref _retrievalKind, value);
+    }
+
+    /// <summary>那根进度条在不在（只有真在下的时候在）。</summary>
+    public Visibility RetrievalBarVisibility
+    {
+        get => _retrievalBar;
+        private set => Set(ref _retrievalBar, value);
+    }
+
+    /// <summary>整块状态（条 + 字）在不在。</summary>
+    public Visibility RetrievalLineVisibility
+    {
+        get => _retrievalLine;
+        private set => Set(ref _retrievalLine, value);
+    }
+
+    public event PropertyChangedEventHandler? PropertyChanged;
+
+    /// <summary>
+    /// 把服务侧的状态快照摊到这几个绑定属性上（窗口的定时器每 250 ms 调一次）。
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ <b><see cref="RetrievalState.Failed"/> 与 <see cref="RetrievalState.Missing"/>
+    /// 是两句不同的话</b>：一个说「归档层上没有这一条」，一个说「这趟取不回来」
+    /// （断网、限流、盘写不进去）。混成一句的话，用户看到「未找到」会以为
+    /// 录像没了 —— 而它可能好端端在网盘上，只是刚才没连上。
+    /// </remarks>
+    public void ApplyRetrieval(RetrievalStatus status)
+    {
+        // ⚠️ 不知道总共多大时（网盘没回 Content-Length）**不给百分比**：
+        // 编一个出来会一路停在某个假数字上，比没有更糟。
+        switch (status.State)
+        {
+            case RetrievalState.Downloading:
+                Fill(
+                    "Downloading",
+                    status.Percent is { } percent ? $"下载中 {percent:0}%" : "下载中",
+                    bar: status.Percent is not null,
+                    percent: status.Percent ?? 0);
+                break;
+
+            case RetrievalState.Done:
+                // 搬完了就把条收掉：这一行接下来一直是「本机上有一条」的常态，
+                // 留着一根满格蓝条会把「正在下」那一批淹掉。
+                Fill("Done", "已下载", bar: false, percent: 100);
+                break;
+
+            case RetrievalState.Missing:
+                Fill("Missing", "未找到", bar: false, percent: 0);
+                break;
+
+            case RetrievalState.Failed:
+                Fill("Failed", "取回失败", bar: false, percent: 0);
+                break;
+
+            default:
+                Fill(string.Empty, string.Empty, bar: false, percent: 0, show: false);
+                break;
+        }
+    }
+
+    private void Fill(string kind, string text, bool bar, double percent, bool show = true)
+    {
+        RetrievalKind = kind;
+        RetrievalText = text;
+        RetrievalBarVisibility = bar ? Visibility.Visible : Visibility.Collapsed;
+        RetrievalLineVisibility = show ? Visibility.Visible : Visibility.Collapsed;
+        RetrievalPercent = percent;
+    }
+
+    private void Set<T>(ref T field, T value, [CallerMemberName] string? name = null)
+    {
+        if (EqualityComparer<T>.Default.Equals(field, value))
+        {
+            return;
+        }
+
+        field = value;
+
+        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
+    }
+
     /// <summary>
     /// 屏幕阅读器念这一行时念什么（A6，2026-10-16）。
     /// </summary>
@@ -113,6 +239,30 @@ public partial class SearchWindow : Window
     /// <summary>播放进度刷新。只在真的在播时跑。</summary>
     private readonly DispatcherTimer _playTicker;
 
+    /// <summary>
+    /// 「从归档层取回」的进度刷新（甲，2026-10-16）。只在有人正在取回时跑。
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ 与 <see cref="_playTicker"/> **分开两支**：两个的开关条件不一样
+    /// （一个看「在不在播」，一个看「在不在取回」），合成一支的话
+    /// 「正在取回但没在播」那一刻就没人刷进度了 —— 而那正是需要它的那一刻。
+    /// </remarks>
+    private readonly DispatcherTimer _retrievalTicker;
+
+    /// <summary>
+    /// 点了播放、正等取回完再自动播的那一条（没有就是 null）。
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ 存的是整条 <see cref="RecordingHit"/> 而不是它的 `EvidenceId`：
+    /// 用户点完之后翻页，那一行对象就不在屏上了，那时只剩一个 id 是**找不回路径**的。
+    /// </remarks>
+    private RecordingHit? _pendingPlayback;
+
+    /// <summary>
+    /// 当前倍速（默认 1X）。换条录像之后**不清回 1** —— 见 <see cref="OnSpeedChanged"/>。
+    /// </summary>
+    private double _speed = 1;
+
     /// <summary>用户正拖着进度条 —— 这期间不要用播放位置去覆盖他拖到的位置。</summary>
     private bool _seeking;
 
@@ -152,9 +302,19 @@ public partial class SearchWindow : Window
         _playTicker = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(250) };
         _playTicker.Tick += (_, _) => UpdatePlaybackPosition();
 
+        _retrievalTicker = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(250) };
+        _retrievalTicker.Tick += (_, _) => RefreshRetrieval();
+
+        // 倍速（需求方 2026-10-16）。⚠️ **先给默认值、再挂事件**：`SelectedIndex = 2`
+        // 自己就会触发一次 `SelectionChanged` —— 那次不是「用户改了倍速」，
+        // 挂早了日志里会凭空多一条「倍速改成 1X」，而且是在窗口刚建出来的时候。
+        SpeedCombo.SelectedIndex = 2;
+        SpeedCombo.SelectionChanged += OnSpeedChanged;
+
         Closed += (_, _) =>
         {
             _playTicker.Stop();
+            _retrievalTicker.Stop();
 
             // ⚠️ 必须收掉：MediaElement 拿着文件句柄，不收的话那个 mp4
             // 在窗口关掉之后仍然被占用 —— 用户会删不掉它。
@@ -228,19 +388,14 @@ public partial class SearchWindow : Window
 
         ResultsList.ItemsSource = slice.Select(h =>
         {
-            var note = BuildNote(h);
-
-            return new SearchResultRow(
+            var row = new SearchResultRow(
                 h.Entry.Waybill.Value,
-                // ⚠️ 末尾那个「 · 」是留给**右边那块分类**的分隔：分类现在是个色块，
-                // 装不进这串字里（2026-10-16）。
+                // ⚠️ 这一串**不带**那个「留给分类色块的分隔」了（2026-10-16）：
+                // 色块搬到了第 0 行与单号同行，这里再挂一个断在句尾的「 · 」就是多余。
                 $"{h.Entry.StartedAt.ToLocalTime():yyyy-MM-dd HH:mm:ss}"
-                + $" · {(int)h.Entry.Duration.TotalMinutes}:{h.Entry.Duration.Seconds:00}"
-                + " ·",
+                + $" · {(int)h.Entry.Duration.TotalMinutes}:{h.Entry.Duration.Seconds:00}",
                 BusinessLabel(h.BusinessType),
                 BusinessKind(h.BusinessType),
-                note,
-                note.Length > 0 ? Visibility.Visible : Visibility.Collapsed,
                 // 争议锁定（规格 §3.6.5）。判据用 `EvidenceLock.IsLocked`
                 // —— 与清理判定**同一个函数**，在界面里另写一份会漏掉
                 // 「认不出来的值当锁着」那一条。
@@ -249,7 +404,16 @@ public partial class SearchWindow : Window
                 h.IsVoided ? "已作废" : "作废",
                 h.Entry.EvidenceId,
                 h);
+
+            // ⚠️ 一渲染就把已经记着的状态摊上去：用户点了这条、等到「下载中」，
+            // 然后又翻页翻回来 —— 那时服务侧还在下，而这一行是新造的对象，
+            // 不补这一下它就从「下载中」退回空白，像是取回被取消了。
+            row.ApplyRetrieval(_host.Services.Retrieval.StatusOf(h.Entry.EvidenceId));
+
+            return row;
         }).ToList();
+
+        EnsureRetrievalTicker();
 
         CountText.Text = SearchForm.SummaryText(_hits.Count, _page, PageCount());
 
@@ -336,25 +500,11 @@ public partial class SearchWindow : Window
         _ => "Unknown",
     };
 
-    /// <summary>
-    /// 一条结果要不要带一句提醒。
-    /// </summary>
-    /// <remarks>
-    /// ⚠️ 「成品不在盘上」**必须说出来**：索引里有、文件没了，是两回事，
-    /// 而用户点播放只会看到一个黑框 —— 不说的话他无从判断是文件丢了、
-    /// 还是播放器坏了。
-    /// </remarks>
-    private string BuildNote(RecordingHit hit)
-    {
-        var path = PathOf(hit);
-
-        return File.Exists(path) ? string.Empty : "⚠️ 成品不在盘上（索引里有，文件没了）";
-    }
-
     /// <remarks>
     /// ⚠️ 走 <c>Resolve</c> 而**不是**拼某一个根（设计图 `_43` 的多磁盘）：
     /// 录像可能落在用户配的任意一块盘上，拼第一个根的话另一块盘上的那些
-    /// 会一律显示成「成品不在盘上」—— 而文件明明好好地在盘上。
+    /// 会一律**判成「本机没有」** —— 而文件明明好好地在盘上（甲落地之后，
+    /// 那一步的代价还不只是显示错：每次点播放都会白跑一趟归档层）。
     /// <para>
     /// 找不到时给活动根下的路径（**不是给空串**）：那个路径要拿去 <c>MediaElement</c>
     /// 与导出对话框用，而「一个不存在的路径」能让它们如实报错，
@@ -478,21 +628,159 @@ public partial class SearchWindow : Window
 
         var path = PathOf(row.Hit);
 
-        if (!File.Exists(path))
+        if (File.Exists(path))
         {
-            // 文件不在盘上就别把播放器指向一个不存在的东西 —— MediaElement
-            // 会静默失败，而那个黑框与「解码器缺失」长得一模一样。
-            Player.Close();
-            ShowPlaceholder($"成品不在盘上：{path}");
+            // ⚠️ 先把「等取回」那条划掉：用户已经改看这一条了，之前点的那一条
+            // 取回来之后**不许**再抢播放器。不划的话它会在下一次刷新时命中
+            // 「状态是已下载 且 是我在等的那条」而**把这一条从头重播一遍** ——
+            // 表现是「刚播起来又跳回 0 秒」。
+            _pendingPlayback = null;
+
+            PlayPath(path);
+
             return;
         }
 
+        // ══ 甲（2026-10-16 需求方裁定）：本机没有 → 从归档层取回来 → 自动播 ══
+        //
+        // ⚠️ 取回**不做扫描、也不看索引里存没存归档层路径**：归档层在哪是个**全局设置**
+        // （设置页那一档），索引里根本没有这一栏。`Start` 拿这条的 `Location` 去问
+        // 当前那一档「有没有这一条」，有就搬回来。
+        _host.Services.Retrieval.Start(row.Hit.Entry);
+
+        _pendingPlayback = row.Hit;
+
+        // ⚠️ 先别把播放器指向那个**还没落地**的文件 —— `MediaElement` 对不存在的东西
+        // 是静默失败，而那个黑框与「解码器缺失」长得一模一样。等变成「已下载」再指向它。
+        Player.Close();
+        ShowPlaceholder("这一条本机上没有，正在从归档层取回…");
+
+        row.ApplyRetrieval(_host.Services.Retrieval.StatusOf(row.Hit.Entry.EvidenceId));
+
+        EnsureRetrievalTicker();
+    }
+
+    /// <summary>把播放器指向一份**确实在盘上**的成品。</summary>
+    private void PlayPath(string path)
+    {
         Player.Source = new Uri(path);
+
+        // ⚠️ 换源之后**再按一次**倍速：`SpeedRatio` 是 `MediaElement` 上的一个
+        // 依赖属性，换源会不会把它带回 1 各版本不一样 —— 而「播到一半换了另一条，
+        // 倍速悄悄回 1X」正是用户最难说清的那种毛病。多赋一次值换这一点确定性，值。
+        Player.SpeedRatio = _speed;
+
         Player.Position = TimeSpan.Zero;
         PositionSlider.Value = 0;
         ShowPlayer();
         Player.Play();
         _playTicker.Start();
+    }
+
+    /// <summary>
+    /// 换了倍速（需求方 2026-10-16：0.25X / 0.5X / 1X / 1.5X / 2X）。
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ <b>换条录像之后倍速**保持**</b>（不清回 1X）：用户选了 2X 就是想连着快看几条，
+    /// 每换一条都替他按回 1X 的话，他得再点一次 —— 而这个动作在回放页上很频繁。
+    /// </remarks>
+    private void OnSpeedChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (SpeedCombo.SelectedItem is not ComboBoxItem item
+            || item.Tag is not string tag
+            || !double.TryParse(tag, NumberStyles.Float, CultureInfo.InvariantCulture, out var rate))
+        {
+            return;
+        }
+
+        _speed = rate;
+        Player.SpeedRatio = rate;
+
+        _host.Log(LogLevel.Info, "回放", $"倍速改成 {rate:0.##}X");
+    }
+
+    /// <summary>
+    /// 刷一遍当前页每一行的取回状态（甲）。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// ⚠️ <b>为什么是轮询而不是事件</b>：结果列表**每检索一次就整个重建**
+    /// （`ItemsSource` 换掉）。把事件接到行对象上的话，重建之后那些接线全成了野引用
+    /// —— 还在往没人看的对象上推。与「百度网盘上传」那一页
+    /// （`CloudUploadService.ProgressOf`）同一套形状。
+    /// </para>
+    /// <para>
+    /// ⚠️ 没有一条在下就把自己停掉：这个定时器不该在没人取回时空转一整天。
+    /// 启动点是「点了播放」与「渲染完一页」，两个都会在下一拍自动停。
+    /// </para>
+    /// </remarks>
+    private void RefreshRetrieval()
+    {
+        var downloading = false;
+
+        foreach (var row in ResultsList.Items.OfType<SearchResultRow>())
+        {
+            var status = _host.Services.Retrieval.StatusOf(row.EvidenceId);
+
+            row.ApplyRetrieval(status);
+
+            if (status.State == RetrievalState.Downloading)
+            {
+                downloading = true;
+            }
+        }
+
+        // ⚠️「我在等的那一条」**单独判，不挂在行上**：用户点了播放之后翻到下一页，
+        // 那一行就不在屏上了，而取回那趟还在跑 —— 收在循环里的话这一条永远等不到，
+        // 播放区会一直停在我写的那句「正在从归档层取回…」上。
+        SettlePendingPlayback();
+
+        if (!downloading)
+        {
+            _retrievalTicker.Stop();
+        }
+    }
+
+    /// <summary>我点了播放、正在等取回的那一条，到站了就播 / 到不了就改掉播放区那句话。</summary>
+    private void SettlePendingPlayback()
+    {
+        if (_pendingPlayback is not { } hit)
+        {
+            return;
+        }
+
+        var status = _host.Services.Retrieval.StatusOf(hit.Entry.EvidenceId);
+
+        switch (status.State)
+        {
+            case RetrievalState.Done:
+                // 搬回来了：接着播，用户点的那一下没有被丢掉。
+                _pendingPlayback = null;
+
+                PlayPath(PathOf(hit));
+                break;
+
+            case RetrievalState.Missing:
+            case RetrievalState.Failed:
+                // ⚠️ 取不回来时**必须把播放区那句「正在从归档层取回…」改掉**：
+                // 那句话是我自己写上去的，留着它就与行里的「未找到」同屏打脸，
+                // 而用户会一直等一个不会来的东西。
+                _pendingPlayback = null;
+
+                ShowPlaceholder(status.State == RetrievalState.Missing
+                    ? $"这一条在归档层上没有：{PathOf(hit)}"
+                    : $"这一条取不回来：{status.Message}");
+                break;
+        }
+    }
+
+    /// <summary>这个定时器没在跑就把它跑起来（跑着的话什么都不做）。</summary>
+    private void EnsureRetrievalTicker()
+    {
+        if (!_retrievalTicker.IsEnabled)
+        {
+            _retrievalTicker.Start();
+        }
     }
 
     private void OnPlayPause(object sender, RoutedEventArgs e)

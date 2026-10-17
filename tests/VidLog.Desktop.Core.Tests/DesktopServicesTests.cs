@@ -1028,11 +1028,17 @@ public class DesktopServicesTests
         //    直接影响下次扫码时那条重复提醒响不响，事后得能回答「谁改的」。
         Assert.Contains("\"作废\"", window, StringComparison.Ordinal);
 
-        // 数一数：锁定成功、锁定失败、回放失败、日历读不出日子、作废成功、作废失败
-        // —— **恰好六条**。
+        // ⑥ 倍速那一步也留痕（2026-10-16 补：回放条加了 0.25X–2X 五档）。
+        //    它不改录像、不改索引，**但改用户看到的时长** —— 事后对不上
+        //    「我明明看了十分钟」时，只有这条能说明当时是几倍速放的。
+        //    类别复用「回放」，所以上面 ③ 那行已经盖住了。
+        Assert.Contains("倍速改成", window, StringComparison.Ordinal);
+
+        // 数一数：锁定成功、锁定失败、回放失败、日历读不出日子、作废成功、作废失败、
+        // 倍速改成 —— **恰好七条**。
         // ⚠️ 这是个精确计数（原为 2）：少一条说明「成功/失败各一条」被删了，
         // 多一条说明有人新加了一个出口却没在这里登记。
-        Assert.Equal(6, System.Text.RegularExpressions.Regex.Matches(window, @"_host\.Log\(").Count);
+        Assert.Equal(7, System.Text.RegularExpressions.Regex.Matches(window, @"_host\.Log\(").Count);
     }
 
     /// <summary>

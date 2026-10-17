@@ -322,20 +322,22 @@
                                  SelectionChanged="OnResultSelected">
                             <ListBox.ItemTemplate>
                                 <DataTemplate>
-                                    <!-- ⚠️ **三行**：单号与【锁定】并排（第 0 行）、
-                                         时间·时长·分类块与【作废】并排（第 1 行）、
-                                         说明跨满整行（第 2 行）。
+                                    <!-- ⚠️ **两行**：分类块·单号·取回状态与【锁定】并排（第 0 行）、
+                                         时间·时长与【作废】并排（第 1 行）。
                                          2026-10-16 需求方点的那一条：时间与分类要跟【作废】**齐平**
                                          —— 原来它们和说明挤在同一个 StackPanel 里跨满整行，
                                          于是整行落在两颗按钮**下面**。
-                                         ⚠️ 说明那一行仍然跨满整行：这一栏本来就窄，
-                                         当年整块被按钮压掉约 50px，把「… · 类型未知」
-                                         折成了两行（2026-10-02 实测：「类型未 / 知」）。
-                                         第 1 行现在只到按钮左边，所以它**定长且不折行**
-                                         （`TextWrapping="NoWrap"` + 横向 StackPanel 不给折行机会）。 -->
+                                         ⚠️ 第 1 行只到按钮左边，所以它**定长且不折行**
+                                         （`TextWrapping="NoWrap"` + 横向 StackPanel 不给折行机会）。
+                                         当年整块跨满整行时被按钮压掉约 50px，
+                                         把「… · 类型未知」折成了两行（2026-10-02 实测：「类型未 / 知」）。
+                                         ⚠️ 2026-10-16 需求方砍掉了原来第 2 行那句
+                                         「⚠️ 成品不在盘上（索引里有，文件没了）」：
+                                         甲（点播放自动从归档层取回）落地之后这句话就成了错的
+                                         —— 本机没有不再是「出事了」，而是取回那一趟的**起点**。
+                                         取回走到哪一步改由第 0 行那颗进度条与状态字说（见下）。 -->
                                     <Grid Margin="2,4">
                                         <Grid.RowDefinitions>
-                                            <RowDefinition Height="Auto"/>
                                             <RowDefinition Height="Auto"/>
                                             <RowDefinition Height="Auto"/>
                                         </Grid.RowDefinitions>
@@ -344,30 +346,24 @@
                                             <ColumnDefinition Width="Auto"/>
                                         </Grid.ColumnDefinitions>
 
-                                        <TextBlock Grid.Row="0" Grid.Column="0"
-                                                   Text="{Binding Waybill}"
-                                                   FontWeight="SemiBold"
-                                                   Foreground="{DynamicResource TextPrimary}"/>
+                                        <!-- 第 0 行左格：分类色块 → 单号 → 取回状态（甲，2026-10-16）。
+                                             ⚠️ 三样**同一行**（需求方指定）。
+                                             ⚠️ 宽度这笔账（这一栏总共 330，减掉内边距与两颗按钮
+                                             只剩约 244）：分类块 48 + 单号 110 + 状态 106 = 264 上下，
+                                             所以条**只给 40**（它只是个「在动」的指示，不需要更长），
+                                             省下的全给单号 —— 单号截断了就认不出是哪一条，
+                                             而这个列表就是拿单号当主键的。
+                                             单号上仍留 `TextTrimming` 兜底（比真实单号更长的那些）。 -->
+                                        <Grid Grid.Row="0" Grid.Column="0">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="Auto"/>
+                                                <ColumnDefinition Width="*"/>
+                                                <ColumnDefinition Width="Auto"/>
+                                            </Grid.ColumnDefinitions>
 
-                                        <!-- 争议锁定（规格 §3.6.5）。⚠️ 它是**硬豁免**（§3.5.3②）：
-                                             锁上之后保留期到了也不会自动清理这一条。 -->
-                                        <Button Grid.Row="0" Grid.Column="1"
-                                                Content="{Binding LockLabel}"
-                                                Padding="8,2" Margin="6,0,0,0"
-                                                Style="{StaticResource SecondaryButton}"
-                                                Click="OnToggleLock"
-                                                Tag="{Binding EvidenceId}"/>
-
-                                        <!-- 第 1 行：时间 · 时长 · 分类块 -->
-                                        <StackPanel Grid.Row="1" Grid.Column="0"
-                                                    Orientation="Horizontal"
-                                                    Margin="0,4,0,0" VerticalAlignment="Center">
-                                            <TextBlock Text="{Binding Subtitle}"
-                                                       Style="{StaticResource Caption}"
-                                                       TextWrapping="NoWrap"
-                                                       VerticalAlignment="Center"/>
                                             <!-- 发货 / 退货那块（需求方 2026-10-16：**全程序统一为
-                                                 发货绿、退货橙**，与设置页「百度网盘上传」那枚徽章同色）。
+                                                 发货绿、退货橙**，与设置页「百度网盘上传」那枚徽章同色；
+                                                 同日又定：它摆在**单号前面**、与单号同行）。
                                                  ⚠️ 颜色走 `DataTrigger` + `DynamicResource`，
                                                  **不是**绑一支现成的笔刷：当场取到的是**冻结**笔刷，
                                                  开着程序换主题时这一块不会跟着变、也不报错
@@ -376,8 +372,9 @@
                                                  （橙，两套主题都达标），不另起一套红色。
                                                  `BusinessKind` 认不出来时留中性灰 —— 那时候
                                                  `BusinessLabel` 写的是「类型未知」，底色不该替它选边。 -->
-                                            <Border CornerRadius="{StaticResource RadiusTag}"
-                                                    Padding="6,1" Margin="6,0,0,0"
+                                            <Border Grid.Column="0"
+                                                    CornerRadius="{StaticResource RadiusTag}"
+                                                    Padding="6,1" Margin="0,0,6,0"
                                                     VerticalAlignment="Center">
                                                 <Border.Style>
                                                     <Style TargetType="Border">
@@ -417,7 +414,103 @@
                                                     </TextBlock.Style>
                                                 </TextBlock>
                                             </Border>
-                                        </StackPanel>
+
+                                            <TextBlock Grid.Column="1"
+                                                       Text="{Binding Waybill}"
+                                                       TextTrimming="CharacterEllipsis"
+                                                       FontWeight="SemiBold"
+                                                       Foreground="{DynamicResource TextPrimary}"/>
+
+                                            <StackPanel Grid.Column="2" Orientation="Horizontal"
+                                                        Margin="6,0,0,0" VerticalAlignment="Center"
+                                                        Visibility="{Binding RetrievalLineVisibility}">
+                                                <!-- ⚠️ 自画一个圆角模板：默认那支 `ProgressBar` 在
+                                                     两套主题下都是中间一道亮槽，与这一栏的卡片底不搭。
+                                                     只给 `Foreground`/`Background` 换色**不够** ——
+                                                     `CornerRadius` 要连模板一起接管。
+                                                     `PART_Track` / `PART_Indicator` 这两个名字是
+                                                     `ProgressBar` 自己按名找的，**不能改**。 -->
+                                                <ProgressBar Width="40" Height="6"
+                                                             VerticalAlignment="Center"
+                                                             Minimum="0" Maximum="100"
+                                                             Value="{Binding RetrievalPercent}"
+                                                             Visibility="{Binding RetrievalBarVisibility}"
+                                                             Foreground="{DynamicResource ProgressFill}"
+                                                             Background="{DynamicResource SurfaceAlt}"
+                                                             BorderThickness="0">
+                                                    <ProgressBar.Template>
+                                                        <ControlTemplate TargetType="ProgressBar">
+                                                            <Border Background="{TemplateBinding Background}"
+                                                                    CornerRadius="3"
+                                                                    SnapsToDevicePixels="True">
+                                                                <Grid>
+                                                                    <Border x:Name="PART_Track"/>
+                                                                    <Border x:Name="PART_Indicator"
+                                                                            HorizontalAlignment="Left"
+                                                                            CornerRadius="3"
+                                                                            Background="{TemplateBinding Foreground}"/>
+                                                                </Grid>
+                                                            </Border>
+                                                        </ControlTemplate>
+                                                    </ProgressBar.Template>
+                                                </ProgressBar>
+
+                                                <!-- 「下载中 42%」/「已下载」/「未找到」/「取回失败」。
+                                                     ⚠️ 颜色走 `DataTrigger` + `DynamicResource`
+                                                     （与上面那块发货/退货同一个理由：当场取到的
+                                                     画笔是**冻结**的，开着程序换主题不跟着变
+                                                     且不报错，`ThemePaletteTests` 守的就是它）。
+                                                     ⚠️ 「未找到」（归档层上没有）与「取回失败」
+                                                     （断网、限流、盘写不进去）**是两句不同的话**，
+                                                     但两套主题下都用同一个橙：它们都要求用户看一眼，
+                                                     而这一格放不下第三种色。 -->
+                                                <TextBlock Text="{Binding RetrievalText}"
+                                                           Margin="6,0,0,0" VerticalAlignment="Center">
+                                                    <TextBlock.Style>
+                                                        <Style TargetType="TextBlock"
+                                                               BasedOn="{StaticResource Caption}">
+                                                            <Setter Property="Foreground"
+                                                                    Value="{DynamicResource TextSecondary}"/>
+                                                            <Style.Triggers>
+                                                                <DataTrigger Binding="{Binding RetrievalKind}"
+                                                                             Value="Done">
+                                                                    <Setter Property="Foreground"
+                                                                            Value="{DynamicResource SuccessInk}"/>
+                                                                </DataTrigger>
+                                                                <DataTrigger Binding="{Binding RetrievalKind}"
+                                                                             Value="Missing">
+                                                                    <Setter Property="Foreground"
+                                                                            Value="{DynamicResource Warning}"/>
+                                                                </DataTrigger>
+                                                                <DataTrigger Binding="{Binding RetrievalKind}"
+                                                                             Value="Failed">
+                                                                    <Setter Property="Foreground"
+                                                                            Value="{DynamicResource Warning}"/>
+                                                                </DataTrigger>
+                                                            </Style.Triggers>
+                                                        </Style>
+                                                    </TextBlock.Style>
+                                                </TextBlock>
+                                            </StackPanel>
+                                        </Grid>
+
+                                        <!-- 争议锁定（规格 §3.6.5）。⚠️ 它是**硬豁免**（§3.5.3②）：
+                                             锁上之后保留期到了也不会自动清理这一条。 -->
+                                        <Button Grid.Row="0" Grid.Column="1"
+                                                Content="{Binding LockLabel}"
+                                                Padding="8,2" Margin="6,0,0,0"
+                                                Style="{StaticResource SecondaryButton}"
+                                                Click="OnToggleLock"
+                                                Tag="{Binding EvidenceId}"/>
+
+                                        <!-- 第 1 行：时间 · 时长。
+                                             ⚠️ 分类块（发货/退货）2026-10-16 已搬去第 0 行、
+                                             与单号同行。 -->
+                                        <TextBlock Grid.Row="1" Grid.Column="0"
+                                                   Text="{Binding Subtitle}"
+                                                   Style="{StaticResource Caption}"
+                                                   TextWrapping="NoWrap"
+                                                   Margin="0,4,0,0" VerticalAlignment="Center"/>
 
                                         <!-- 作废／重录（D1，2026-10-10）。⚠️ 与锁定**不同**：
                                              作废不动文件、也不豁免清理 —— 它只管
@@ -430,14 +523,6 @@
                                                 Click="OnToggleVoid"
                                                 Tag="{Binding EvidenceId}"/>
 
-                                        <!-- 重复单号 / 成品不在盘上这类，说明白。
-                                             ⚠️ 跨满整行，见上面那段为什么。 -->
-                                        <TextBlock Grid.Row="2" Grid.Column="0" Grid.ColumnSpan="2"
-                                                   Text="{Binding Note}"
-                                                   Style="{StaticResource Caption}"
-                                                   Margin="0,2,0,0"
-                                                   Foreground="{DynamicResource Warning}"
-                                                   Visibility="{Binding NoteVisibility}"/>
                                     </Grid>
                                 </DataTemplate>
                             </ListBox.ItemTemplate>
@@ -519,6 +604,7 @@
                     <ColumnDefinition Width="Auto"/>
                     <ColumnDefinition Width="*"/>
                     <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="Auto"/>
                 </Grid.ColumnDefinitions>
 
                 <Button x:Name="PlayButton" Grid.Column="0" Content="播放"
@@ -535,6 +621,22 @@
                 <TextBlock x:Name="TimeText" Grid.Column="2" VerticalAlignment="Center"
                            FontFamily="{StaticResource MonoFont}"
                            Foreground="White" Text="00:00:00 / 00:00:00"/>
+
+                <!-- 倍速（需求方 2026-10-16）。
+                     ⚠️ 走 `MediaElement.SpeedRatio`（WPF 自带的那个属性），
+                     **不引任何第三方播放器、也不接 ffmpeg**（I10：离线可用）。
+                     ⚠️ 摆在这一条的**最右**、而不是进度条与时间之间：这三格是定宽的，
+                     挤在中间那一格只会把进度条压短（进度条是这一条上唯一要紧的东西）。
+                     五档是需求方点名的，别自作主张加 0.75 之类。 -->
+                <ComboBox x:Name="SpeedCombo" Grid.Column="3" Width="80" Margin="12,0,0,0"
+                          VerticalAlignment="Center"
+                          AutomationProperties.Name="播放倍速">
+                    <ComboBoxItem Content="0.25X" Tag="0.25"/>
+                    <ComboBoxItem Content="0.5X" Tag="0.5"/>
+                    <ComboBoxItem Content="1X" Tag="1"/>
+                    <ComboBoxItem Content="1.5X" Tag="1.5"/>
+                    <ComboBoxItem Content="2X" Tag="2"/>
+                </ComboBox>
             </Grid>
         </Border>
     </Grid>
