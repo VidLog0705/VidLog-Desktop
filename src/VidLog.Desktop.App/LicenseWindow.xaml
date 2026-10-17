@@ -39,7 +39,7 @@
                 <TextBlock Style="{StaticResource SectionTitle}" Margin="0"
                            Text="这台电脑的机器码"/>
                 <TextBlock Style="{StaticResource Caption}" Margin="0,3,0,0" TextWrapping="Wrap"
-                           Text="把它发给提供方，拿到激活码后在【设置 → 许可】里粘进去。"/>
+                           Text="发给提供方换激活码，到【设置 → 许可】粘贴。"/>
                 <Grid Margin="0,10,0,0">
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="*"/>
@@ -79,10 +79,10 @@
                            Text="微信扫码加我们"/>
                 <TextBlock Style="{StaticResource BodySecondary}" TextWrapping="Wrap"
                            Margin="0,6,0,0"
-                           Text="把机器码发过来，我们给你一张试用码。也会发邮件：vidlog@126.com"/>
+                           Text="发来机器码换试用码；邮件 vidlog@126.com"/>
                 <TextBlock Style="{StaticResource Caption}" TextWrapping="Wrap"
                            Margin="0,10,0,0"
-                           Text="试用到期后不会再录新的视频，但本机已经保存的录像不受影响，照常可以检索、回放、导出。"/>
+                           Text="到期后不能再录；已有录像照常检索、回放、导出。"/>
             </StackPanel>
         </Grid>
 
