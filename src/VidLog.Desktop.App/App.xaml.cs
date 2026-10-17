@@ -225,6 +225,22 @@ public partial class App : System.Windows.Application
                     ["用途"] = StationRoles.Describe(_host.Settings.StationRole).Title,
                 });
 
+            // ── 首次运行的 7 天试用说明（需求方 2026-10-17）──────────────────
+            // ⚠️ 排在录制合规告知**之前**：这一张是「点不同意就退出程序」的那一步，
+            //    先问它；反过来的话用户会先看到一个关不掉流程的告知框，
+            //    再被问「同意还是退出」。
+            if (!await ShowLicenseNoticeOnceAsync(logger))
+            {
+                await ExitAsync();
+                return;
+            }
+
+            // ── 首次运行的录制合规告知（需求方 2026-10-17）──────────────────
+            // ⚠️ 挂在这里而不是「按下【开始录制】那一刻」：录制有两条入口
+            //    （主窗按钮、取景识码自动开录），两处各写一份迟早只补了一处 ——
+            //    而这条说的是「录别人之前要依法告知」，跟从哪个门进来无关。
+            await ShowRecordingNoticeOnceAsync(logger);
+
             // 开机自启动：**每次启动都把注册表重写一遍**。
             // ⚠️ 理由是路径会漂移 —— 程序被搬到别的目录之后，注册表里那条指向的是
             // 已经不存在的 exe，而重写是唯一能让它追上来的办法（几毫秒的事）。
@@ -255,6 +271,73 @@ public partial class App : System.Windows.Application
 
             Shutdown(1);
         }
+    }
+
+    /// <summary>
+    /// 首次运行时把「7 天试用 / 机器码 / 联系方式」当面说一次（需求方 2026-10-17）。
+    /// </summary>
+    /// <returns>
+    /// <see langword="true"/> = 用户点了【我已了解，同意】（或本来就同意过）；
+    /// <see langword="false"/> = 点了【不同意，退出程序】，调用方应当收掉程序。
+    /// </returns>
+    /// <remarks>
+    /// ⚠️ 这是**告知**，不是许可校验：点同意**不会**开始计时、也不解锁任何功能 ——
+    /// 试用窗口从「粘上试用码并激活」那一刻起算（有码试用，需求方 2026-10-17 定）。
+    /// 那个标志只用于「别再弹」，不参与许可判断。
+    /// </remarks>
+    private async Task<bool> ShowLicenseNoticeOnceAsync(FileLogger logger)
+    {
+        if (_host is null || _window is null || _host.Settings.LicenseNoticeAccepted)
+        {
+            return true;
+        }
+
+        logger.Log(LogLevel.Info, "许可", "首次运行：展示 7 天试用说明");
+
+        var window = new LicenseWindow(_host, LicenseWindowMode.FirstRun) { Owner = _window };
+
+        if (window.ShowDialog() != true)
+        {
+            logger.Log(LogLevel.Info, "许可", "用户不同意 7 天试用说明，程序退出");
+
+            return false;
+        }
+
+        await _host.SaveSettingsAsync(_host.Settings with { LicenseNoticeAccepted = true });
+
+        return true;
+    }
+
+    /// <summary>
+    /// 首次运行时把「录制前请依法告知被录制人员」当面说一次（需求方 2026-10-17）。
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ 这是**告知**，不是许可校验，也不挡任何功能 —— 用户点一下【确定】就过去了。
+    /// 那个标志只用于「别再弹」，它不参与许可判断，也不许被别处当成「用户同意了某件事」
+    /// 的证据（见 <c>AppSettings.RecordingNoticeAccepted</c>）。
+    /// </remarks>
+    private async Task ShowRecordingNoticeOnceAsync(FileLogger logger)
+    {
+        if (_host is null || _window is null || _host.Settings.RecordingNoticeAccepted)
+        {
+            return;
+        }
+
+        logger.Log(LogLevel.Info, "启动", "首次运行：展示录制合规告知");
+
+        MessageBox.Show(
+            _window,
+            "本软件会录制画面与声音，录像中可能包含他人的人脸与声音。\n\n"
+            + "请在录制区域显著位置张贴「视频监控区域」提示标识，向被录制人员告知"
+            + "处理目的、方式、范围与保存期限，并依法取得同意。\n\n"
+            + "这是您作为录像管理者的法定义务，本软件不能替您履行。"
+            + "完整说明见《服务条款》第五条与《隐私政策》第六条（安装目录 licenses 文件夹）。",
+            "录制前请依法告知被录制人员",
+            MessageBoxButton.OK,
+            MessageBoxImage.Information);
+
+        await _host.SaveSettingsAsync(_host.Settings with { RecordingNoticeAccepted = true });
+        logger.Log(LogLevel.Info, "启动", "录制合规告知已确认，以后不再提示");
     }
 
     /// <summary>

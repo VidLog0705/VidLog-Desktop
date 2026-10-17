@@ -98,6 +98,11 @@ public sealed class EntitlementStore
 /// <param name="Degraded">机器码有降级（某一段读不到）。</param>
 /// <param name="IsTrial">这是**试用**而不是买断（规格 §6）。</param>
 /// <param name="TrialRemaining">试用还剩多久（<see cref="IsTrial"/> 为假时是 <see langword="null"/>）。</param>
+/// <param name="TrialEndsAt">
+/// 试用到期的那一**刻**（需求方 2026-10-17 要的「天-时-分-秒」倒计时靠它现算）。
+/// <see langword="null"/> = 不是试用 / 没有绝对时刻（老构造点与测试用
+/// <see cref="TrialRemaining"/> 那个快照就够）。
+/// </param>
 /// <remarks>
 /// ⚠️ <b>试用中借用 <see cref="Activated"/> 的语义（<c>true</c> + <c>Slots = 4</c>），
 /// 这是刻意的。</b> 判「能不能录」的是
@@ -123,7 +128,8 @@ public sealed record LicenseStatus(
     string MachineCode,
     bool Degraded,
     bool IsTrial = false,
-    TimeSpan? TrialRemaining = null)
+    TimeSpan? TrialRemaining = null,
+    DateTimeOffset? TrialEndsAt = null)
 {
     /// <summary>能不能录 —— **只挡住新录**（L5）。</summary>
     public bool CanRecord => Activated;
@@ -135,19 +141,40 @@ public sealed record LicenseStatus(
     /// ⚠️ 放在这里而不是各写一份：主窗导航栏与许可页都要显示它，
     /// 而仓规不许同一个说法有两份（<c>MainWindow.xaml.cs</c> 里那条注释点名过这件事）。
     /// </remarks>
-    public string TrialRemainingText
-    {
-        get
-        {
-            if (TrialRemaining is not { } left || left <= TimeSpan.Zero)
-            {
-                return "不到 1 小时";
-            }
+    public string TrialRemainingText => Countdown(RemainingAt(DateTimeOffset.Now));
 
-            return left.TotalDays >= 1
-                ? $"{(int)left.TotalDays} 天 {left.Hours} 小时"
-                : $"{Math.Max(1, (int)Math.Ceiling(left.TotalHours))} 小时";
+    /// <summary>
+    /// 到 <paramref name="now"/> 这一刻还剩多久。
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ 有 <see cref="TrialEndsAt"/> 时**按那一刻现算** —— 界面每秒刷一次，
+    /// 拿启动时的 <see cref="TrialRemaining"/> 快照会让倒计时停在原地。
+    /// 没有绝对时刻时才退回那个快照（老构造点 / 测试）。
+    /// </remarks>
+    public TimeSpan? RemainingAt(DateTimeOffset now) =>
+        TrialEndsAt is { } ends ? ends - now : TrialRemaining;
+
+    /// <summary>
+    /// 倒计时那一段文字：`天-时-分-秒`（需求方 2026-10-17 裁定）。
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ 还剩不到一天时**照样写「0 天」**：少了「天」那一段，读的人会以为
+    /// 那串 `05:12:33` 是「5 小时」还是「5 分钟」要靠猜。
+    /// 已经用完（或时钟被往回拨过头）时给全零，不给负数。
+    /// </remarks>
+    public static string Countdown(TimeSpan? left)
+    {
+        if (left is not { } span)
+        {
+            return "不到 1 小时";
         }
+
+        if (span <= TimeSpan.Zero)
+        {
+            return "0 天 00:00:00";
+        }
+
+        return $"{(int)span.TotalDays} 天 {span.Hours:00}:{span.Minutes:00}:{span.Seconds:00}";
     }
 
     /// <summary>
@@ -171,19 +198,22 @@ public sealed record LicenseStatus(
     /// 与降级警告）由调用点自己接在后面。
     /// </para>
     /// </remarks>
-    public string SummaryText
-    {
-        get
-        {
-            if (IsTrial && Activated)
-            {
-                return $"✅ 试用中：还剩 {TrialRemainingText}，可接入 {Slots} 台手机端。";
-            }
+    public string SummaryText => SummaryTextAt(DateTimeOffset.Now);
 
-            return Activated
-                ? $"✅ 已激活：允许接入 {Slots} 台手机端。"
-                : $"⛔ {FailureReason}允许接入 0 台手机端。";
+    /// <summary>
+    /// 同上，但按 <paramref name="now"/> 这一刻算试用倒计时
+    /// （界面每秒刷一次就走这条；测试也走这条，才钉得住那个数）。
+    /// </summary>
+    public string SummaryTextAt(DateTimeOffset now)
+    {
+        if (IsTrial && Activated)
+        {
+            return $"✅ 试用中：还剩 {Countdown(RemainingAt(now))}，可接入 {Slots} 台手机端。";
         }
+
+        return Activated
+            ? $"✅ 已激活：允许接入 {Slots} 台手机端。"
+            : $"⛔ {FailureReason}允许接入 0 台手机端。";
     }
 }
 
@@ -198,7 +228,8 @@ public sealed record LicenseStatus(
 /// </para>
 /// <para>
 /// ⚠️ 「运行期间冻结」是**刻意的**：录到一半许可过期了，不该把这一段掐掉。
-/// 下次启动才生效。
+/// 唯一的例外是 <see cref="EndTrialNow"/>（需求方 2026-10-17：到期后不能再录新的）——
+/// 它由主窗在**这一场录完之后**调用，而且只往「收」的方向翻，不碰正在录的段。
 /// </para>
 /// </remarks>
 public sealed class LicenseService
@@ -234,7 +265,10 @@ public sealed class LicenseService
         _status = new LicenseStatus(false, 0, "还没有激活。", identity.Display, identity.IsDegraded);
     }
 
-    /// <summary>当前状态。启动时算一次之后**不再变**（L7）。</summary>
+    /// <summary>
+    /// 当前状态。启动时算一次，之后只在两处变：用户激活成功，
+    /// 或者 <see cref="EndTrialNow"/>（运行中试用到期）。
+    /// </summary>
     public LicenseStatus Status => _status;
 
     /// <summary>本机的机器标识（界面要拿它显示机器码）。</summary>
@@ -306,15 +340,47 @@ public sealed class LicenseService
                 _identity.Display, _identity.IsDegraded, IsTrial: true, TrialRemaining: TimeSpan.Zero);
         }
 
-        var state = _trial.Evaluate(_now(), fallbackFirstRunAt);
+        var now = _now();
+        var state = _trial.Evaluate(now, fallbackFirstRunAt);
 
         return state.Phase == TrialPhase.Running
             ? new LicenseStatus(
                 true, LicensePayload.TrialSlots, null,
-                _identity.Display, _identity.IsDegraded, IsTrial: true, TrialRemaining: state.Remaining)
+                _identity.Display, _identity.IsDegraded, IsTrial: true,
+                TrialRemaining: state.Remaining,
+                // 界面要按「到期那一刻」现算天-时-分-秒，快照不够（它不会动）。
+                TrialEndsAt: now + state.Remaining)
             : new LicenseStatus(
                 false, 0, "试用已结束。",
                 _identity.Display, _identity.IsDegraded, IsTrial: true, TrialRemaining: TimeSpan.Zero);
+    }
+
+    /// <summary>
+    /// 运行中试用到期：把状态翻成「试用已结束」（需求方 2026-10-17）。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// ⚠️ <b>这是 L7「运行期冻结」唯一的例外，而且只许往「收」的方向翻</b>：
+    /// 到期不会掐断**正在录**的那一场（协调器只在开始工作的两个入口看许可），
+    /// 但之后新的录制与新的手机接入会被挡住 —— 那正是需求要的。
+    /// </para>
+    /// <para>
+    /// 调用点是主窗那个每秒的计时器：录着的时候先不翻，等这一场结束再翻，
+    /// 这样「录制结束才弹窗」与「弹完就不能再录」两件事是同一个时刻。
+    /// </para>
+    /// </remarks>
+    public void EndTrialNow()
+    {
+        if (!_status.IsTrial || !_status.Activated)
+        {
+            return;
+        }
+
+        _status = new LicenseStatus(
+            false, 0, "试用已结束。", _identity.Display, _identity.IsDegraded,
+            IsTrial: true, TrialRemaining: TimeSpan.Zero);
+
+        _logger.Log(LogLevel.Info, "许可", "运行中试用到期：新的录制与接入已停止（已有的录像照常可查）");
     }
 
     /// <summary>
@@ -341,6 +407,10 @@ public sealed class LicenseService
             return _status with { FailureReason = check.FailureReason };
         }
 
+        // ⚠️ **在覆盖之前**读一次旧记录：下面那句 Save 会把「上一次激活」抹掉，
+        //    而试用起算的兜底要靠它（见 `TrialAnchor`）。
+        var previous = await _store.LoadAsync(cancellationToken);
+
         var entitlement = new Entitlement
         {
             Code = code.Trim(),
@@ -349,17 +419,22 @@ public sealed class LicenseService
             IssuedAt = new DateTimeOffset(
                 check.Payload.Issued.ToDateTime(TimeOnly.MinValue), TimeSpan.Zero),
             MachineCode = _identity.Display,
-            ActivatedAt = DateTimeOffset.Now,
+            // ⚠️ 走注入的时钟（`_now`），不是 `DateTimeOffset.Now`：
+            //    它是试用起算的兜底（`TrialAnchor`），必须和 `Evaluate` 用同一个时间源。
+            ActivatedAt = _now(),
         };
 
         await _store.SaveAsync(entitlement, cancellationToken);
 
         if (check.Payload.IsTrial)
         {
-            // ⚠️ 这里传 `null`（= 真的首次）：**激活这一刻正是试用起算的那一刻**。
-            //    而机器上如果**已经**有试用记录，`Evaluate` 会取其中最早的 ——
-            //    所以「同一台机器再签一个试用码」不会重置窗口，只会接着用剩下的那段。
-            _status = EvaluateTrial(check.Payload, fallbackFirstRunAt: null);
+            // ⚠️ 起算兜底：真的首次传 `null`（激活这一刻正是起算那一刻）；
+            //    而这台机器**以前激活过试用码**时，用那次的激活时刻兜底。
+            //    不兜的话有一个洞：把四处试用记录删掉、再把**同一张旧码**粘一次，
+            //    就能重新开始 168 小时（2026-10-17 查实）。
+            //    机器上如果四处记录还在，`Evaluate` 取其中最早的，兜底根本用不上 ——
+            //    「同一台机器再签一个试用码」照旧不重置，只接着用剩下的那段。
+            _status = EvaluateTrial(check.Payload, fallbackFirstRunAt: TrialAnchor(previous));
 
             _logger.Log(LogLevel.Info, "许可",
                 $"试用码激活：{_status.FailureReason ?? $"开始 7 天试用，机位 {_status.Slots}"}",
@@ -374,5 +449,33 @@ public sealed class LicenseService
         _logger.Log(LogLevel.Info, "许可", $"激活成功：{check.Payload.Slots} 机位");
 
         return _status;
+    }
+
+    /// <summary>
+    /// 这台机器上「上一次激活过试用码」的时刻 —— 给 <see cref="TrialRecordStore.Evaluate"/>
+    /// 当四处记录都读不到时的起算兜底。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// ⚠️ <b>不兜的话，试用只防君子</b>：把四处试用记录删掉、再把同一张旧试用码
+    /// 粘一次，`Evaluate` 会把它当成首次运行，重新给 168 小时（2026-10-17 查实）。
+    /// </para>
+    /// <para>
+    /// ⚠️ 判据是**旧记录里那串码自己验得过且是试用码**，不是「旧记录存在」：
+    /// 机器上如果原来是一张终身码，就**不该**拿它的激活时刻去扣试用窗口。
+    /// 旧记录验不过（换过硬件 / 手改过文件）时返回 <see langword="null"/>，
+    /// 与没有旧记录同一个结果 —— 那时能挡的只有四处记录本身。
+    /// </para>
+    /// </remarks>
+    private DateTimeOffset? TrialAnchor(Entitlement? previous)
+    {
+        if (previous is not { Code.Length: > 0 } || previous.ActivatedAt == default)
+        {
+            return null;
+        }
+
+        var prior = _verifier.Verify(previous.Code, _identity);
+
+        return prior.Ok && prior.Payload is { IsTrial: true } ? previous.ActivatedAt : null;
     }
 }

@@ -736,8 +736,46 @@ public class LicenseStatusTextTests
             activated: true, slots: 4, trial: true,
             remaining: TimeSpan.FromDays(3) + TimeSpan.FromHours(4)).SummaryText;
 
-        Assert.Equal("✅ 试用中：还剩 3 天 4 小时，可接入 4 台手机端。", text);
+        Assert.Equal("✅ 试用中：还剩 3 天 04:00:00，可接入 4 台手机端。", text);
         Assert.DoesNotContain("已激活", text, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void 倒计时按到期那一刻现算_不是启动时的快照()
+    {
+        // 需求方 2026-10-17：主窗导航栏要「天-时-分-秒」一直走。
+        // ⚠️ `TrialRemaining` 是**启动那一刻**的快照，拿它渲染的话倒计时会停在原地 ——
+        //    有 `TrialEndsAt` 时必须按它现算。
+        var start = new DateTimeOffset(2026, 10, 17, 8, 0, 0, TimeSpan.FromHours(8));
+
+        var status = new LicenseStatus(
+            true, 4, null, "机器码-占位", Degraded: false,
+            IsTrial: true,
+            TrialRemaining: TimeSpan.FromDays(7),
+            TrialEndsAt: start + TimeSpan.FromDays(7));
+
+        Assert.Equal(
+            "✅ 试用中：还剩 7 天 00:00:00，可接入 4 台手机端。",
+            status.SummaryTextAt(start));
+
+        Assert.Equal(
+            "✅ 试用中：还剩 6 天 23:59:58，可接入 4 台手机端。",
+            status.SummaryTextAt(start.AddSeconds(2)));
+    }
+
+    [Fact]
+    public void 倒计时用完时给全零_不给负数()
+    {
+        var start = new DateTimeOffset(2026, 10, 17, 8, 0, 0, TimeSpan.FromHours(8));
+
+        var status = new LicenseStatus(
+            true, 4, null, "机器码-占位", Degraded: false,
+            IsTrial: true,
+            TrialRemaining: TimeSpan.FromHours(1),
+            TrialEndsAt: start);
+
+        Assert.Contains("还剩 0 天 00:00:00", status.SummaryTextAt(start.AddHours(2)), StringComparison.Ordinal);
+        Assert.DoesNotContain("-", status.SummaryTextAt(start.AddHours(2)), StringComparison.Ordinal);
     }
 
     [Fact]

@@ -1,0 +1,71 @@
+﻿VidLog 工位录像　第三方组件与开源许可声明
+
+版本：1.0　　日期：2026-10-17
+运营者：灯塔市蒂妃澜服装店
+联系邮箱：vidlog@126.com　　联系电话：18553528977
+
+本软件在运行中使用下列第三方组件。各组件的著作权归其各自权利人所有，
+并按各自的许可条款提供给您。
+
+
+一、FFmpeg（随包附带的 tools\ffmpeg.exe）
+────────────────────────────────────────────────────────────
+
+随包附带的 FFmpeg 可执行文件是一个启用了 GPL 组件的构建：
+
+    版本：N-126574-g912208af28-20260915
+    构建参数含：--enable-gpl --enable-version3 --enable-libx264
+    （完整构建参数可用 ffmpeg -version 查看）
+
+因此该构建按 GNU 通用公共许可证第 3 版（GPLv3）分发。
+许可正文见同目录下的 FFmpeg-GPLv3.txt，或访问 https://www.gnu.org/licenses/gpl-3.0.html
+
+对应源代码的获取方式：本软件仅以可执行文件形式随包分发 FFmpeg，
+不修改其源代码。您可以：
+
+  1. 在 https://ffmpeg.org/download.html 与各外部库（x264 等）的官方仓库
+     取得同一版本的上游源代码；
+  2. 或通过上面的联系邮箱/电话向我们索取该构建对应的源代码副本
+     （我们自收到请求起 3 年内提供，仅收取介质与邮寄成本）。
+
+FFmpeg 项目主页：https://ffmpeg.org/
+
+
+二、.NET 运行时与基础类库
+────────────────────────────────────────────────────────────
+
+本软件为自包含发布，随包附带 .NET 9 运行时（含 WPF 桌面运行时）。
+许可：MIT License
+https://github.com/dotnet/runtime/blob/main/LICENSE.TXT
+
+其中 System.Speech、System.Management、
+System.Security.Cryptography.ProtectedData 为 Microsoft 发布的 NuGet 组件，
+按 MIT 许可分发。
+
+
+三、Microsoft Edge WebView2 Runtime
+────────────────────────────────────────────────────────────
+
+安装程序会在本机尚未安装时，静默安装微软官方的 WebView2 运行时
+（MicrosoftEdgeWebView2RuntimeInstallerX64.exe），该运行时不属于本软件的一部分，
+按微软的软件许可条款提供。
+产品说明：https://learn.microsoft.com/microsoft-edge/webview2/
+
+本软件中的 Microsoft.Web.WebView2 SDK 用于内嵌百度网盘登录页。
+
+
+四、ZXing.Net
+────────────────────────────────────────────────────────────
+
+用于识别面单条码 / 二维码。
+许可：MIT License
+https://github.com/micjahn/ZXing.Net
+
+
+五、说明
+────────────────────────────────────────────────────────────
+
+上述组件均以「现状」提供，其各自的权利人不对本软件作出任何担保。
+本软件自身的商业许可与上述开源许可相互独立；您对本软件的使用限制
+（见《VidLog 工位录像 服务条款》第三条）不适用于上述开源组件，
+您对上述组件的权利以各自的许可条款为准。

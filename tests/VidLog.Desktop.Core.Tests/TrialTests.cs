@@ -328,6 +328,81 @@ public class TrialTests
     }
 
     [Fact]
+    public async Task 四处记录被删掉之后_再粘同一张旧码_不重置()
+    {
+        // ⚠️ 2026-10-17 查实的洞：把四处试用记录删干净、再把**同一张旧试用码**粘一次，
+        //    `Evaluate` 会把它当首次运行、重新给 168 小时 —— 「试用仅一次」就成了空话。
+        //    修法在 `LicenseService.TrialAnchor`：旧记录里那串码验得过而且是试用码时，
+        //    拿它当初的激活时刻兜底。
+        var (signing, _) = NewKeyPair();
+        var machine = Machine();
+
+        var licensePath = Path.Combine(
+            Path.GetTempPath(), "vidlog-trial-license-" + Guid.NewGuid().ToString("N"), "license.json");
+
+        var locations = Four();
+        var now = T0;
+
+        var code = Issue(signing, machine, trial: true, serial: 7);
+
+        var (service, _) = NewService(signing, machine, () => now, licensePath, locations);
+        var first = await service.ActivateAsync(code);
+
+        Assert.Equal(TrialRecordStore.Window, first.TrialRemaining);
+
+        // 用户（或「清一下缓存」的人）把四处记录全删了。
+        foreach (var location in locations)
+        {
+            location.Record = null;
+        }
+
+        // 过了 100 小时，同一张码再粘一次。
+        now = T0.AddHours(100);
+
+        var (reopened, _) = NewService(signing, machine, () => now, licensePath, locations);
+        var again = await reopened.ActivateAsync(code);
+
+        // ⚠️ 不是 168（重置成功），也不是「用不了」—— 是接着扣：68。
+        Assert.Equal(TimeSpan.FromHours(68), again.TrialRemaining);
+        Assert.True(again.Activated);
+    }
+
+    [Fact]
+    public async Task 运行中到期_当场翻成已结束_新的录制被挡()
+    {
+        // 需求方 2026-10-17：录着的时候不掐断，但这一场结束之后不能再开新的。
+        var (signing, _) = NewKeyPair();
+        var machine = Machine();
+        var (service, _) = NewService(signing, machine, () => T0);
+
+        await service.ActivateAsync(Issue(signing, machine, trial: true));
+
+        Assert.True(service.Status.Activated);
+        Assert.Equal(LicensePayload.TrialSlots, service.Status.Slots);
+
+        service.EndTrialNow();
+
+        Assert.False(service.Status.Activated);
+        Assert.Equal(0, service.Status.Slots);
+        Assert.Equal("试用已结束。", service.Status.FailureReason);
+    }
+
+    [Fact]
+    public async Task 运行中到期那个方法_对终身码是空操作()
+    {
+        var (signing, _) = NewKeyPair();
+        var machine = Machine();
+        var (service, _) = NewService(signing, machine, () => T0);
+
+        await service.ActivateAsync(Issue(signing, machine, trial: false, slots: 4));
+
+        service.EndTrialNow();
+
+        Assert.True(service.Status.Activated);
+        Assert.Equal(4, service.Status.Slots);
+    }
+
+    [Fact]
     public async Task 试用窗口用完_重启后说试用已结束_而且机位归零()
     {
         var (signing, _) = NewKeyPair();

@@ -38,6 +38,7 @@ using VidLog.Desktop.Core.Commands;
 using VidLog.Desktop.Core.Configuration;
 using VidLog.Desktop.Core.Diagnostics;
 using VidLog.Desktop.Core.Labels;
+using VidLog.Desktop.Core.License;
 using VidLog.Desktop.Core.Live;
 using VidLog.Desktop.Core.Media;
 using VidLog.Desktop.Core.Punches;
@@ -96,6 +97,12 @@ public partial class MainWindow : Window
     /// </remarks>
     private readonly DispatcherTimer _clockTicker;
 
+    /// <summary>试用到期了、但这一场还在录 —— 等它收尾再提示（需求方 2026-10-17）。</summary>
+    private bool _trialExpiryPending;
+
+    /// <summary>到期提示已经处理过（一次运行只弹一次）。</summary>
+    private bool _trialExpiryShown;
+
     public MainWindow(AppHost host)
     {
         _host = host;
@@ -120,6 +127,13 @@ public partial class MainWindow : Window
             // 而磁盘余量、在线机位数在空闲时照样在变（`_clockTicker` 自己那条
             // 「不该在空闲时停住」的理由，这里同样成立）。
             UpdateStatusBar();
+
+            // ⚠️ 试用那句要**每秒重算**：`SummaryText` 里那个倒计时按 `TrialEndsAt`
+            //    现算，不重刷的话它会停在启动时那一刻（导航栏与备份主机那屏都要）。
+            ShowStatusSummaries();
+
+            // 运行中试用到期（需求方 2026-10-17）：录着的时候等这一场收尾，空闲时当场提示。
+            CheckTrialExpiry();
 
             // ⚠️ 相机回来之后自动重探（补上 §3.1.7「改了下次开始工作才生效」之外的
             // 那一种：用户什么都没改，是相机自己回来了）。**不 await** ——
@@ -308,6 +322,106 @@ public partial class MainWindow : Window
         //    （同一次调用产出、同一个来源）。2026-10-03 之前这里没有这一行，
         //    于是「备份主机」形态下**看不到试用剩余 / 已到期**。
         BackupLicenseText.Text = StatusSummaries.License(_host);
+    }
+
+    /// <summary>
+    /// 运行中试用到期（需求方 2026-10-17）。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// 需求方裁定的时机是「**运行中，但录制结束时弹**」：到期那一刻如果还在录，
+    /// 这一场照常收尾（L7 不掐断正在录的段），等它结束再翻状态、再提示。
+    /// 空闲时到期就当场提示。
+    /// </para>
+    /// <para>
+    /// ⚠️ 翻状态（<see cref="LicenseService.EndTrialNow"/>）与弹窗**在同一刻**做：
+    /// 先翻、再弹，用户点完【关闭】回去按录制，会被那句「试用已结束」挡住 ——
+    /// 那是需求要的；反过来先弹后翻的话，点完还录得进去。
+    /// </para>
+    /// </remarks>
+    private void CheckTrialExpiry()
+    {
+        if (_trialExpiryShown)
+        {
+            return;
+        }
+
+        var license = _host.Services.License;
+
+        if (license is null)
+        {
+            return;
+        }
+
+        var status = license.Status;
+
+        if (!status.IsTrial || !status.Activated || status.TrialEndsAt is not { } ends)
+        {
+            return;
+        }
+
+        if (!_trialExpiryPending)
+        {
+            if (DateTimeOffset.Now < ends)
+            {
+                return;
+            }
+
+            _trialExpiryPending = true;
+
+            _host.Logger.Log(LogLevel.Info, "许可",
+                _host.Coordinator.CurrentWaybill is null
+                    ? "运行中试用到期"
+                    : "运行中试用到期，等这一场录完再提示");
+        }
+
+        // 还在录（有单号在跑）⇒ 等这一场收尾，别在录的时候弹一个模态框。
+        if (_host.Coordinator.CurrentWaybill is not null)
+        {
+            return;
+        }
+
+        _trialExpiryPending = false;
+        _trialExpiryShown = true;
+
+        license.EndTrialNow();
+        ShowStatusSummaries();
+        UpdateStatusBar();
+
+        ShowTrialEndedDialog();
+    }
+
+    /// <summary>「感谢陪伴 / 是否购买 / 不买就明说不能录了」那两句话。</summary>
+    private void ShowTrialEndedDialog()
+    {
+        _host.Logger.Log(LogLevel.Info, "许可", "弹出试用到期提示");
+
+        var hours = TrialRecordStore.Window.TotalHours;
+
+        var buy = MessageBox.Show(
+            this,
+            $"试用期已结束。感谢您 {hours:0} 小时的陪伴。\n\n是否购买激活码继续使用？",
+            "试用已结束",
+            MessageBoxButton.YesNo,
+            MessageBoxImage.Question);
+
+        if (buy == MessageBoxResult.Yes)
+        {
+            _host.Logger.Log(LogLevel.Info, "许可", "试用到期：用户选择购买（展示机器码与二维码）");
+
+            new LicenseWindow(_host, LicenseWindowMode.Purchase) { Owner = this }.ShowDialog();
+
+            return;
+        }
+
+        _host.Logger.Log(LogLevel.Info, "许可", "试用到期：用户暂不购买，继续用已有录像");
+
+        MessageBox.Show(
+            this,
+            "无法继续录制新的视频。\n\n本机已经保存的录像不受影响，照常可以检索、回放、导出。",
+            "试用已结束",
+            MessageBoxButton.OK,
+            MessageBoxImage.Information);
     }
 
     /// <summary>

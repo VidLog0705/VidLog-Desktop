@@ -84,6 +84,26 @@ Compression=lzma2/max
 SolidCompression=yes
 WizardStyle=modern
 
+; ── 安装前必须同意的许可协议（需求方 2026-10-17）────────────────────────
+; 这是 Inno **内置**的许可页：向导第一步就是它，用户不选【我接受】时
+; 「下一步」是灰的，装不下去；选【我不接受】由下面 [Code] 那一段直接退出。
+;
+; ⚠️ Inno 的 LicenseFile **只认一个文件**（写了多个只有最后一个生效，而且不报错）。
+;    所以《服务条款》与《隐私政策》是**合成一份**的：
+;      installer\legal\许可协议.txt  ← 改条款就改这个文件，它是唯一底稿
+;    两份 Markdown（桌面上的初稿）只用于校对，改了 txt 之后不要再去改它们。
+;
+; ⚠️ 这个文件必须是 UTF-8 **带 BOM**：不带 BOM 时 Inno 按 ANSI 读，
+;    许可页会整篇乱码 —— 而编译器一个字都不说。
+LicenseFile=legal\许可协议.txt
+
+; ── 向导语言 ──────────────────────────────────────────────────────────
+; 不写 [Languages] 时整个安装向导是**英文**的（Inno 的默认行为），
+; 而下面的任务、状态提示全是中文 —— 一份中英混排的向导。
+; ⚠️ 这个 .isl 取自 Inno 官方仓库；用 6.4.3 编过探针，能编。
+[Languages]
+Name: "chinesesimp"; MessagesFile: "languages\ChineseSimplified.isl"
+
 [Tasks]
 Name: "desktopicon"; Description: "在桌面上放一个快捷方式"; \
     GroupDescription: "附加任务："
@@ -105,6 +125,17 @@ Source: "{#StageDir}\*"; DestDir: "{app}"; \
 ;    连拷都不拷（省一次 200MB 的磁盘写），更不会去跑它的安装器。
 Source: "{#WebView2Runtime}"; DestDir: "{tmp}"; DestName: "MicrosoftEdgeWebView2RuntimeInstallerX64.exe"; \
     Flags: deleteafterinstall; Check: not IsWebView2RuntimeInstalled
+
+; ── 法律文本随程序常驻（需求方 2026-10-17）──────────────────────────────
+; 许可协议在安装时已经给用户看过一遍，但那是**装之前**看的、看完就没了；
+; 用户日后要回看条款、或者要看 FFmpeg 的 GPLv3 正文与源码获取方式，
+; 得有一个装完之后还在的地方 —— 就是这里。
+;
+; ⚠️ 进 `{app}\licenses` 而不进 `{app}` 根：根目录是程序自己的地盘，
+;    `{#StageDir}\*` 那一行还会整个覆盖一遍。
+; ⚠️ 这里**不许**出现「安装后才生成」之类的 [Code] 逻辑：少一份文本，
+;    GPLv3 的分发义务就没履行（见 第三方组件声明.txt 第一条）。
+Source: "legal\*"; DestDir: "{app}\licenses"; Flags: ignoreversion
 
 [Icons]
 Name: "{group}\VidLog 工位录像"; Filename: "{app}\VidLog.Desktop.App.exe"
@@ -179,7 +210,7 @@ Filename: "{cmd}"; \
     Parameters: "/c ""netsh advfirewall firewall delete rule name=VidLog-Playback-8720 >nul 2>&1 & exit /b 0"""; \
     Flags: runhidden; RunOnceId: "RemovePlaybackFirewallRule"
 
-; ── 关于卸载时**不删**什么 ─────────────────────────────────────────────
+; ── 关于卸载时删什么 ───────────────────────────────────────────────────
 ; 这里刻意**没有** [UninstallDelete] 段，而且一个字都不许加：
 ;
 ; 录像、索引、设置、日志全在 `%LOCALAPPDATA%\VidLog` 下（不在 {app} 里），
@@ -187,6 +218,10 @@ Filename: "{cmd}"; \
 ; 这是母仓 AGENTS.md §3「卸载**不清用户数据**」那一条，也是本产品
 ; 「证据不丢」那个承诺的一部分：**卸载重装是排查故障的常规手段，
 ; 它绝不能变成一次数据灭失。**
+;
+; 需求方 2026-10-17 追加：卸载时要**问一次**要不要删，两个勾选项默认都不勾。
+; 删除动作全部在下面 [Code] 里按勾选做（所以上面那条「[UninstallDelete] 一个字
+; 都不许加」照旧成立 —— 那条规矩的真正意思是「不许**无条件**删」）。
 
 [Code]
 // ── 这台机器上有没有 WebView2 运行时 ────────────────────────────────────────
@@ -231,4 +266,393 @@ begin
     (RegQueryStringValue(HKCU,
       'SOFTWARE\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}',
       'pv', Pv) and HasRealVersion(Pv));
+end;
+
+// ── 「我不接受」= 直接退出安装（需求方 2026-10-17）──────────────────────────
+//
+// Inno 内置的许可页只把【下一步】灰掉：用户选了「我不接受」之后，还得再点一次
+// 【取消】才走得到退出。需求方要的是**一步**。
+//
+// ⚠️ 实测（本机探针安装，2026-10-17）：WizardForm.Close 会弹 Inno 自己的
+//    「现在退出安装程序吗？」（是/否，默认否）。这个确认**在脚本里关不掉**
+//    —— 它就是【取消】按钮走的同一条退出路。留着也好：一个文件都还没写，
+//    点错了重新双击安装包即可。
+//    不加这个钩子的默认行为更差：选了「我不接受」之后界面**毫无反应**，
+//    用户得自己猜到去点【取消】。
+procedure LicenseNotAcceptedClick(Sender: TObject);
+begin
+  WizardForm.Close;
+end;
+
+procedure InitializeWizard;
+begin
+  // 许可页的控件在 InitializeWizard 时已经建好了（页面先建、这个事件后到）。
+  WizardForm.LicenseNotAcceptedRadio.OnClick := @LicenseNotAcceptedClick;
+end;
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 卸载时按勾选删数据（需求方 2026-10-17）
+//
+// 需求原文：「用户卸载电脑端时，给用户选择框，供用户选择，并严格按照选择
+// 结果进行卸载任务。」图上那两个框是默认**不勾**的。
+//
+// ⚠️ 默认不勾 = 与卸载器一直以来的行为完全一致（母仓 AGENTS.md §3
+//    「卸载不清用户数据」）。也就是说：多了一个**选项**，没有改变默认结果。
+//
+// ⚠️ 两条永远不删的（需求方 2026-10-17 逐条裁的）：
+//    ① license.json —— 它是购买凭据，不是设置。删了重装要重新激活。
+//    ② trial.dat（以及 %ProgramData% 与两处注册表里的那三条）—— 试用记录。
+//       清掉它们之后「卸载 → 重装」就能把 7 天试用重置一遍，等于给试用开后门。
+//
+// ⚠️ 只碰**本机数据目录**（%LOCALAPPDATA%\VidLog）。用户配在别的盘/移动硬盘上的
+//    录像**不删** —— 那是需求方 2026-10-17 选的「只删本机数据目录里的」。
+//    所以界面上必须把这条写出来，不能让用户以为勾了就全删干净了。
+//
+// ⚠️ 判据顺序照需求方的图：**录像全部删成功，才删录像记录（索引）**。
+//    有一条删不掉（被占用 / 只读 / 盘不在）就保留索引，并当场把删不掉的列出来。
+//
+// ⚠️ 静默卸载（/SILENT、/VERYSILENT）不弹窗、**也不删任何数据**：
+//    没有人能点勾，默认就是「都留着」。
+// ═══════════════════════════════════════════════════════════════════════════
+
+var
+  DeleteSettings: Boolean;
+  DeleteRecordings: Boolean;
+  DeleteFailures: TStringList;
+  DeleteCounter: Integer;
+
+function DataRoot(): String;
+begin
+  // 与 `DataLayout.Default()` 逐字对应（%LOCALAPPDATA%\VidLog）。
+  // 有测试钉着：新增一个数据文件却忘了写进下面的清单时，那条会红。
+  Result := ExpandConstant('{localappdata}') + '\VidLog';
+end;
+
+procedure NoteDeleteProgress();
+begin
+  Inc(DeleteCounter);
+
+  if (DeleteCounter mod 200) = 0 then
+  begin
+    // 删几千个文件时进度条不动会像卡死；每 200 个刷一次状态字。
+    UninstallProgressForm.StatusLabel.Caption :=
+      '正在删除你选择的数据…（已处理 ' + IntToStr(DeleteCounter) + ' 个文件）';
+    UninstallProgressForm.Update;
+  end;
+end;
+
+function RemoveOneFile(const FileName: String): Boolean;
+begin
+  Result := True;
+
+  if not FileExists(FileName) then
+  begin
+    Exit;
+  end;
+
+  NoteDeleteProgress();
+
+  if not DeleteFile(FileName) then
+  begin
+    if DeleteFailures.Count < 8 then
+    begin
+      DeleteFailures.Add(FileName);
+    end;
+
+    Result := False;
+  end;
+end;
+
+function RemoveTree(const Dir: String): Boolean;
+var
+  FindRec: TFindRec;
+  Item: String;
+begin
+  Result := True;
+
+  if not DirExists(Dir) then
+  begin
+    Exit;
+  end;
+
+  if FindFirst(Dir + '\*', FindRec) then
+  begin
+    try
+      repeat
+        if (FindRec.Name <> '.') and (FindRec.Name <> '..') then
+        begin
+          Item := Dir + '\' + FindRec.Name;
+
+          if (FindRec.Attributes and FILE_ATTRIBUTE_DIRECTORY) <> 0 then
+          begin
+            if not RemoveTree(Item) then
+            begin
+              Result := False;
+            end;
+          end
+          else
+          begin
+            if not RemoveOneFile(Item) then
+            begin
+              Result := False;
+            end;
+          end;
+        end;
+      until not FindNext(FindRec);
+    finally
+      FindClose(FindRec);
+    end;
+  end;
+
+  // 目录只在空了之后才删得掉；删不掉说明里面有东西留下了。
+  if Result then
+  begin
+    if not RemoveDir(Dir) then
+    begin
+      if DeleteFailures.Count < 8 then
+      begin
+        DeleteFailures.Add(Dir + '（目录非空或删不掉）');
+      end;
+
+      Result := False;
+    end;
+  end;
+end;
+
+function DeleteChosenData(): Boolean;
+var
+  Root: String;
+  RecordingsOk: Boolean;
+begin
+  Root := DataRoot();
+
+  // ── 录像与录像记录 ───────────────────────────────────────────────────
+  if DeleteRecordings then
+  begin
+    // ⚠️ 只删本机数据目录下的归档区（`StorageLocations.FallbackRoot`）。
+    RecordingsOk := RemoveTree(Root + '\archive');
+
+    // 全部删成功之后才动录像记录 —— 先删索引的话，删不掉的录像就再也没人认得了。
+    if RecordingsOk then
+    begin
+      RecordingsOk := RemoveOneFile(Root + '\labels.jsonl');
+    end;
+
+    if RecordingsOk then
+    begin
+      RecordingsOk := RemoveOneFile(Root + '\punches.jsonl');
+    end;
+
+    if RecordingsOk then
+    begin
+      RecordingsOk := RemoveOneFile(Root + '\published.jsonl');
+    end;
+
+    if RecordingsOk then
+    begin
+      RecordingsOk := RemoveOneFile(Root + '\receipts.jsonl');
+    end;
+
+    // 索引**最后**删（它就是「录像记录」本身）。
+    if RecordingsOk then
+    begin
+      RemoveOneFile(Root + '\index.jsonl');
+    end;
+  end;
+
+  // ── 设置与临时文件 ───────────────────────────────────────────────────
+  // ⚠️ license.json 与 trial.dat **不在这张单子里**，见上面那两条「永远不删」。
+  if DeleteSettings then
+  begin
+    RemoveOneFile(Root + '\settings.json');
+    RemoveOneFile(Root + '\calibration.json');
+    RemoveOneFile(Root + '\scan-errors.jsonl');
+    RemoveOneFile(Root + '\cleanup-audit.jsonl');
+    RemoveOneFile(Root + '\devices.jsonl');          // 里面有手机端凭据
+    RemoveOneFile(Root + '\baidu-pan-token.json');   // 网盘账号令牌
+    RemoveOneFile(Root + '\upload-queue.jsonl');
+    RemoveOneFile(Root + '\archive-failures.jsonl');
+    RemoveTree(Root + '\logs');
+    RemoveTree(Root + '\work');       // 未收尾的分段
+    RemoveTree(Root + '\incoming');   // 上传暂存区
+  end;
+
+  Result := DeleteFailures.Count = 0;
+end;
+
+function AskUninstallChoices(): Boolean;
+var
+  Form: TSetupForm;
+  Header: TNewStaticText;
+  Hint: TNewStaticText;
+  SettingsBox: TNewCheckBox;
+  SettingsDesc: TNewStaticText;
+  RecordingsBox: TNewCheckBox;
+  RecordingsDesc: TNewStaticText;
+  OkBtn: TNewButton;
+  CancelBtn: TNewButton;
+begin
+  Result := False;
+
+  Form := CreateCustomForm();
+
+  try
+    Form.Caption := '卸载 VidLog 工位录像';
+    Form.BorderStyle := bsDialog;
+    Form.Position := poScreenCenter;
+    Form.ClientWidth := 620;
+    Form.ClientHeight := 268;
+
+    Header := TNewStaticText.Create(Form);
+    Header.Parent := Form;
+    Header.AutoSize := False;
+    Header.Left := 24;
+    Header.Top := 20;
+    Header.Width := 560;
+    Header.Height := 24;
+    Header.Font.Size := 13;
+    Header.Font.Style := [fsBold];
+    Header.Caption := '卸载前，请选择要保留的内容';
+
+    Hint := TNewStaticText.Create(Form);
+    Hint.Parent := Form;
+    Hint.AutoSize := False;
+    Hint.WordWrap := True;
+    Hint.Left := 24;
+    Hint.Top := 50;
+    Hint.Width := 560;
+    Hint.Height := 32;
+    Hint.Font.Color := clGray;
+    Hint.Caption := '默认两项都不勾：设置与录像都留着，重新安装后仍能继续使用。';
+
+    SettingsBox := TNewCheckBox.Create(Form);
+    SettingsBox.Parent := Form;
+    SettingsBox.Left := 24;
+    SettingsBox.Top := 96;
+    SettingsBox.Width := 560;
+    SettingsBox.Height := 22;
+    SettingsBox.Caption := '删除设置和临时文件';
+    SettingsBox.Checked := False;
+
+    SettingsDesc := TNewStaticText.Create(Form);
+    SettingsDesc.Parent := Form;
+    SettingsDesc.AutoSize := False;
+    SettingsDesc.WordWrap := True;
+    SettingsDesc.Left := 44;
+    SettingsDesc.Top := 120;
+    SettingsDesc.Width := 540;
+    SettingsDesc.Height := 32;
+    SettingsDesc.Font.Color := clGray;
+    SettingsDesc.Caption := '清除设置、日志和缓存；不会删除录像与录像记录。激活记录和试用记录也保留。';
+
+    RecordingsBox := TNewCheckBox.Create(Form);
+    RecordingsBox.Parent := Form;
+    RecordingsBox.Left := 24;
+    RecordingsBox.Top := 160;
+    RecordingsBox.Width := 560;
+    RecordingsBox.Height := 22;
+    RecordingsBox.Caption := '删除录像和录像记录';
+    RecordingsBox.Checked := False;
+
+    RecordingsDesc := TNewStaticText.Create(Form);
+    RecordingsDesc.Parent := Form;
+    RecordingsDesc.AutoSize := False;
+    RecordingsDesc.WordWrap := True;
+    RecordingsDesc.Left := 44;
+    RecordingsDesc.Top := 184;
+    RecordingsDesc.Width := 540;
+    RecordingsDesc.Height := 32;
+    RecordingsDesc.Font.Color := clGray;
+    RecordingsDesc.Caption := '只删除本机数据目录里的录像；配在别的盘上的录像不动。删除后无法恢复。';
+
+    OkBtn := TNewButton.Create(Form);
+    OkBtn.Parent := Form;
+    OkBtn.Left := 370;
+    OkBtn.Top := 226;
+    OkBtn.Width := 120;
+    OkBtn.Height := 30;
+    OkBtn.Caption := '开始卸载';
+    OkBtn.Default := True;
+    OkBtn.ModalResult := mrOk;
+
+    CancelBtn := TNewButton.Create(Form);
+    CancelBtn.Parent := Form;
+    CancelBtn.Left := 500;
+    CancelBtn.Top := 226;
+    CancelBtn.Width := 100;
+    CancelBtn.Height := 30;
+    CancelBtn.Caption := '取消';
+    CancelBtn.Cancel := True;
+    CancelBtn.ModalResult := mrCancel;
+
+    Result := Form.ShowModal = mrOk;
+
+    if Result then
+    begin
+      DeleteSettings := SettingsBox.Checked;
+      DeleteRecordings := RecordingsBox.Checked;
+    end;
+  finally
+    Form.Free;
+  end;
+end;
+
+function InitializeUninstall(): Boolean;
+begin
+  DeleteSettings := False;
+  DeleteRecordings := False;
+  DeleteCounter := 0;
+  DeleteFailures := TStringList.Create();
+
+  // ⚠️ 静默卸载不弹窗、一样都不删（上面那一段注释有理由）。
+  if UninstallSilent() then
+  begin
+    Result := True;
+    Exit;
+  end;
+
+  Result := AskUninstallChoices();
+end;
+
+procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
+var
+  MessageText: String;
+  Index: Integer;
+begin
+  // 在「文件还没开始删」这一刻动手：此刻 {app} 与数据目录都还在。
+  if CurUninstallStep <> usUninstall then
+  begin
+    Exit;
+  end;
+
+  // 两个都没勾 = 什么都不做（与老版本的卸载器一模一样）。
+  if not (DeleteSettings or DeleteRecordings) then
+  begin
+    Exit;
+  end;
+
+  if DeleteChosenData() then
+  begin
+    Exit;
+  end;
+
+  // 删不掉的时候必须**当面说**：用户勾了「删除」，不能让它悄悄地没删干净。
+  MessageText := '下面这些没能删掉（可能正被别的程序占用，或者文件是只读的）：'
+    + #13#10#13#10;
+
+  for Index := 0 to DeleteFailures.Count - 1 do
+  begin
+    MessageText := MessageText + '  · ' + DeleteFailures[Index] + #13#10;
+  end;
+
+  if DeleteFailures.Count >= 8 then
+  begin
+    MessageText := MessageText + '  · …（只列出前 8 条）' + #13#10;
+  end;
+
+  MessageText := MessageText + #13#10
+    + '它们还在原处。录像记录（索引）在你勾了「删除录像」时有删不掉的文件就整份保留，'
+    + '重新安装后仍能看到它们；其余已按你的选择处理。';
+
+  MsgBox(MessageText, mbError, MB_OK);
 end;

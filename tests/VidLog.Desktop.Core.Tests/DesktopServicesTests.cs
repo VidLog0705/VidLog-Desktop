@@ -2047,13 +2047,21 @@ public class DesktopServicesTests
     }
 
     /// <summary>
-    /// 卸载**不清用户数据**（母仓 AGENTS.md §3）。
+    /// 卸载**默认不清用户数据**（母仓 AGENTS.md §3）。
     /// </summary>
     /// <remarks>
+    /// <para>
     /// 录像、索引、设置在 <c>%LOCALAPPDATA%\VidLog</c>，**不在** <c>{app}</c> 里，
     /// 所以 Inno 默认就碰不到它们。<c>[UninstallDelete]</c> 是唯一能删到
     /// <c>{app}</c> 之外东西的段 —— 加上它，「卸载重装」这个常规排查手段
     /// 就变成了一次数据灭失，而那正是本产品承诺「证据不丢」的反面。
+    /// </para>
+    /// <para>
+    /// ⚠️ 2026-10-17 起数据**可以被删**，但只在用户当场勾了要删的时候
+    /// （<c>[Code]</c> 里的 <c>DeleteChosenData</c>）。所以 ② 从「一个字都不许提
+    /// <c>{localappdata}</c>」改成了「只许在 <c>DataRoot()</c> 里提一次」——
+    /// 别处再出现就意味着有一条**无条件**的删除路径。
+    /// </para>
     /// </remarks>
     [Fact]
     public void 安装脚本卸载时不删用户数据()
@@ -2063,14 +2071,147 @@ public class DesktopServicesTests
         // ① 那个段整个不许出现。
         Assert.DoesNotContain("[UninstallDelete]", iss, StringComparison.Ordinal);
 
-        // ② 也不许绕过它去碰数据目录（`{localappdata}` 只会出现在真的拿它做事的地方）。
-        Assert.DoesNotContain("{localappdata}", iss, StringComparison.OrdinalIgnoreCase);
+        // ② 数据根只许从 `DataRoot()` 这一处来，且整份脚本只此一次。
+        var hits = Regex.Matches(iss, @"\{localappdata\}", RegexOptions.IgnoreCase);
+        var hit = Assert.Single(hits);
+        var lineStart = iss.LastIndexOf('\n', hit.Index) + 1;
+        var lineEnd = iss.IndexOf('\n', hit.Index);
+        Assert.Equal(
+            @"  Result := ExpandConstant('{localappdata}') + '\VidLog'",  // `;` 已被 InstallerCode 剥掉
+            iss[lineStart..lineEnd].TrimEnd('\r'));
 
         // ③ 装的时候登记了 urlacl，卸的时候就得撤掉 —— 只登记不撤会在那台机器上
         //    留下一条指向已卸软件的预留，下一个想用 8720 的人会莫名失败。
         var idx = iss.IndexOf("[UninstallRun]", StringComparison.Ordinal);
         Assert.True(idx >= 0, "`.iss` 里没有 [UninstallRun] —— 卸载会留下那条 urlacl 预留");
         Assert.Contains("netsh http delete urlacl", iss[idx..], StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// 卸载时**必须问一次**，而且两个勾选项**默认都不勾**（需求方 2026-10-17）。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// 默认勾了就是「顺手卸载 = 顺手删掉证据」，而用户点「下一步」的速度
+    /// 比他读字的速度快。所以这里钉的是**默认值**，不是「有没有这个窗」。
+    /// </para>
+    /// <para>
+    /// ⚠️ 静默卸载（<c>/SILENT</c>）没有人能点勾 ⇒ <c>InitializeUninstall</c>
+    /// 必须先短路掉询问、什么都不删。这条在脚本里是顺序关系，所以这里也按
+    /// 顺序断言：<c>UninstallSilent()</c> 必须出现在 <c>AskUninstallChoices()</c> 之前。
+    /// </para>
+    /// <para>
+    /// ⚠️ 天花板：这是**文本**断言，只挡得住「有人把默认值改成勾上」「有人把
+    /// 静默那条短路删了」，挡不住窗体布局被改坏 —— 那是要人看的。
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public void 卸载时必须让用户选_而且默认两个都不勾()
+    {
+        var iss = InstallerCode();
+
+        // ① 两个选项与两个按钮都在。
+        Assert.Contains("删除设置和临时文件", iss, StringComparison.Ordinal);
+        Assert.Contains("删除录像和录像记录", iss, StringComparison.Ordinal);
+        Assert.Contains("开始卸载", iss, StringComparison.Ordinal);
+        Assert.Contains("取消", iss, StringComparison.Ordinal);
+
+        // ② 默认值：两个 `Checked := False`，一个 `Checked := True` 都不许有。
+        Assert.DoesNotContain("Checked := True", iss, StringComparison.Ordinal);
+        Assert.True(
+            Regex.Matches(iss, @"Checked := False").Count >= 2,
+            "卸载窗体里两个复选框得显式 `Checked := False` —— 别指望控件的默认值");
+
+        // ③ 静默卸载先短路，别弹窗（弹了也没人点）。
+        var silent = iss.IndexOf("UninstallSilent()", StringComparison.Ordinal);
+        Assert.True(silent >= 0, "`.iss` 里找不到 UninstallSilent() —— 静默卸载会卡在一个没人能点的窗上");
+
+        // 从 `UninstallSilent()` 往后找**调用**：函数自己的声明在上面，别把它当成调用。
+        Assert.True(
+            iss.IndexOf("AskUninstallChoices()", silent, StringComparison.Ordinal) > silent,
+            "静默卸载的短路必须在询问之前");
+    }
+
+    /// <summary>
+    /// 卸载**永远不删** <c>license.json</c> 与 <c>trial.dat</c>（需求方 2026-10-17 逐条裁的）。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <c>license.json</c> 是购买凭据，不是设置 —— 删了重装要重新激活。
+    /// <c>trial.dat</c> 是试用记录 —— 删了「卸载 → 重装」就能把 7 天试用重置一遍。
+    /// 这两条都不是「删干净点更好看」能推翻的。
+    /// </para>
+    /// <para>
+    /// ⚠️ 断言的是**删除调用**而不是「文件名出现」：注释里正当写着这两个名字
+    /// （解释为什么不删），所以整份脚本搜名字是假红。
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public void 卸载永远不删激活与试用记录()
+    {
+        var script = InstallerScript();
+        var iss = InstallerCode();
+
+        foreach (var name in new[] { "license.json", "trial.dat" })
+        {
+            Assert.DoesNotContain($@"Root + '\{name}'", iss, StringComparison.Ordinal);
+
+            // 上面那条之所以不是「碰巧没写」，得有人解释过。
+            Assert.Contains(name, script, StringComparison.Ordinal);
+        }
+    }
+
+    /// <summary>
+    /// 卸载删的数据文件清单与 <see cref="DataLayout"/> **必须是同一份**。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// 这个仓里数据文件的唯一事实来源是 <see cref="DataLayout"/>；卸载脚本是
+    /// Pascal，引用不到它，只能抄一份名字。抄漏一个的后果是**静默的**：
+    /// 用户勾了「删除设置」，那个文件还在，重装后设置原样回来 —— 而界面上
+    /// 写着「已删除」。
+    /// </para>
+    /// <para>
+    /// 所以两头都查：<c>DataLayout</c> 里的每一个都得在清单里（除了裁定保留的
+    /// 那两个），清单里的每一个也都得在 <c>DataLayout</c> 里（防手滑打错字）。
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public void 卸载清单与_DataLayout_是同一份()
+    {
+        var iss = InstallerCode();
+
+        // ⚠️ 需求方 2026-10-17 裁定永远保留，见上一条。
+        var kept = new[] { "license.json", "trial.dat" };
+
+        var layoutSource = File.ReadAllText(
+            Path.Combine(RepoRoot(), "src", "VidLog.Desktop.Core", "Configuration", "DataLayout.cs"));
+
+        var declared = Regex.Matches(layoutSource, @"Path\.Combine\(\s*RootDirectory\s*,\s*""([^""]+)""\s*\)")
+                            .Select(m => m.Groups[1].Value)
+                            .Distinct()
+                            .ToList();
+
+        Assert.NotEmpty(declared);
+
+        var missing = declared.Where(n => !kept.Contains(n))
+                              .Where(n => !iss.Contains($@"Root + '\{n}'", StringComparison.Ordinal))
+                              .ToList();
+
+        Assert.True(
+            missing.Count == 0,
+            "DataLayout 里有、卸载清单里没有：" + string.Join("、", missing));
+
+        var listed = Regex.Matches(iss, @"Root \+ '\\([^'\\]+)'")
+                          .Select(m => m.Groups[1].Value)
+                          .Distinct()
+                          .ToList();
+
+        var typo = listed.Where(n => !declared.Contains(n)).ToList();
+
+        Assert.True(
+            typo.Count == 0,
+            "卸载清单里有、DataLayout 里没有（多半是打错字）：" + string.Join("、", typo));
     }
 
     /// <summary>
@@ -2090,6 +2231,51 @@ public class DesktopServicesTests
         Assert.True(
             bytes.Length >= 3 && bytes[0] == 0xEF && bytes[1] == 0xBB && bytes[2] == 0xBF,
             "installer\\VidLog.iss 少了 UTF-8 BOM —— Inno 会把里面的中文按 ANSI 读");
+    }
+
+    /// <summary>
+    /// 安装前必须同意的许可协议：那一行指的文件在、内容不是占位稿、
+    /// 而且三份法律文本都随包装进 `licenses`（需求方 2026-10-17）。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// ⚠️ <c>LicenseFile</c> 指错文件时 ISCC **会报错**（这条不用测）；
+    /// 真正会静默出事的是另外两件：**指向一份没填完的草稿**（带 <c>【】</c> 占位符），
+    /// 以及 <c>[Files]</c> 里那条通配符落在一个空目录上 —— 后者编得出包，
+    /// 只是「装完 licenses 文件夹是空的」，而 GPLv3 的随附义务就在那里。
+    /// </para>
+    /// <para>
+    /// ⚠️ 断言的三个名字都与**真实工商信息**对得上（需求方 2026-10-17 给的），
+    /// 它们同时是「这份 txt 不是别的项目的」的判据。
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public void 安装包带着许可协议与开源许可文本()
+    {
+        var iss = InstallerCode();
+        Assert.Contains(@"LicenseFile=legal\许可协议.txt", iss, StringComparison.Ordinal);
+        Assert.Contains(@"Source: ""legal\*""", iss, StringComparison.Ordinal);
+        Assert.Contains("chinesesimp", iss, StringComparison.Ordinal);
+
+        var legal = Path.Combine(RepoRoot(), "installer", "legal");
+        var license = File.ReadAllText(Path.Combine(legal, "许可协议.txt"));
+
+        // ⚠️ 不查「有没有【】」：txt 里那些【】是**故意**的（Markdown 的加粗
+        //    降级成了它，用来说明哪些是免责/限权条款，见《服务条款》开头那句）。
+        //    要查的是**没填完的占位符** —— 初稿里那种方括号包着的字段名。
+        Assert.DoesNotContain("【运营者】", license);
+        Assert.DoesNotContain("【联系邮箱】", license);
+        Assert.Contains("灯塔市蒂妃澜服装店", license, StringComparison.Ordinal);
+        Assert.Contains("vidlog@126.com", license, StringComparison.Ordinal);
+        // 两段都得在：只贴了服务条款的话，隐私政策等于没给用户看。
+        Assert.Contains("服务条款", license, StringComparison.Ordinal);
+        Assert.Contains("隐私政策", license, StringComparison.Ordinal);
+        Assert.Contains("个人信息保护法", license, StringComparison.Ordinal);
+
+        // ⚠️ FFmpeg 是 GPLv3 构建（`--enable-gpl --enable-version3`），
+        //    随包**必须**带许可正文，否则整个包的再分发就是违规的。
+        Assert.True(File.Exists(Path.Combine(legal, "FFmpeg-GPLv3.txt")));
+        Assert.True(File.Exists(Path.Combine(legal, "第三方组件声明.txt")));
     }
 
     /// <summary>

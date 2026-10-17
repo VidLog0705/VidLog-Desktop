@@ -310,6 +310,43 @@ public sealed record AppSettings
     public bool CheckForUpdates { get; init; } = true;
 
     /// <summary>
+    /// 首次运行时那条「录制前请依法告知被录制人员」的提示，用户是否已经点掉过。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// 需求方 2026-10-17 要求：安装完成后第一次启动，要把录制涉及他人个人信息这件事
+    /// 当面说一次（《个人信息保护法》第十三条、《民法典》第一千零三十二条那一串，
+    /// 义务在**用户**身上，而用户多半是我们之外的另一个人）。
+    /// </para>
+    /// <para>
+    /// ⚠️ 默认 <see langword="false"/>，**老设置文件里没有这个字段 ⇒ 反序列化也是 false**
+    /// ⇒ 升级上来的机器会**再看一次**。这是有意的：多提示一次只是多点一下，
+    /// 少提示一次可能让人根本不知道有这回事。
+    /// </para>
+    /// <para>
+    /// ⚠️ 这是「已看过」的记录，<b>不是</b>任何形式的授权凭据 ——
+    /// 它不参与许可校验，也不许被别处拿去当同意某件事的证据。
+    /// </para>
+    /// </remarks>
+    public bool RecordingNoticeAccepted { get; init; }
+
+    /// <summary>
+    /// 首次运行那个「7 天试用 / 机器码」窗口，用户是不是已经点过【同意】。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// 需求方 2026-10-17 裁定：首次运行弹一次，点【不同意】直接退出程序；
+    /// 点【同意】之后不再弹。它是**告知与同意**的记录，不是许可凭据 ——
+    /// 能不能录由 <c>LicenseService</c> 判，**不许**拿这个字段当授权用。
+    /// </para>
+    /// <para>
+    /// ⚠️ 默认 <see langword="false"/>：老设置文件没有这个字段 ⇒ 升级上来的机器
+    /// 会再看一次。与 <see cref="RecordingNoticeAccepted"/> 同一条口径。
+    /// </para>
+    /// </remarks>
+    public bool LicenseNoticeAccepted { get; init; }
+
+    /// <summary>
     /// 归档层是哪儿 —— 2026-10-13 之前是用户手选的那一档，**现在只剩兼容读懂老配置**。
     /// </summary>
     /// <remarks>
@@ -760,6 +797,11 @@ public sealed class SettingsStore
         // 而屏幕上看不出是谁、什么时候 —— 这句是唯一能回答的地方。
         Compare(nameof(AppSettings.ThemeMode), previous.ThemeMode, next.ThemeMode);
         Compare(nameof(AppSettings.CheckForUpdates), previous.CheckForUpdates, next.CheckForUpdates);
+        // 首次运行那条录制合规告知的「已看过」记录（需求方 2026-10-17）。
+        // 会变的一共两种时候：用户点掉它（false → true），或者设置文件被手改/回滚。
+        Compare(nameof(AppSettings.RecordingNoticeAccepted), previous.RecordingNoticeAccepted, next.RecordingNoticeAccepted);
+        // 首次运行那个「7 天试用」窗口的「已同意」记录（需求方 2026-10-17）。
+        Compare(nameof(AppSettings.LicenseNoticeAccepted), previous.LicenseNoticeAccepted, next.LicenseNoticeAccepted);
         Compare(nameof(AppSettings.Mode), previous.Mode, next.Mode);
         Compare(nameof(AppSettings.Codec), previous.Codec, next.Codec);
         Compare(nameof(AppSettings.Resolution), previous.Resolution, next.Resolution);
