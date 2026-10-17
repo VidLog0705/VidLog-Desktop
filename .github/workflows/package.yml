@@ -205,3 +205,81 @@ jobs:
           }
           gh release upload $tag $setup.FullName --clobber
           Write-Host "下载页：${{ github.server_url }}/${{ github.repository }}/releases/tag/$tag"
+
+      # 用户实际下载走 AtomGit（2026-10-17 实测：匿名 **7.76 MB/s**、支持 Range
+      # 断点续传；GitHub 直连在国内太慢）。上面 GitHub 那份保留作备份。
+      #
+      # 发布仓是**公开**的 `Vidlog/vidlog-releases`，里面**只有安装程序附件**，
+      # 不含源码 —— 公开仓的源码归档是平台自动生成的，所以那边永远只有一个
+      # auto_init 的 README 提交。
+      #
+      # ⚠️ AtomGit 的 v5 API **只认 `api.atomgit.com`**。`web-api.atomgit.com`
+      #    是前端用的，前面套着 CloudWAF，脚本直连会被 418/403 挡掉。
+      # ⚠️ 附件**不支持同名覆盖**（返回错），重复发同一个版本号时必须先按 id
+      #    删掉旧附件（`DELETE …/releases/{tag}/attach_files/{id}` → 204）。
+      # ⚠️ 上传是**两步法**：先要签名 URL（`upload_url?file_name=…`），再带着
+      #    平台给的那几个头 PUT 到对象存储 —— 少一个头就会被 OBS 拒。
+      # ⚠️ 缺 `ATOMGIT_TOKEN` 时**故意红**，不静默跳过：跳过的话 GitHub 上有包、
+      #    用户那边却永远收不到更新，这种「绿着的假成功」比红更难发现。
+      - name: 同步到 AtomGit
+        env:
+          ATOMGIT_TOKEN: ${{ secrets.ATOMGIT_TOKEN }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (-not $env:ATOMGIT_TOKEN) { throw '没配仓库密钥 ATOMGIT_TOKEN（AtomGit「访问令牌（经典）」，权限要项目读写）' }
+
+          $repo = 'Vidlog/vidlog-releases'
+          $api  = "https://api.atomgit.com/api/v5/repos/$repo"
+          $h    = @{ 'PRIVATE-TOKEN' = $env:ATOMGIT_TOKEN }
+
+          $setup = Get-ChildItem dist/*-setup.exe | Select-Object -First 1
+          if (-not $setup) { throw 'dist 里没有安装程序' }
+          $version = if ($setup.BaseName -match '\d+\.\d+\.\d+') { $Matches[0] } else { $null }
+          if (-not $version) { throw "从 $($setup.Name) 里取不到版本号" }
+          $tag = "v$version"
+
+          # 1) Release 有就复用、没有就建（404 是预期的一条路，不是错误）
+          $release = $null
+          try {
+            $release = Invoke-RestMethod -Uri "$api/releases/tags/$tag" -Headers $h
+          } catch {
+            if ([int]$_.Exception.Response.StatusCode -ne 404) { throw }
+          }
+          if (-not $release) {
+            $body = @{
+              tag_name         = $tag
+              target_commitish = 'main'
+              name             = "VidLog $version"
+              body             = 'VidLog 电脑端安装程序（自包含，带 WebView2 运行时）'
+              prerelease       = $false
+            } | ConvertTo-Json
+            $release = Invoke-RestMethod -Method Post -Uri "$api/releases" -Headers $h `
+                -ContentType 'application/json' -Body $body
+            Write-Host "新建 Release $tag"
+          }
+
+          # 2) 同名附件先删（平台不支持覆盖）
+          foreach ($a in @($release.assets) | Where-Object { $_.type -eq 'attach' -and $_.name -eq $setup.Name }) {
+            Invoke-RestMethod -Method Delete -Uri "$api/releases/$tag/attach_files/$($a.id)" -Headers $h
+            Write-Host "删掉旧附件 id=$($a.id)"
+          }
+
+          # 3) 两步法上传
+          $esc  = [uri]::EscapeDataString($setup.Name)
+          $info = Invoke-RestMethod -Uri "$api/releases/$tag/upload_url?file_name=$esc" -Headers $h
+          if (-not $info.url) { throw "没拿到 upload_url：$($info | ConvertTo-Json -Compress)" }
+
+          $uh = @{}
+          $info.headers.PSObject.Properties | ForEach-Object { $uh[$_.Name] = $_.Value }
+
+          $sw = [Diagnostics.Stopwatch]::StartNew()
+          Invoke-WebRequest -Method Put -Uri $info.url -Headers $uh -InFile $setup.FullName | Out-Null
+          $sw.Stop()
+          Write-Host ("上传完成：{0:N1} MB / {1:N1} 秒" -f ($setup.Length / 1MB), $sw.Elapsed.TotalSeconds)
+
+          # 4) 复核：HTTP 200 不等于附件挂上了，回读一次列表
+          $check = Invoke-RestMethod -Uri "$api/releases/tags/$tag" -Headers $h
+          if (-not (@($check.assets) | Where-Object { $_.name -eq $setup.Name })) {
+            throw "上传后附件列表里没有 $($setup.Name)"
+          }
+          Write-Host "AtomGit 下载页：https://atomgit.com/$repo/releases/tag/$tag"
