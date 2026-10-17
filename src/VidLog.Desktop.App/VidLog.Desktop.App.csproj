@@ -637,7 +637,31 @@
         只在假接口上验过）；百度下载限速、代码里写的 10 次/小时额度都没量过；
         `MediaElement.SpeedRatio` 对真实文件（尤其带音轨）的听感没验过。
     -->
-    <Version>0.15.11</Version>
+    <!--
+        0.15.12（2026-10-17）—— 0.15.11 装机实测抓到的两个真缺陷，都只影响「本机没有、
+        要从网盘取回」这条路；正常录制上传不受影响。
+
+        ① 检索一出结果必崩：`SearchWindow.xaml` 里结果行的进度条写的是
+        `Value="{Binding RetrievalPercent}"`，少写 `Mode=OneWay`。`RangeBase.Value`
+        的元数据是 BindsTwoWayByDefault，而该属性只有 private set ⇒ 渲染第一行时
+        抛 XamlParseException，整个进程退出。另两处同类绑定本来就带 Mode，只漏了这一处。
+        并加 `XamlBindingLintTests`：扫 App 下全部 xaml，`Value="{Binding ...}"`
+        缺 Mode 即红（反证过：去掉 Mode 该测试立刻红）。
+
+        ② 百度网盘取回一律失败：`method=meta` 挂错了服务。两个 xpan 服务分工不同，
+        `meta` 在 `/xpan/file` 上（认 path、不回 dlink），`filemetas` 在
+        `/xpan/multimedia` 上（认 fsids、回 dlink）。0.15.11 拿前者去问后者，
+        界面原样打出 errno=2 unsupported api。改成两步：先 meta 拿 fs_id，
+        再 filemetas&dlink=1 拿直链。`BaiduPanWireTests` 新增一条钉住两次请求的
+        地址与参数（反证过：改回旧地址该测试立刻红）。
+
+        ⚠️ 手机端 `baidu_pan.dart` 的 `_metaUri` 是同一个错组合，本轮未改
+        （需求方裁定：等改手机端时一起改）。
+        ⚠️ 这一版只在本机出安装程序，不走 CI 发 Release。
+        ⚠️ `fs_id` 兼容字符串形式的那一处小改之后，没有再走一整趟真实取回
+        （实机返回的是数字分支，行为未变）。
+    -->
+    <Version>0.15.12</Version>
     <OutputType>WinExe</OutputType>
     <TargetFramework>net9.0-windows</TargetFramework>
     <Nullable>enable</Nullable>

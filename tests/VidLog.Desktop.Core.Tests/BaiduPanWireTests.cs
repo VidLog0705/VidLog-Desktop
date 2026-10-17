@@ -485,6 +485,40 @@ public class BaiduPanWireTests
                 && e.Message.Contains("errno=31045", StringComparison.Ordinal));
     }
 
+    [Fact]
+    public async Task 取下载直链先问meta拿fsid_再按fsid问filemetas()
+    {
+        // ⚠️ 2026-10-17 真机（0.15.11 装机）：录一条 → 删掉本机那份 → 检索页点开，
+        // 界面原样打出两句 errno：
+        //   ① `errno=2 unsupported api` —— 原代码把 `method=meta` 挂到了
+        //      `/xpan/multimedia` 上，那一族根本不认这个 method；
+        //   ② 换到 `/xpan/file?method=meta&dlink=1` 之后**答复里没有 dlink**
+        //      （list[0] 里 fs_id / size / md5 都在，就是没有直链）。
+        // 真正给直链的是 `/xpan/multimedia?method=filemetas`，而它只认 `fsids`。
+        // ⇒ 两步：meta 拿 fs_id，filemetas 拿 dlink。
+        //
+        // 在此之前**没有任何测试碰过这两个地址** —— 假件按猜出来的约定回包，
+        // 两边一起错，测试全绿。这条钉住：两次请求、各走哪个服务、fs_ids 取的是 meta 回的那个。
+        var stub = new Stub(request =>
+            request.RequestUri!.AbsolutePath.Contains("/multimedia", StringComparison.Ordinal)
+                ? Json("""{"errno":0,"info":[{"dlink":"https://d.pcs.baidu.com/file/x?sig=1"}]}""")
+                : Json("""{"errno":0,"list":[{"fs_id":123456789,"server_filename":"a.mp4"}]}"""));
+
+        var link = await Client(stub).GetDlinkAsync("t", "/apps/VidLog/2026-10-17/发货/a.mp4");
+
+        Assert.Equal("https://d.pcs.baidu.com/file/x?sig=1", link);
+
+        Assert.Equal(2, stub.Urls.Count);
+        Assert.StartsWith(
+            "https://pan.baidu.com/rest/2.0/xpan/file?method=meta", stub.Urls[0], StringComparison.Ordinal);
+        Assert.StartsWith(
+            "https://pan.baidu.com/rest/2.0/xpan/multimedia?method=filemetas",
+            stub.Urls[1],
+            StringComparison.Ordinal);
+        Assert.Contains("dlink=1", stub.Urls[1], StringComparison.Ordinal);
+        Assert.Contains("fsids=[123456789]", stub.Urls[1], StringComparison.Ordinal);
+    }
+
     // ─────────────────────────────────────────────
     // 响应体怎么解
     // ─────────────────────────────────────────────

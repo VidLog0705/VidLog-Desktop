@@ -112,15 +112,15 @@ public sealed class BaiduPanClient : IBaiduPanApi
     private const string FileBase = "https://pan.baidu.com/rest/2.0/xpan/file";
     private const string NasBase = "https://pan.baidu.com/rest/2.0/xpan/nas";
 
-    /// <summary>
-    /// 取文件信息 / 下载直链的那个服务（047）。
-    /// </summary>
-    /// <remarks>
-    /// ⚠️ 它与 <c>FileBase</c> **不是一族**：<c>method=meta&amp;dlink=1</c> 挂在
-    /// <c>/rest/2.0/xpan/multimedia</c> 上（手机端已经跑通的那一份用的就是它）。
-    /// 挂到 <c>file</c> 那一族上会回 <c>errno=31023</c>（参数不对），
-    /// 而那句「参数不对」指不回「你把服务名拼错了」。
-    /// </remarks>
+    // ⚠️ 这两个服务**分工不同，别互相借**（2026-10-17 真机纠正）：
+    // `method=meta` 挂在 `/xpan/file` 上（认 path，但**不回 dlink**）；
+    // `method=filemetas` 挂在 `/xpan/multimedia` 上（认 fsids，回 dlink）。
+    // 拿 `method=meta` 去问 multimedia，百度回 `errno=2 unsupported api`；
+    // 拿 `path` / `target` 去问 filemetas，回 `errno=2 fsids error`。
+    // 判据是 0.15.11 装机：真录一条 → 删掉本机那份 → 检索页点开，界面原样打出这两句。
+    // 手机端 `baidu_pan.dart` 的 `_metaUri` 拼的还是「multimedia + method=meta」那个错组合。
+
+    /// <summary>按 fs_id 问文件信息 / 下载直链（`method=filemetas`）。</summary>
     private const string MultimediaBase = "https://pan.baidu.com/rest/2.0/xpan/multimedia";
 
     /// <summary>
@@ -658,37 +658,93 @@ public sealed class BaiduPanClient : IBaiduPanApi
     public async Task<string> GetDlinkAsync(
         string accessToken, string remotePath, CancellationToken cancellationToken = default)
     {
-        var url = $"{MultimediaBase}?method=meta"
-            + "&dlink=1"
+        // ⚠️ **两步**（2026-10-17 真机纠正，别改回一步）。
+        // `/rest/2.0/xpan/file?method=meta&dlink=1` **不**回 dlink：答复的 `list[0]`
+        // 里 fs_id / size / md5 都在，就是没有 dlink（0.15.11 装机实测）。
+        // 而 `/rest/2.0/xpan/multimedia` 只认 `method=filemetas` + `fsids`，
+        // 拿 `path` 或 `target` 去问它，回 `errno=2`（unsupported api / fsids error）。
+        // ⇒ 先 `meta` 拿 fs_id，再 `filemetas` 拿直链。两次都走同一处 errno 判读。
+        var metaUrl = $"{FileBase}?method=meta"
             + $"&access_token={Uri.EscapeDataString(accessToken)}"
             + $"&path={Uri.EscapeDataString(remotePath)}";
 
-        // 顶层 errno 非 0 由 `ReadAsync` 抛（它是全类统一的那一处）。
-        var json = await GetJsonAsync(url, cancellationToken);
+        // 顶层 errno 非 0 由 `GetJsonAsync` 后面的 `ReadAsync` 抛（全类统一的那一处）。
+        var meta = await GetJsonAsync(metaUrl, cancellationToken);
+        var entry = FirstRow(meta);
 
-        if (json.TryGetProperty("list", out var list) && list.ValueKind == JsonValueKind.Array)
+        if (entry.ValueKind == JsonValueKind.Undefined)
         {
-            foreach (var item in list.EnumerateArray())
+            throw new BaiduPanException(0, "取不到下载地址：答复里没有这一条文件");
+        }
+
+        ThrowIfRowFailed(entry);
+
+        // 老接口（PCS 那一代）会在 meta 里直接给 dlink —— 有就用，省一次往返。
+        if (Optional(entry, "dlink") is { Length: > 0 } direct)
+        {
+            return direct;
+        }
+
+        // fs_id 是个 uint64，`GetRawText()` 原样取数字（转 double 会丢精度）；
+        // 万一哪天回成字符串，去掉引号 —— 两种都认。
+        var fsid = entry.TryGetProperty("fs_id", out var id)
+            ? id.ValueKind == JsonValueKind.String ? id.GetString() : id.GetRawText()
+            : null;
+
+        if (string.IsNullOrEmpty(fsid))
+        {
+            throw new BaiduPanException(0, "取不到下载地址：答复里没有 fs_id");
+        }
+
+        var dlinkUrl = $"{MultimediaBase}?method=filemetas&dlink=1"
+            + $"&access_token={Uri.EscapeDataString(accessToken)}"
+            + $"&fsids=[{fsid}]";
+
+        var info = await GetJsonAsync(dlinkUrl, cancellationToken);
+        var file = FirstRow(info);
+
+        if (file.ValueKind == JsonValueKind.Undefined)
+        {
+            throw new BaiduPanException(0, "取不到下载地址：答复里没有这一条文件");
+        }
+
+        ThrowIfRowFailed(file);
+
+        return Optional(file, "dlink") is { Length: > 0 } link
+            ? link
+            : throw new BaiduPanException(0, "取不到下载地址：答复里没有 dlink");
+    }
+
+    /// <summary>答复里那条记录（`list[]` 或 `info[]`，两个接口各用一种）。</summary>
+    private static JsonElement FirstRow(JsonElement json)
+    {
+        foreach (var name in (string[])["list", "info"])
+        {
+            if (json.TryGetProperty(name, out var array) && array.ValueKind == JsonValueKind.Array)
             {
-                // ⚠️ 顶层是 0 时**这一条自己还可能带 errno**（047 的 `list[].errno`）：
-                // 只看顶层就会拿着一个空串去下载，而报出来的错是「HTTP 403」之类
-                // 指不回这里的话。
-                var itemErrno = item.TryGetProperty("errno", out var code) ? code.GetInt32() : 0;
-
-                if (itemErrno != 0)
+                foreach (var item in array.EnumerateArray())
                 {
-                    throw new BaiduPanException(
-                        itemErrno, $"这一条文件取不到下载地址：errno={itemErrno}{Hint(itemErrno)}");
-                }
-
-                if (Optional(item, "dlink") is { Length: > 0 } link)
-                {
-                    return link;
+                    return item;
                 }
             }
         }
 
-        throw new BaiduPanException(0, "取不到下载地址：答复里没有这一条文件");
+        return default;
+    }
+
+    /// <summary>
+    /// 顶层 errno 是 0 时，**这一条自己还可能带 errno**（047 的 `list[].errno`）：
+    /// 只看顶层就会拿着一个空串去下载，而报出来的错是「HTTP 403」之类指不回这里的话。
+    /// </summary>
+    private static void ThrowIfRowFailed(JsonElement item)
+    {
+        var itemErrno = item.TryGetProperty("errno", out var code) ? code.GetInt32() : 0;
+
+        if (itemErrno != 0)
+        {
+            throw new BaiduPanException(
+                itemErrno, $"这一条文件取不到下载地址：errno={itemErrno}{Hint(itemErrno)}");
+        }
     }
 
     public async Task DownloadAsync(

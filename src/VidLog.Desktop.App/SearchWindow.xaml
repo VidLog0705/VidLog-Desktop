@@ -433,7 +433,7 @@
                                                 <ProgressBar Width="40" Height="6"
                                                              VerticalAlignment="Center"
                                                              Minimum="0" Maximum="100"
-                                                             Value="{Binding RetrievalPercent}"
+                                                             Value="{Binding RetrievalPercent, Mode=OneWay}"
                                                              Visibility="{Binding RetrievalBarVisibility}"
                                                              Foreground="{DynamicResource ProgressFill}"
                                                              Background="{DynamicResource SurfaceAlt}"
